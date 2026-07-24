@@ -1,0 +1,74 @@
+// HardwareManager.cpp
+#include "hardware/HardwareManager.h"
+
+#include "hardware/SimulatedDevice.h"
+#include "core/Log.h"
+
+namespace firedog {
+
+HardwareManager::HardwareManager()
+{
+    // Remaining simulated instruments from readme.txt. PI/ACS are now real
+    // layer-1 drivers (added by Workflow from config via AddMotion); the camera
+    // and Keithley are direct-SDK members. Replace each SimulatedDevice below
+    // with its SDK-backed adapter as that module comes online.
+    devices_.emplace_back(std::make_unique<SimulatedDevice>("CLD101x", 350));
+    devices_.emplace_back(std::make_unique<SimulatedDevice>("SMU",     450));
+    devices_.emplace_back(std::make_unique<SimulatedDevice>("PSU",     300));
+}
+
+void HardwareManager::AddMotion(std::unique_ptr<IMotionController> dev)
+{
+    auto slot  = std::make_unique<MotionSlot>();
+    slot->name = dev->Name();
+    slot->dev  = std::move(dev);
+    motion_.push_back(std::move(slot));
+}
+
+HardwareManager::~HardwareManager()
+{
+    for (auto& f : pending_) {
+        if (f.valid()) f.wait();
+    }
+}
+
+void HardwareManager::ConnectAllAsync()
+{
+    FD_INFO("hw", "connecting %zu simulated devices", devices_.size());
+    pending_.clear();
+    for (auto& d : devices_) {
+        IDevice* dev = d.get();
+        pending_.push_back(std::async(std::launch::async, [dev] {
+            const bool ok = dev->Connect();
+            if (ok) FD_INFO("hw", "%s connected", dev->Name().c_str());
+            else    FD_WARN("hw", "%s failed to connect", dev->Name().c_str());
+        }));
+    }
+}
+
+bool HardwareManager::AllConnected() const
+{
+    for (const auto& d : devices_) {
+        if (d->State() != ConnState::Connected) return false;
+    }
+    return true;
+}
+
+std::vector<HardwareManager::DeviceStatus> HardwareManager::Snapshot() const
+{
+    std::vector<DeviceStatus> out;
+    out.reserve(motion_.size() + devices_.size() + 2);
+    // Motion fleet first (PI hexapods + ACS gantry), then the simulated
+    // instruments, then the two direct-SDK instruments (via their atomics).
+    for (const auto& m : motion_) {
+        out.push_back({m->name, m->state.load()});
+    }
+    for (const auto& d : devices_) {
+        out.push_back({d->Name(), d->State()});
+    }
+    out.push_back({camName_, camState_.load()});
+    out.push_back({keiName_, keiState_.load()});
+    return out;
+}
+
+} // namespace firedog

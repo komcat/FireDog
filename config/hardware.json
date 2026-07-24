@@ -1,0 +1,61 @@
+{
+  "cameras": [
+    {
+      "id": "main_camera",
+      "enabled": true,
+      "camera_type": "PYLON",
+      "connection_type": "ip",
+      "ip_address": "192.168.0.68",
+      "display_name": "Basler Camera",
+      "auto_connect": true,
+      "pixel_to_mm_x": 0.00248,
+      "pixel_to_mm_y": 0.00248
+    }
+  ],
+  "motion_devices": [
+    {
+      "axes": "X Y Z",
+      "controller_type": "ACS",
+      "device_id": 3,
+      "enabled": true,
+      "id": "gantry-main",
+      "ip_address": "192.168.0.50",
+      "name": "gantry-main",
+      "port": 701
+    },
+    {
+      "axes": "X Y Z U V W",
+      "controller_type": "PI",
+      "device_id": 0,
+      "enabled": true,
+      "id": "hex-left",
+      "ip_address": "192.168.0.10",
+      "name": "hex-left",
+      "port": 50000
+    },
+    {
+      "axes": "X Y Z U V W",
+      "controller_type": "PI",
+      "device_id": 2,
+      "enabled": true,
+      "id": "hex-right",
+      "ip_address": "192.168.0.30",
+      "name": "hex-right",
+      "port": 50000
+    }
+  ],
+  "instruments": [
+    {
+      "name": "Keithley_6482",
+      "type": "keithley_6482",
+      "visa_resource": "GPIB0::1::INSTR",
+      "enabled": true,
+      "channel_count": 2,
+      "enabled_channels": [1, 2],
+      "measurement_nplc": 0.1,
+      "auto_range": true,
+      "fixed_range": 0.0,
+      "poll_interval_ms": 0
+    }
+  ]
+}
