@@ -26,6 +26,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("lower_h"))    s.lowerH    = j["lower_h"].get<float>();
         if (j.contains("show_chart"))    s.showChart   = j["show_chart"].get<bool>();
         if (j.contains("click_to_move")) s.clickToMove = j["click_to_move"].get<bool>();
+        if (j.contains("chart_scope"))   s.chartScope  = j["chart_scope"].get<bool>();
         if (j.contains("last_product"))  s.lastProduct = j["last_product"].get<std::string>();
         FD_INFO("ui", "settings loaded from %s (font %d, %.0f px)",
                 path.c_str(), s.fontIndex, s.fontSize);
@@ -47,6 +48,7 @@ bool UiSettings::Save(const std::string& path) const
     j["lower_h"]    = lowerH;
     j["show_chart"]    = showChart;
     j["click_to_move"] = clickToMove;
+    j["chart_scope"]   = chartScope;
     j["last_product"]  = lastProduct;
 
     std::ofstream f(path);

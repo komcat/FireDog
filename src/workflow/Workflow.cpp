@@ -53,6 +53,7 @@ void Workflow::Start(const HardwareConfig& hw)
     StartCamera(hw);
     StartKeithley(hw);
     StartCld(hw);
+    StartPsu(hw);
 }
 
 void Workflow::StartMotion(const HardwareConfig& hw)
@@ -72,7 +73,7 @@ void Workflow::StartMotion(const HardwareConfig& hw)
         } else if (d.controllerType == "ACS") {
             dev = std::make_unique<ACSController>(d);
         } else {
-            FD_WARN("workflow", "unknown controller_type '%s' for '%s' — skipping",
+            FD_WARN("workflow", "unknown controller_type '%s' for '%s' - skipping",
                     d.controllerType.c_str(), d.name.c_str());
             continue;
         }
@@ -112,7 +113,7 @@ void Workflow::StartIO(const HardwareConfig& hw)
         if (d.type == "eziio") {
             // FAS_* calls address boards by device_id — duplicates would alias.
             if (std::find(eziIds.begin(), eziIds.end(), d.deviceId) != eziIds.end()) {
-                FD_WARN("workflow", "duplicate eziio device_id %d for '%s' — skipping",
+                FD_WARN("workflow", "duplicate eziio device_id %d for '%s' - skipping",
                         d.deviceId, d.name.c_str());
                 continue;
             }
@@ -138,7 +139,7 @@ void Workflow::StartIO(const HardwareConfig& hw)
             cfg.outputNames = d.outputNames;
             dev = std::make_unique<WagoIoDevice>(cfg);
         } else {
-            FD_WARN("workflow", "unknown io type '%s' for '%s' — skipping",
+            FD_WARN("workflow", "unknown io type '%s' for '%s' - skipping",
                     d.type.c_str(), d.name.c_str());
             continue;
         }
@@ -190,12 +191,12 @@ void Workflow::StartPneumatics(const HardwareConfig& hw)
         w.retractedPin = w.retractedDev ? w.retractedDev->InputPinByName(c.retractedPin) : -1;
 
         if (!w.outputDev || w.outputPin < 0) {
-            FD_WARN("workflow", "pneumatic '%s': output pin '%s' not found on '%s' — skipping",
+            FD_WARN("workflow", "pneumatic '%s': output pin '%s' not found on '%s' - skipping",
                     c.name.c_str(), c.outputPin.c_str(), c.outputDevice.c_str());
             continue;
         }
         if (!w.extendedDev || w.extendedPin < 0 || !w.retractedDev || w.retractedPin < 0) {
-            FD_WARN("workflow", "pneumatic '%s': sensor pin '%s'@'%s' or '%s'@'%s' not found — skipping",
+            FD_WARN("workflow", "pneumatic '%s': sensor pin '%s'@'%s' or '%s'@'%s' not found - skipping",
                     c.name.c_str(), c.extendedPin.c_str(), c.extendedDevice.c_str(),
                     c.retractedPin.c_str(), c.retractedDevice.c_str());
             continue;
@@ -243,7 +244,7 @@ bool Workflow::ApplyIoWatch(const IoWatchConfig& cfg)
         b.outputPin  = b.outputDev ? b.outputDev->OutputPinByName(c.outputPin) : -1;
 
         if (!b.inputDev || b.inputPin < 0 || !b.outputDev || b.outputPin < 0) {
-            FD_WARN("workflow", "io_watch '%s': unresolved pin ('%s'@'%s' -> '%s'@'%s') — skipping",
+            FD_WARN("workflow", "io_watch '%s': unresolved pin ('%s'@'%s' -> '%s'@'%s') - skipping",
                     c.name.c_str(), c.inputPin.c_str(), c.inputDevice.c_str(),
                     c.outputPin.c_str(), c.outputDevice.c_str());
             continue;
@@ -294,7 +295,7 @@ void Workflow::StartSafetyWatch(const HardwareConfig& hw)
             s.pin = c.pinNumber;
         }
         if (!s.dev || s.pin < 0) {
-            FD_ERROR("workflow", "safety signal '%s'@'%s' UNRESOLVED — NOT monitored",
+            FD_ERROR("workflow", "safety signal '%s'@'%s' UNRESOLVED - NOT monitored",
                      c.pinName.c_str(), c.device.c_str());
             continue;
         }
@@ -436,7 +437,7 @@ void Workflow::LaunchKeithleyConnect()
         // Bias is verified against the instrument (:OUTP?); a refusal is
         // logged but doesn't abort bring-up — measurement works unbiased.
         if (ok && !kei->SetVoltageBias(bias))
-            FD_WARN("workflow", "Keithley bias not confirmed (see keithley log) — polling anyway");
+            FD_WARN("workflow", "Keithley bias not confirmed (see keithley log) - polling anyway");
         if (ok) ok = kei->StartPolling(interval, topics::kKeithleyCh1, topics::kKeithleyCh2);
         hw_.SetKeithleyState(ok ? ConnState::Connected : ConnState::Failed);
         if (!ok) FD_ERROR("workflow", "Keithley bring-up failed: %s",
@@ -604,6 +605,86 @@ bool Workflow::CldTecOff()   { CLD101x* c = ConnectedCld(); return c && c->TecOf
 bool Workflow::CldLaserOn()  { CLD101x* c = ConnectedCld(); return c && c->LaserOn(); }
 bool Workflow::CldLaserOff() { CLD101x* c = ConnectedCld(); return c && c->LaserOff(); }
 
+void Workflow::StartPsu(const HardwareConfig& hw)
+{
+    const PsuConfig* p = hw.FirstEnabledPsu();
+    if (!p) {
+        FD_WARN("workflow", "no enabled PSU in config");
+        hw_.SetPsuState(ConnState::Disconnected);
+        return;
+    }
+
+    psuCfg_      = *p;   // kept so the PSU page can reconnect later
+    psuCfgValid_ = true;
+    hw_.SetPsuName(p->name);
+    LaunchPsuConnect();
+}
+
+void Workflow::LaunchPsuConnect()
+{
+    hw_.SetPsuState(ConnState::Connecting);
+    FD_INFO("workflow", "connecting PSU '%s' (%s)",
+            psuCfg_.name.c_str(), psuCfg_.visaResource.c_str());
+
+    UDP3305S::Config cfg;
+    cfg.name           = psuCfg_.name;
+    cfg.visaResource   = psuCfg_.visaResource;
+    cfg.channels       = psuCfg_.channels;
+    cfg.pollIntervalMs = psuCfg_.pollIntervalMs;
+    hw_.SetPsu(std::make_unique<UDP3305S>(cfg));
+
+    // Connect + poll only. Nothing is written to the outputs at startup —
+    // enabling an output is always an explicit UI action.
+    const int interval = psuCfg_.pollIntervalMs;
+    psuConnect_ = std::async(std::launch::async, [this, interval] {
+        UDP3305S* psu = hw_.Psu();
+        bool ok = psu && psu->Connect();
+        if (ok) ok = psu->StartPolling(interval);
+        hw_.SetPsuState(ok ? ConnState::Connected : ConnState::Failed);
+        if (!ok) FD_ERROR("workflow", "PSU bring-up failed: %s",
+                          psu ? psu->LastError().c_str() : "no driver");
+    });
+}
+
+bool Workflow::ConnectPsu()
+{
+    if (!psuCfgValid_) {
+        FD_WARN("workflow", "PSU connect: no PSU configured");
+        return false;
+    }
+    if (hw_.PsuState() == ConnState::Connecting) return false;   // in flight
+    UDP3305S* psu = hw_.Psu();
+    if (psu && psu->IsConnected()) return true;                  // already up
+    LaunchPsuConnect();   // rebuilds the driver from psuCfg_
+    return true;
+}
+
+bool Workflow::DisconnectPsu()
+{
+    if (hw_.PsuState() == ConnState::Connecting) return false;   // let it finish
+    UDP3305S* psu = hw_.Psu();
+    if (!psu) return false;
+    psu->Disconnect();   // stops polling; forces every output OFF (bobcat habit)
+    hw_.SetPsuState(ConnState::Disconnected);
+    FD_INFO("workflow", "PSU '%s' disconnected", hw_.PsuName().c_str());
+    return true;
+}
+
+UDP3305S* Workflow::ConnectedPsu() const
+{
+    if (hw_.PsuState() != ConnState::Connected) return nullptr;
+    return hw_.Psu();
+}
+
+bool Workflow::SetPsuVI(int channel, double volts, double amps)
+{
+    UDP3305S* psu = ConnectedPsu();
+    return psu && psu->Apply(channel, volts, amps);
+}
+
+bool Workflow::PsuOutputOn(int channel)  { UDP3305S* p = ConnectedPsu(); return p && p->OutputOn(channel); }
+bool Workflow::PsuOutputOff(int channel) { UDP3305S* p = ConnectedPsu(); return p && p->OutputOff(channel); }
+
 void Workflow::Update(float dt)
 {
     clock_ += dt;
@@ -628,7 +709,7 @@ const char* Workflow::StatusText() const
 bool Workflow::MoveGantryRelativeMM(double dxMM, double dyMM)
 {
     if (SafetyBlocked()) {
-        FD_WARN("safety", "move blocked — acknowledge the safety alert first");
+        FD_WARN("safety", "move blocked - acknowledge the safety alert first");
         return false;
     }
     // Locate gantry-main (fall back to the first ACS controller).
@@ -675,7 +756,7 @@ bool Workflow::SetJogVelocity(std::size_t devIdx, double mmPerSec)
     double v = mmPerSec;
     if (v < kMinVelMMs) v = kMinVelMMs;
     if (v > maxVel) {
-        FD_WARN("workflow", "%s velocity %.3f mm/s over limit — clamped to %.1f",
+        FD_WARN("workflow", "%s velocity %.3f mm/s over limit - clamped to %.1f",
                 m->Name().c_str(), mmPerSec, maxVel);
         v = maxVel;
     }
@@ -735,7 +816,7 @@ bool Workflow::JogGlobalRot(std::size_t devIdx, float gu, float gv, float gw, do
 bool Workflow::JogLocalAxis(std::size_t devIdx, const std::string& axis, double deltaMM)
 {
     if (SafetyBlocked()) {
-        FD_WARN("safety", "jog blocked — acknowledge the safety alert first");
+        FD_WARN("safety", "jog blocked - acknowledge the safety alert first");
         return false;
     }
     if (devIdx >= hw_.MotionCount()) return false;
@@ -773,7 +854,7 @@ bool Workflow::MoveToPosition(std::size_t devIdx,
                               const std::vector<std::pair<std::string, double>>& targets)
 {
     if (SafetyBlocked()) {
-        FD_WARN("safety", "move blocked — acknowledge the safety alert first");
+        FD_WARN("safety", "move blocked - acknowledge the safety alert first");
         return false;
     }
     if (devIdx >= hw_.MotionCount() || targets.empty()) return false;

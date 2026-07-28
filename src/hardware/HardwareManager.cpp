@@ -9,11 +9,10 @@ namespace firedog {
 HardwareManager::HardwareManager()
 {
     // Remaining simulated instruments from readme.txt. PI/ACS are now real
-    // layer-1 drivers (added by Workflow from config via AddMotion); the camera
-    // and Keithley are direct-SDK members. Replace each SimulatedDevice below
-    // with its SDK-backed adapter as that module comes online.
+    // layer-1 drivers (added by Workflow from config via AddMotion); camera,
+    // Keithley, CLD101x, and the UDP3305S PSU are direct-SDK members. Replace
+    // each SimulatedDevice below with its SDK adapter as it comes online.
     devices_.emplace_back(std::make_unique<SimulatedDevice>("SMU", 450));
-    devices_.emplace_back(std::make_unique<SimulatedDevice>("PSU", 300));
 }
 
 void HardwareManager::AddMotion(std::unique_ptr<IMotionController> dev)
@@ -64,9 +63,9 @@ bool HardwareManager::AllConnected() const
 std::vector<HardwareManager::DeviceStatus> HardwareManager::Snapshot() const
 {
     std::vector<DeviceStatus> out;
-    out.reserve(motion_.size() + io_.size() + devices_.size() + 2);
+    out.reserve(motion_.size() + io_.size() + devices_.size() + 4);
     // Motion fleet first (PI hexapods + ACS gantry), then the IO fleet, then
-    // the simulated instruments, then the two direct-SDK instruments.
+    // the simulated instruments, then the direct-SDK instruments.
     for (const auto& m : motion_) {
         out.push_back({m->name, m->state.load()});
     }
@@ -79,6 +78,7 @@ std::vector<HardwareManager::DeviceStatus> HardwareManager::Snapshot() const
     out.push_back({camName_, camState_.load()});
     out.push_back({keiName_, keiState_.load()});
     out.push_back({cldName_, cldState_.load()});
+    out.push_back({psuName_, psuState_.load()});
     return out;
 }
 

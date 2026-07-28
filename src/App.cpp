@@ -189,6 +189,7 @@ int App::Run()
         if (ui.lowerH > 0.0f) lowerH_ = ui.lowerH;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
+        chartScope_      = ui.chartScope;
         lastProduct      = ui.lastProduct;
     }
     Theme::Apply(themeIndex_);
@@ -230,6 +231,9 @@ int App::Run()
         cldId_         = cc->name;
         cldTempSet_    = static_cast<float>(cc->defaultTemperature);
         cldCurrentSet_ = static_cast<float>(cc->defaultLaserCurrentMA);
+    }
+    if (const PsuConfig* pc = hw.FirstEnabledPsu()) {
+        psuId_ = pc->name;
     }
     transformCfg_ = LoadMotionTransforms("config/motion_transforms.json");
     workflow_.SetTransforms(transformCfg_);   // transformCfg_ stays the editor's working copy
@@ -298,6 +302,8 @@ void App::DrawMainWindow()
                     currentPage_ = Page::Keithley;
                 if (ImGui::MenuItem("CLD101x",  nullptr, currentPage_ == Page::CLD))
                     currentPage_ = Page::CLD;
+                if (ImGui::MenuItem("PSU",      nullptr, currentPage_ == Page::PSU))
+                    currentPage_ = Page::PSU;
                 if (ImGui::MenuItem("Motion",   nullptr, currentPage_ == Page::Motion))
                     currentPage_ = Page::Motion;
                 if (ImGui::MenuItem("IO",       nullptr, currentPage_ == Page::IO))
@@ -400,6 +406,7 @@ void App::DrawMainWindow()
             case Page::Camera:    DrawCameraListPanel();    break;
             case Page::Keithley:  DrawKeithleyListPanel();  break;
             case Page::CLD:       DrawCldListPanel();       break;
+            case Page::PSU:       DrawPsuListPanel();       break;
             case Page::Motion:    DrawMotionListPanel();    break;
             case Page::IO:        DrawIoListPanel();        break;
             case Page::Pneumatic: DrawPneumaticListPanel(); break;
@@ -419,6 +426,7 @@ void App::DrawMainWindow()
             case Page::Camera:    DrawCameraDetailPanel();    break;
             case Page::Keithley:  DrawKeithleyDetailPanel();  break;
             case Page::CLD:       DrawCldDetailPanel();       break;
+            case Page::PSU:       DrawPsuDetailPanel();       break;
             case Page::Motion:    DrawMotionDetailPanel();    break;
             case Page::IO:        DrawIoDetailPanel();        break;
             case Page::Pneumatic: DrawPneumaticDetailPanel(); break;
@@ -441,6 +449,7 @@ void App::DrawMainWindow()
             case Page::Camera:    DrawCameraInfoPanel();    break;
             case Page::Keithley:  DrawKeithleyInfoPanel();  break;
             case Page::CLD:       DrawCldInfoPanel();       break;
+            case Page::PSU:       DrawPsuInfoPanel();       break;
             case Page::Motion:    DrawMotionInfoPanel();    break;
             case Page::IO:        DrawIoInputPanel();       break;
             case Page::Pneumatic: DrawPneumaticInfoPanel(); break;
@@ -506,6 +515,7 @@ void App::SaveUiSettings()
     s.lowerH    = lowerH_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
+    s.chartScope  = chartScope_;
     s.lastProduct = product_.name;
     s.Save(kUiSettingsPath);
 }
@@ -1337,6 +1347,153 @@ void App::DrawCldInfoPanel()
         ImGui::Spacing();
         ImGui::TextDisabled("Polling");
         ImGui::TextUnformatted(cld->IsPolling() ? "yes" : "no");
+    }
+}
+
+// ---- PSU page (UNI-T UDP3305S) --------------------------------------------
+// Left: status + connect/disconnect. Middle: per-channel V/I setpoints (the
+// verified APPLy form) + output ON/OFF (read-back verified). Right: identity +
+// live values. Turning an output on is always an explicit button press —
+// nothing is enabled automatically at connect; disconnect forces all OFF.
+
+namespace {
+// Datasheet channel limits: CH1/CH2 0..32 V / 0..5 A, CH3 0..6 V / 0..3 A.
+float PsuMaxVolts(int ch) { return ch == 3 ? 6.0f : 32.0f; }
+float PsuMaxAmps(int ch)  { return ch == 3 ? 3.0f : 5.0f; }
+} // namespace
+
+void App::DrawPsuListPanel()
+{
+    ImGui::TextUnformatted("Power supply");
+    ImGui::Separator();
+    if (psuId_.empty()) {
+        ImGui::TextDisabled("no PSU configured in hardware.json");
+        return;
+    }
+
+    const ConnState st = hardware_.PsuState();
+    ImGui::TextColored(StateColor(st), "%s", StateGlyph(st));
+    ImGui::SameLine();
+    ImGui::TextUnformatted(hardware_.PsuName().c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(StateColor(st), "%s", StateText(st));
+
+    ImGui::Spacing();
+    const bool busy = (st == ConnState::Connecting);
+    ImGui::BeginDisabled(busy || st == ConnState::Connected);
+    if (ImGui::Button("Connect", ImVec2(-FLT_MIN, 0.0f))) workflow_.ConnectPsu();
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(busy || st != ConnState::Connected);
+    if (ImGui::Button("Disconnect", ImVec2(-FLT_MIN, 0.0f))) {
+        workflow_.DisconnectPsu();
+        psuPulled_ = false;   // re-seed edits on the next connect
+    }
+    ImGui::EndDisabled();
+    if (st == ConnState::Connected)
+        ImGui::TextDisabled("disconnect forces all outputs OFF");
+
+    if (st == ConnState::Failed && hardware_.Psu()) {
+        const std::string err = hardware_.Psu()->LastError();
+        if (!err.empty()) {
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, StateColor(ConnState::Failed));
+            ImGui::TextWrapped("%s", err.c_str());
+            ImGui::PopStyleColor();
+        }
+    }
+}
+
+void App::DrawPsuDetailPanel()
+{
+    const ConnState st  = hardware_.PsuState();
+    UDP3305S*       psu = hardware_.Psu();
+    const bool connected = (st == ConnState::Connected) && psu;
+    const UDP3305S::Status s = psu ? psu->GetStatus() : UDP3305S::Status{};
+    const int channels = psu ? psu->Channels() : 3;
+
+    if (connected && !psuPulled_) {   // seed edits from the device's setpoints
+        for (int ch = 0; ch < channels; ++ch) {
+            if (s.ch[ch].setV > 0.0) psuVSet_[ch] = static_cast<float>(s.ch[ch].setV);
+            if (s.ch[ch].setI > 0.0) psuISet_[ch] = static_cast<float>(s.ch[ch].setI);
+        }
+        psuPulled_ = true;
+    }
+    if (!connected) psuPulled_ = false;
+
+    for (int ch = 1; ch <= channels; ++ch) {
+        const UDP3305S::ChannelStatus& c = s.ch[ch - 1];
+        ImGui::PushID(ch);
+        ImGui::Text("CH%d", ch);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(0-%.0f V / 0-%.0f A)", PsuMaxVolts(ch), PsuMaxAmps(ch));
+        ImGui::Separator();
+
+        ImGui::BeginDisabled(!connected);
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::InputFloat("V##v", &psuVSet_[ch - 1], 0.0f, 0.0f, "%.3f");
+        if (psuVSet_[ch - 1] < 0.0f)             psuVSet_[ch - 1] = 0.0f;
+        if (psuVSet_[ch - 1] > PsuMaxVolts(ch))  psuVSet_[ch - 1] = PsuMaxVolts(ch);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::InputFloat("A##i", &psuISet_[ch - 1], 0.0f, 0.0f, "%.3f");
+        if (psuISet_[ch - 1] < 0.0f)            psuISet_[ch - 1] = 0.0f;
+        if (psuISet_[ch - 1] > PsuMaxAmps(ch))  psuISet_[ch - 1] = PsuMaxAmps(ch);
+        ImGui::SameLine();
+        if (ImGui::Button("Apply"))
+            workflow_.SetPsuVI(ch, psuVSet_[ch - 1], psuISet_[ch - 1]);
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.60f, 0.25f, 1.0f));
+        if (ImGui::Button("Output ON")) workflow_.PsuOutputOn(ch);
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
+        if (ImGui::Button("Output OFF")) workflow_.PsuOutputOff(ch);
+        ImGui::PopStyleColor();
+        ImGui::EndDisabled();
+
+        if (connected) {
+            if (c.outputOn)
+                ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.40f, 1.0f),
+                                   "ON  |  %.3f V  %.3f A (set %.3f V / %.3f A)",
+                                   c.measV, c.measI, c.setV, c.setI);
+            else
+                ImGui::TextDisabled("OFF  |  set %.3f V / %.3f A", c.setV, c.setI);
+        }
+        ImGui::Spacing();
+        ImGui::PopID();
+    }
+    if (!connected) ImGui::TextDisabled("connect the power supply to operate it");
+}
+
+void App::DrawPsuInfoPanel()
+{
+    ImGui::TextUnformatted("Supply info");
+    ImGui::Separator();
+
+    const ConnState st  = hardware_.PsuState();
+    UDP3305S*       psu = hardware_.Psu();
+
+    ImGui::TextDisabled("State");
+    ImGui::TextColored(StateColor(st), "%s", StateText(st));
+    ImGui::Spacing();
+    ImGui::TextDisabled("Device ID");
+    ImGui::TextWrapped("%s", (psu && !psu->DeviceId().empty()) ? psu->DeviceId().c_str() : "-");
+
+    if (psu) {
+        const UDP3305S::Status s = psu->GetStatus();
+        for (int ch = 1; ch <= psu->Channels(); ++ch) {
+            const UDP3305S::ChannelStatus& c = s.ch[ch - 1];
+            ImGui::Spacing();
+            ImGui::TextDisabled("CH%d", ch);
+            if (c.outputOn) ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.40f, 1.0f), "ON");
+            else            ImGui::TextUnformatted("OFF");
+            if (s.valid) ImGui::Text("%.3f V  %.3f A", c.measV, c.measI);
+            else         ImGui::TextDisabled("no reading yet");
+            ImGui::Text("set %.3f V / %.3f A", c.setV, c.setI);
+        }
+        ImGui::Spacing();
+        ImGui::TextDisabled("Polling");
+        ImGui::TextUnformatted(psu->IsPolling() ? "yes" : "no");
     }
 }
 
@@ -2447,42 +2604,108 @@ void App::UpdateKeithleyChartData(float dt)
 }
 
 // Readout + channel selector + rolling chart — shared by the Aux overlay and
-// the Keithley page (chartCh_ keeps both views on the same channel selection).
+// the Keithley page (chartCh_/chartScope_ keep both views in sync). Two looks:
+// classic (axes + ticks) and scope (bare dark canvas, thick trace, legend
+// swatch top-left, big live value bottom-left — the bobcat scope style).
 void App::DrawKeithleyChart(const ImVec2& size)
 {
-    // Live readout: latest value per channel + achieved sample rate.
-    if (!kV1_.empty()) ImGui::TextColored(ImVec4(0.00f, 0.85f, 1.00f, 1.0f), "Ch1: %s", FormatCurrent(kV1_.back()).c_str());
-    else               ImGui::TextDisabled("Ch1: --");
-    ImGui::SameLine(0.0f, 16.0f);
-    if (!kV2_.empty()) ImGui::TextColored(ImVec4(1.00f, 0.55f, 0.10f, 1.0f), "Ch2: %s", FormatCurrent(kV2_.back()).c_str());
-    else               ImGui::TextDisabled("Ch2: --");
-    ImGui::SameLine(0.0f, 16.0f);
-    ImGui::Text("| %.0f Hz", MeasuredHz(kT1_.empty() ? kT2_ : kT1_));
+    const ImVec4 kCh1Col(0.00f, 0.85f, 1.00f, 1.0f);   // cyan
+    const ImVec4 kCh2Col(1.00f, 0.55f, 0.10f, 1.0f);   // orange
+
+    if (!chartScope_) {
+        // Live readout row — in scope mode the value lives on the canvas instead.
+        if (!kV1_.empty()) ImGui::TextColored(kCh1Col, "Ch1: %s", FormatCurrent(kV1_.back()).c_str());
+        else               ImGui::TextDisabled("Ch1: --");
+        ImGui::SameLine(0.0f, 16.0f);
+        if (!kV2_.empty()) ImGui::TextColored(kCh2Col, "Ch2: %s", FormatCurrent(kV2_.back()).c_str());
+        else               ImGui::TextDisabled("Ch2: --");
+        ImGui::SameLine(0.0f, 16.0f);
+        ImGui::Text("| %.0f Hz", MeasuredHz(kT1_.empty() ? kT2_ : kT1_));
+    }
 
     ImGui::RadioButton("Ch1", &chartCh_, 0); ImGui::SameLine();
     ImGui::RadioButton("Ch2", &chartCh_, 1); ImGui::SameLine();
-    ImGui::RadioButton("Both", &chartCh_, 2);
+    ImGui::RadioButton("Both", &chartCh_, 2); ImGui::SameLine(0.0f, 16.0f);
+    if (ImGui::Checkbox("Scope", &chartScope_)) SaveUiSettings();
+    if (chartScope_) {
+        ImGui::SameLine(0.0f, 16.0f);
+        ImGui::TextDisabled("%.0f Hz", MeasuredHz(kT1_.empty() ? kT2_ : kT1_));
+    }
 
-    if (ImPlot::BeginPlot("##keithley", size)) {
+    const bool scope = chartScope_;
+    if (scope) {
+        ImPlot::PushStyleColor(ImPlotCol_FrameBg,    ImVec4(0.16f, 0.17f, 0.19f, 1.0f));
+        ImPlot::PushStyleColor(ImPlotCol_PlotBg,     ImVec4(0.16f, 0.17f, 0.19f, 1.0f));
+        ImPlot::PushStyleColor(ImPlotCol_PlotBorder, ImVec4(0, 0, 0, 0));
+        // Pad the Y auto-fit so the trace stays clear of the overlay text
+        // (legend top-left, value readout bottom-left).
+        ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.0f, 0.30f));
+    }
+    const ImPlotFlags pflags = scope ? ImPlotFlags_CanvasOnly : ImPlotFlags_None;
+    if (ImPlot::BeginPlot("##keithley", size, pflags)) {
         // Y auto-fits to the visible data; X is a fixed relative-time window:
         // 0 s at the right edge (now), running back to -kChartWindowSec.
-        ImPlot::SetupAxes("t (s)", "current (A)",
-                          ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+        if (scope) {
+            ImPlot::SetupAxes(nullptr, nullptr,
+                              ImPlotAxisFlags_NoDecorations,
+                              ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
+        } else {
+            ImPlot::SetupAxes("t (s)", "current (A)",
+                              ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+            ImPlot::SetupAxisFormat(ImAxis_X1, "%.0fs");
+        }
         ImPlot::SetupAxisLimits(ImAxis_X1, -kChartWindowSec, 0.0, ImGuiCond_Always);
-        ImPlot::SetupAxisFormat(ImAxis_X1, "%.0fs");
 
+        const float weight = scope ? 3.0f : 2.0f;
         if (chartCh_ != 1 && !kV1_.empty()) {
             ShiftToRelative(kT1_, chartClock_, kX1_);
-            ImPlotSpec s1; s1.LineColor = ImVec4(0.00f, 0.85f, 1.00f, 1.0f); s1.LineWeight = 2.0f;   // cyan
+            ImPlotSpec s1; s1.LineColor = kCh1Col; s1.LineWeight = weight;
             ImPlot::PlotLine("ch1", kX1_.data(), kV1_.data(), static_cast<int>(kV1_.size()), s1);
         }
         if (chartCh_ != 0 && !kV2_.empty()) {
             ShiftToRelative(kT2_, chartClock_, kX2_);
-            ImPlotSpec s2; s2.LineColor = ImVec4(1.00f, 0.55f, 0.10f, 1.0f); s2.LineWeight = 2.0f;   // orange
+            ImPlotSpec s2; s2.LineColor = kCh2Col; s2.LineWeight = weight;
             ImPlot::PlotLine("ch2", kX2_.data(), kV2_.data(), static_cast<int>(kV2_.size()), s2);
+        }
+
+        if (scope) {
+            // Overlay drawn straight on the plot canvas: per-channel legend
+            // swatch top-left, live value(s) bottom-left in a larger size.
+            ImDrawList*  dl = ImPlot::GetPlotDrawList();
+            const ImVec2 p0 = ImPlot::GetPlotPos();
+            const ImVec2 ps = ImPlot::GetPlotSize();
+            ImPlot::PushPlotClipRect();
+            const float fs  = ImGui::GetFontSize();
+            const float pad = 8.0f;
+
+            float ly = p0.y + pad;
+            auto LegendRow = [&](const ImVec4& c, const char* label) {
+                const float  box = fs * 0.55f;
+                const ImVec2 b0(p0.x + pad, ly + (fs - box) * 0.5f);
+                dl->AddRectFilled(b0, ImVec2(b0.x + box, b0.y + box),
+                                  ImGui::ColorConvertFloat4ToU32(c));
+                dl->AddText(ImVec2(b0.x + box + 6.0f, ly), IM_COL32(235, 235, 235, 255), label);
+                ly += fs + 2.0f;
+            };
+            if (chartCh_ != 1) LegendRow(kCh1Col, "Keithley 6482 Ch1");
+            if (chartCh_ != 0) LegendRow(kCh2Col, "Keithley 6482 Ch2");
+
+            const float vfs = fs * 1.35f;
+            float vy = p0.y + ps.y - pad - vfs;
+            auto ValueRow = [&](const ImVec4& c, const std::vector<float>& v) {
+                const std::string txt = v.empty() ? "--" : FormatCurrent(v.back());
+                dl->AddText(ImGui::GetFont(), vfs, ImVec2(p0.x + pad, vy),
+                            ImGui::ColorConvertFloat4ToU32(c), txt.c_str());
+                vy -= vfs + 2.0f;
+            };
+            // Bottom-up: ch1 sits at the very bottom, ch2 stacks above it.
+            if (chartCh_ != 1) ValueRow(kCh1Col, kV1_);
+            if (chartCh_ != 0) ValueRow(kCh2Col, kV2_);
+            ImPlot::PopPlotClipRect();
         }
         ImPlot::EndPlot();
     }
+    if (scope) { ImPlot::PopStyleVar(); ImPlot::PopStyleColor(3); }
 }
 
 void App::DrawSignalOverlay()

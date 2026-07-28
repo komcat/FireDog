@@ -246,6 +246,14 @@
       "default_temperature": 25.0,
       "default_laser_current": 50.0,
       "poll_interval_ms": 500
+    },
+    {
+      "name": "PSU3",
+      "type": "unit_t_udp3305s",
+      "visa_resource": "USB0::0x0483::0x5740::ADP3424500154::INSTR",
+      "enabled": true,
+      "channels": 3,
+      "poll_interval_ms": 500
     }
   ]
 }

@@ -68,6 +68,18 @@ struct Cld101xConfig {
     int         pollIntervalMs        = 500;
 };
 
+// UNI-T UDP3305S 3-channel DC power supply (from "instruments", type
+// containing "udp3305"). Setpoints seed from the device at connect — the
+// config carries only identity + polling.
+struct PsuConfig {
+    std::string name = "PSU3";
+    std::string type = "unit_t_udp3305s";
+    std::string visaResource;
+    bool        enabled = true;
+    int         channels = 3;
+    int         pollIntervalMs = 500;
+};
+
 // One motion controller entry (from "motion_devices"): a PI hexapod or an ACS
 // gantry, connected over TCP/IP. Shared shape for both controller kinds.
 struct MotionConfig {
@@ -152,6 +164,7 @@ struct HardwareConfig {
     std::vector<CameraConfig>   cameras;
     std::vector<KeithleyConfig> keithleys;      // from "instruments" (type keithley_*)
     std::vector<Cld101xConfig>  clds;           // from "instruments" (type cld*)
+    std::vector<PsuConfig>      psus;           // from "instruments" (type *udp3305*)
     std::vector<MotionConfig>   motionDevices;  // from "motion_devices" (PI / ACS)
     std::vector<IoDeviceConfig> ioDevices;      // from "io_devices" (eziio / wago)
     std::vector<PneumaticSlideConfig> pneumaticSlides;  // from "pneumatic_slides"
@@ -164,6 +177,7 @@ struct HardwareConfig {
     const CameraConfig*   FirstEnabledCamera() const;
     const KeithleyConfig* FirstEnabledKeithley() const;
     const Cld101xConfig*  FirstEnabledCld() const;
+    const PsuConfig*      FirstEnabledPsu() const;
     std::vector<MotionConfig>   EnabledMotionDevices() const;   // enabled only
     std::vector<IoDeviceConfig> EnabledIoDevices() const;       // enabled only
     std::vector<PneumaticSlideConfig> EnabledPneumaticSlides() const;

@@ -25,6 +25,10 @@ struct UiSettings {
     bool showChart   = true;
     bool clickToMove = false;
 
+    // Keithley chart style: true = scope look (bare canvas, overlay legend +
+    // live value), false = classic axes/ticks plot.
+    bool chartScope  = true;
+
     // Last-loaded product name (folder under products/); empty = none.
     // Auto-reloaded at startup.
     std::string lastProduct;

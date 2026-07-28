@@ -15,6 +15,11 @@ inline constexpr const char* kKeithleyCh2 = "keithley/ch2";
 inline constexpr const char* kCldTemp    = "cld/temp";
 inline constexpr const char* kCldCurrent = "cld/current";
 
+// UDP3305S PSU per-channel measured streams (1-based channel), e.g.
+// "psu/ch1/v" in volts and "psu/ch1/i" in amps.
+inline std::string PsuVoltage(int channel) { return "psu/ch" + std::to_string(channel) + "/v"; }
+inline std::string PsuCurrent(int channel) { return "psu/ch" + std::to_string(channel) + "/i"; }
+
 // Per-axis motion position stream, e.g. "motion/hex-left/X". Publishers are the
 // PI/ACS drivers' poll threads; any consumer (charts, alignment procedures,
 // loggers, a future 3D view) subscribes or pulls a Snapshot on the same string.

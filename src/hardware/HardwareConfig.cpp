@@ -171,6 +171,17 @@ HardwareConfig HardwareConfig::Load(const std::string& path)
                     hc.clds.push_back(cc);
                     continue;
                 }
+                if (type.find("udp3305") != std::string::npos) {
+                    PsuConfig pc;
+                    pc.name         = inst.value("name", std::string("PSU3"));
+                    pc.type         = type;
+                    pc.visaResource = inst.value("visa_resource", std::string());
+                    pc.enabled      = inst.value("enabled", true);
+                    pc.channels     = inst.value("channels", 3);
+                    pc.pollIntervalMs = inst.value("poll_interval_ms", 500);
+                    hc.psus.push_back(pc);
+                    continue;
+                }
                 if (type.find("keithley") == std::string::npos) continue;
 
                 KeithleyConfig kc;
@@ -218,6 +229,14 @@ const Cld101xConfig* HardwareConfig::FirstEnabledCld() const
 {
     for (const auto& c : clds) {
         if (c.enabled) return &c;
+    }
+    return nullptr;
+}
+
+const PsuConfig* HardwareConfig::FirstEnabledPsu() const
+{
+    for (const auto& p : psus) {
+        if (p.enabled) return &p;
     }
     return nullptr;
 }

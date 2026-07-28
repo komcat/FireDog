@@ -62,7 +62,7 @@ void SafetyWatch::Acknowledge()
 {
     if (raised_.exchange(false)) {
         critical_.store(false);
-        FD_WARN("safety", "alert acknowledged — operations may resume");
+        FD_WARN("safety", "alert acknowledged - operations may resume");
     }
 }
 
@@ -102,7 +102,7 @@ void SafetyWatch::Raise(const Signal& s, bool prev, bool curr)
     // One alert at a time (bobcat semantics): further triggers are ignored
     // until the active one is acknowledged.
     if (raised_.load()) {
-        FD_WARN("safety", "trigger on %s:%s ignored — alert already active",
+        FD_WARN("safety", "trigger on %s:%s ignored - alert already active",
                 s.device.c_str(), s.pinName.c_str());
         return;
     }

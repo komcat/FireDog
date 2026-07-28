@@ -29,7 +29,7 @@ struct CanvasObject {
 // Which content the Main window shows. Hardware pages are selected via the
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
-enum class Page { Overview, Camera, Keithley, CLD, Motion, IO, Pneumatic, WatchEdit, TransformEdit };
+enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic, WatchEdit, TransformEdit };
 
 class App {
 public:
@@ -57,6 +57,11 @@ private:
     void DrawCldListPanel();       // left:   status + connect/disconnect
     void DrawCldDetailPanel();     // middle: TEC + laser controls
     void DrawCldInfoPanel();       // right:  identity + live values
+
+    // PSU page — the UNI-T UDP3305S 3-channel DC power supply.
+    void DrawPsuListPanel();       // left:   status + connect/disconnect
+    void DrawPsuDetailPanel();     // middle: per-channel V/I + output switches
+    void DrawPsuInfoPanel();       // right:  identity + live values
     // Motion page — all motion devices (PI + ACS) on one page.
     void DrawMotionListPanel();    // left:   device list + status
     void DrawMotionDetailPanel();  // middle: selected device + positions
@@ -124,12 +129,20 @@ private:
     float cldCurrentSet_ = 50.0f;  // laser current setpoint edit (mA)
     bool  cldPulled_     = false;
 
+    // PSU page state — edits seed from the device's setpoints at connect
+    // (same psuPulled_ pattern as the CLD page).
+    std::string psuId_;                          // config instrument name
+    float psuVSet_[3] = {5.0f, 5.0f, 3.3f};      // per-channel voltage edits (V)
+    float psuISet_[3] = {1.0f, 1.0f, 1.0f};      // per-channel current-limit edits (A)
+    bool  psuPulled_  = false;
+
     // Keithley chart buffers — refreshed once per frame by
     // UpdateKeithleyChartData (from Update); rendered by DrawKeithleyChart in
     // both the Aux overlay and the Keithley page.
     void UpdateKeithleyChartData(float dt);
     void DrawKeithleyChart(const ImVec2& size);
     int                       chartCh_ = 2;   // 0 ch1, 1 ch2, 2 both
+    bool                      chartScope_ = true;  // scope look vs classic axes
     std::vector<float>        kT1_, kV1_, kT2_, kV2_;
     std::vector<float>        kX1_, kX2_;      // X shifted to relative time (t - now)
     double                    chartClock_ = 0.0;   // smooth rolling X right-edge

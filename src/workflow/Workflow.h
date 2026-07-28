@@ -21,6 +21,7 @@ namespace firedog {
 class HardwareManager;
 class Keithley6482;
 class CLD101x;
+class UDP3305S;
 
 class Workflow {
 public:
@@ -91,6 +92,16 @@ public:
     bool CldLaserOn();
     bool CldLaserOff();
 
+    // ---- UDP3305S PSU commands (PSU page) -----------------------------------
+    // Same pattern: reconnect from the config captured at Start; setpoints go
+    // through the verified APPLy form, output switches are read-back verified.
+    // Channels are 1-based.
+    bool ConnectPsu();
+    bool DisconnectPsu();
+    bool SetPsuVI(int channel, double volts, double amps);
+    bool PsuOutputOn(int channel);
+    bool PsuOutputOff(int channel);
+
     // ---- Digital IO commands (IO page + future procedures) ------------------
     // devIdx indexes the HardwareManager IO fleet. Writes require Connected.
     bool SetIoOutput(std::size_t devIdx, int pin, bool on);
@@ -127,6 +138,9 @@ private:
     void StartCld(const HardwareConfig& hw);
     void LaunchCldConnect();      // async connect from cldCfg_ (Start + reconnect)
     CLD101x* ConnectedCld() const;             // null unless state == Connected
+    void StartPsu(const HardwareConfig& hw);
+    void LaunchPsuConnect();      // async connect from psuCfg_ (Start + reconnect)
+    UDP3305S* ConnectedPsu() const;            // null unless state == Connected
     void StartKeithley(const HardwareConfig& hw);
     void StartMotion(const HardwareConfig& hw);
     void StartIO(const HardwareConfig& hw);
@@ -147,6 +161,7 @@ private:
     std::future<void>              camConnect_;
     std::future<void>              keiConnect_;
     std::future<void>              cldConnect_;
+    std::future<void>              psuConnect_;
     std::vector<std::future<void>> motionConnect_;   // one per motion device
     std::vector<std::future<void>> ioConnect_;       // one per IO device
 
@@ -163,6 +178,10 @@ private:
     // CLD101x config captured at Start (same pattern).
     Cld101xConfig cldCfg_;
     bool          cldCfgValid_ = false;
+
+    // UDP3305S PSU config captured at Start (same pattern).
+    PsuConfig psuCfg_;
+    bool      psuCfgValid_ = false;
 
     // Per-(device,axis) jog target: rapid presses accumulate onto one evolving
     // target so the latest press overrides the previous instead of queuing; the

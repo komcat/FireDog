@@ -11,6 +11,7 @@
 #include "hardware/camera/PylonCamera.h"
 #include "hardware/instruments/CLD101x.h"
 #include "hardware/instruments/Keithley6482.h"
+#include "hardware/instruments/UDP3305S.h"
 #include "hardware/io/IIoDevice.h"
 #include "hardware/io/IoWatch.h"
 #include "hardware/motion/IMotionController.h"
@@ -42,6 +43,8 @@ public:
     void SetKeithley(std::unique_ptr<Keithley6482> k) { keithley_ = std::move(k); }
     CLD101x*      Cld()      { return cld_.get(); }        // null until Workflow builds it
     void SetCld(std::unique_ptr<CLD101x> c) { cld_ = std::move(c); }
+    UDP3305S*     Psu()      { return psu_.get(); }        // null until Workflow builds it
+    void SetPsu(std::unique_ptr<UDP3305S> p) { psu_ = std::move(p); }
 
     // --- Motion fleet (PI hexapods + ACS gantry). Multiple, heterogeneous. ----
     // Workflow builds each from config, hands it here, then drives async connect.
@@ -80,16 +83,20 @@ public:
     ConnState CameraState()   const { return camState_.load(); }
     ConnState KeithleyState() const { return keiState_.load(); }
     ConnState CldState()      const { return cldState_.load(); }
+    ConnState PsuState()      const { return psuState_.load(); }
     void SetCameraState(ConnState s)   { camState_.store(s); }
     void SetKeithleyState(ConnState s) { keiState_.store(s); }
     void SetCldState(ConnState s)      { cldState_.store(s); }
+    void SetPsuState(ConnState s)      { psuState_.store(s); }
 
     const std::string& CameraName()   const { return camName_; }
     const std::string& KeithleyName() const { return keiName_; }
     const std::string& CldName()      const { return cldName_; }
+    const std::string& PsuName()      const { return psuName_; }
     void SetCameraName(std::string n)   { camName_ = std::move(n); }
     void SetKeithleyName(std::string n) { keiName_ = std::move(n); }
     void SetCldName(std::string n)      { cldName_ = std::move(n); }
+    void SetPsuName(std::string n)      { psuName_ = std::move(n); }
 
 private:
     // A motion device + its async-connect state. Held via unique_ptr so the
@@ -121,12 +128,15 @@ private:
     PylonCamera                   camera_;
     std::unique_ptr<Keithley6482> keithley_;
     std::unique_ptr<CLD101x>      cld_;
+    std::unique_ptr<UDP3305S>     psu_;
     std::atomic<ConnState>        camState_{ConnState::Disconnected};
     std::atomic<ConnState>        keiState_{ConnState::Disconnected};
     std::atomic<ConnState>        cldState_{ConnState::Disconnected};
+    std::atomic<ConnState>        psuState_{ConnState::Disconnected};
     std::string                   camName_ = "Camera";
     std::string                   keiName_ = "Keithley";
     std::string                   cldName_ = "CLD101x";
+    std::string                   psuName_ = "PSU";
 };
 
 } // namespace firedog

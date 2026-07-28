@@ -241,5 +241,5 @@ add_custom_command(TARGET FireDog POST_BUILD
 # TODO (layer 1 hardware SDKs still to port) — mirror the detection blocks above:
 #   PI GCS2  -> external/PI/PI_GCS2_DLL_x64.lib   (DONE: HAS_PI, copies DLL)
 #   ACS ACSC -> external/ACS/ACSCL_x64.LIB        (DONE: HAS_ACS, links ws2_32)
-#   NI-VISA  -> CLD101x / SMU / PSU adapters (still SimulatedDevice placeholders)
+#   NI-VISA  -> CLD101x + UDP3305S PSU (DONE: HAS_VISA); SMU still a SimulatedDevice
 # Detect each with if(EXISTS ...) and gate the real adapter behind a HAS_* compile def.
