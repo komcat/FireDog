@@ -111,6 +111,7 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.state         = state_;
     s.recipeName    = recipeName_;
     s.currentStep   = currentStep_;
+    s.stepPath      = curPath_;
     s.leafDone      = leafDone_;
     s.leafTotal     = leafTotal_;
     s.error         = error_;
@@ -119,10 +120,12 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     return s;
 }
 
-void RecipeEngine::SetCurrentStep(const std::string& s)
+void RecipeEngine::SetCurrentStep(const std::string& s,
+                                  const std::vector<std::size_t>& path)
 {
     const std::scoped_lock lock(mu_);
     currentStep_ = s;
+    curPath_     = path;
 }
 
 bool RecipeEngine::SafetyAborted() const
@@ -159,7 +162,7 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
 
     Outcome out = Outcome::Fail;
     try {
-        out = ExecSteps(recipe.steps, ctx, "", 1);
+        out = ExecSteps(recipe.steps, ctx, "", {}, 1);
     } catch (const std::exception& e) {
         // Should have been contained at the step boundary — last line of defense.
         FD_ERROR("recipe", "unexpected engine exception: %s", e.what());
@@ -184,6 +187,7 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
             if (error_.empty()) error_ = "step failed";
         }
         currentStep_ = "";
+        curPath_.clear();
         FD_INFO("recipe", "run '%s' finished: %s%s%s", recipeName_.c_str(),
                 StateName(state_), error_.empty() ? "" : " - ", error_.c_str());
     }
@@ -192,7 +196,9 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
 
 RecipeEngine::Outcome RecipeEngine::ExecSteps(const std::vector<RecipeStep>& steps,
                                               ExecutionContext& ctx,
-                                              const std::string& pathPrefix, int depth)
+                                              const std::string& pathPrefix,
+                                              const std::vector<std::size_t>& basePath,
+                                              int depth)
 {
     if (depth > kMaxRecipeDepth) {   // validated at load; belt and braces
         const std::scoped_lock lock(mu_);
@@ -208,16 +214,18 @@ RecipeEngine::Outcome RecipeEngine::ExecSteps(const std::vector<RecipeStep>& ste
         const std::string where =
             (pathPrefix.empty() ? "" : pathPrefix + ".") + std::to_string(i + 1) +
             " (" + (s.nickname.empty() ? s.type : s.nickname) + ")";
+        std::vector<std::size_t> path = basePath;
+        path.push_back(i);
 
         if (s.type == "group" || s.type == "sub_recipe") {
-            const Outcome o = ExecSteps(s.children, ctx, where, depth + 1);
+            const Outcome o = ExecSteps(s.children, ctx, where, path, depth + 1);
             if (o != Outcome::Ok) return o;
         } else if (s.type == "loop") {
             if (s.params.contains("count")) {
                 const int count = s.params["count"].get<int>();
                 for (int k = 0; k < count; ++k) {
                     if (stopReq_.load() || SafetyAborted()) return Outcome::Aborted;
-                    const Outcome o = ExecSteps(s.children, ctx, where, depth + 1);
+                    const Outcome o = ExecSteps(s.children, ctx, where, path, depth + 1);
                     if (o != Outcome::Ok) return o;
                 }
             } else {   // while-form; bounded by max_iterations
@@ -239,7 +247,7 @@ RecipeEngine::Outcome RecipeEngine::ExecSteps(const std::vector<RecipeStep>& ste
                         return Outcome::Fail;
                     }
                     if (!*go) break;
-                    const Outcome o = ExecSteps(s.children, ctx, where, depth + 1);
+                    const Outcome o = ExecSteps(s.children, ctx, where, path, depth + 1);
                     if (o != Outcome::Ok) return o;
                 }
             }
@@ -252,7 +260,7 @@ RecipeEngine::Outcome RecipeEngine::ExecSteps(const std::vector<RecipeStep>& ste
                 return Outcome::Fail;
             }
             const Outcome o =
-                ExecSteps(*v ? s.children : s.elseChildren, ctx, where, depth + 1);
+                ExecSteps(*v ? s.children : s.elseChildren, ctx, where, path, depth + 1);
             if (o != Outcome::Ok) return o;
         } else if (s.type == "stop_recipe") {
             const bool ok = s.params.value("ok", true);
@@ -265,7 +273,7 @@ RecipeEngine::Outcome RecipeEngine::ExecSteps(const std::vector<RecipeStep>& ste
             }
             return ok ? Outcome::StopOk : Outcome::StopFail;
         } else {
-            const Outcome o = ExecLeaf(s, ctx, where);
+            const Outcome o = ExecLeaf(s, ctx, where, path);
             if (o != Outcome::Ok) return o;
         }
     }
@@ -274,7 +282,8 @@ RecipeEngine::Outcome RecipeEngine::ExecSteps(const std::vector<RecipeStep>& ste
 
 RecipeEngine::Outcome RecipeEngine::ExecLeaf(const RecipeStep& s,
                                              ExecutionContext& ctx,
-                                             const std::string& where)
+                                             const std::string& where,
+                                             const std::vector<std::size_t>& path)
 {
     const CommandSpec* spec = reg_.Find(s.type);
     if (!spec) {   // validated at Start; belt and braces
@@ -297,9 +306,9 @@ RecipeEngine::Outcome RecipeEngine::ExecLeaf(const RecipeStep& s,
         if (stopReq_.load() || SafetyAborted()) return Outcome::Aborted;
         if (attempts > 1) {
             SetCurrentStep(where + " attempt " + std::to_string(a + 1) + "/" +
-                           std::to_string(attempts));
+                           std::to_string(attempts), path);
         } else {
-            SetCurrentStep(where);
+            SetCurrentStep(where, path);
         }
 
         CommandResult r;

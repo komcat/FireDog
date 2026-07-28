@@ -258,7 +258,6 @@ int App::Run()
         DrawMainWindow();
         if (showAux_) DrawAuxWindow();
         if (showJog_) DrawJogWindow();
-        if (showRecipeRunner_) DrawRecipeRunnerWindow();
         host_.EndFrame();
     }
 
@@ -321,7 +320,6 @@ void App::DrawMainWindow()
             if (ImGui::BeginMenu("View")) {
                 ImGui::MenuItem("Aux Window", nullptr, &showAux_);
                 ImGui::MenuItem("Jog",        nullptr, &showJog_);
-                ImGui::MenuItem("Recipe Runner", nullptr, &showRecipeRunner_);
                 if (ImGui::BeginMenu("Theme")) {   // same picker as Display header
                     for (int i = 0; i < Theme::Count(); ++i) {
                         if (ImGui::MenuItem(Theme::Name(i), nullptr, themeIndex_ == i)) {
@@ -337,7 +335,8 @@ void App::DrawMainWindow()
                 // remembers the current hardware page so Close returns to it.
                 auto toggleEditor = [this](Page p) {
                     if (currentPage_ == p) { currentPage_ = prevPage_; return; }
-                    if (currentPage_ != Page::WatchEdit && currentPage_ != Page::TransformEdit)
+                    if (currentPage_ != Page::WatchEdit && currentPage_ != Page::TransformEdit &&
+                        currentPage_ != Page::RecipeEdit)
                         prevPage_ = currentPage_;
                     currentPage_ = p;
                 };
@@ -345,6 +344,8 @@ void App::DrawMainWindow()
                     toggleEditor(Page::WatchEdit);
                 if (ImGui::MenuItem("Transforms Editor", nullptr, currentPage_ == Page::TransformEdit))
                     toggleEditor(Page::TransformEdit);
+                if (ImGui::MenuItem("Recipe Editor", nullptr, currentPage_ == Page::RecipeEdit))
+                    toggleEditor(Page::RecipeEdit);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Help")) {
@@ -358,22 +359,27 @@ void App::DrawMainWindow()
         }
         DrawProductPopups();   // modals opened via the File-menu flags above
         DrawSafetyAlertModal();   // blocking safety alert (highest priority)
+        DrawRecipePromptModal();  // global recipe prompt (any page, any time)
 
         // ---- Editor pages (View menu) replace the whole panel layout until
         // closed via the top-right Close button (back to the previous page).
-        if (currentPage_ == Page::WatchEdit || currentPage_ == Page::TransformEdit) {
-            const bool watch = (currentPage_ == Page::WatchEdit);
+        if (currentPage_ == Page::WatchEdit || currentPage_ == Page::TransformEdit ||
+            currentPage_ == Page::RecipeEdit) {
+            const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
+                                : currentPage_ == Page::TransformEdit ? "Transforms Editor"
+                                                                      : "Recipe Editor";
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
-            ImGui::TextUnformatted(watch ? "IO Watch Editor" : "Transforms Editor");
+            ImGui::TextUnformatted(title);
             ImGui::SameLine();
             const float closeW = ImGui::CalcTextSize("Close").x +
                                  ImGui::GetStyle().FramePadding.x * 2.0f;
             ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - closeW);
             if (ImGui::Button("Close")) currentPage_ = prevPage_;
             ImGui::Separator();
-            if (watch) DrawWatchEditPanel();
-            else       DrawTransformEditPanel();
+            if (currentPage_ == Page::WatchEdit)          DrawWatchEditPanel();
+            else if (currentPage_ == Page::TransformEdit) DrawTransformEditPanel();
+            else                                          DrawRecipeEditPanel();
             ImGui::EndChild();
             ImGui::End();
             return;
@@ -596,55 +602,224 @@ void App::LoadRecipesFromDisk()
     recipes_ = LoadRecipes();   // config/recipes.local.json -> recipes.json
 }
 
-// Recipe Runner (View menu) — the Phase-A test hook, NOT the recipe editor.
-// Runs hand-written JSON recipes through the RecipeEngine; the real editor
-// (Phase B) replaces this window. See docs/recipe-core-design.md.
-void App::DrawRecipeRunnerWindow()
+// ---- Recipe Editor (View menu, full page) — Phase B1: browse + run ----------
+// The step tree and inspector are read-only; editing arrives in B2,
+// persistence/validation in B3. See docs/recipe-editor-design.md.
+
+namespace {
+// Step-path components >= kElsePathBase address an if-step's ELSE branch
+// (component - kElsePathBase = index into elseChildren). The engine never
+// emits else-marked paths (it addresses whichever branch ran by plain index),
+// so run highlighting lands on the then-branch row — a documented B1 quirk.
+constexpr std::size_t kElsePathBase = static_cast<std::size_t>(1) << 20;
+
+const RecipeStep* FindStepByPath(const std::vector<RecipeStep>* list,
+                                 const std::vector<std::size_t>& path)
 {
-    ImGui::SetNextWindowSize(ImVec2(460.0f, 420.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Recipe Runner", &showRecipeRunner_)) {
-        ImGui::End();
-        return;
+    const RecipeStep* cur = nullptr;
+    for (const std::size_t c : path) {
+        const bool        inElse = c >= kElsePathBase;
+        const std::size_t idx    = inElse ? c - kElsePathBase : c;
+        if (inElse) {
+            if (!cur) return nullptr;
+            list = &cur->elseChildren;
+        }
+        if (!list || idx >= list->size()) return nullptr;
+        cur  = &(*list)[idx];
+        list = &cur->children;
     }
+    return cur;
+}
+} // namespace
+
+void App::DrawRecipeEditPanel()
+{
+    const float  stripH = ImGui::GetFrameHeightWithSpacing() * 3.2f;
+    const ImVec2 avail  = ImGui::GetContentRegionAvail();
+    const float  paneH  = avail.y - stripH;
+    const float  leftW  = 230.0f;
+    const float  rightW = 320.0f;
 
     const RecipeEngine::Status st = recipeEngine_.GetStatus();
     const bool running = recipeEngine_.Running();
 
-    // ---- Recipe picker + reload (locked while running) ----
-    ImGui::BeginDisabled(running);
-    const char* cur = (recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size()))
-                          ? recipes_[recipeSel_].name.c_str()
-                          : "(select a recipe)";
-    ImGui::SetNextItemWidth(260.0f);
-    if (ImGui::BeginCombo("##recipe", cur)) {
-        for (int i = 0; i < static_cast<int>(recipes_.size()); ++i) {
-            ImGui::PushID(i);
-            if (ImGui::Selectable(recipes_[i].name.c_str(), recipeSel_ == i))
-                recipeSel_ = i;
-            ImGui::PopID();
-        }
-        ImGui::EndCombo();
-    }
+    // ---- Left: recipe list ----
+    ImGui::BeginChild("edRecipes", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
+    ImGui::TextUnformatted("Recipes");
     ImGui::SameLine();
-    if (ImGui::Button("Reload")) {
+    ImGui::BeginDisabled(running);
+    if (ImGui::SmallButton("Reload")) {
         LoadRecipesFromDisk();
         FD_INFO("recipe", "%zu recipe(s) loaded", recipes_.size());
     }
     ImGui::EndDisabled();
-    if (recipes_.empty()) {
-        ImGui::TextDisabled("No recipes found (config/recipes.json or the product's file).");
-    } else if (recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size()) &&
-               !recipes_[recipeSel_].description.empty()) {
-        ImGui::TextWrapped("%s", recipes_[recipeSel_].description.c_str());
+    ImGui::Separator();
+    if (recipes_.empty())
+        ImGui::TextWrapped("No recipes found (config/recipes.json or the product's file).");
+    for (int i = 0; i < static_cast<int>(recipes_.size()); ++i) {
+        ImGui::PushID(i);
+        if (ImGui::Selectable(recipes_[i].name.c_str(), recipeSel_ == i)) {
+            recipeSel_ = i;
+            edStepSel_.clear();
+        }
+        ImGui::PopID();
     }
+    ImGui::EndChild();
+    ImGui::SameLine();
 
-    // ---- Run / Stop ----
+    // ---- Middle: step tree ----
+    const float midW = avail.x - leftW - rightW - ImGui::GetStyle().ItemSpacing.x * 2.0f;
+    ImGui::BeginChild("edTree", ImVec2(midW, paneH), ImGuiChildFlags_Borders);
+    if (recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size())) {
+        const Recipe& r = recipes_[recipeSel_];
+        if (!r.description.empty()) ImGui::TextWrapped("%s", r.description.c_str());
+        ImGui::Separator();
+        std::vector<std::size_t> path;
+        DrawRecipeTreeNodes(r.steps, path, false, st.stepPath, running);
+    } else {
+        ImGui::TextDisabled("Select a recipe on the left.");
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    // ---- Right: inspector (read-only in B1) ----
+    ImGui::BeginChild("edInspect", ImVec2(rightW, paneH), ImGuiChildFlags_Borders);
+    const RecipeStep* sel = nullptr;
+    if (recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size()) &&
+        !edStepSel_.empty())
+        sel = FindStepByPath(&recipes_[recipeSel_].steps, edStepSel_);
+    if (sel) DrawRecipeInspector(*sel);
+    else     ImGui::TextDisabled("Select a step to inspect it.");
+    ImGui::EndChild();
+
+    DrawRecipeRunStrip();
+}
+
+// One row per step; structural steps (except stop_recipe) are tree nodes.
+// The executing step (engine stepPath) renders gold while a run is active.
+void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
+                              std::vector<std::size_t>& path, bool elseBranch,
+                              const std::vector<std::size_t>& runPath, bool running)
+{
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        const RecipeStep& s = steps[i];
+        path.push_back(elseBranch ? kElsePathBase + i : i);
+
+        const bool structural = IsStructuralStep(s.type) && s.type != "stop_recipe";
+        const bool selected   = (path == edStepSel_);
+        const bool executing  = running && path == runPath;
+
+        char label[160];
+        std::snprintf(label, sizeof(label), "%zu  %s%s", i + 1,
+                      s.nickname.empty() ? s.type.c_str() : s.nickname.c_str(),
+                      s.enabled ? "" : "  [off]");
+
+        const bool dim = !s.enabled && !executing;
+        if (executing)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+        else if (dim)
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+
+        ImGui::PushID(static_cast<int>(path.back()));
+        if (structural) {
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                                       ImGuiTreeNodeFlags_SpanAvailWidth |
+                                       ImGuiTreeNodeFlags_DefaultOpen;
+            if (selected) flags |= ImGuiTreeNodeFlags_Selected;
+            const bool open = ImGui::TreeNodeEx("##node", flags, "%s", label);
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
+                edStepSel_ = path;
+            if (open) {
+                DrawRecipeTreeNodes(s.children, path, false, runPath, running);
+                if (!s.elseChildren.empty()) {
+                    ImGui::TextDisabled("else:");
+                    DrawRecipeTreeNodes(s.elseChildren, path, true, runPath, running);
+                }
+                ImGui::TreePop();
+            }
+        } else {
+            if (ImGui::Selectable(label, selected)) edStepSel_ = path;
+        }
+        ImGui::PopID();
+
+        if (executing || dim) ImGui::PopStyleColor();
+        path.pop_back();
+    }
+}
+
+// Read-only step details: common fields, then the params laid out from the
+// registry's ParamSpec schema (B2 turns these rows into editable widgets).
+void App::DrawRecipeInspector(const RecipeStep& s)
+{
+    ImGui::Text("Type: %s", s.type.c_str());
+    if (!s.nickname.empty()) ImGui::Text("Nickname: %s", s.nickname.c_str());
+    ImGui::Text("Enabled: %s", s.enabled ? "yes" : "no");
+    switch (s.onError) {
+    case RecipeStep::OnError::Abort:    ImGui::TextUnformatted("On error: abort");    break;
+    case RecipeStep::OnError::Continue: ImGui::TextUnformatted("On error: continue"); break;
+    case RecipeStep::OnError::Retry:    ImGui::Text("On error: retry x%d", s.retryCount); break;
+    }
+    ImGui::Separator();
+
+    const CommandSpec* spec =
+        IsStructuralStep(s.type) ? nullptr : cmdRegistry_.Find(s.type);
+    if (!IsStructuralStep(s.type) && !spec) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "unknown command '%s'",
+                           s.type.c_str());
+        return;
+    }
+    if (spec) {
+        ImGui::TextWrapped("%s", spec->description.c_str());
+        ImGui::Spacing();
+        nlohmann::json merged;
+        const std::string err = ValidateParams(*spec, s.params, &merged);
+        if (!err.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", err.c_str());
+            merged = s.params;   // still show what is there
+        }
+        for (const ParamSpec& p : spec->params) {
+            if (!merged.contains(p.name)) continue;
+            const nlohmann::json& v = merged[p.name];
+            std::string shown = v.is_string() ? v.get<std::string>() : v.dump();
+            if (p.type == ParamType::PositionUid) {
+                // Resolve position uids to their taught names for readability.
+                const std::string dev = merged.value("device", std::string());
+                const auto it = savedPos_.find(dev);
+                if (it != savedPos_.end()) {
+                    for (const SavedPos& sp : it->second) {
+                        if (sp.uid == shown) {
+                            shown += std::string("  (") + sp.name + ")";
+                            break;
+                        }
+                    }
+                }
+            }
+            ImGui::Text("%s: %s", p.name.c_str(), shown.c_str());
+            if (!p.help.empty() && ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", p.help.c_str());
+        }
+    } else if (!s.params.empty()) {
+        // Structural step: show its raw params (condition/count/uid...).
+        ImGui::TextWrapped("%s", s.params.dump(2).c_str());
+    }
+}
+
+// Bottom strip: Run/Stop + state + executing step + progress. Runs the recipe
+// selected in the left panel through the engine (positions/maps copied at
+// Start, so mid-run edits elsewhere in the UI can't disturb the run).
+void App::DrawRecipeRunStrip()
+{
+    const RecipeEngine::Status st = recipeEngine_.GetStatus();
+    const bool running = recipeEngine_.Running();
+    ImGui::BeginChild("edRunStrip", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
+
     const bool canRun = !running && recipeSel_ >= 0 &&
                         recipeSel_ < static_cast<int>(recipes_.size());
     ImGui::BeginDisabled(!canRun);
-    if (ImGui::Button("Run", ImVec2(100.0f, 0.0f))) {
+    if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
         RecipeEngine::Env env;
-        env.positions = savedPos_;      // copied — stable for the whole run
+        env.positions = savedPos_;
         env.maps      = motionMaps_;
         env.library   = recipes_;
         recipeStartErr_.clear();
@@ -654,16 +829,22 @@ void App::DrawRecipeRunnerWindow()
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(100.0f, 0.0f))) recipeEngine_.RequestStop();
+    if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) recipeEngine_.RequestStop();
     ImGui::EndDisabled();
-    if (!recipeStartErr_.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "Start rejected:");
-        ImGui::TextWrapped("%s", recipeStartErr_.c_str());
-    }
-
-    // ---- Status (GetStatus snapshot — the engine runs on its own thread) ----
-    ImGui::Separator();
+    ImGui::SameLine();
     ImGui::Text("State: %s", RecipeEngine::StateName(st.state));
+    if (!st.currentStep.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("| %s", st.currentStep.c_str());
+    }
+    if (!recipeStartErr_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "start rejected: %s",
+                           recipeStartErr_.c_str());
+    } else if (!st.error.empty() && st.state != RecipeEngine::State::Running) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
+    }
     if (st.leafTotal > 0) {
         float frac = static_cast<float>(st.leafDone) / static_cast<float>(st.leafTotal);
         if (frac > 1.0f) frac = 1.0f;   // while-loops can overshoot the estimate
@@ -671,37 +852,24 @@ void App::DrawRecipeRunnerWindow()
         std::snprintf(overlay, sizeof(overlay), "%zu / %zu", st.leafDone, st.leafTotal);
         ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay);
     }
-    if (!st.currentStep.empty()) ImGui::Text("Step: %s", st.currentStep.c_str());
-    if (!st.error.empty() && st.state != RecipeEngine::State::Running) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
-    }
+    ImGui::EndChild();
+}
 
-    // ---- Run context values ----
-    if (!st.ctx.empty() && ImGui::CollapsingHeader("Context")) {
-        if (ImGui::BeginTable("##recipectx", 2,
-                              ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-            for (const auto& [key, val] : st.ctx) {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(key.c_str());
-                ImGui::TableSetColumnIndex(1);
-                ImGui::TextUnformatted(CtxValueToString(val).c_str());
-            }
-            ImGui::EndTable();
-        }
-    }
-
-    // ---- Blocking prompt (a `prompt` step is waiting on the operator) ----
+// Global recipe prompt — drawn every frame from DrawMainWindow (like the
+// safety modal), so a blocking `prompt` step surfaces no matter which page or
+// window the operator is on. Pinned to the main window's center.
+void App::DrawRecipePromptModal()
+{
+    const RecipeEngine::Status st = recipeEngine_.GetStatus();
     if (!st.pendingPrompt.empty() && !ImGui::IsPopupOpen("Recipe Prompt"))
         ImGui::OpenPopup("Recipe Prompt");
-    // Pin to the MAIN window's center every frame (Always, not Appearing): the
-    // runner window may live anywhere — even another monitor — but the prompt
-    // must surface where the operator is looking.
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("Recipe Prompt", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextWrapped("%s", st.pendingPrompt.c_str());
+        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 420.0f);
+        ImGui::TextUnformatted(st.pendingPrompt.c_str());
+        ImGui::PopTextWrapPos();
         ImGui::Separator();
         if (ImGui::Button("OK", ImVec2(100.0f, 0.0f))) {
             recipeEngine_.AnswerPrompt(true);
@@ -715,8 +883,6 @@ void App::DrawRecipeRunnerWindow()
         if (st.pendingPrompt.empty()) ImGui::CloseCurrentPopup();   // stop released it
         ImGui::EndPopup();
     }
-
-    ImGui::End();
 }
 
 void App::NewProduct(const char* name)

@@ -33,7 +33,8 @@ struct CanvasObject {
 // Which content the Main window shows. Hardware pages are selected via the
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
-enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic, WatchEdit, TransformEdit };
+enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
+                  WatchEdit, TransformEdit, RecipeEdit };
 
 class App {
 public:
@@ -84,8 +85,14 @@ private:
     void DrawPneumaticInfoPanel();    // right:  live output/sensor states
     void DrawWatchEditPanel();        // IO Watch editor (full-page, View menu)
     void DrawTransformEditPanel();    // axis-transform editor (full-page, View menu)
-    void DrawRecipeRunnerWindow();    // Phase-A test hook (View menu) — replaced
-                                      // by the real recipe editor in Phase B
+    // Recipe editor (full-page, View menu) — Phase B. B1: browse + run.
+    void DrawRecipeEditPanel();       // page body: recipes | step tree | inspector
+    void DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
+                             std::vector<std::size_t>& path, bool elseBranch,
+                             const std::vector<std::size_t>& runPath, bool running);
+    void DrawRecipeInspector(const RecipeStep& s);   // read-only in B1
+    void DrawRecipeRunStrip();        // bottom strip: run/stop + progress
+    void DrawRecipePromptModal();     // GLOBAL blocking prompt (like safety modal)
     void LoadRecipesFromDisk();       // product recipes file, else config fallback
     void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
     void DrawAuxWindow();
@@ -277,14 +284,17 @@ private:
     // file when one is loaded, else config/positions.local.json.
     SavedPosMap savedPos_;
 
-    // Recipes (Phase A: hand-written JSON, run via the Recipe Runner window).
-    // Loaded from the product's recipes file when a product is loaded, else
-    // config/recipes.local.json -> recipes.json.
+    // Recipes — browsed/run via the Recipe Editor page (View menu). Loaded
+    // from the product's recipes file when a product is loaded, else
+    // config/recipes.local.json -> recipes.json. Hand-written JSON until the
+    // editor gains editing (Phase B2).
     std::vector<Recipe> recipes_;
     std::string         recipesUid_;       // file uid (product integrity check)
-    int                 recipeSel_ = -1;   // Runner window selection
+    int                 recipeSel_ = -1;   // selected recipe (editor left panel)
     std::string         recipeStartErr_;   // last Start() rejection message
-    bool                showRecipeRunner_ = false;
+    // Selected step as a numeric path into the nested step tree; components
+    // >= kElsePathBase (App.cpp) address an if-step's else branch.
+    std::vector<std::size_t> edStepSel_;
 
     // Current product (File menu). Not loaded => config-fallback persistence.
     ProductManifest product_;

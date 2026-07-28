@@ -63,6 +63,11 @@ public:
         State       state = State::Idle;
         std::string recipeName;
         std::string currentStep;      // "3.2 (move_to_position) attempt 2/3"
+        // Numeric 0-based path of the executing leaf (e.g. {2,1} = step 3.2)
+        // so the editor's tree can highlight without parsing the string. An
+        // if-step's else-branch reports the same indices as its then-branch
+        // (the engine addresses whichever branch ran).
+        std::vector<std::size_t> stepPath;
         std::size_t leafDone = 0, leafTotal = 0;
         std::string error;            // terminal cause when Failed/Stopped
         std::string pendingPrompt;    // non-empty while a prompt blocks
@@ -76,11 +81,13 @@ private:
 
     void    ThreadMain(Recipe recipe, Env env);
     Outcome ExecSteps(const std::vector<RecipeStep>& steps, ExecutionContext& ctx,
-                      const std::string& pathPrefix, int depth);
+                      const std::string& pathPrefix,
+                      const std::vector<std::size_t>& basePath, int depth);
     Outcome ExecLeaf(const RecipeStep& s, ExecutionContext& ctx,
-                     const std::string& where);
+                     const std::string& where,
+                     const std::vector<std::size_t>& path);
     bool    SafetyAborted() const;   // critical unacknowledged alert?
-    void    SetCurrentStep(const std::string& s);
+    void    SetCurrentStep(const std::string& s, const std::vector<std::size_t>& path);
 
     // Prompt handshake (worker blocks; UI answers). Guarded by mu_.
     bool AwaitPromptInternal(const std::string& message);
@@ -97,6 +104,7 @@ private:
     State       state_ = State::Idle;
     std::string recipeName_;
     std::string currentStep_;
+    std::vector<std::size_t> curPath_;   // numeric path of currentStep_
     std::string error_;
     std::string prompt_;               // pending prompt text ("" = none)
     bool        promptAnswered_ = false;
