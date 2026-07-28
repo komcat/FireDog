@@ -8,15 +8,24 @@
 
 namespace firedog {
 
-// Global->local axis transform for a motion device (3x3 rotation/permutation).
-// local = M * global. Loaded from config/motion_transforms.json, keyed by device
-// id/name. Defaults to identity.
+// Global->local axis transform for a motion device. local = M * global, in
+// two independent 3x3 signed-permutation blocks: `m` for translation (global
+// X,Y,Z) and `r` for rotation (global U=thetaX, V=thetaY, W=thetaZ -> local
+// rotational axes, indexed 0..2 == the device's axes beyond XYZ). Loaded from
+// config/motion_transforms.json, keyed by device name. Defaults to identity.
+// Column j of a block encodes where global axis j goes: entry (i,j) = sign.
 struct AxisTransform {
     double m[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    double r[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 };
 
 // Tolerant loader — returns an empty map if the file is missing/invalid.
 std::map<std::string, AxisTransform> LoadMotionTransforms(const std::string& path);
+
+// Rewrite the whole transforms file from the map (every entry, including
+// devices not currently in the fleet). Used by the Transforms editor's Save.
+bool SaveMotionTransforms(const std::string& path,
+                          const std::map<std::string, AxisTransform>& transforms);
 
 struct CameraConfig {
     std::string id;

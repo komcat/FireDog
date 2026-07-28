@@ -44,6 +44,10 @@ public:
     // Jog by `stepMM` along a GLOBAL direction (gx,gy,gz unit vector); the device
     // transform maps it to a signed local axis relative move.
     bool JogGlobal(std::size_t devIdx, float gx, float gy, float gz, double stepMM);
+    // Jog by `step` about a GLOBAL rotation axis (gu,gv,gw = thetaX,thetaY,thetaZ
+    // unit vector); the transform's rotation block maps it to a signed local
+    // rotational axis (the device's axes beyond XYZ). False if unmapped.
+    bool JogGlobalRot(std::size_t devIdx, float gu, float gv, float gw, double step);
     // Jog a LOCAL axis directly (e.g. rotational U/V/W) by a signed delta.
     bool JogLocalAxis(std::size_t devIdx, const std::string& axis, double deltaMM);
     // Stop all motion on one device (jog panel Stop button).

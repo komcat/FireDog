@@ -196,7 +196,8 @@ int App::Run()
         pixelToMmX_ = static_cast<float>(cam->pixelToMmX);
         pixelToMmY_ = static_cast<float>(cam->pixelToMmY);
     }
-    workflow_.SetTransforms(LoadMotionTransforms("config/motion_transforms.json"));
+    transformCfg_ = LoadMotionTransforms("config/motion_transforms.json");
+    workflow_.SetTransforms(transformCfg_);   // transformCfg_ stays the editor's working copy
     savedPos_ = LoadSavedPositions();   // config fallback (no product)
     if (!lastProduct.empty() && !LoadProduct(lastProduct))
         FD_WARN("product", "could not reload last product '%s'", lastProduct.c_str());
@@ -213,7 +214,6 @@ int App::Run()
         DrawMainWindow();
         if (showAux_) DrawAuxWindow();
         if (showJog_) DrawJogWindow();
-        if (showWatchEdit_) DrawWatchEditWindow();
         host_.EndFrame();
     }
 
@@ -265,9 +265,21 @@ void App::DrawMainWindow()
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
-                ImGui::MenuItem("Aux Window",      nullptr, &showAux_);
-                ImGui::MenuItem("Jog",             nullptr, &showJog_);
-                ImGui::MenuItem("IO Watch Editor", nullptr, &showWatchEdit_);
+                ImGui::MenuItem("Aux Window", nullptr, &showAux_);
+                ImGui::MenuItem("Jog",        nullptr, &showJog_);
+                ImGui::Separator();
+                // Editor pages replace the main-window content; selecting one
+                // remembers the current hardware page so Close returns to it.
+                auto toggleEditor = [this](Page p) {
+                    if (currentPage_ == p) { currentPage_ = prevPage_; return; }
+                    if (currentPage_ != Page::WatchEdit && currentPage_ != Page::TransformEdit)
+                        prevPage_ = currentPage_;
+                    currentPage_ = p;
+                };
+                if (ImGui::MenuItem("IO Watch Editor", nullptr, currentPage_ == Page::WatchEdit))
+                    toggleEditor(Page::WatchEdit);
+                if (ImGui::MenuItem("Transforms Editor", nullptr, currentPage_ == Page::TransformEdit))
+                    toggleEditor(Page::TransformEdit);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Help")) {
@@ -281,6 +293,26 @@ void App::DrawMainWindow()
         }
         DrawProductPopups();   // modals opened via the File-menu flags above
         DrawSafetyAlertModal();   // blocking safety alert (highest priority)
+
+        // ---- Editor pages (View menu) replace the whole panel layout until
+        // closed via the top-right Close button (back to the previous page).
+        if (currentPage_ == Page::WatchEdit || currentPage_ == Page::TransformEdit) {
+            const bool watch = (currentPage_ == Page::WatchEdit);
+            ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
+                              ImGuiChildFlags_Borders);
+            ImGui::TextUnformatted(watch ? "IO Watch Editor" : "Transforms Editor");
+            ImGui::SameLine();
+            const float closeW = ImGui::CalcTextSize("Close").x +
+                                 ImGui::GetStyle().FramePadding.x * 2.0f;
+            ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - closeW);
+            if (ImGui::Button("Close")) currentPage_ = prevPage_;
+            ImGui::Separator();
+            if (watch) DrawWatchEditPanel();
+            else       DrawTransformEditPanel();
+            ImGui::EndChild();
+            ImGui::End();
+            return;
+        }
 
         // ---- Panel layout (user-resizable via splitter bars) ----
         //   left | [ middle / lower ] | right. Sizes persist in leftW_/rightW_/
@@ -630,30 +662,54 @@ void App::DrawJogPanel()
     if (ImGui::Button("Up\nR", jb))    workflow_.JogGlobal(di, 0.0f,  0.0f, -1.0f, step); ImGui::SameLine();
     if (ImGui::Button("Down\nF", jb))  workflow_.JogGlobal(di, 0.0f,  0.0f, 1.0f, step);
 
-    // --- Rotational cluster (local U/V/W...), only if the device has them ---
+    // --- Rotational cluster (GLOBAL U/V/W = theta x/y/z), only if the device
+    // has rotational axes. Routed through JogGlobalRot so the transform's
+    // rotation block maps global -> signed local axis (test it live from the
+    // Transforms editor). jogRotAxis_ selects the GLOBAL rotation axis.
     const int rotCount = static_cast<int>(axes.size()) - 3;
     if (rotCount > 0) {
-        if (jogRotAxis_ < 0 || jogRotAxis_ >= rotCount) jogRotAxis_ = 0;
+        if (jogRotAxis_ < 0 || jogRotAxis_ >= 3) jogRotAxis_ = 0;
+        static const char* kRotNames[3] = {"U \xce\xb8x", "V \xce\xb8y", "W \xce\xb8z"};
+
+        // Mapped-target readout: dominant entry of the rotation block's column,
+        // from the same working copy the Transforms editor hot-applies.
+        std::string mapped = "unmapped";
+        {
+            AxisTransform t;   // identity if none configured
+            const auto it = transformCfg_.find(dev->Name());
+            if (it != transformCfg_.end()) t = it->second;
+            int ax = 0;
+            for (int i = 1; i < 3; ++i)
+                if (std::fabs(t.r[i][jogRotAxis_]) > std::fabs(t.r[ax][jogRotAxis_])) ax = i;
+            if (std::fabs(t.r[ax][jogRotAxis_]) > 1e-9 && 3 + ax < static_cast<int>(axes.size()))
+                mapped = axes[3 + ax] + (t.r[ax][jogRotAxis_] >= 0.0 ? "+" : "-");
+        }
+
         ImGui::Separator();
         ImGui::TextUnformatted("Rotational");
+        ImGui::SameLine();
+        ImGui::TextDisabled("-> local %s", mapped.c_str());
         ImGui::BeginGroup();
-        for (int i = 0; i < rotCount; ++i) {
+        for (int i = 0; i < 3; ++i) {
             const bool sel = (jogRotAxis_ == i);
             if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.90f, 0.55f, 0.10f, 1.0f));
-            if (ImGui::Button(axes[3 + i].c_str(), ImVec2(jb.x, 0.0f))) jogRotAxis_ = i;
+            if (ImGui::Button(kRotNames[i], ImVec2(jb.x, 0.0f))) jogRotAxis_ = i;
             if (sel) ImGui::PopStyleColor();
         }
         ImGui::EndGroup();
         ImGui::SameLine();
         ImGui::BeginGroup();
+        const float gu = (jogRotAxis_ == 0) ? 1.0f : 0.0f;
+        const float gv = (jogRotAxis_ == 1) ? 1.0f : 0.0f;
+        const float gw = (jogRotAxis_ == 2) ? 1.0f : 0.0f;
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.60f, 0.25f, 1.0f));
-        if (ImGui::Button("+##rot", ImVec2(jb.x, 0.0f))) workflow_.JogLocalAxis(di, axes[3 + jogRotAxis_], +step);
+        if (ImGui::Button("+##rot", ImVec2(jb.x, 0.0f))) workflow_.JogGlobalRot(di, gu, gv, gw, +step);
         ImGui::PopStyleColor();
         char stepReadout[24];
         std::snprintf(stepReadout, sizeof(stepReadout), "%s##rotstep", kSteps[jogStepIndex_].label);
         ImGui::Button(stepReadout, ImVec2(jb.x, 0.0f));   // step readout (unique id)
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.60f, 0.25f, 1.0f));
-        if (ImGui::Button("-##rot", ImVec2(jb.x, 0.0f))) workflow_.JogLocalAxis(di, axes[3 + jogRotAxis_], -step);
+        if (ImGui::Button("-##rot", ImVec2(jb.x, 0.0f))) workflow_.JogGlobalRot(di, gu, gv, gw, -step);
         ImGui::PopStyleColor();
         ImGui::EndGroup();
     }
@@ -1361,11 +1417,10 @@ void App::DrawSafetyAlertModal()
     }
 }
 
-void App::DrawWatchEditWindow()
+// IO Watch editor — full-page main-window content (header/Close drawn by
+// DrawMainWindow's editor-page branch).
+void App::DrawWatchEditPanel()
 {
-    ImGui::SetNextWindowSize(ImVec2(780.0f, 480.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("IO Watch Editor", &showWatchEdit_)) { ImGui::End(); return; }
-
     // Master settings + actions. Apply rebuilds the running watch from the
     // working copy; Save also persists it into config/hardware.json.
     ImGui::Checkbox("Enabled", &watchCfg_.enabled);
@@ -1476,8 +1531,110 @@ void App::DrawWatchEditWindow()
         ImGui::Separator();
         ImGui::TextDisabled("no bindings — use \"+ Add binding\"");
     }
+}
 
-    ImGui::End();
+// Transforms editor — full-page main-window content (header/Close drawn by
+// DrawMainWindow's editor-page branch). Rows = the 6 GLOBAL axes (X/Y/Z
+// translation, U/V/W = theta x/y/z rotation), one column per motion device —
+// same shape as the machine's global-axis table. Each cell picks the signed
+// LOCAL axis that global axis maps to (one signed-permutation column of
+// AxisTransform's m or r block). Every edit hot-applies to Workflow so the jog
+// panel maps through it on the next press; Save writes config/motion_transforms.json.
+void App::DrawTransformEditPanel()
+{
+    const size_t n = hardware_.MotionCount();
+    if (n == 0) {
+        ImGui::TextDisabled("no motion devices");
+        return;
+    }
+
+    bool changed = false;
+
+    if (ImGui::Button("Save")) {
+        if (SaveMotionTransforms("config/motion_transforms.json", transformCfg_))
+            FD_INFO("app", "transforms saved to config/motion_transforms.json");
+        else
+            FD_ERROR("app", "failed to save motion transforms");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload file")) {
+        transformCfg_ = LoadMotionTransforms("config/motion_transforms.json");
+        changed = true;
+    }
+    ImGui::TextDisabled("Edits apply to jog immediately (arm the Jog window to test). Save writes "
+                        "config/motion_transforms.json next to the exe; a rebuild overwrites it "
+                        "(mirror durable changes into the repo config).");
+
+    // One combo per (global axis, device): the signed local axis this global
+    // axis maps to. Writes one column of the selected block (m or r).
+    auto cell = [&](AxisTransform& t, bool rot, int col, IMotionController* dev) {
+        double (*blk)[3] = rot ? t.r : t.m;
+        const std::vector<std::string> axes = dev->Axes();
+        std::vector<std::string> names;   // local axis labels for this block
+        if (rot) { for (size_t a = 3; a < axes.size() && a < 6; ++a) names.push_back(axes[a]); }
+        else     { for (size_t a = 0; a < axes.size() && a < 3; ++a) names.push_back(axes[a]); }
+        if (names.empty()) { ImGui::TextDisabled("n/a"); return; }
+
+        // Current selection = dominant entry of this column.
+        int ax = 0;
+        for (int i = 1; i < 3; ++i)
+            if (std::fabs(blk[i][col]) > std::fabs(blk[ax][col])) ax = i;
+        const bool mapped = std::fabs(blk[ax][col]) > 1e-9 && ax < static_cast<int>(names.size());
+        const bool pos    = blk[ax][col] >= 0.0;
+
+        char cur[16];
+        if (mapped) std::snprintf(cur, sizeof(cur), "%s %s", names[ax].c_str(), pos ? "+" : "-");
+        else        std::snprintf(cur, sizeof(cur), "-");
+
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##cell", cur)) {
+            auto pick = [&](int i, double sign) {
+                for (int r = 0; r < 3; ++r) blk[r][col] = 0.0;
+                if (i >= 0) blk[i][col] = sign;
+                changed = true;
+            };
+            for (int i = 0; i < static_cast<int>(names.size()); ++i) {
+                char lbl[16];
+                std::snprintf(lbl, sizeof(lbl), "%s +", names[i].c_str());
+                if (ImGui::Selectable(lbl, mapped && ax == i && pos)) pick(i, +1.0);
+                std::snprintf(lbl, sizeof(lbl), "%s -", names[i].c_str());
+                if (ImGui::Selectable(lbl, mapped && ax == i && !pos)) pick(i, -1.0);
+            }
+            if (ImGui::Selectable("- (none)", !mapped)) pick(-1, 0.0);
+            ImGui::EndCombo();
+        }
+    };
+
+    static const char* kRows[6] = {"X", "Y", "Z", "U (\xce\xb8x)", "V (\xce\xb8y)", "W (\xce\xb8z)"};
+
+    if (ImGui::BeginTable("xform", 1 + static_cast<int>(n),
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Global axis");
+        for (size_t d = 0; d < n; ++d)
+            ImGui::TableSetupColumn(hardware_.MotionName(d).c_str());
+        ImGui::TableHeadersRow();
+
+        for (int row = 0; row < 6; ++row) {
+            const bool rot = row >= 3;
+            const int  col = rot ? row - 3 : row;   // column of the m / r block
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(kRows[row]);
+            for (size_t d = 0; d < n; ++d) {
+                ImGui::TableSetColumnIndex(1 + static_cast<int>(d));
+                IMotionController* dev = hardware_.MotionDevice(d);
+                if (!dev) { ImGui::TextDisabled("-"); continue; }
+                ImGui::PushID(row * 64 + static_cast<int>(d));
+                AxisTransform& t = transformCfg_[dev->Name()];   // identity if new
+                cell(t, rot, col, dev);
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndTable();
+    }
+
+    if (changed) workflow_.SetTransforms(transformCfg_);   // hot reload
 }
 
 void App::DrawImageOverlay()

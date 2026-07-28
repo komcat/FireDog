@@ -277,8 +277,10 @@ std::map<std::string, AxisTransform> LoadMotionTransforms(const std::string& pat
     try {
         nlohmann::json j;
         f >> j;
-        static const char* keys[3][3] = {
+        static const char* mKeys[3][3] = {
             {"M11", "M12", "M13"}, {"M21", "M22", "M23"}, {"M31", "M32", "M33"}};
+        static const char* rKeys[3][3] = {
+            {"R11", "R12", "R13"}, {"R21", "R22", "R23"}, {"R31", "R32", "R33"}};
         for (const auto& e : j) {
             const std::string id = e.value("DeviceId", std::string());
             if (id.empty() || !e.contains("Matrix")) continue;
@@ -286,13 +288,48 @@ std::map<std::string, AxisTransform> LoadMotionTransforms(const std::string& pat
             AxisTransform t;
             for (int r = 0; r < 3; ++r)
                 for (int c = 0; c < 3; ++c)
-                    t.m[r][c] = mm.value(keys[r][c], (r == c) ? 1.0 : 0.0);
+                    t.m[r][c] = mm.value(mKeys[r][c], (r == c) ? 1.0 : 0.0);
+            if (e.contains("Rotation")) {   // optional; identity when absent
+                const auto& rr = e["Rotation"];
+                for (int r = 0; r < 3; ++r)
+                    for (int c = 0; c < 3; ++c)
+                        t.r[r][c] = rr.value(rKeys[r][c], (r == c) ? 1.0 : 0.0);
+            }
             out[id] = t;
         }
     } catch (const std::exception& e) {
         std::cerr << "[config] transforms parse error: " << e.what() << std::endl;
     }
     return out;
+}
+
+bool SaveMotionTransforms(const std::string& path,
+                          const std::map<std::string, AxisTransform>& transforms)
+{
+    static const char* mKeys[3][3] = {
+        {"M11", "M12", "M13"}, {"M21", "M22", "M23"}, {"M31", "M32", "M33"}};
+    static const char* rKeys[3][3] = {
+        {"R11", "R12", "R13"}, {"R21", "R22", "R23"}, {"R31", "R32", "R33"}};
+
+    nlohmann::json j = nlohmann::json::array();
+    for (const auto& [id, t] : transforms) {
+        nlohmann::json e;
+        e["DeviceId"] = id;
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c) {
+                e["Matrix"][mKeys[r][c]]   = t.m[r][c];
+                e["Rotation"][rKeys[r][c]] = t.r[r][c];
+            }
+        j.push_back(e);
+    }
+
+    std::ofstream out(path);
+    if (!out) {
+        std::cerr << "[config] cannot write " << path << std::endl;
+        return false;
+    }
+    out << j.dump(2) << "\n";
+    return true;
 }
 
 } // namespace firedog

@@ -26,8 +26,10 @@ struct CanvasObject {
     ImU32       color;
 };
 
-// Which content the Main window shows. Selected via the Hardware menu.
-enum class Page { Overview, Motion, IO, Pneumatic };
+// Which content the Main window shows. Hardware pages are selected via the
+// Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
+// until closed via their top-right Close button (back to the previous page).
+enum class Page { Overview, Motion, IO, Pneumatic, WatchEdit, TransformEdit };
 
 class App {
 public:
@@ -55,7 +57,8 @@ private:
     void DrawPneumaticListPanel();    // left:   slide list + position
     void DrawPneumaticDetailPanel();  // middle: selected slide + Extend/Retract/Stop
     void DrawPneumaticInfoPanel();    // right:  live output/sensor states
-    void DrawWatchEditWindow();       // IO Watch editor (own window, View menu)
+    void DrawWatchEditPanel();        // IO Watch editor (full-page, View menu)
+    void DrawTransformEditPanel();    // axis-transform editor (full-page, View menu)
     void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
     void DrawAuxWindow();
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
@@ -113,7 +116,9 @@ private:
     bool  splitterWasActive_ = false;   // to save panel sizes once a drag ends
 
     // Main-window page + which motion device is selected on the Motion page.
+    // prevPage_ = the hardware page to return to when an editor page closes.
     Page currentPage_    = Page::Overview;
+    Page prevPage_       = Page::Overview;
     int  selectedMotion_ = -1;   // absolute index into the HardwareManager motion fleet
     bool showHiddenPos_  = false;   // reveal hidden (system) positions in the table
 
@@ -126,10 +131,15 @@ private:
     int  selectedSlide_ = -1;   // absolute index into the HardwareManager slide fleet
     bool pneuArmed_     = true;
 
-    // IO Watch editor (View menu): edits a working copy of the io_watch config;
-    // Apply rebuilds the live watch, Save also writes config/hardware.json.
-    bool          showWatchEdit_ = false;
+    // IO Watch editor (View menu page): edits a working copy of the io_watch
+    // config; Apply rebuilds the live watch, Save also writes config/hardware.json.
     IoWatchConfig watchCfg_;
+
+    // Transforms editor (View menu page): the working copy of ALL device
+    // transforms (including devices not in the fleet — preserved on Save).
+    // Every edit is hot-pushed to Workflow::SetTransforms so the jog panel
+    // reflects it immediately; Save also writes config/motion_transforms.json.
+    std::map<std::string, AxisTransform> transformCfg_;
 
     // Rename-position dialog (name is a label; the uid never changes).
     bool openRenamePos_ = false;    // row Edit button -> popup handoff

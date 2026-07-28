@@ -484,11 +484,38 @@ bool Workflow::JogGlobal(std::size_t devIdx, float gx, float gy, float gz, doubl
         loc[i] = t.m[i][0] * g[0] + t.m[i][1] * g[1] + t.m[i][2] * g[2];
     int ax = 0;
     for (int i = 1; i < 3; ++i) if (std::fabs(loc[i]) > std::fabs(loc[ax])) ax = i;
+    if (std::fabs(loc[ax]) < 1e-9) return false;   // unmapped (zero column)
 
     const std::vector<std::string> axes = m->Axes();
     if (ax >= static_cast<int>(axes.size())) return false;
     const double delta = stepMM * (loc[ax] >= 0.0 ? 1.0 : -1.0);
     return JogLocalAxis(devIdx, axes[ax], delta);
+}
+
+bool Workflow::JogGlobalRot(std::size_t devIdx, float gu, float gv, float gw, double step)
+{
+    if (devIdx >= hw_.MotionCount()) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m) return false;
+
+    // Map the global rotation direction to a signed local rotational axis via
+    // the transform's rotation block (same scheme as JogGlobal's translation).
+    AxisTransform t;   // identity if none configured
+    const auto it = transforms_.find(m->Name());
+    if (it != transforms_.end()) t = it->second;
+    const double g[3] = {gu, gv, gw};
+    double loc[3];
+    for (int i = 0; i < 3; ++i)
+        loc[i] = t.r[i][0] * g[0] + t.r[i][1] * g[1] + t.r[i][2] * g[2];
+    int ax = 0;
+    for (int i = 1; i < 3; ++i) if (std::fabs(loc[i]) > std::fabs(loc[ax])) ax = i;
+    if (std::fabs(loc[ax]) < 1e-9) return false;   // unmapped (zero column)
+
+    // Local rotational axes are the ones beyond XYZ (hexapod U/V/W).
+    const std::vector<std::string> axes = m->Axes();
+    if (3 + ax >= static_cast<int>(axes.size())) return false;
+    const double delta = step * (loc[ax] >= 0.0 ? 1.0 : -1.0);
+    return JogLocalAxis(devIdx, axes[3 + ax], delta);
 }
 
 bool Workflow::JogLocalAxis(std::size_t devIdx, const std::string& axis, double deltaMM)
