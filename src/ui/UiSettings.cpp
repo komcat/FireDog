@@ -18,8 +18,9 @@ UiSettings UiSettings::Load(const std::string& path)
     try {
         nlohmann::json j;
         f >> j;
-        if (j.contains("font_index")) s.fontIndex = j["font_index"].get<int>();
-        if (j.contains("font_size"))  s.fontSize  = j["font_size"].get<float>();
+        if (j.contains("font_index"))  s.fontIndex  = j["font_index"].get<int>();
+        if (j.contains("font_size"))   s.fontSize   = j["font_size"].get<float>();
+        if (j.contains("theme_index")) s.themeIndex = j["theme_index"].get<int>();
         if (j.contains("left_w"))     s.leftW     = j["left_w"].get<float>();
         if (j.contains("right_w"))    s.rightW    = j["right_w"].get<float>();
         if (j.contains("lower_h"))    s.lowerH    = j["lower_h"].get<float>();
@@ -38,8 +39,9 @@ UiSettings UiSettings::Load(const std::string& path)
 bool UiSettings::Save(const std::string& path) const
 {
     nlohmann::json j;
-    j["font_index"] = fontIndex;
-    j["font_size"]  = fontSize;
+    j["font_index"]  = fontIndex;
+    j["font_size"]   = fontSize;
+    j["theme_index"] = themeIndex;
     j["left_w"]     = leftW;
     j["right_w"]    = rightW;
     j["lower_h"]    = lowerH;

@@ -155,14 +155,14 @@ int App::Run()
         FD_ERROR("app", "GlHost init failed");
         return 1;
     }
-    Theme::Apply();
-    // Restore the saved font choice + size (defaults to Segoe UI 26 px on first
-    // run), validated against the current font table / slider range.
+    // Restore the saved theme + font choice + size (defaults to FireDog Dark /
+    // Segoe UI 26 px on first run), validated against the current tables.
     std::string lastProduct;
     {
         const UiSettings ui = UiSettings::Load(kUiSettingsPath);
         fontIndex_  = (ui.fontIndex >= 0 && ui.fontIndex < kFontCount) ? ui.fontIndex : 0;
         uiFontSize_ = (ui.fontSize >= 8.0f && ui.fontSize <= 48.0f) ? ui.fontSize : 26.0f;
+        themeIndex_ = (ui.themeIndex >= 0 && ui.themeIndex < Theme::Count()) ? ui.themeIndex : 0;
         // Panel sizes: keep saved px if present; 0 lets DrawMainWindow seed them.
         if (ui.leftW  > 0.0f) leftW_  = ui.leftW;
         if (ui.rightW > 0.0f) rightW_ = ui.rightW;
@@ -171,6 +171,7 @@ int App::Run()
         enableClickMove_ = ui.clickToMove;
         lastProduct      = ui.lastProduct;
     }
+    Theme::Apply(themeIndex_);
     host_.SetFont(kFonts[fontIndex_].path, uiFontSize_);
 
     // Build a placeholder frame (checkerboard) for the main-window vision view.
@@ -267,6 +268,16 @@ void App::DrawMainWindow()
             if (ImGui::BeginMenu("View")) {
                 ImGui::MenuItem("Aux Window", nullptr, &showAux_);
                 ImGui::MenuItem("Jog",        nullptr, &showJog_);
+                if (ImGui::BeginMenu("Theme")) {   // same picker as Display header
+                    for (int i = 0; i < Theme::Count(); ++i) {
+                        if (ImGui::MenuItem(Theme::Name(i), nullptr, themeIndex_ == i)) {
+                            themeIndex_ = i;
+                            Theme::Apply(themeIndex_);
+                            SaveUiSettings();
+                        }
+                    }
+                    ImGui::EndMenu();
+                }
                 ImGui::Separator();
                 // Editor pages replace the main-window content; selecting one
                 // remembers the current hardware page so Close returns to it.
@@ -404,6 +415,20 @@ void App::DrawLeftPanel()
 
     ImGui::Spacing();
     if (ImGui::CollapsingHeader("Display")) {
+        // Theme picker — hot-applies (mid-frame style changes are fine in
+        // immediate mode) and persists like the font choice.
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##theme", Theme::Name(themeIndex_))) {
+            for (int i = 0; i < Theme::Count(); ++i) {
+                if (ImGui::Selectable(Theme::Name(i), themeIndex_ == i)) {
+                    themeIndex_ = i;
+                    Theme::Apply(themeIndex_);
+                    SaveUiSettings();
+                }
+            }
+            ImGui::EndCombo();
+        }
+
         const char* names[kFontCount];
         for (int i = 0; i < kFontCount; ++i) names[i] = kFonts[i].label;
 
@@ -423,8 +448,9 @@ void App::DrawLeftPanel()
 void App::SaveUiSettings()
 {
     UiSettings s;
-    s.fontIndex = fontIndex_;
-    s.fontSize  = uiFontSize_;
+    s.fontIndex  = fontIndex_;
+    s.fontSize   = uiFontSize_;
+    s.themeIndex = themeIndex_;
     s.leftW     = leftW_;
     s.rightW    = rightW_;
     s.lowerH    = lowerH_;

@@ -97,9 +97,11 @@ private:
     std::vector<CanvasObject> objects_;
     int                       dragging_ = -1;
 
-    // Display controls (font picker + size) — bound to the GlHost font API.
-    int   fontIndex_ = 0;        // index into kFonts (see App.cpp)
+    // Display controls (theme + font picker + size). Theme applies via
+    // Theme::Apply; fonts bind to the GlHost font API.
+    int   fontIndex_  = 0;       // index into kFonts (see App.cpp)
     float uiFontSize_ = 26.0f;   // current UI font size in px
+    int   themeIndex_ = 0;       // index into Theme's theme list
 
     // Log viewer state — snapshots the Logger ringbuffer, refreshed on change.
     std::vector<LogEntry> logView_;

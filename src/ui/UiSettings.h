@@ -10,8 +10,9 @@
 namespace firedog {
 
 struct UiSettings {
-    int   fontIndex = 0;        // index into App's kFonts table
-    float fontSize  = 26.0f;    // UI font size in px
+    int   fontIndex  = 0;       // index into App's kFonts table
+    float fontSize   = 26.0f;   // UI font size in px
+    int   themeIndex = 0;       // index into Theme's theme list
 
     // Main-window panel splitter sizes in px (0 = unset -> seed from proportion).
     // Shared across all pages (Overview / PI / ACS).
