@@ -52,6 +52,7 @@ void Workflow::Start(const HardwareConfig& hw)
     StartSafetyWatch(hw);  // after StartIO — first-priority safety signals
     StartCamera(hw);
     StartKeithley(hw);
+    StartCld(hw);
 }
 
 void Workflow::StartMotion(const HardwareConfig& hw)
@@ -513,6 +514,95 @@ bool Workflow::SetKeithleyPollInterval(int ms)
     if (ok) keiCfg_.pollIntervalMs = ms;   // so a later reconnect keeps it
     return ok;
 }
+
+void Workflow::StartCld(const HardwareConfig& hw)
+{
+    const Cld101xConfig* c = hw.FirstEnabledCld();
+    if (!c) {
+        FD_WARN("workflow", "no enabled CLD101x in config");
+        hw_.SetCldState(ConnState::Disconnected);
+        return;
+    }
+
+    cldCfg_      = *c;   // kept so the CLD page can reconnect later
+    cldCfgValid_ = true;
+    hw_.SetCldName(c->name);
+    LaunchCldConnect();
+}
+
+void Workflow::LaunchCldConnect()
+{
+    hw_.SetCldState(ConnState::Connecting);
+    FD_INFO("workflow", "connecting CLD101x '%s' (%s)",
+            cldCfg_.name.c_str(), cldCfg_.visaResource.c_str());
+
+    CLD101x::Config cfg;
+    cfg.name                  = cldCfg_.name;
+    cfg.visaResource          = cldCfg_.visaResource;
+    cfg.defaultTemperature    = cldCfg_.defaultTemperature;
+    cfg.defaultLaserCurrentMA = cldCfg_.defaultLaserCurrentMA;
+    hw_.SetCld(std::make_unique<CLD101x>(cfg));
+
+    // Connect + poll only. No setpoints and no output switching at startup —
+    // the device keeps whatever state it is in (bobcat behavior); enabling the
+    // laser is always an explicit UI action.
+    const int interval = cldCfg_.pollIntervalMs;
+    cldConnect_ = std::async(std::launch::async, [this, interval] {
+        CLD101x* cld = hw_.Cld();
+        bool ok = cld && cld->Connect();
+        if (ok) ok = cld->StartPolling(interval, topics::kCldTemp, topics::kCldCurrent);
+        hw_.SetCldState(ok ? ConnState::Connected : ConnState::Failed);
+        if (!ok) FD_ERROR("workflow", "CLD101x bring-up failed: %s",
+                          cld ? cld->LastError().c_str() : "no driver");
+    });
+}
+
+bool Workflow::ConnectCld()
+{
+    if (!cldCfgValid_) {
+        FD_WARN("workflow", "CLD connect: no CLD101x configured");
+        return false;
+    }
+    if (hw_.CldState() == ConnState::Connecting) return false;   // in flight
+    CLD101x* cld = hw_.Cld();
+    if (cld && cld->IsConnected()) return true;                  // already up
+    LaunchCldConnect();   // rebuilds the driver from cldCfg_
+    return true;
+}
+
+bool Workflow::DisconnectCld()
+{
+    if (hw_.CldState() == ConnState::Connecting) return false;   // let it finish
+    CLD101x* cld = hw_.Cld();
+    if (!cld) return false;
+    cld->Disconnect();   // stops polling; device outputs keep their state
+    hw_.SetCldState(ConnState::Disconnected);
+    FD_INFO("workflow", "CLD101x '%s' disconnected", hw_.CldName().c_str());
+    return true;
+}
+
+CLD101x* Workflow::ConnectedCld() const
+{
+    if (hw_.CldState() != ConnState::Connected) return nullptr;
+    return hw_.Cld();
+}
+
+bool Workflow::SetCldTemperature(double celsius)
+{
+    CLD101x* cld = ConnectedCld();
+    return cld && cld->SetTemperature(celsius);
+}
+
+bool Workflow::SetCldLaserCurrentMA(double mA)
+{
+    CLD101x* cld = ConnectedCld();
+    return cld && cld->SetLaserCurrentMA(mA);
+}
+
+bool Workflow::CldTecOn()    { CLD101x* c = ConnectedCld(); return c && c->TecOn(); }
+bool Workflow::CldTecOff()   { CLD101x* c = ConnectedCld(); return c && c->TecOff(); }
+bool Workflow::CldLaserOn()  { CLD101x* c = ConnectedCld(); return c && c->LaserOn(); }
+bool Workflow::CldLaserOff() { CLD101x* c = ConnectedCld(); return c && c->LaserOff(); }
 
 void Workflow::Update(float dt)
 {

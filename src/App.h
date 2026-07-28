@@ -29,7 +29,7 @@ struct CanvasObject {
 // Which content the Main window shows. Hardware pages are selected via the
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
-enum class Page { Overview, Camera, Keithley, Motion, IO, Pneumatic, WatchEdit, TransformEdit };
+enum class Page { Overview, Camera, Keithley, CLD, Motion, IO, Pneumatic, WatchEdit, TransformEdit };
 
 class App {
 public:
@@ -53,6 +53,10 @@ private:
     void DrawKeithleyListPanel();    // left:   status + connect/disconnect
     void DrawKeithleyDetailPanel();  // middle: bias + measurement settings + chart
     void DrawKeithleyInfoPanel();    // right:  identity + settings + live values
+    // CLD page — the Thorlabs CLD101x laser + TEC controller.
+    void DrawCldListPanel();       // left:   status + connect/disconnect
+    void DrawCldDetailPanel();     // middle: TEC + laser controls
+    void DrawCldInfoPanel();       // right:  identity + live values
     // Motion page — all motion devices (PI + ACS) on one page.
     void DrawMotionListPanel();    // left:   device list + status
     void DrawMotionDetailPanel();  // middle: selected device + positions
@@ -112,6 +116,13 @@ private:
     int   keiRangeIdx_  = 0;       // index into kKeiRanges (App.cpp)
     int   keiPollMs_    = 0;       // poll interval edit (0 = as fast as possible)
     bool  keiPulled_    = false;
+
+    // CLD page state — same seed pattern (config at startup, then the device's
+    // own setpoints once per connection).
+    std::string cldId_;            // config instrument name (for saving)
+    float cldTempSet_    = 25.0f;  // temperature setpoint edit (deg C)
+    float cldCurrentSet_ = 50.0f;  // laser current setpoint edit (mA)
+    bool  cldPulled_     = false;
 
     // Keithley chart buffers — refreshed once per frame by
     // UpdateKeithleyChartData (from Update); rendered by DrawKeithleyChart in

@@ -10,6 +10,11 @@ namespace firedog::topics {
 inline constexpr const char* kKeithleyCh1 = "keithley/ch1";
 inline constexpr const char* kKeithleyCh2 = "keithley/ch2";
 
+// CLD101x laser controller streams: temperature in deg C, laser current in mA
+// (display units — unlike the Keithley topics, which publish amps).
+inline constexpr const char* kCldTemp    = "cld/temp";
+inline constexpr const char* kCldCurrent = "cld/current";
+
 // Per-axis motion position stream, e.g. "motion/hex-left/X". Publishers are the
 // PI/ACS drivers' poll threads; any consumer (charts, alignment procedures,
 // loggers, a future 3D view) subscribes or pulls a Snapshot on the same string.

@@ -12,9 +12,8 @@ HardwareManager::HardwareManager()
     // layer-1 drivers (added by Workflow from config via AddMotion); the camera
     // and Keithley are direct-SDK members. Replace each SimulatedDevice below
     // with its SDK-backed adapter as that module comes online.
-    devices_.emplace_back(std::make_unique<SimulatedDevice>("CLD101x", 350));
-    devices_.emplace_back(std::make_unique<SimulatedDevice>("SMU",     450));
-    devices_.emplace_back(std::make_unique<SimulatedDevice>("PSU",     300));
+    devices_.emplace_back(std::make_unique<SimulatedDevice>("SMU", 450));
+    devices_.emplace_back(std::make_unique<SimulatedDevice>("PSU", 300));
 }
 
 void HardwareManager::AddMotion(std::unique_ptr<IMotionController> dev)
@@ -79,6 +78,7 @@ std::vector<HardwareManager::DeviceStatus> HardwareManager::Snapshot() const
     }
     out.push_back({camName_, camState_.load()});
     out.push_back({keiName_, keiState_.load()});
+    out.push_back({cldName_, cldState_.load()});
     return out;
 }
 

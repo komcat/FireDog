@@ -20,6 +20,7 @@ namespace firedog {
 
 class HardwareManager;
 class Keithley6482;
+class CLD101x;
 
 class Workflow {
 public:
@@ -78,6 +79,18 @@ public:
     bool SetKeithleyRangeFixed(double amps);
     bool SetKeithleyPollInterval(int ms);   // restart polling at the new rate
 
+    // ---- CLD101x commands (CLD page) ----------------------------------------
+    // Same pattern: reconnect from the config captured at Start; setters and
+    // output switches require Connected (switches are read-back verified).
+    bool ConnectCld();
+    bool DisconnectCld();
+    bool SetCldTemperature(double celsius);
+    bool SetCldLaserCurrentMA(double mA);
+    bool CldTecOn();
+    bool CldTecOff();
+    bool CldLaserOn();
+    bool CldLaserOff();
+
     // ---- Digital IO commands (IO page + future procedures) ------------------
     // devIdx indexes the HardwareManager IO fleet. Writes require Connected.
     bool SetIoOutput(std::size_t devIdx, int pin, bool on);
@@ -111,6 +124,9 @@ private:
     void LaunchCameraConnect();   // async connect from camCfg_ (Start + reconnect)
     void LaunchKeithleyConnect(); // async connect from keiCfg_ (Start + reconnect)
     Keithley6482* ConnectedKeithley() const;   // null unless state == Connected
+    void StartCld(const HardwareConfig& hw);
+    void LaunchCldConnect();      // async connect from cldCfg_ (Start + reconnect)
+    CLD101x* ConnectedCld() const;             // null unless state == Connected
     void StartKeithley(const HardwareConfig& hw);
     void StartMotion(const HardwareConfig& hw);
     void StartIO(const HardwareConfig& hw);
@@ -130,6 +146,7 @@ private:
     // so their blocking dtor still sees a live HardwareManager.
     std::future<void>              camConnect_;
     std::future<void>              keiConnect_;
+    std::future<void>              cldConnect_;
     std::vector<std::future<void>> motionConnect_;   // one per motion device
     std::vector<std::future<void>> ioConnect_;       // one per IO device
 
@@ -142,6 +159,10 @@ private:
     // Keithley config captured at Start (same pattern as the camera).
     KeithleyConfig keiCfg_;
     bool           keiCfgValid_ = false;
+
+    // CLD101x config captured at Start (same pattern).
+    Cld101xConfig cldCfg_;
+    bool          cldCfgValid_ = false;
 
     // Per-(device,axis) jog target: rapid presses accumulate onto one evolving
     // target so the latest press overrides the previous instead of queuing; the

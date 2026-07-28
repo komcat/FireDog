@@ -237,6 +237,15 @@
       "fixed_range": 0.0,
       "poll_interval_ms": 0,
       "bias_voltage": 1.0
+    },
+    {
+      "name": "laser-main",
+      "type": "cld101x",
+      "visa_resource": "USB0::0x1313::0x804F::M00930341::INSTR",
+      "enabled": true,
+      "default_temperature": 25.0,
+      "default_laser_current": 50.0,
+      "poll_interval_ms": 500
     }
   ]
 }

@@ -158,6 +158,19 @@ HardwareConfig HardwareConfig::Load(const std::string& path)
         if (j.contains("instruments")) {
             for (const auto& inst : j["instruments"]) {
                 const std::string type = inst.value("type", std::string());
+
+                if (type.find("cld") != std::string::npos) {
+                    Cld101xConfig cc;
+                    cc.name         = inst.value("name", std::string("laser-main"));
+                    cc.type         = type;
+                    cc.visaResource = inst.value("visa_resource", std::string());
+                    cc.enabled      = inst.value("enabled", true);
+                    cc.defaultTemperature    = inst.value("default_temperature", 25.0);
+                    cc.defaultLaserCurrentMA = inst.value("default_laser_current", 50.0);
+                    cc.pollIntervalMs        = inst.value("poll_interval_ms", 500);
+                    hc.clds.push_back(cc);
+                    continue;
+                }
                 if (type.find("keithley") == std::string::npos) continue;
 
                 KeithleyConfig kc;
@@ -197,6 +210,14 @@ const KeithleyConfig* HardwareConfig::FirstEnabledKeithley() const
 {
     for (const auto& k : keithleys) {
         if (k.enabled) return &k;
+    }
+    return nullptr;
+}
+
+const Cld101xConfig* HardwareConfig::FirstEnabledCld() const
+{
+    for (const auto& c : clds) {
+        if (c.enabled) return &c;
     }
     return nullptr;
 }
@@ -294,6 +315,45 @@ bool HardwareConfig::SaveKeithleySettings(const std::string& path, const std::st
             inst["fixed_range"]      = fixedRange;
             inst["poll_interval_ms"] = pollIntervalMs;
             inst["bias_voltage"]     = biasVoltage;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        std::cerr << "[config] instrument '" << name << "' not found in " << path << std::endl;
+        return false;
+    }
+
+    std::ofstream out(path);
+    if (!out) {
+        std::cerr << "[config] cannot write " << path << std::endl;
+        return false;
+    }
+    out << j.dump(2) << "\n";
+    return true;
+}
+
+bool HardwareConfig::SaveCldSettings(const std::string& path, const std::string& name,
+                                     double defaultTemperature, double defaultLaserCurrentMA)
+{
+    nlohmann::json j;
+    {
+        std::ifstream f(path);
+        if (f) {
+            try { f >> j; }
+            catch (const std::exception& e) {
+                std::cerr << "[config] cannot rewrite " << path << ": " << e.what() << std::endl;
+                return false;   // don't clobber a file we couldn't parse
+            }
+        }
+    }
+
+    bool found = false;
+    if (j.contains("instruments")) {
+        for (auto& inst : j["instruments"]) {
+            if (inst.value("name", std::string()) != name) continue;
+            inst["default_temperature"]   = defaultTemperature;
+            inst["default_laser_current"] = defaultLaserCurrentMA;
             found = true;
             break;
         }
