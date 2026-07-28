@@ -27,7 +27,7 @@ struct CanvasObject {
 };
 
 // Which content the Main window shows. Selected via the Hardware menu.
-enum class Page { Overview, Motion };
+enum class Page { Overview, Motion, IO, Pneumatic };
 
 class App {
 public:
@@ -47,6 +47,16 @@ private:
     void DrawMotionListPanel();    // left:   device list + status
     void DrawMotionDetailPanel();  // middle: selected device + positions
     void DrawMotionInfoPanel();    // right:  live axis positions
+    // IO page — all IO devices (Ezi-IO + WAGO) on one page.
+    void DrawIoListPanel();        // left:   device list + status
+    void DrawIoDetailPanel();      // middle: selected device + output toggles
+    void DrawIoInputPanel();       // right:  live input pin states
+    // Pneumatics page — synthetic slides composed from IO pins.
+    void DrawPneumaticListPanel();    // left:   slide list + position
+    void DrawPneumaticDetailPanel();  // middle: selected slide + Extend/Retract/Stop
+    void DrawPneumaticInfoPanel();    // right:  live output/sensor states
+    void DrawWatchEditWindow();       // IO Watch editor (own window, View menu)
+    void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
     void DrawAuxWindow();
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
@@ -106,6 +116,20 @@ private:
     Page currentPage_    = Page::Overview;
     int  selectedMotion_ = -1;   // absolute index into the HardwareManager motion fleet
     bool showHiddenPos_  = false;   // reveal hidden (system) positions in the table
+
+    // IO page: selected device + the output Enable gate (defaults ON per user
+    // preference — the checkbox remains as an explicit kill switch).
+    int  selectedIo_ = -1;   // absolute index into the HardwareManager IO fleet
+    bool ioArmed_    = true;
+
+    // Pneumatics page: selected slide + the same Enable gate.
+    int  selectedSlide_ = -1;   // absolute index into the HardwareManager slide fleet
+    bool pneuArmed_     = true;
+
+    // IO Watch editor (View menu): edits a working copy of the io_watch config;
+    // Apply rebuilds the live watch, Save also writes config/hardware.json.
+    bool          showWatchEdit_ = false;
+    IoWatchConfig watchCfg_;
 
     // Rename-position dialog (name is a label; the uid never changes).
     bool openRenamePos_ = false;    // row Edit button -> popup handoff

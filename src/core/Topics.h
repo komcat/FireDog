@@ -18,4 +18,10 @@ inline std::string MotionAxis(const std::string& device, const std::string& axis
     return "motion/" + device + "/" + axis;
 }
 
+// Per-device IO bitmask streams, e.g. "io/IOBottom/in". The drivers' poll
+// threads publish the pin bitmask (as a double) only when it changes; future
+// procedures ("wait for UV_Head_Up") subscribe on the same strings.
+inline std::string IoInputs(const std::string& device)  { return "io/" + device + "/in"; }
+inline std::string IoOutputs(const std::string& device) { return "io/" + device + "/out"; }
+
 } // namespace firedog::topics

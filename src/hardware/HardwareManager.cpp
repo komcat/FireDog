@@ -25,6 +25,14 @@ void HardwareManager::AddMotion(std::unique_ptr<IMotionController> dev)
     motion_.push_back(std::move(slot));
 }
 
+void HardwareManager::AddIo(std::unique_ptr<IIoDevice> dev)
+{
+    auto slot  = std::make_unique<IoSlot>();
+    slot->name = dev->Name();
+    slot->dev  = std::move(dev);
+    io_.push_back(std::move(slot));
+}
+
 HardwareManager::~HardwareManager()
 {
     for (auto& f : pending_) {
@@ -57,11 +65,14 @@ bool HardwareManager::AllConnected() const
 std::vector<HardwareManager::DeviceStatus> HardwareManager::Snapshot() const
 {
     std::vector<DeviceStatus> out;
-    out.reserve(motion_.size() + devices_.size() + 2);
-    // Motion fleet first (PI hexapods + ACS gantry), then the simulated
-    // instruments, then the two direct-SDK instruments (via their atomics).
+    out.reserve(motion_.size() + io_.size() + devices_.size() + 2);
+    // Motion fleet first (PI hexapods + ACS gantry), then the IO fleet, then
+    // the simulated instruments, then the two direct-SDK instruments.
     for (const auto& m : motion_) {
         out.push_back({m->name, m->state.load()});
+    }
+    for (const auto& i : io_) {
+        out.push_back({i->name, i->state.load()});
     }
     for (const auto& d : devices_) {
         out.push_back({d->Name(), d->State()});

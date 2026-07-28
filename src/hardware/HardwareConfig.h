@@ -58,17 +58,96 @@ struct MotionConfig {
     bool        enabled  = true;
 };
 
+// One digital-IO node (from "io_devices"): a FASTECH Ezi-IO board or a WAGO
+// Modbus TCP coupler. Shared shape for both device kinds.
+struct IoDeviceConfig {
+    std::string id;
+    std::string name;
+    std::string type;                // "eziio" | "wago"
+    std::string ipAddress;
+    int         port           = 502;    // wago Modbus port; eziio ignores it
+    int         deviceId       = 0;      // eziio FAS board id — unique per board
+    int         inputCount     = 8;
+    int         outputCount    = 8;
+    int         pollIntervalMs = 100;
+    bool        enabled        = true;
+    bool        simulated      = false;  // wago only: in-memory sim, no sockets
+    std::map<int, std::string> inputNames;    // pin -> display name (from "pins")
+    std::map<int, std::string> outputNames;
+};
+
+// One pneumatic slide (from "pneumatic_slides"): a synthetic device built from
+// IO pins — one output (ON = extend), two position sensors. Pins by NAME,
+// resolved against the io_devices pin maps at startup.
+struct PneumaticSlideConfig {
+    std::string name;
+    std::string outputDevice,    outputPin;
+    std::string extendedDevice,  extendedPin;
+    std::string retractedDevice, retractedPin;
+    int  timeoutMs = 10000;
+    bool enabled   = true;
+};
+
+// One IO-watch binding (from "io_watch"): an input edge that fires an action
+// on an output pin. Pins by NAME, resolved at startup like pneumatic slides.
+struct IoWatchBindingConfig {
+    std::string name;
+    std::string inputDevice,  inputPin;
+    std::string outputDevice, outputPin;
+    std::string trigger  = "rising";    // rising | falling | both
+    std::string behavior = "toggle";    // toggle | set_on | set_off | momentary
+    int  debounceMs = 100;
+    bool enabled    = true;
+};
+
+struct IoWatchConfig {
+    bool enabled           = false;
+    int  pollingIntervalMs = 50;
+    std::vector<IoWatchBindingConfig> bindings;
+};
+
+// One watched safety input (from "safety_watch"): an edge that latches an
+// alert; critical signals also stop all motion (wired in Workflow).
+struct SafetySignalConfig {
+    std::string device;
+    std::string pinName;                // preferred reference
+    int         pinNumber = 0;          // fallback if the name doesn't resolve
+    std::string trigger = "rising";     // rising | falling | both
+    std::string alertTitle   = "Safety Alert";
+    std::string alertMessage = "A safety condition was triggered.";
+    bool        critical = false;
+    bool        enabled  = true;
+};
+
+struct SafetyWatchConfig {
+    bool enabled           = false;
+    int  pollingIntervalMs = 100;
+    std::vector<SafetySignalConfig> watchedInputs;
+};
+
 struct HardwareConfig {
     std::vector<CameraConfig>   cameras;
     std::vector<KeithleyConfig> keithleys;      // from "instruments" (type keithley_*)
     std::vector<MotionConfig>   motionDevices;  // from "motion_devices" (PI / ACS)
+    std::vector<IoDeviceConfig> ioDevices;      // from "io_devices" (eziio / wago)
+    std::vector<PneumaticSlideConfig> pneumaticSlides;  // from "pneumatic_slides"
+    IoWatchConfig     ioWatch;                          // from "io_watch"
+    SafetyWatchConfig safetyWatch;                      // from "safety_watch"
 
     // Tolerant loader — returns an empty config if the file is missing/invalid.
     static HardwareConfig Load(const std::string& path);
 
     const CameraConfig*   FirstEnabledCamera() const;
     const KeithleyConfig* FirstEnabledKeithley() const;
-    std::vector<MotionConfig> EnabledMotionDevices() const;   // enabled only
+    std::vector<MotionConfig>   EnabledMotionDevices() const;   // enabled only
+    std::vector<IoDeviceConfig> EnabledIoDevices() const;       // enabled only
+    std::vector<PneumaticSlideConfig> EnabledPneumaticSlides() const;
+
+    // Write ONLY the "io_watch" section back into the config file (read-
+    // modify-write; all other sections are preserved). Used by the IO Watch
+    // editor window. Note: a rebuild recopies the repo's config/ over the
+    // exe-side copy, so mirror durable edits into the repo file too.
+    static bool SaveIoWatch(const std::string& path, const IoWatchConfig& cfg);
 };
 
 } // namespace firedog

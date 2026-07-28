@@ -44,6 +44,186 @@
       "port": 50000
     }
   ],
+  "io_devices": [
+    {
+      "id": "io-bottom",
+      "name": "IOBottom",
+      "type": "eziio",
+      "ip_address": "192.168.0.3",
+      "device_id": 0,
+      "input_count": 16,
+      "output_count": 16,
+      "poll_interval_ms": 100,
+      "enabled": true,
+      "pins": {
+        "inputs": [
+          { "name": "switch0", "pin": 0 },
+          { "name": "switch1", "pin": 1 },
+          { "name": "switch2", "pin": 2 },
+          { "name": "switch3", "pin": 3 },
+          { "name": "switch4", "pin": 4 },
+          { "name": "switch5", "pin": 5 },
+          { "name": "switch6", "pin": 6 },
+          { "name": "switch7", "pin": 7 }
+        ],
+        "outputs": [
+          { "name": "L_Gripper", "pin": 0 },
+          { "name": "P1", "pin": 1 },
+          { "name": "R_Gripper", "pin": 2 },
+          { "name": "P3", "pin": 3 },
+          { "name": "UV_Head", "pin": 4 },
+          { "name": "Dispenser_Head", "pin": 5 },
+          { "name": "Pick_Up_Tool", "pin": 6 },
+          { "name": "P7", "pin": 7 },
+          { "name": "reserved_8", "pin": 8 },
+          { "name": "reserved_9", "pin": 9 },
+          { "name": "Vacuum_Base", "pin": 10 },
+          { "name": "P11", "pin": 11 },
+          { "name": "Reserve_UV_PLC3", "pin": 12 },
+          { "name": "UV_PLC2", "pin": 13 },
+          { "name": "UV_PLC1", "pin": 14 },
+          { "name": "Dispenser_Shot", "pin": 15 }
+        ]
+      }
+    },
+    {
+      "id": "io-top",
+      "name": "IOTop",
+      "type": "eziio",
+      "ip_address": "192.168.0.5",
+      "device_id": 1,
+      "input_count": 8,
+      "output_count": 8,
+      "poll_interval_ms": 100,
+      "enabled": true,
+      "pins": {
+        "inputs": [
+          { "name": "Input0", "pin": 0 },
+          { "name": "UV_Head_Up", "pin": 1 },
+          { "name": "UV_Head_Down", "pin": 2 },
+          { "name": "Dispenser_Head_Up", "pin": 3 },
+          { "name": "Dispenser_Head_Down", "pin": 4 },
+          { "name": "Pick_Up_Tool_Up", "pin": 5 },
+          { "name": "Pick_Up_Tool_Down", "pin": 6 },
+          { "name": "Input7", "pin": 7 }
+        ],
+        "outputs": [
+          { "name": "Output0", "pin": 0 },
+          { "name": "Output1", "pin": 1 },
+          { "name": "Output2", "pin": 2 },
+          { "name": "Output3", "pin": 3 },
+          { "name": "Output4", "pin": 4 },
+          { "name": "Output5", "pin": 5 },
+          { "name": "Output6", "pin": 6 },
+          { "name": "Output7", "pin": 7 }
+        ]
+      }
+    },
+    {
+      "id": "wago-1",
+      "name": "wago1",
+      "type": "wago",
+      "ip_address": "192.168.3.13",
+      "port": 502,
+      "input_count": 8,
+      "output_count": 8,
+      "poll_interval_ms": 100,
+      "enabled": false,
+      "simulated": false,
+      "pins": {
+        "inputs": [],
+        "outputs": []
+      }
+    }
+  ],
+  "safety_watch": {
+    "enabled": true,
+    "polling_interval_ms": 100,
+    "watched_inputs": [
+      {
+        "device": "IOBottom",
+        "pin_name": "switch0",
+        "pin_number": 0,
+        "trigger": "falling",
+        "alert_title": "Emergency Stop Activated",
+        "alert_message": "E-Stop pressed. All operations halted. Acknowledge to resume.",
+        "critical": true,
+        "enabled": true
+      }
+    ]
+  },
+  "io_watch": {
+    "enabled": true,
+    "polling_interval_ms": 50,
+    "bindings": [
+      {
+        "name": "Switch 1 -> Vacuum_Base",
+        "input": { "device": "IOBottom", "pin_name": "switch1" },
+        "output": { "device": "IOBottom", "pin_name": "Vacuum_Base" },
+        "trigger": "rising",
+        "debounce_ms": 100,
+        "enabled": true
+      },
+      {
+        "name": "Switch 2 -> L_Gripper",
+        "input": { "device": "IOBottom", "pin_name": "switch2" },
+        "output": { "device": "IOBottom", "pin_name": "L_Gripper" },
+        "trigger": "rising",
+        "debounce_ms": 100,
+        "enabled": true
+      },
+      {
+        "name": "Switch 3 -> R_Gripper",
+        "input": { "device": "IOBottom", "pin_name": "switch3" },
+        "output": { "device": "IOBottom", "pin_name": "R_Gripper" },
+        "trigger": "rising",
+        "debounce_ms": 100,
+        "enabled": true
+      },
+      {
+        "name": "Switch 4 -> UV_Head",
+        "input": { "device": "IOBottom", "pin_name": "switch4" },
+        "output": { "device": "IOBottom", "pin_name": "UV_Head" },
+        "trigger": "rising",
+        "debounce_ms": 100,
+        "enabled": true
+      },
+      {
+        "name": "Switch 5 -> Dispenser_Head",
+        "input": { "device": "IOBottom", "pin_name": "switch5" },
+        "output": { "device": "IOBottom", "pin_name": "Dispenser_Head" },
+        "trigger": "rising",
+        "debounce_ms": 100,
+        "enabled": true
+      },
+      {
+        "name": "Switch 6 -> Dispenser_Shot",
+        "input": { "device": "IOBottom", "pin_name": "switch6" },
+        "output": { "device": "IOBottom", "pin_name": "Dispenser_Shot" },
+        "trigger": "rising",
+        "debounce_ms": 100,
+        "enabled": true
+      }
+    ]
+  },
+  "pneumatic_slides": [
+    {
+      "name": "UV_Head",
+      "enabled": true,
+      "timeout_ms": 10000,
+      "output":          { "device": "IOBottom", "pin": "UV_Head" },
+      "extended_input":  { "device": "IOTop", "pin": "UV_Head_Down" },
+      "retracted_input": { "device": "IOTop", "pin": "UV_Head_Up" }
+    },
+    {
+      "name": "Dispenser_Head",
+      "enabled": true,
+      "timeout_ms": 10000,
+      "output":          { "device": "IOBottom", "pin": "Dispenser_Head" },
+      "extended_input":  { "device": "IOTop", "pin": "Dispenser_Head_Down" },
+      "retracted_input": { "device": "IOTop", "pin": "Dispenser_Head_Up" }
+    }
+  ],
   "instruments": [
     {
       "name": "Keithley_6482",

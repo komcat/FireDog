@@ -10,7 +10,10 @@
 #include "hardware/IDevice.h"
 #include "hardware/camera/PylonCamera.h"
 #include "hardware/instruments/Keithley6482.h"
+#include "hardware/io/IIoDevice.h"
+#include "hardware/io/IoWatch.h"
 #include "hardware/motion/IMotionController.h"
+#include "hardware/pneumatic/PneumaticSlide.h"
 
 #include <atomic>
 #include <future>
@@ -47,6 +50,27 @@ public:
     void      SetMotionState(size_t i, ConnState s) { motion_[i]->state.store(s); }
     const std::string& MotionName(size_t i) const { return motion_[i]->name; }
 
+    // --- IO fleet (Ezi-IO boards + WAGO couplers). Multiple, heterogeneous. --
+    // Same ownership pattern as the motion fleet: Workflow builds each from
+    // config, hands it here, then drives async connect + polling.
+    void   AddIo(std::unique_ptr<IIoDevice> dev);
+    size_t IoCount() const { return io_.size(); }
+    IIoDevice* IoDevice(size_t i) const { return io_[i]->dev.get(); }
+    ConnState IoState(size_t i) const { return io_[i]->state.load(); }
+    void      SetIoState(size_t i, ConnState s) { io_[i]->state.store(s); }
+    const std::string& IoName(size_t i) const { return io_[i]->name; }
+
+    // --- Pneumatic slides (synthetic devices over the IO fleet). -------------
+    // No ConnState: a slide's "connection" is its underlying IO devices
+    // (PneumaticSlide::IsIoConnected), which are already in Snapshot().
+    void AddSlide(std::unique_ptr<PneumaticSlide> s) { slides_.push_back(std::move(s)); }
+    size_t SlideCount() const { return slides_.size(); }
+    PneumaticSlide* Slide(size_t i) const { return slides_[i].get(); }
+
+    // --- IO watch (background input->output override; may be null). ----------
+    void SetIoWatch(std::unique_ptr<IoWatch> w) { ioWatch_ = std::move(w); }
+    IoWatch* Watch() const { return ioWatch_.get(); }
+
     // Connection state is the atomic hand-off point between the async connect
     // (Workflow) and the UI read. Names are set once on the main thread before
     // the render loop, so a plain std::string is race-free here.
@@ -69,9 +93,21 @@ private:
         std::string                        name;
     };
 
-    std::vector<std::unique_ptr<IDevice>>     devices_;
-    std::vector<std::unique_ptr<MotionSlot>>  motion_;
-    std::vector<std::future<void>>            pending_;
+    // An IO device + its async-connect state (same shape as MotionSlot).
+    struct IoSlot {
+        std::unique_ptr<IIoDevice> dev;
+        std::atomic<ConnState>     state{ConnState::Disconnected};
+        std::string                name;
+    };
+
+    std::vector<std::unique_ptr<IDevice>>        devices_;
+    std::vector<std::unique_ptr<MotionSlot>>     motion_;
+    std::vector<std::unique_ptr<IoSlot>>         io_;
+    std::vector<std::unique_ptr<PneumaticSlide>> slides_;   // reference io_ devices
+    std::unique_ptr<IoWatch>                     ioWatch_;  // references io_ devices;
+                                                            // declared after io_ so its
+                                                            // thread stops before they die
+    std::vector<std::future<void>>               pending_;
 
     // Direct-SDK instruments, owned alongside the IDevice fleet. Their own
     // destructors stop the grab/poll threads.

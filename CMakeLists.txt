@@ -120,6 +120,19 @@ else()
     message(WARNING "ACS SDK not found - ACS gantry runs in simulated stub mode")
 endif()
 
+# ---- FASTECH EziMOTIONPlusE SDK (layer 1 Ezi-IO digital IO) — optional ----
+# Vendored under external/eziio (header + import lib + runtime DLL alongside).
+# WAGO needs no SDK (hand-rolled Modbus TCP over winsock).
+set(EZIIO_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/eziio")
+if(EXISTS "${EZIIO_SDK_DIR}/FAS_EziMOTIONPlusE.h" AND EXISTS "${EZIIO_SDK_DIR}/EziMOTIONPlusE.lib")
+    set(EZIIO_FOUND TRUE)
+    set(EZIIO_LIBRARY "${EZIIO_SDK_DIR}/EziMOTIONPlusE.lib")
+    message(STATUS "EziMOTIONPlusE SDK found: ${EZIIO_SDK_DIR}")
+else()
+    set(EZIIO_FOUND FALSE)
+    message(WARNING "EziMOTIONPlusE SDK not found - Ezi-IO runs in simulated stub mode")
+endif()
+
 # Dear ImGui core + GLFW/OpenGL3 backends.
 add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -159,7 +172,8 @@ target_include_directories(FireDog PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # opengl32 for the base GL calls in GlHost (texture upload, clear).
-target_link_libraries(FireDog PRIVATE glfw imgui_lib implot_lib opengl32
+# ws2_32 for the WAGO Modbus TCP client (always compiled — no vendor SDK).
+target_link_libraries(FireDog PRIVATE glfw imgui_lib implot_lib opengl32 ws2_32
     nlohmann_json::nlohmann_json spdlog::spdlog)
 
 # Pylon camera (real SDK if found; otherwise PylonCamera.cpp compiles its stub).
@@ -200,6 +214,22 @@ if(ACS_FOUND)
     target_compile_definitions(FireDog PRIVATE HAS_ACS)
     target_include_directories(FireDog PRIVATE "${ACS_SDK_DIR}")
     target_link_libraries(FireDog PRIVATE "${ACS_LIBRARY}" ws2_32)
+endif()
+
+# Ezi-IO (real FASTECH driver if found; otherwise EziIoDevice.cpp compiles its stub).
+# The SDK header auto-links via #pragma comment(lib, "EziMOTIONPlusE.lib"), so the
+# link directory must be known in addition to the explicit library path.
+if(EZIIO_FOUND)
+    target_compile_definitions(FireDog PRIVATE HAS_EZIIO)
+    target_include_directories(FireDog PRIVATE "${EZIIO_SDK_DIR}")
+    target_link_directories(FireDog PRIVATE "${EZIIO_SDK_DIR}")
+    target_link_libraries(FireDog PRIVATE "${EZIIO_LIBRARY}")
+    if(EXISTS "${EZIIO_SDK_DIR}/EziMOTIONPlusE.dll")
+        add_custom_command(TARGET FireDog POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${EZIIO_SDK_DIR}/EziMOTIONPlusE.dll" "$<TARGET_FILE_DIR:FireDog>"
+            COMMENT "Copying EziMOTIONPlusE runtime DLL")
+    endif()
 endif()
 
 # Copy the config/ folder next to the executable so config/hardware.json resolves.

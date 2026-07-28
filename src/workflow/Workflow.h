@@ -6,11 +6,15 @@
 #include "hardware/HardwareConfig.h"   // AxisTransform, HardwareConfig
 
 #include <cstddef>
+#include <cstdint>
 #include <future>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "hardware/io/SafetyWatch.h"
 
 namespace firedog {
 
@@ -19,6 +23,7 @@ class HardwareManager;
 class Workflow {
 public:
     explicit Workflow(HardwareManager& hw);
+    ~Workflow();   // stops the safety watch before hw_'s devices can die
 
     // Bring the direct-SDK instruments online from config: async connect, set
     // the alignment bias, start the poll/publish. Call once from the UI at startup.
@@ -49,10 +54,48 @@ public:
     bool MoveToPosition(std::size_t devIdx,
                         const std::vector<std::pair<std::string, double>>& targets);
 
+    // ---- Digital IO commands (IO page + future procedures) ------------------
+    // devIdx indexes the HardwareManager IO fleet. Writes require Connected.
+    bool SetIoOutput(std::size_t devIdx, int pin, bool on);
+    bool SetIoOutputByName(const std::string& device, const std::string& pinName, bool on);
+    bool ClearIoLatch(std::size_t devIdx, uint64_t mask);
+
+    // ---- Pneumatic slide commands (Pneumatics page; non-blocking) -----------
+    // idx indexes the HardwareManager slide fleet.
+    bool ExtendSlide(std::size_t idx);
+    bool RetractSlide(std::size_t idx);
+    bool StopSlide(std::size_t idx);
+
+    // ---- IO watch (editor window) -------------------------------------------
+    // Replace the running watch with cfg (stops the old one first). Also used
+    // by startup. Returns false if enabled but nothing could be wired.
+    bool ApplyIoWatch(const IoWatchConfig& cfg);
+
+    // ---- Safety (first-priority critical signals, e.g. E-Stop) --------------
+    // A critical alert stops all motion immediately (from the watch thread)
+    // and blocks new motion commands until acknowledged.
+    bool SafetyAlertActive() const { return safetyWatch_ && safetyWatch_->AlertActive(); }
+    SafetyWatch::Alert SafetyAlert() const
+    {
+        return safetyWatch_ ? safetyWatch_->ActiveAlert() : SafetyWatch::Alert{};
+    }
+    void AcknowledgeSafety() { if (safetyWatch_) safetyWatch_->Acknowledge(); }
+    void StopAllMotion();   // hard stop on every motion device
+
 private:
     void StartCamera(const HardwareConfig& hw);
     void StartKeithley(const HardwareConfig& hw);
     void StartMotion(const HardwareConfig& hw);
+    void StartIO(const HardwareConfig& hw);
+    void StartPneumatics(const HardwareConfig& hw);   // wires slides to IO pins
+    void StartIoWatch(const HardwareConfig& hw);      // wires edge->action bindings
+    void StartSafetyWatch(const HardwareConfig& hw);  // wires safety signals
+
+    // Motion is inhibited while a CRITICAL safety alert is unacknowledged.
+    bool SafetyBlocked() const
+    {
+        return safetyWatch_ && safetyWatch_->AlertActive() && safetyWatch_->AlertCritical();
+    }
 
     HardwareManager& hw_;
 
@@ -61,6 +104,7 @@ private:
     std::future<void>              camConnect_;
     std::future<void>              keiConnect_;
     std::vector<std::future<void>> motionConnect_;   // one per motion device
+    std::vector<std::future<void>> ioConnect_;       // one per IO device
 
     std::map<std::string, AxisTransform> transforms_;   // global->local, per device
 
@@ -72,6 +116,11 @@ private:
 
     float clock_  = 0.0f;
     float sample_ = 0.0f;
+
+    // Owned by Workflow (not HardwareManager): its callback stops motion via
+    // this object, so it must die first. Declared last so it is destroyed
+    // before every other member; ~Workflow also stops it explicitly.
+    std::unique_ptr<SafetyWatch> safetyWatch_;
 };
 
 } // namespace firedog

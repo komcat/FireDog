@@ -55,6 +55,105 @@ HardwareConfig HardwareConfig::Load(const std::string& path)
             }
         }
 
+        if (j.contains("io_devices")) {
+            for (const auto& d : j["io_devices"]) {
+                IoDeviceConfig ic;
+                ic.id             = d.value("id", std::string());
+                ic.name           = d.value("name", ic.id);
+                ic.type           = d.value("type", std::string());
+                ic.ipAddress      = d.value("ip_address", std::string());
+                ic.port           = d.value("port", 502);
+                ic.deviceId       = d.value("device_id", 0);
+                ic.inputCount     = d.value("input_count", 8);
+                ic.outputCount    = d.value("output_count", 8);
+                ic.pollIntervalMs = d.value("poll_interval_ms", 100);
+                ic.enabled        = d.value("enabled", true);
+                ic.simulated      = d.value("simulated", false);
+                if (d.contains("pins")) {
+                    const auto& p = d["pins"];
+                    if (p.contains("inputs")) {
+                        for (const auto& e : p["inputs"]) {
+                            const int pin = e.value("pin", -1);
+                            if (pin >= 0) ic.inputNames[pin] = e.value("name", std::string());
+                        }
+                    }
+                    if (p.contains("outputs")) {
+                        for (const auto& e : p["outputs"]) {
+                            const int pin = e.value("pin", -1);
+                            if (pin >= 0) ic.outputNames[pin] = e.value("name", std::string());
+                        }
+                    }
+                }
+                hc.ioDevices.push_back(ic);
+            }
+        }
+
+        if (j.contains("pneumatic_slides")) {
+            // Helper: read {"device": "...", "pin": "..."} into two strings.
+            auto pinRef = [](const nlohmann::json& e, const char* key,
+                             std::string& dev, std::string& pin) {
+                if (!e.contains(key)) return;
+                dev = e[key].value("device", std::string());
+                pin = e[key].value("pin", std::string());
+            };
+            for (const auto& s : j["pneumatic_slides"]) {
+                PneumaticSlideConfig pc;
+                pc.name      = s.value("name", std::string());
+                pc.timeoutMs = s.value("timeout_ms", 10000);
+                pc.enabled   = s.value("enabled", true);
+                pinRef(s, "output",          pc.outputDevice,    pc.outputPin);
+                pinRef(s, "extended_input",  pc.extendedDevice,  pc.extendedPin);
+                pinRef(s, "retracted_input", pc.retractedDevice, pc.retractedPin);
+                hc.pneumaticSlides.push_back(pc);
+            }
+        }
+
+        if (j.contains("io_watch")) {
+            const auto& w = j["io_watch"];
+            hc.ioWatch.enabled           = w.value("enabled", false);
+            hc.ioWatch.pollingIntervalMs = w.value("polling_interval_ms", 50);
+            if (w.contains("bindings")) {
+                for (const auto& b : w["bindings"]) {
+                    IoWatchBindingConfig bc;
+                    bc.name       = b.value("name", std::string());
+                    bc.trigger    = b.value("trigger", std::string("rising"));
+                    bc.behavior   = b.value("behavior", std::string("toggle"));
+                    bc.debounceMs = b.value("debounce_ms", 100);
+                    bc.enabled    = b.value("enabled", true);
+                    if (b.contains("input")) {
+                        bc.inputDevice = b["input"].value("device", std::string());
+                        bc.inputPin    = b["input"].value("pin_name", std::string());
+                    }
+                    if (b.contains("output")) {
+                        bc.outputDevice = b["output"].value("device", std::string());
+                        bc.outputPin    = b["output"].value("pin_name", std::string());
+                    }
+                    hc.ioWatch.bindings.push_back(bc);
+                }
+            }
+        }
+
+        if (j.contains("safety_watch")) {
+            const auto& w = j["safety_watch"];
+            hc.safetyWatch.enabled           = w.value("enabled", false);
+            hc.safetyWatch.pollingIntervalMs = w.value("polling_interval_ms", 100);
+            if (w.contains("watched_inputs")) {
+                for (const auto& s : w["watched_inputs"]) {
+                    SafetySignalConfig sc;
+                    sc.device       = s.value("device", std::string());
+                    sc.pinName      = s.value("pin_name", std::string());
+                    sc.pinNumber    = s.value("pin_number", 0);
+                    sc.trigger      = s.value("trigger", std::string("rising"));
+                    sc.alertTitle   = s.value("alert_title", std::string("Safety Alert"));
+                    sc.alertMessage = s.value("alert_message",
+                                              std::string("A safety condition was triggered."));
+                    sc.critical     = s.value("critical", false);
+                    sc.enabled      = s.value("enabled", true);
+                    hc.safetyWatch.watchedInputs.push_back(sc);
+                }
+            }
+        }
+
         if (j.contains("instruments")) {
             for (const auto& inst : j["instruments"]) {
                 const std::string type = inst.value("type", std::string());
@@ -107,6 +206,64 @@ std::vector<MotionConfig> HardwareConfig::EnabledMotionDevices() const
         if (m.enabled) out.push_back(m);
     }
     return out;
+}
+
+std::vector<IoDeviceConfig> HardwareConfig::EnabledIoDevices() const
+{
+    std::vector<IoDeviceConfig> out;
+    for (const auto& d : ioDevices) {
+        if (d.enabled) out.push_back(d);
+    }
+    return out;
+}
+
+std::vector<PneumaticSlideConfig> HardwareConfig::EnabledPneumaticSlides() const
+{
+    std::vector<PneumaticSlideConfig> out;
+    for (const auto& p : pneumaticSlides) {
+        if (p.enabled) out.push_back(p);
+    }
+    return out;
+}
+
+bool HardwareConfig::SaveIoWatch(const std::string& path, const IoWatchConfig& cfg)
+{
+    nlohmann::json j;
+    {
+        std::ifstream f(path);
+        if (f) {
+            try { f >> j; }
+            catch (const std::exception& e) {
+                std::cerr << "[config] cannot rewrite " << path << ": " << e.what() << std::endl;
+                return false;   // don't clobber a file we couldn't parse
+            }
+        }
+    }
+
+    nlohmann::json w;
+    w["enabled"]             = cfg.enabled;
+    w["polling_interval_ms"] = cfg.pollingIntervalMs;
+    w["bindings"]            = nlohmann::json::array();
+    for (const auto& b : cfg.bindings) {
+        nlohmann::json e;
+        e["name"]        = b.name;
+        e["input"]       = {{"device", b.inputDevice}, {"pin_name", b.inputPin}};
+        e["output"]      = {{"device", b.outputDevice}, {"pin_name", b.outputPin}};
+        e["trigger"]     = b.trigger;
+        e["behavior"]    = b.behavior;
+        e["debounce_ms"] = b.debounceMs;
+        e["enabled"]     = b.enabled;
+        w["bindings"].push_back(e);
+    }
+    j["io_watch"] = w;
+
+    std::ofstream out(path);
+    if (!out) {
+        std::cerr << "[config] cannot write " << path << std::endl;
+        return false;
+    }
+    out << j.dump(2) << "\n";
+    return true;
 }
 
 std::map<std::string, AxisTransform> LoadMotionTransforms(const std::string& path)

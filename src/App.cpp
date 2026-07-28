@@ -191,6 +191,7 @@ int App::Run()
     objects_.push_back({ImVec2(400.0f, 100.0f), "DUT",   IM_COL32(160, 250, 130, 255)});
 
     const HardwareConfig hw = HardwareConfig::Load("config/hardware.json");
+    watchCfg_ = hw.ioWatch;   // working copy for the IO Watch editor
     if (const CameraConfig* cam = hw.FirstEnabledCamera()) {
         pixelToMmX_ = static_cast<float>(cam->pixelToMmX);
         pixelToMmY_ = static_cast<float>(cam->pixelToMmY);
@@ -212,6 +213,7 @@ int App::Run()
         DrawMainWindow();
         if (showAux_) DrawAuxWindow();
         if (showJog_) DrawJogWindow();
+        if (showWatchEdit_) DrawWatchEditWindow();
         host_.EndFrame();
     }
 
@@ -256,20 +258,29 @@ void App::DrawMainWindow()
                     currentPage_ = Page::Overview;
                 if (ImGui::MenuItem("Motion",   nullptr, currentPage_ == Page::Motion))
                     currentPage_ = Page::Motion;
+                if (ImGui::MenuItem("IO",       nullptr, currentPage_ == Page::IO))
+                    currentPage_ = Page::IO;
+                if (ImGui::MenuItem("Pneumatics", nullptr, currentPage_ == Page::Pneumatic))
+                    currentPage_ = Page::Pneumatic;
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
-                ImGui::MenuItem("Aux Window", nullptr, &showAux_);
-                ImGui::MenuItem("Jog",        nullptr, &showJog_);
+                ImGui::MenuItem("Aux Window",      nullptr, &showAux_);
+                ImGui::MenuItem("Jog",             nullptr, &showJog_);
+                ImGui::MenuItem("IO Watch Editor", nullptr, &showWatchEdit_);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Help")) {
                 ImGui::MenuItem("About", nullptr, false, false);
                 ImGui::EndMenu();
             }
+            if (workflow_.SafetyAlertActive()) {
+                ImGui::TextColored(StateColor(ConnState::Failed), "  !! SAFETY ALERT !!");
+            }
             ImGui::EndMenuBar();
         }
         DrawProductPopups();   // modals opened via the File-menu flags above
+        DrawSafetyAlertModal();   // blocking safety alert (highest priority)
 
         // ---- Panel layout (user-resizable via splitter bars) ----
         //   left | [ middle / lower ] | right. Sizes persist in leftW_/rightW_/
@@ -302,8 +313,10 @@ void App::DrawMainWindow()
         // Left column (content depends on the selected Hardware page)
         ImGui::BeginChild("LeftPanel", ImVec2(leftW_, avail.y), ImGuiChildFlags_Borders);
         switch (currentPage_) {
-            case Page::Motion: DrawMotionListPanel(); break;
-            default:           DrawLeftPanel();       break;
+            case Page::Motion:    DrawMotionListPanel();    break;
+            case Page::IO:        DrawIoListPanel();        break;
+            case Page::Pneumatic: DrawPneumaticListPanel(); break;
+            default:              DrawLeftPanel();          break;
         }
         ImGui::EndChild();
 
@@ -316,8 +329,10 @@ void App::DrawMainWindow()
         ImGui::BeginGroup();
         ImGui::BeginChild("MiddlePanel", ImVec2(centerW, midH), ImGuiChildFlags_Borders);
         switch (currentPage_) {
-            case Page::Motion: DrawMotionDetailPanel(); break;
-            default:           DrawMiddlePanel();       break;
+            case Page::Motion:    DrawMotionDetailPanel();    break;
+            case Page::IO:        DrawIoDetailPanel();        break;
+            case Page::Pneumatic: DrawPneumaticDetailPanel(); break;
+            default:              DrawMiddlePanel();          break;
         }
         ImGui::EndChild();
         if (Splitter("##splitM", false, sp, centerW)) { lowerH_ -= io.MouseDelta.y; splitterActive = true; }
@@ -333,8 +348,10 @@ void App::DrawMainWindow()
         // Right column (content depends on the selected Hardware page)
         ImGui::BeginChild("RightPanel", ImVec2(rightW_, avail.y), ImGuiChildFlags_Borders);
         switch (currentPage_) {
-            case Page::Motion: DrawMotionInfoPanel(); break;
-            default:           DrawRightPanel();      break;
+            case Page::Motion:    DrawMotionInfoPanel();    break;
+            case Page::IO:        DrawIoInputPanel();       break;
+            case Page::Pneumatic: DrawPneumaticInfoPanel(); break;
+            default:              DrawRightPanel();         break;
         }
         ImGui::EndChild();
 
@@ -1001,6 +1018,466 @@ void App::DrawMotionInfoPanel()
     ImGui::Spacing();
     ImGui::Separator();
     DrawVelocityCombo(static_cast<size_t>(selectedMotion_));
+}
+
+void App::DrawIoListPanel()
+{
+    const size_t n = hardware_.IoCount();
+
+    // Keep the current selection if still valid; otherwise fall back to the
+    // first device (same convention as the Motion list).
+    if (selectedIo_ < 0 || static_cast<size_t>(selectedIo_) >= n ||
+        !hardware_.IoDevice(static_cast<size_t>(selectedIo_))) {
+        selectedIo_ = n > 0 ? 0 : -1;
+    }
+
+    ImGui::TextUnformatted("IO devices");
+    ImGui::Separator();
+
+    bool any = false;
+    for (size_t i = 0; i < n; ++i) {
+        IIoDevice* d = hardware_.IoDevice(i);
+        if (!d) continue;
+        any = true;
+        const ConnState st = hardware_.IoState(i);
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::TextColored(StateColor(st), "%s", StateGlyph(st));
+        ImGui::SameLine();
+        const std::string& name = hardware_.IoName(i);
+        const ImVec2 sz = ImGui::CalcTextSize(name.c_str());
+        if (ImGui::Selectable(name.c_str(), selectedIo_ == static_cast<int>(i),
+                              ImGuiSelectableFlags_None, ImVec2(sz.x, 0.0f))) {
+            selectedIo_ = static_cast<int>(i);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", d->Type().c_str());
+        ImGui::SameLine();
+        ImGui::TextColored(StateColor(st), "%s", StateText(st));
+        ImGui::PopID();
+    }
+    if (!any) ImGui::TextDisabled("no IO devices configured");
+
+    // ---- Background IO watch (input edge -> output action) ----
+    IoWatch* w = hardware_.Watch();
+    if (w) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        bool active = w->IsActive();
+        if (ImGui::Checkbox("Watch bindings", &active)) w->SetActive(active);
+        for (size_t i = 0; i < w->BindingCount(); ++i) {
+            const IoWatch::Binding& b = w->BindingAt(i);
+            ImGui::PushID(static_cast<int>(i));
+            const bool on = w->InputOn(i);
+            ImGui::TextColored(on ? StateColor(ConnState::Connected)
+                                  : ImVec4(0.45f, 0.45f, 0.48f, 1.0f), "*");
+            ImGui::SameLine();
+            ImGui::TextUnformatted(b.name.c_str());
+            const uint64_t hits = w->Hits(i);
+            if (hits > 0) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%llu)", static_cast<unsigned long long>(hits));
+            }
+            ImGui::PopID();
+        }
+    }
+}
+
+void App::DrawIoDetailPanel()
+{
+    const size_t n = hardware_.IoCount();
+    IIoDevice* d = (selectedIo_ >= 0 && static_cast<size_t>(selectedIo_) < n)
+                     ? hardware_.IoDevice(static_cast<size_t>(selectedIo_))
+                     : nullptr;
+    if (!d) {
+        ImGui::TextDisabled("Select a device from the list.");
+        return;
+    }
+
+    const size_t    idx = static_cast<size_t>(selectedIo_);
+    const ConnState st  = hardware_.IoState(idx);
+
+    ImGui::TextUnformatted(hardware_.IoName(idx).c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(StateColor(st), "[%s]", StateText(st));
+    ImGui::Separator();
+    ImGui::Text("Type : %s", d->Type().c_str());
+    ImGui::Text("Pins : %d in / %d out", d->InputCount(), d->OutputCount());
+
+    if (st == ConnState::Failed) {
+        ImGui::Spacing();
+        ImGui::TextColored(StateColor(ConnState::Failed), "error: %s", d->LastError().c_str());
+    }
+
+    // ---- Outputs (writes drive real actuators — gated behind arming) ----
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextUnformatted("Outputs");
+    ImGui::SameLine();
+    ImGui::Checkbox("Enable", &ioArmed_);
+    ImGui::SameLine();
+    if (ioArmed_) {
+        ImGui::TextColored(StateColor(ConnState::Connecting), "LIVE - toggles drive hardware");
+    } else {
+        ImGui::TextDisabled("check Enable to activate the toggles");
+    }
+
+    const IIoDevice::IoStatus s = d->Status();
+    const bool canWrite = ioArmed_ && st == ConnState::Connected;
+    if (ImGui::BeginTable("iooutputs", 4,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Pin", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+        ImGui::TableSetupColumn("Name");
+        ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+        ImGui::TableSetupColumn("##toggle", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+        ImGui::TableHeadersRow();
+        for (int pin = 0; pin < d->OutputCount(); ++pin) {
+            const bool on = ((s.outputs >> pin) & 1ull) != 0;
+            ImGui::TableNextRow();
+            ImGui::PushID(pin);
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%d", pin);
+            ImGui::TableSetColumnIndex(1);
+            const std::string name = d->OutputPinName(pin);
+            if (name.empty()) ImGui::TextDisabled("--");
+            else              ImGui::TextUnformatted(name.c_str());
+            ImGui::TableSetColumnIndex(2);
+            if (on) ImGui::TextColored(StateColor(ConnState::Connected), "ON");
+            else    ImGui::TextDisabled("OFF");
+            ImGui::TableSetColumnIndex(3);
+            ImGui::BeginDisabled(!canWrite);
+            if (ImGui::SmallButton(on ? "Turn OFF" : "Turn ON")) {
+                workflow_.SetIoOutput(idx, pin, !on);
+            }
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (!s.valid && st == ConnState::Connected) {
+        ImGui::TextDisabled("waiting for first poll...");
+    }
+}
+
+void App::DrawIoInputPanel()
+{
+    // Right panel: live input pin states for the selected IO device.
+    const size_t n = hardware_.IoCount();
+    IIoDevice* d = (selectedIo_ >= 0 && static_cast<size_t>(selectedIo_) < n)
+                     ? hardware_.IoDevice(static_cast<size_t>(selectedIo_))
+                     : nullptr;
+
+    ImGui::TextUnformatted("Inputs");
+    ImGui::Separator();
+    if (!d) { ImGui::TextDisabled("no selection"); return; }
+
+    const IIoDevice::IoStatus s = d->Status();
+    if (ImGui::BeginTable("ioinputs", 4,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Pin", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+        ImGui::TableSetupColumn("Name");
+        ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+        ImGui::TableSetupColumn("Latch", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+        ImGui::TableHeadersRow();
+        for (int pin = 0; pin < d->InputCount(); ++pin) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%d", pin);
+            ImGui::TableSetColumnIndex(1);
+            const std::string name = d->InputPinName(pin);
+            if (name.empty()) ImGui::TextDisabled("--");
+            else              ImGui::TextUnformatted(name.c_str());
+            ImGui::TableSetColumnIndex(2);
+            if ((s.inputs >> pin) & 1) ImGui::TextColored(StateColor(ConnState::Connected), "ON");
+            else                       ImGui::TextDisabled("OFF");
+            ImGui::TableSetColumnIndex(3);
+            if ((s.latch >> pin) & 1) ImGui::TextColored(StateColor(ConnState::Connecting), "SET");
+            else                      ImGui::TextDisabled("--");
+        }
+        ImGui::EndTable();
+    }
+    if (!s.valid) ImGui::TextDisabled("waiting for first poll...");
+
+    ImGui::Spacing();
+    if (ImGui::SmallButton("Clear latch")) {
+        workflow_.ClearIoLatch(static_cast<size_t>(selectedIo_), ~0ull);
+    }
+}
+
+// Position -> display color for the Pneumatics page.
+static ImVec4 SlideColor(SlidePosition p)
+{
+    switch (p) {
+        case SlidePosition::Extended:      return ImVec4(0.40f, 0.90f, 0.50f, 1.0f);
+        case SlidePosition::Retracted:     return ImVec4(0.85f, 0.88f, 0.90f, 1.0f);
+        case SlidePosition::Extending:
+        case SlidePosition::Retracting:    return ImVec4(0.95f, 0.80f, 0.30f, 1.0f);
+        case SlidePosition::HardwareError:
+        case SlidePosition::Timeout:       return ImVec4(0.95f, 0.40f, 0.40f, 1.0f);
+        default:                           return ImVec4(0.60f, 0.60f, 0.60f, 1.0f);
+    }
+}
+
+void App::DrawPneumaticListPanel()
+{
+    const size_t n = hardware_.SlideCount();
+    if (selectedSlide_ < 0 || static_cast<size_t>(selectedSlide_) >= n) {
+        selectedSlide_ = n > 0 ? 0 : -1;
+    }
+
+    ImGui::TextUnformatted("Pneumatic slides");
+    ImGui::Separator();
+
+    for (size_t i = 0; i < n; ++i) {
+        PneumaticSlide* s = hardware_.Slide(i);
+        const SlidePosition p = s->Position();
+        ImGui::PushID(static_cast<int>(i));
+        const ImVec2 sz = ImGui::CalcTextSize(s->Name().c_str());
+        if (ImGui::Selectable(s->Name().c_str(), selectedSlide_ == static_cast<int>(i),
+                              ImGuiSelectableFlags_None, ImVec2(sz.x, 0.0f))) {
+            selectedSlide_ = static_cast<int>(i);
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(SlideColor(p), "%s", SlidePositionName(p));
+        ImGui::PopID();
+    }
+    if (n == 0) ImGui::TextDisabled("no pneumatic slides configured");
+}
+
+void App::DrawPneumaticDetailPanel()
+{
+    const size_t n = hardware_.SlideCount();
+    PneumaticSlide* s = (selectedSlide_ >= 0 && static_cast<size_t>(selectedSlide_) < n)
+                          ? hardware_.Slide(static_cast<size_t>(selectedSlide_))
+                          : nullptr;
+    if (!s) {
+        ImGui::TextDisabled("Select a slide from the list.");
+        return;
+    }
+
+    const PneumaticSlide::Status st = s->GetStatus();
+    const bool ioUp = s->IsIoConnected();
+
+    ImGui::TextUnformatted(s->Name().c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(SlideColor(st.position), "[%s]", SlidePositionName(st.position));
+    ImGui::Separator();
+    ImGui::Text("IO      : %s", ioUp ? "connected" : "not connected");
+    ImGui::Text("Timeout : %u ms", s->TimeoutMs());
+    if (st.moving) ImGui::Text("Moving  : %u ms elapsed", st.elapsedMs);
+    else if (st.elapsedMs > 0) ImGui::Text("Last move : %u ms", st.elapsedMs);
+
+    if (st.position == SlidePosition::Timeout || st.position == SlidePosition::HardwareError) {
+        ImGui::Spacing();
+        ImGui::TextColored(SlideColor(st.position), "error: %s",
+                           st.position == SlidePosition::HardwareError
+                               ? "both sensors active" : s->LastError().c_str());
+    }
+
+    // ---- Commands (drive real actuators — gated behind arming) ----
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextUnformatted("Control");
+    ImGui::SameLine();
+    ImGui::Checkbox("Enable", &pneuArmed_);
+    ImGui::SameLine();
+    if (pneuArmed_) {
+        ImGui::TextColored(StateColor(ConnState::Connecting), "LIVE - buttons drive hardware");
+    } else {
+        ImGui::TextDisabled("check Enable to activate the buttons");
+    }
+
+    const size_t idx = static_cast<size_t>(selectedSlide_);
+    ImGui::BeginDisabled(!pneuArmed_ || !ioUp);
+    if (ImGui::Button("Extend"))  workflow_.ExtendSlide(idx);
+    ImGui::SameLine();
+    if (ImGui::Button("Retract")) workflow_.RetractSlide(idx);
+    ImGui::SameLine();
+    if (ImGui::Button("Stop"))    workflow_.StopSlide(idx);
+    ImGui::EndDisabled();
+}
+
+void App::DrawPneumaticInfoPanel()
+{
+    // Right panel: the live output/sensor pin states for the selected slide.
+    const size_t n = hardware_.SlideCount();
+    PneumaticSlide* s = (selectedSlide_ >= 0 && static_cast<size_t>(selectedSlide_) < n)
+                          ? hardware_.Slide(static_cast<size_t>(selectedSlide_))
+                          : nullptr;
+
+    ImGui::TextUnformatted("Slide IO");
+    ImGui::Separator();
+    if (!s) { ImGui::TextDisabled("no selection"); return; }
+
+    const PneumaticSlide::Status st = s->GetStatus();
+    if (ImGui::BeginTable("slideio", 2,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Signal");
+        ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+        ImGui::TableHeadersRow();
+        auto row = [](const char* label, bool on) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(label);
+            ImGui::TableSetColumnIndex(1);
+            if (on) ImGui::TextColored(StateColor(ConnState::Connected), "ON");
+            else    ImGui::TextDisabled("OFF");
+        };
+        row("Output (extend)",  st.outputOn);
+        row("Extended sensor",  st.extendedOn);
+        row("Retracted sensor", st.retractedOn);
+        ImGui::EndTable();
+    }
+    if (!st.ioValid) ImGui::TextDisabled("waiting for first poll...");
+}
+
+void App::DrawSafetyAlertModal()
+{
+    // First-priority safety alert: opened whenever a watched signal latched an
+    // alert; motion is already stopped (Workflow's callback) and — for
+    // critical alerts — blocked until acknowledged here.
+    if (workflow_.SafetyAlertActive() && !ImGui::IsPopupOpen("Safety Alert")) {
+        ImGui::OpenPopup("Safety Alert");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Safety Alert", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const SafetyWatch::Alert a = workflow_.SafetyAlert();
+        ImGui::TextColored(StateColor(ConnState::Failed), "%s", a.title.c_str());
+        ImGui::Separator();
+        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 420.0f);
+        ImGui::TextUnformatted(a.message.c_str());
+        ImGui::PopTextWrapPos();
+        if (a.critical) {
+            ImGui::Spacing();
+            ImGui::TextColored(StateColor(ConnState::Failed),
+                               "All motion stopped. New moves are blocked until acknowledged.");
+        }
+        ImGui::Spacing();
+        if (ImGui::Button("Acknowledge", ImVec2(160.0f, 0.0f))) {
+            workflow_.AcknowledgeSafety();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
+void App::DrawWatchEditWindow()
+{
+    ImGui::SetNextWindowSize(ImVec2(780.0f, 480.0f), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("IO Watch Editor", &showWatchEdit_)) { ImGui::End(); return; }
+
+    // Master settings + actions. Apply rebuilds the running watch from the
+    // working copy; Save also persists it into config/hardware.json.
+    ImGui::Checkbox("Enabled", &watchCfg_.enabled);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::InputInt("Poll ms", &watchCfg_.pollingIntervalMs);
+    ImGui::SameLine();
+    if (ImGui::Button("+ Add binding")) watchCfg_.bindings.push_back({});
+    ImGui::SameLine();
+    if (ImGui::Button("Apply")) workflow_.ApplyIoWatch(watchCfg_);
+    ImGui::SameLine();
+    if (ImGui::Button("Save")) {
+        workflow_.ApplyIoWatch(watchCfg_);
+        if (HardwareConfig::SaveIoWatch("config/hardware.json", watchCfg_))
+            FD_INFO("app", "io_watch saved to config/hardware.json");
+        else
+            FD_ERROR("app", "failed to save io_watch config");
+    }
+    ImGui::TextDisabled("Save writes config/hardware.json next to the exe; a rebuild overwrites it "
+                        "(mirror durable changes into the repo config).");
+
+    // Combo helpers: devices from the IO fleet; pins limited to NAMED pins
+    // (bindings reference pins by name).
+    auto ioDeviceByName = [this](const std::string& name) -> IIoDevice* {
+        for (size_t i = 0; i < hardware_.IoCount(); ++i)
+            if (hardware_.IoName(i) == name) return hardware_.IoDevice(i);
+        return nullptr;
+    };
+    auto deviceCombo = [this](const char* id, std::string& dev) {
+        ImGui::SetNextItemWidth(120.0f);
+        if (ImGui::BeginCombo(id, dev.empty() ? "(device)" : dev.c_str())) {
+            for (size_t i = 0; i < hardware_.IoCount(); ++i) {
+                const std::string& n = hardware_.IoName(i);
+                if (ImGui::Selectable(n.c_str(), n == dev)) dev = n;
+            }
+            ImGui::EndCombo();
+        }
+    };
+    auto pinCombo = [&](const char* id, const std::string& dev, std::string& pin, bool output) {
+        IIoDevice* d = ioDeviceByName(dev);
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::BeginCombo(id, pin.empty() ? "(pin)" : pin.c_str())) {
+            if (d) {
+                const int count = output ? d->OutputCount() : d->InputCount();
+                for (int p = 0; p < count; ++p) {
+                    const std::string n = output ? d->OutputPinName(p) : d->InputPinName(p);
+                    if (n.empty()) continue;
+                    if (ImGui::Selectable(n.c_str(), n == pin)) pin = n;
+                }
+            }
+            ImGui::EndCombo();
+        }
+    };
+
+    static const char* kEdges[]     = {"rising", "falling", "both"};
+    static const char* kBehaviors[] = {"toggle", "set_on", "set_off", "momentary"};
+    auto stringCombo = [](const char* id, std::string& val, const char* const* items,
+                          int count, float width) {
+        ImGui::SetNextItemWidth(width);
+        if (ImGui::BeginCombo(id, val.c_str())) {
+            for (int i = 0; i < count; ++i) {
+                if (ImGui::Selectable(items[i], val == items[i])) val = items[i];
+            }
+            ImGui::EndCombo();
+        }
+    };
+
+    int deleteRow = -1;
+    for (int i = 0; i < static_cast<int>(watchCfg_.bindings.size()); ++i) {
+        IoWatchBindingConfig& b = watchCfg_.bindings[i];
+        ImGui::PushID(i);
+        ImGui::Separator();
+
+        ImGui::Checkbox("##en", &b.enabled);
+        ImGui::SameLine();
+        char nameBuf[64];
+        std::snprintf(nameBuf, sizeof(nameBuf), "%s", b.name.c_str());
+        ImGui::SetNextItemWidth(260.0f);
+        if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf))) b.name = nameBuf;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Delete")) deleteRow = i;
+
+        ImGui::TextDisabled("in ");
+        ImGui::SameLine();
+        deviceCombo("##indev", b.inputDevice);
+        ImGui::SameLine();
+        pinCombo("##inpin", b.inputDevice, b.inputPin, false);
+        ImGui::SameLine();
+        stringCombo("##edge", b.trigger, kEdges, 3, 90.0f);
+        ImGui::SameLine();
+        ImGui::TextDisabled("-> out");
+        ImGui::SameLine();
+        deviceCombo("##outdev", b.outputDevice);
+        ImGui::SameLine();
+        pinCombo("##outpin", b.outputDevice, b.outputPin, true);
+        ImGui::SameLine();
+        stringCombo("##beh", b.behavior, kBehaviors, 4, 110.0f);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputInt("ms", &b.debounceMs);
+
+        ImGui::PopID();
+    }
+    if (deleteRow >= 0) {
+        watchCfg_.bindings.erase(watchCfg_.bindings.begin() + deleteRow);
+    }
+    if (watchCfg_.bindings.empty()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("no bindings — use \"+ Add binding\"");
+    }
+
+    ImGui::End();
 }
 
 void App::DrawImageOverlay()
