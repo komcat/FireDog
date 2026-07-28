@@ -172,9 +172,11 @@ private:
 
     // Mapped-path executor state. Mutated on the UI thread only (Start/Cancel/
     // TickPath); other threads (safety watch) request cancellation via the
-    // atomic flag, honored on the next TickPath.
+    // atomic flag, honored on the next TickPath. `active` is itself atomic
+    // because StopMotion — which reads it — may be called from the recipe
+    // engine's worker thread; the other fields remain UI-thread-only.
     struct PathExec {
-        bool        active = false;
+        std::atomic<bool> active{false};
         std::size_t devIdx = 0;
         std::vector<PathWaypoint> waypoints;
         std::size_t cur     = 0;

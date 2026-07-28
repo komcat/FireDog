@@ -10,6 +10,9 @@
 #include "imgui.h"
 
 #include "ui/GlHost.h"
+#include "command/CommandRegistry.h"
+#include "command/Recipe.h"
+#include "command/RecipeEngine.h"
 #include "core/Log.h"
 #include "core/MotionMap.h"
 #include "core/Product.h"
@@ -81,6 +84,9 @@ private:
     void DrawPneumaticInfoPanel();    // right:  live output/sensor states
     void DrawWatchEditPanel();        // IO Watch editor (full-page, View menu)
     void DrawTransformEditPanel();    // axis-transform editor (full-page, View menu)
+    void DrawRecipeRunnerWindow();    // Phase-A test hook (View menu) — replaced
+                                      // by the real recipe editor in Phase B
+    void LoadRecipesFromDisk();       // product recipes file, else config fallback
     void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
     void DrawAuxWindow();
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
@@ -103,6 +109,14 @@ private:
     // Layer 1 owns the hardware; layer 2 orchestrates it. The UI only renders.
     HardwareManager hardware_;
     Workflow        workflow_{hardware_};
+
+    // Layer 2.5 — command registry + recipe engine. Declared AFTER workflow_
+    // so they are destroyed FIRST (~RecipeEngine joins its worker thread while
+    // Workflow/HardwareManager are still alive — same discipline as
+    // SafetyWatch). Commands are registered once in Run() after
+    // Workflow::Start; the registry is read-only afterwards.
+    CommandRegistry cmdRegistry_;
+    RecipeEngine    recipeEngine_{workflow_, hardware_, cmdRegistry_};
 
     // UI-side camera texture — frames are pulled from hardware_.Camera() via
     // UpdateCameraTexture() by every view that shows the live image (Aux,
@@ -262,6 +276,15 @@ private:
     // startup, autosaved on every change — into the current product's positions
     // file when one is loaded, else config/positions.local.json.
     SavedPosMap savedPos_;
+
+    // Recipes (Phase A: hand-written JSON, run via the Recipe Runner window).
+    // Loaded from the product's recipes file when a product is loaded, else
+    // config/recipes.local.json -> recipes.json.
+    std::vector<Recipe> recipes_;
+    std::string         recipesUid_;       // file uid (product integrity check)
+    int                 recipeSel_ = -1;   // Runner window selection
+    std::string         recipeStartErr_;   // last Start() rejection message
+    bool                showRecipeRunner_ = false;
 
     // Current product (File menu). Not loaded => config-fallback persistence.
     ProductManifest product_;

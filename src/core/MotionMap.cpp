@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <exception>
 #include <fstream>
 #include <limits>
@@ -196,6 +197,59 @@ std::vector<std::string> FindMapPath(
     }
     std::reverse(path.begin(), path.end());
     return path;
+}
+
+std::vector<MapRouteLeg> BuildMapRoute(const MotionMap& map,
+                                       const std::vector<SavedPos>& positions,
+                                       const std::vector<std::string>& axes,
+                                       const std::string& fromUid,
+                                       const std::string& toUid, std::string* err)
+{
+    const auto posOf = [&positions](const std::string& uid) -> const SavedPos* {
+        for (const SavedPos& p : positions) {
+            if (p.uid == uid) return &p;
+        }
+        return nullptr;
+    };
+
+    // Edge weight = Euclidean distance between the two positions (shared axes).
+    const auto cost = [&posOf](const std::string& a, const std::string& b) -> double {
+        const SavedPos* pa = posOf(a);
+        const SavedPos* pb = posOf(b);
+        if (!pa || !pb) return 1.0e6;   // missing position — strongly avoid
+        double d2 = 0.0;
+        for (const auto& [axis, va] : pa->vals) {
+            const auto it = pb->vals.find(axis);
+            if (it != pb->vals.end()) d2 += (va - it->second) * (va - it->second);
+        }
+        const double d = std::sqrt(d2);
+        return d > 1.0e-6 ? d : 1.0e-6;
+    };
+
+    const std::vector<std::string> path = FindMapPath(map, fromUid, toUid, cost);
+    if (path.empty()) {
+        if (err) *err = "no edge route between the chosen nodes";
+        return {};
+    }
+
+    std::vector<MapRouteLeg> legs;
+    legs.reserve(path.size());
+    for (const std::string& uid : path) {
+        const SavedPos* p = posOf(uid);
+        if (!p) {
+            if (err) *err = "path touches a node with no saved position";
+            return {};
+        }
+        MapRouteLeg leg;
+        leg.uid   = uid;
+        leg.label = p->name;
+        for (const std::string& a : axes) {
+            const auto it = p->vals.find(a);
+            if (it != p->vals.end()) leg.targets.emplace_back(a, it->second);
+        }
+        legs.push_back(std::move(leg));
+    }
+    return legs;
 }
 
 } // namespace firedog

@@ -6,6 +6,7 @@
 
 #include "ui/Theme.h"
 #include "ui/UiSettings.h"
+#include "command/Commands.h"
 #include "core/DataBus.h"
 #include "core/Topics.h"
 #include "core/Log.h"
@@ -241,8 +242,11 @@ int App::Run()
     motionMaps_ = LoadMotionMaps();     // node-edge maps (Mapped Path tab)
     if (!lastProduct.empty() && !LoadProduct(lastProduct))
         FD_WARN("product", "could not reload last product '%s'", lastProduct.c_str());
+    if (!product_.Loaded()) LoadRecipesFromDisk();   // else LoadProduct did it
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
+    RegisterBuiltinCommands(cmdRegistry_, workflow_, hardware_);   // layer 2.5
+    FD_INFO("command", "%zu command(s) registered", cmdRegistry_.Count());
 
     double prev = host_.Time();
     while (!host_.ShouldClose()) {
@@ -254,6 +258,7 @@ int App::Run()
         DrawMainWindow();
         if (showAux_) DrawAuxWindow();
         if (showJog_) DrawJogWindow();
+        if (showRecipeRunner_) DrawRecipeRunnerWindow();
         host_.EndFrame();
     }
 
@@ -316,6 +321,7 @@ void App::DrawMainWindow()
             if (ImGui::BeginMenu("View")) {
                 ImGui::MenuItem("Aux Window", nullptr, &showAux_);
                 ImGui::MenuItem("Jog",        nullptr, &showJog_);
+                ImGui::MenuItem("Recipe Runner", nullptr, &showRecipeRunner_);
                 if (ImGui::BeginMenu("Theme")) {   // same picker as Display header
                     for (int i = 0; i < Theme::Count(); ++i) {
                         if (ImGui::MenuItem(Theme::Name(i), nullptr, themeIndex_ == i)) {
@@ -557,9 +563,160 @@ bool App::LoadProduct(const std::string& name)
         FD_WARN("product", "'%s' has no positions entry; keeping current positions", name.c_str());
     }
     product_ = std::move(m);
+    LoadRecipesFromDisk();   // product recipes replace the config-fallback set
     SaveUiSettings();   // remember as last product for the next startup
     FD_INFO("product", "loaded '%s'", product_.name.c_str());
     return true;
+}
+
+void App::LoadRecipesFromDisk()
+{
+    recipeSel_ = -1;
+    recipeStartErr_.clear();
+    if (product_.Loaded()) {
+        const ManifestFile* e = product_.Entry("recipes");
+        if (e) {
+            recipes_ = LoadRecipesFile(product_.FilePath("recipes"), &recipesUid_);
+            if (!recipes_.empty()) {
+                if (!recipesUid_.empty() && recipesUid_ != e->uid)
+                    FD_WARN("product", "recipes uid mismatch: manifest %s vs file '%s'",
+                            e->uid.c_str(), recipesUid_.c_str());
+                return;
+            }
+            // New products carry an empty seed file (no editor yet in Phase A) —
+            // fall through to the config recipes so the runner has something.
+            FD_INFO("recipe", "product '%s' has no recipes yet - using config recipes",
+                    product_.name.c_str());
+        } else {
+            FD_WARN("product", "'%s' has no recipes entry; using config recipes",
+                    product_.name.c_str());
+        }
+    }
+    recipesUid_.clear();
+    recipes_ = LoadRecipes();   // config/recipes.local.json -> recipes.json
+}
+
+// Recipe Runner (View menu) — the Phase-A test hook, NOT the recipe editor.
+// Runs hand-written JSON recipes through the RecipeEngine; the real editor
+// (Phase B) replaces this window. See docs/recipe-core-design.md.
+void App::DrawRecipeRunnerWindow()
+{
+    ImGui::SetNextWindowSize(ImVec2(460.0f, 420.0f), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Recipe Runner", &showRecipeRunner_)) {
+        ImGui::End();
+        return;
+    }
+
+    const RecipeEngine::Status st = recipeEngine_.GetStatus();
+    const bool running = recipeEngine_.Running();
+
+    // ---- Recipe picker + reload (locked while running) ----
+    ImGui::BeginDisabled(running);
+    const char* cur = (recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size()))
+                          ? recipes_[recipeSel_].name.c_str()
+                          : "(select a recipe)";
+    ImGui::SetNextItemWidth(260.0f);
+    if (ImGui::BeginCombo("##recipe", cur)) {
+        for (int i = 0; i < static_cast<int>(recipes_.size()); ++i) {
+            ImGui::PushID(i);
+            if (ImGui::Selectable(recipes_[i].name.c_str(), recipeSel_ == i))
+                recipeSel_ = i;
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload")) {
+        LoadRecipesFromDisk();
+        FD_INFO("recipe", "%zu recipe(s) loaded", recipes_.size());
+    }
+    ImGui::EndDisabled();
+    if (recipes_.empty()) {
+        ImGui::TextDisabled("No recipes found (config/recipes.json or the product's file).");
+    } else if (recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size()) &&
+               !recipes_[recipeSel_].description.empty()) {
+        ImGui::TextWrapped("%s", recipes_[recipeSel_].description.c_str());
+    }
+
+    // ---- Run / Stop ----
+    const bool canRun = !running && recipeSel_ >= 0 &&
+                        recipeSel_ < static_cast<int>(recipes_.size());
+    ImGui::BeginDisabled(!canRun);
+    if (ImGui::Button("Run", ImVec2(100.0f, 0.0f))) {
+        RecipeEngine::Env env;
+        env.positions = savedPos_;      // copied — stable for the whole run
+        env.maps      = motionMaps_;
+        env.library   = recipes_;
+        recipeStartErr_.clear();
+        if (!recipeEngine_.Start(recipes_[recipeSel_], std::move(env), &recipeStartErr_))
+            FD_WARN("recipe", "start rejected: %s", recipeStartErr_.c_str());
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!running);
+    if (ImGui::Button("Stop", ImVec2(100.0f, 0.0f))) recipeEngine_.RequestStop();
+    ImGui::EndDisabled();
+    if (!recipeStartErr_.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "Start rejected:");
+        ImGui::TextWrapped("%s", recipeStartErr_.c_str());
+    }
+
+    // ---- Status (GetStatus snapshot — the engine runs on its own thread) ----
+    ImGui::Separator();
+    ImGui::Text("State: %s", RecipeEngine::StateName(st.state));
+    if (st.leafTotal > 0) {
+        float frac = static_cast<float>(st.leafDone) / static_cast<float>(st.leafTotal);
+        if (frac > 1.0f) frac = 1.0f;   // while-loops can overshoot the estimate
+        char overlay[48];
+        std::snprintf(overlay, sizeof(overlay), "%zu / %zu", st.leafDone, st.leafTotal);
+        ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay);
+    }
+    if (!st.currentStep.empty()) ImGui::Text("Step: %s", st.currentStep.c_str());
+    if (!st.error.empty() && st.state != RecipeEngine::State::Running) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
+    }
+
+    // ---- Run context values ----
+    if (!st.ctx.empty() && ImGui::CollapsingHeader("Context")) {
+        if (ImGui::BeginTable("##recipectx", 2,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            for (const auto& [key, val] : st.ctx) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(key.c_str());
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(CtxValueToString(val).c_str());
+            }
+            ImGui::EndTable();
+        }
+    }
+
+    // ---- Blocking prompt (a `prompt` step is waiting on the operator) ----
+    if (!st.pendingPrompt.empty() && !ImGui::IsPopupOpen("Recipe Prompt"))
+        ImGui::OpenPopup("Recipe Prompt");
+    // Pin to the MAIN window's center every frame (Always, not Appearing): the
+    // runner window may live anywhere — even another monitor — but the prompt
+    // must surface where the operator is looking.
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Recipe Prompt", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("%s", st.pendingPrompt.c_str());
+        ImGui::Separator();
+        if (ImGui::Button("OK", ImVec2(100.0f, 0.0f))) {
+            recipeEngine_.AnswerPrompt(true);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) {
+            recipeEngine_.AnswerPrompt(false);
+            ImGui::CloseCurrentPopup();
+        }
+        if (st.pendingPrompt.empty()) ImGui::CloseCurrentPopup();   // stop released it
+        ImGui::EndPopup();
+    }
+
+    ImGui::End();
 }
 
 void App::NewProduct(const char* name)
@@ -2213,22 +2370,9 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         ImGui::EndCombo();
     }
     ImGui::SameLine();
-    ImGui::BeginDisabled(running || !m->IsConnected() || goNodes.empty() || mapTo_ < 0);
+    ImGui::BeginDisabled(running || recipeEngine_.Running() || !m->IsConnected() ||
+                         goNodes.empty() || mapTo_ < 0);
     if (ImGui::Button("Go")) {
-        // Edge weight = Euclidean distance between the two positions (shared axes).
-        auto cost = [&posOf](const std::string& a, const std::string& b) -> double {
-            const SavedPos* pa = posOf(a);
-            const SavedPos* pb = posOf(b);
-            if (!pa || !pb) return 1.0e6;   // missing position — strongly avoid
-            double d2 = 0.0;
-            for (const auto& [axis, va] : pa->vals) {
-                const auto it = pb->vals.find(axis);
-                if (it != pb->vals.end()) d2 += (va - it->second) * (va - it->second);
-            }
-            const double d = std::sqrt(d2);
-            return d > 1.0e-6 ? d : 1.0e-6;
-        };
-
         std::string fromUid;
         if (mapFrom_ == 0) {   // nearest node to the live position
             const std::map<std::string, double> pos = m->Positions();
@@ -2246,31 +2390,22 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             fromUid = goNodes[mapFrom_ - 1].uid;
         }
 
-        const std::string toUid = goNodes[mapTo_].uid;
-        const std::vector<std::string> path = FindMapPath(map, fromUid, toUid, cost);
-        if (path.empty()) {
-            FD_WARN("path", "%s: no edge route between the chosen nodes", devName.c_str());
+        // Route planning is shared with the recipe engine's move_path command
+        // (core/MotionMap::BuildMapRoute) — one planner, two executors.
+        std::string routeErr;
+        const std::vector<MapRouteLeg> legs = BuildMapRoute(
+            map, saved, m->Axes(), fromUid, goNodes[mapTo_].uid, &routeErr);
+        if (legs.empty()) {
+            FD_WARN("path", "%s: %s", devName.c_str(), routeErr.c_str());
         } else {
-            const std::vector<std::string> axes = m->Axes();
+            mapLastPath_.clear();
             std::vector<Workflow::PathWaypoint> wps;
-            bool ok = true;
-            for (const std::string& uid : path) {
-                const SavedPos* p = posOf(uid);
-                if (!p) { ok = false; break; }   // node lost its position
-                Workflow::PathWaypoint wp;
-                wp.label = p->name;
-                for (const std::string& a : axes) {
-                    const auto it = p->vals.find(a);
-                    if (it != p->vals.end()) wp.targets.emplace_back(a, it->second);
-                }
-                wps.push_back(std::move(wp));
+            wps.reserve(legs.size());
+            for (const MapRouteLeg& leg : legs) {
+                mapLastPath_.push_back(leg.uid);
+                wps.push_back({leg.label, leg.targets});
             }
-            if (!ok) {
-                FD_WARN("path", "%s: path touches a node with no saved position", devName.c_str());
-            } else {
-                mapLastPath_ = path;
-                workflow_.StartPathMove(devIdx, std::move(wps));
-            }
+            workflow_.StartPathMove(devIdx, std::move(wps));
         }
     }
     ImGui::EndDisabled();

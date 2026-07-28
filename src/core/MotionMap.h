@@ -12,9 +12,12 @@
 // malformed file yields an empty set, never throws.
 #pragma once
 
+#include "core/SavedPositions.h"   // BuildMapRoute resolves node uids to positions
+
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace firedog {
@@ -58,5 +61,29 @@ bool SaveMotionMaps(const MotionMapSet& maps);
 std::vector<std::string> FindMapPath(
     const MotionMap& map, const std::string& from, const std::string& to,
     const std::function<double(const std::string&, const std::string&)>& cost);
+
+// One leg of a planned route: a node's label + its per-axis absolute targets
+// (restricted to the device's axes). Same shape as Workflow::PathWaypoint —
+// core/ cannot depend on workflow/, so the caller converts trivially.
+struct MapRouteLeg {
+    std::string uid;     // node (position) uid — the UI's canvas highlight
+    std::string label;
+    std::vector<std::pair<std::string, double>> targets;
+};
+
+// Plan a route from -> to over the map's edges (Dijkstra; edge weight =
+// Euclidean distance between the two saved positions over their shared axes).
+// `positions` is the device's saved-position list (node uids resolve into it);
+// `axes` restricts each leg's targets to the device's axes. Returns the legs
+// INCLUDING both endpoints, or empty on failure (unknown nodes, unreachable,
+// node without a position) with the reason in *err. Shared by the Motion
+// page's Go button and the recipe engine's move_path command — one planner,
+// two executors.
+std::vector<MapRouteLeg> BuildMapRoute(const MotionMap& map,
+                                       const std::vector<SavedPos>& positions,
+                                       const std::vector<std::string>& axes,
+                                       const std::string& fromUid,
+                                       const std::string& toUid,
+                                       std::string* err = nullptr);
 
 } // namespace firedog

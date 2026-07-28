@@ -1,0 +1,32 @@
+{
+  "uid": "recipes0",
+  "recipes": [
+    {
+      "uid": "rcp-demo01",
+      "name": "Demo: log + delay loop",
+      "description": "No-hardware smoke test: three logged loop passes with delays, then an operator prompt.",
+      "steps": [
+        { "type": "ctx_set", "params": { "key": "note", "value": "hello from ctx" } },
+        { "type": "loop", "nickname": "three passes", "params": { "count": 3 },
+          "children": [
+            { "type": "log", "params": { "message": "loop pass, note={note}" } },
+            { "type": "delay", "params": { "ms": 500 } }
+          ] },
+        { "type": "prompt", "params": { "message": "Loops done ({note}). Continue to the final step?" } },
+        { "type": "log", "params": { "message": "demo complete" } }
+      ]
+    },
+    {
+      "uid": "rcp-demo02",
+      "name": "Demo: wait_until on Keithley ch1",
+      "description": "Needs the Keithley connected: samples ch1 into ctx, then waits for ch1 > 1e-9 A.",
+      "steps": [
+        { "type": "read_topic", "params": { "topic": "keithley/ch1", "ctx": "pd" } },
+        { "type": "log", "params": { "message": "starting current pd={pd}" } },
+        { "type": "wait_until", "nickname": "light on ch1",
+          "params": { "topic": "keithley/ch1", "op": ">", "value": 1e-9, "timeout_ms": 15000 } },
+        { "type": "log", "params": { "message": "threshold reached" } }
+      ]
+    }
+  ]
+}
