@@ -5,6 +5,7 @@
 
 #include "hardware/HardwareConfig.h"   // AxisTransform, HardwareConfig
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -60,6 +61,27 @@ public:
     // coordinated command. Called by the saved-positions Move button.
     bool MoveToPosition(std::size_t devIdx,
                         const std::vector<std::pair<std::string, double>>& targets);
+
+    // ---- Mapped-path execution (Motion page "Mapped Path" tab) --------------
+    // A path is a sequence of waypoints (node label + per-axis targets), built
+    // by the UI from a map's node chain. StartPathMove issues the first leg;
+    // Update() watches the live position and issues the next leg once the
+    // device arrives (all targeted axes within kPathTolMM). One path at a time.
+    struct PathWaypoint {
+        std::string label;   // node/position name (logs + progress UI)
+        std::vector<std::pair<std::string, double>> targets;
+    };
+    struct PathProgress {
+        bool        active  = false;
+        std::size_t devIdx  = 0;
+        std::size_t current = 0;   // waypoint being driven to (0-based)
+        std::size_t total   = 0;
+        std::string label;         // current waypoint label
+    };
+    bool StartPathMove(std::size_t devIdx, std::vector<PathWaypoint> waypoints);
+    void CancelPathMove();         // stops the device and abandons the path
+    bool PathActive() const { return pathExec_.active; }
+    PathProgress PathStatus() const;
 
     // ---- Camera commands (Camera page) --------------------------------------
     // Reconnect using the config captured at Start (async, like startup).
@@ -148,6 +170,18 @@ private:
     void StartIoWatch(const HardwareConfig& hw);      // wires edge->action bindings
     void StartSafetyWatch(const HardwareConfig& hw);  // wires safety signals
 
+    // Mapped-path executor state. Mutated on the UI thread only (Start/Cancel/
+    // TickPath); other threads (safety watch) request cancellation via the
+    // atomic flag, honored on the next TickPath.
+    struct PathExec {
+        bool        active = false;
+        std::size_t devIdx = 0;
+        std::vector<PathWaypoint> waypoints;
+        std::size_t cur     = 0;
+        float       legTime = 0.0f;   // seconds spent on the current leg
+    };
+    void TickPath(float dt);   // called from Update()
+
     // Motion is inhibited while a CRITICAL safety alert is unacknowledged.
     bool SafetyBlocked() const
     {
@@ -191,6 +225,9 @@ private:
 
     float clock_  = 0.0f;
     float sample_ = 0.0f;
+
+    PathExec          pathExec_;
+    std::atomic<bool> pathCancelReq_{false};   // set from any thread
 
     // Owned by Workflow (not HardwareManager): its callback stops motion via
     // this object, so it must die first. Declared last so it is destroyed

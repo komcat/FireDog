@@ -320,6 +320,9 @@ void Workflow::StartSafetyWatch(const HardwareConfig& hw)
 
 void Workflow::StopAllMotion()
 {
+    // May run on the safety-watch thread: request path abandon via the atomic;
+    // TickPath honors it on the next frame.
+    pathCancelReq_.store(true);
     for (size_t i = 0; i < hw_.MotionCount(); ++i) {
         IMotionController* m = hw_.MotionDevice(i);
         if (m) {
@@ -699,6 +702,128 @@ void Workflow::Update(float dt)
     for (size_t i = 0; i < hw_.SlideCount(); ++i) {
         hw_.Slide(i)->Update();
     }
+
+    TickPath(dt);   // mapped-path executor (no-op unless a path is running)
+}
+
+// ---- Mapped-path executor ---------------------------------------------------
+// Runs on the UI thread from Update(). Arrival = every targeted axis within
+// kPathTolMM of its target; each leg gets kPathLegTimeoutSec before the path
+// aborts (device stalled / interlocked / velocity too low).
+namespace {
+constexpr double kPathTolMM         = 0.01;
+constexpr float  kPathLegTimeoutSec = 120.0f;
+} // namespace
+
+bool Workflow::StartPathMove(std::size_t devIdx, std::vector<PathWaypoint> waypoints)
+{
+    if (pathExec_.active) {
+        FD_WARN("path", "a path is already running - cancel it first");
+        return false;
+    }
+    if (SafetyBlocked()) {
+        FD_WARN("safety", "path blocked - acknowledge the safety alert first");
+        return false;
+    }
+    if (devIdx >= hw_.MotionCount() || waypoints.empty()) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m || !m->IsConnected()) return false;
+
+    if (!m->MoveAbsolute(waypoints.front().targets)) {
+        FD_WARN("path", "path start failed: move to '%s' rejected",
+                waypoints.front().label.c_str());
+        return false;
+    }
+    pathCancelReq_.store(false);
+    pathExec_.active    = true;
+    pathExec_.devIdx    = devIdx;
+    pathExec_.waypoints = std::move(waypoints);
+    pathExec_.cur       = 0;
+    pathExec_.legTime   = 0.0f;
+    FD_INFO("path", "%s: path started, %zu node(s), first '%s'", m->Name().c_str(),
+            pathExec_.waypoints.size(), pathExec_.waypoints.front().label.c_str());
+    return true;
+}
+
+void Workflow::CancelPathMove()
+{
+    if (!pathExec_.active) return;
+    pathExec_.active = false;
+    FD_WARN("path", "path cancelled at node %zu/%zu",
+            pathExec_.cur + 1, pathExec_.waypoints.size());
+    StopMotion(pathExec_.devIdx);
+}
+
+Workflow::PathProgress Workflow::PathStatus() const
+{
+    PathProgress p;
+    p.active = pathExec_.active;
+    if (p.active) {
+        p.devIdx  = pathExec_.devIdx;
+        p.current = pathExec_.cur;
+        p.total   = pathExec_.waypoints.size();
+        p.label   = pathExec_.waypoints[pathExec_.cur].label;
+    }
+    return p;
+}
+
+void Workflow::TickPath(float dt)
+{
+    if (!pathExec_.active) return;
+    if (pathCancelReq_.exchange(false)) {   // e.g. safety STOP from the watch thread
+        pathExec_.active = false;
+        FD_WARN("path", "path aborted - motion was stopped");
+        return;
+    }
+    if (SafetyBlocked()) {
+        pathExec_.active = false;
+        FD_WARN("path", "path aborted - safety alert active");
+        return;
+    }
+    IMotionController* m = (pathExec_.devIdx < hw_.MotionCount())
+                             ? hw_.MotionDevice(pathExec_.devIdx) : nullptr;
+    if (!m || !m->IsConnected()) {
+        pathExec_.active = false;
+        FD_WARN("path", "path aborted - device unavailable");
+        return;
+    }
+    m->RequestFastPoll();   // keep the arrival check on fresh positions
+
+    const PathWaypoint& wp  = pathExec_.waypoints[pathExec_.cur];
+    const std::map<std::string, double> pos = m->Positions();
+    bool arrived = true;
+    for (const auto& [axis, tgt] : wp.targets) {
+        const auto it = pos.find(axis);
+        if (it == pos.end() || std::fabs(it->second - tgt) > kPathTolMM) {
+            arrived = false;
+            break;
+        }
+    }
+
+    if (arrived) {
+        FD_INFO("path", "%s: reached '%s' (%zu/%zu)", m->Name().c_str(),
+                wp.label.c_str(), pathExec_.cur + 1, pathExec_.waypoints.size());
+        ++pathExec_.cur;
+        pathExec_.legTime = 0.0f;
+        if (pathExec_.cur >= pathExec_.waypoints.size()) {
+            pathExec_.active = false;
+            FD_INFO("path", "%s: path complete", m->Name().c_str());
+            return;
+        }
+        const PathWaypoint& next = pathExec_.waypoints[pathExec_.cur];
+        if (!m->MoveAbsolute(next.targets)) {
+            pathExec_.active = false;
+            FD_WARN("path", "path aborted - move to '%s' rejected", next.label.c_str());
+        }
+        return;
+    }
+
+    pathExec_.legTime += dt;
+    if (pathExec_.legTime > kPathLegTimeoutSec) {
+        pathExec_.active = false;
+        FD_ERROR("path", "path aborted - timeout driving to '%s'", wp.label.c_str());
+        StopMotion(pathExec_.devIdx);
+    }
 }
 
 const char* Workflow::StatusText() const
@@ -844,6 +969,12 @@ bool Workflow::JogLocalAxis(std::size_t devIdx, const std::string& axis, double 
 bool Workflow::StopMotion(std::size_t devIdx)
 {
     if (devIdx >= hw_.MotionCount()) return false;
+    // A manual stop on the pathing device abandons the running path (UI thread;
+    // the executor's own Cancel/timeout deactivate before calling here).
+    if (pathExec_.active && pathExec_.devIdx == devIdx) {
+        pathExec_.active = false;
+        FD_WARN("path", "path abandoned - device stopped");
+    }
     IMotionController* m = hw_.MotionDevice(devIdx);
     if (!m) return false;
     FD_WARN("workflow", "STOP %s", m->Name().c_str());

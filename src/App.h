@@ -11,6 +11,7 @@
 
 #include "ui/GlHost.h"
 #include "core/Log.h"
+#include "core/MotionMap.h"
 #include "core/Product.h"
 #include "core/SavedPositions.h"
 #include "hardware/HardwareManager.h"
@@ -62,9 +63,13 @@ private:
     void DrawPsuListPanel();       // left:   status + connect/disconnect
     void DrawPsuDetailPanel();     // middle: per-channel V/I + output switches
     void DrawPsuInfoPanel();       // right:  identity + live values
-    // Motion page — all motion devices (PI + ACS) on one page.
+    // Motion page — all motion devices (PI + ACS) on one page. The middle
+    // panel is tabbed: "Positions" (saved-position table) and "Mapped Path"
+    // (node-edge graph editor + path execution).
     void DrawMotionListPanel();    // left:   device list + status
-    void DrawMotionDetailPanel();  // middle: selected device + positions
+    void DrawMotionDetailPanel();  // middle: device header + tab bar
+    void DrawMotionPositionsTab(std::size_t devIdx, IMotionController* m);
+    void DrawMotionMapTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionInfoPanel();    // right:  live axis positions
     // IO page — all IO devices (Ezi-IO + WAGO) on one page.
     void DrawIoListPanel();        // left:   device list + status
@@ -84,6 +89,7 @@ private:
     void DrawObjectCanvas();   // click-drag objects (unused; kept for reuse)
     void SaveUiSettings();     // persist font choice + size to disk
     void SavePositions();      // persist savedPos_ (autosaved on every change)
+    void SaveMaps();           // persist motionMaps_ (autosaved on every change)
 
     // Product manifest (File menu). Load/New replace savedPos_ from the
     // product's positions file; Save runs through the manifest entries.
@@ -178,6 +184,24 @@ private:
     Page prevPage_       = Page::Overview;
     int  selectedMotion_ = -1;   // absolute index into the HardwareManager motion fleet
     bool showHiddenPos_  = false;   // reveal hidden (system) positions in the table
+
+    // Mapped Path tab (Motion page): node-edge maps per device, persisted to
+    // config/maps.local.json. Nodes reference saved positions by uid; edges
+    // are bidirectional; path moves run through Workflow's path executor.
+    MotionMapSet motionMaps_;
+    int  mapSel_    = 0;         // selected map for the current device
+    int  mapSelDev_ = -1;        // device the selection belongs to (reset on switch)
+    bool mapEdgeMode_ = false;   // canvas clicks pick edge endpoints
+    std::string mapEdgeFrom_;    // first endpoint picked in edge mode
+    std::string mapDragNode_;    // node uid being dragged on the canvas
+    std::string mapCtxNode_;     // node uid under the context menu
+    int         mapCtxEdge_ = -1;   // edge index under the context menu
+    std::string mapSelEdgeA_, mapSelEdgeB_;   // click-selected edge (empty = none)
+    ImVec2      mapAddAt_ = ImVec2(0.0f, 0.0f);   // canvas spot for "add node here"
+    int  mapFrom_ = 0, mapTo_ = -1;    // Go combos (From index 0 = nearest node)
+    std::vector<std::string> mapLastPath_;   // last computed path (canvas highlight)
+    char mapNameBuf_[32] = "";
+    bool openNewMap_ = false, openRenameMap_ = false, openDeleteMap_ = false;
 
     // IO page: selected device + the output Enable gate (defaults ON per user
     // preference — the checkbox remains as an explicit kill switch).
