@@ -58,6 +58,13 @@ public:
     bool MoveToPosition(std::size_t devIdx,
                         const std::vector<std::pair<std::string, double>>& targets);
 
+    // ---- Camera commands (Camera page) --------------------------------------
+    // Reconnect using the config captured at Start (async, like startup).
+    // False if no camera is configured or a connect is already in flight.
+    bool ConnectCamera();
+    bool DisconnectCamera();     // stop grabbing + close (quick, synchronous)
+    bool SetCameraExposure(double us);   // requires Connected
+
     // ---- Digital IO commands (IO page + future procedures) ------------------
     // devIdx indexes the HardwareManager IO fleet. Writes require Connected.
     bool SetIoOutput(std::size_t devIdx, int pin, bool on);
@@ -88,6 +95,7 @@ public:
 
 private:
     void StartCamera(const HardwareConfig& hw);
+    void LaunchCameraConnect();   // async connect from camCfg_ (Start + reconnect)
     void StartKeithley(const HardwareConfig& hw);
     void StartMotion(const HardwareConfig& hw);
     void StartIO(const HardwareConfig& hw);
@@ -111,6 +119,10 @@ private:
     std::vector<std::future<void>> ioConnect_;       // one per IO device
 
     std::map<std::string, AxisTransform> transforms_;   // global->local, per device
+
+    // Camera config captured at Start so the Camera page can reconnect later.
+    CameraConfig camCfg_;
+    bool         camCfgValid_ = false;
 
     // Per-(device,axis) jog target: rapid presses accumulate onto one evolving
     // target so the latest press overrides the previous instead of queuing; the

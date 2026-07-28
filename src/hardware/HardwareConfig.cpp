@@ -36,6 +36,7 @@ HardwareConfig HardwareConfig::Load(const std::string& path)
                 cc.deviceIndex    = c.value("device_index", 0);
                 cc.pixelToMmX     = c.value("pixel_to_mm_x", 0.00248);
                 cc.pixelToMmY     = c.value("pixel_to_mm_y", 0.00248);
+                cc.exposureUs     = c.value("exposure_us", 0.0);
                 hc.cameras.push_back(cc);
             }
         }
@@ -224,6 +225,47 @@ std::vector<PneumaticSlideConfig> HardwareConfig::EnabledPneumaticSlides() const
         if (p.enabled) out.push_back(p);
     }
     return out;
+}
+
+bool HardwareConfig::SaveCameraSettings(const std::string& path, const std::string& id,
+                                        double pixelToMmX, double pixelToMmY,
+                                        double exposureUs)
+{
+    nlohmann::json j;
+    {
+        std::ifstream f(path);
+        if (f) {
+            try { f >> j; }
+            catch (const std::exception& e) {
+                std::cerr << "[config] cannot rewrite " << path << ": " << e.what() << std::endl;
+                return false;   // don't clobber a file we couldn't parse
+            }
+        }
+    }
+
+    bool found = false;
+    if (j.contains("cameras")) {
+        for (auto& c : j["cameras"]) {
+            if (c.value("id", std::string()) != id) continue;
+            c["pixel_to_mm_x"] = pixelToMmX;
+            c["pixel_to_mm_y"] = pixelToMmY;
+            if (exposureUs > 0.0) c["exposure_us"] = exposureUs;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        std::cerr << "[config] camera id '" << id << "' not found in " << path << std::endl;
+        return false;
+    }
+
+    std::ofstream out(path);
+    if (!out) {
+        std::cerr << "[config] cannot write " << path << std::endl;
+        return false;
+    }
+    out << j.dump(2) << "\n";
+    return true;
 }
 
 bool HardwareConfig::SaveIoWatch(const std::string& path, const IoWatchConfig& cfg)

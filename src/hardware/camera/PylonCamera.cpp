@@ -34,14 +34,21 @@ struct PylonCamera::Impl {
     std::atomic<bool>    running{false};
     std::atomic<bool>    connected{false};
 
-    std::mutex                 frameMutex;
+    mutable std::mutex         frameMutex;
     std::vector<unsigned char> latestRGB;
     int                        width = 0;
     int                        height = 0;
     std::atomic<bool>          newFrame{false};
 
+    // Identity strings are written by the (async) connect thread and read by
+    // the UI's GetInfo() — guarded by metaMutex, like the frame buffer.
+    mutable std::mutex metaMutex;
     std::string model;
+    std::string serial;
+    std::string ip;
     std::string lastError;
+
+    std::atomic<double> fps{0.0};   // measured by GrabLoop, ~1 s window
 
     Impl()
     {
@@ -62,8 +69,89 @@ struct PylonCamera::Impl {
 
     bool IsConnected() const { return connected.load(); }
     bool IsGrabbing()  const { return running.load(); }
-    std::string Model() const { return model; }
-    std::string LastError() const { return lastError; }
+    std::string Model() const
+    {
+        std::lock_guard<std::mutex> lock(metaMutex);
+        return model;
+    }
+    std::string LastError() const
+    {
+        std::lock_guard<std::mutex> lock(metaMutex);
+        return lastError;
+    }
+
+    PylonCamera::Info GetInfo() const
+    {
+        PylonCamera::Info info;
+        {
+            std::lock_guard<std::mutex> lock(metaMutex);
+            info.model  = model;
+            info.serial = serial;
+            info.ip     = ip;
+        }
+        {
+            std::lock_guard<std::mutex> lock(frameMutex);
+            info.width  = width;
+            info.height = height;
+        }
+        info.fps      = fps.load();
+        info.grabbing = running.load();
+        return info;
+    }
+
+    // SFNC 2.x cameras expose "ExposureTime"; legacy GigE uses "ExposureTimeAbs".
+    // Both are float microseconds. Returns nullptr when neither exists.
+    const char* ExposureNodeName()
+    {
+        try {
+            if (camera.GetNodeMap().GetNode("ExposureTime"))    return "ExposureTime";
+            if (camera.GetNodeMap().GetNode("ExposureTimeAbs")) return "ExposureTimeAbs";
+        } catch (...) {}
+        return nullptr;
+    }
+
+    double ExposureUs()
+    {
+        if (!connected.load()) return -1.0;
+        try {
+            if (const char* node = ExposureNodeName())
+                return Pylon::CFloatParameter(camera.GetNodeMap(), node).GetValue();
+        }
+        catch (const Pylon::GenericException& e) {
+            std::lock_guard<std::mutex> lock(metaMutex);
+            lastError = e.GetDescription();
+        }
+        return -1.0;
+    }
+
+    bool SetExposureUs(double us)
+    {
+        if (!connected.load()) return false;
+        try {
+            if (const char* node = ExposureNodeName()) {
+                Pylon::CFloatParameter p(camera.GetNodeMap(), node);
+                return p.TrySetValue(us, Pylon::FloatValueCorrection_ClipToRange);
+            }
+        }
+        catch (const Pylon::GenericException& e) {
+            std::lock_guard<std::mutex> lock(metaMutex);
+            lastError = e.GetDescription();
+        }
+        return false;
+    }
+
+    void ExposureRange(double& minUs, double& maxUs)
+    {
+        minUs = maxUs = 0.0;
+        if (!connected.load()) return;
+        try {
+            if (const char* node = ExposureNodeName()) {
+                Pylon::CFloatParameter p(camera.GetNodeMap(), node);
+                minUs = p.GetMin();
+                maxUs = p.GetMax();
+            }
+        } catch (...) {}
+    }
 
     // Enumerate GigE devices and match one by its IP address.
     bool FindByIP(const std::string& ip, Pylon::CDeviceInfo& out)
@@ -137,10 +225,21 @@ struct PylonCamera::Impl {
             if (camera.GetNodeMap().GetNode("TriggerMode")) {
                 Pylon::CEnumParameter(camera.GetNodeMap(), "TriggerMode").SetValue("Off");
             }
+            // Manual exposure only — auto-exposure would fight SetExposureUs.
+            if (camera.GetNodeMap().GetNode("ExposureAuto")) {
+                Pylon::CEnumParameter(camera.GetNodeMap(), "ExposureAuto").TrySetValue("Off");
+            }
 
-            model = std::string(camera.GetDeviceInfo().GetModelName().c_str());
+            {
+                std::lock_guard<std::mutex> lock(metaMutex);
+                model = std::string(camera.GetDeviceInfo().GetModelName().c_str());
+                try { serial = std::string(camera.GetDeviceInfo().GetSerialNumber().c_str()); }
+                catch (...) {}
+                try { ip = std::string(camera.GetDeviceInfo().GetIpAddress().c_str()); }
+                catch (...) {}
+            }
             connected.store(true);
-            std::cout << "[PylonCamera] connected: " << model << std::endl;
+            std::cout << "[PylonCamera] connected: " << Model() << std::endl;
             return true;
         }
         catch (const Pylon::GenericException& e) {
@@ -199,6 +298,7 @@ struct PylonCamera::Impl {
         if (running.exchange(false)) {
             if (grabThread.joinable()) grabThread.join();
         }
+        fps.store(0.0);
         try {
             if (camera.IsGrabbing()) camera.StopGrabbing();
         } catch (...) {}
@@ -215,12 +315,23 @@ struct PylonCamera::Impl {
 
     void GrabLoop()
     {
+        int  fpsCount = 0;
+        auto fpsT0    = std::chrono::steady_clock::now();
         while (running.load()) {
             try {
                 Pylon::CGrabResultPtr result;
                 // Short timeout + Return so StopGrabbing() is responsive.
                 if (camera.RetrieveResult(50, result, Pylon::TimeoutHandling_Return) &&
                     result && result->GrabSucceeded()) {
+                    // Grab-rate estimate over a ~1 s window.
+                    ++fpsCount;
+                    const auto now = std::chrono::steady_clock::now();
+                    const double dt = std::chrono::duration<double>(now - fpsT0).count();
+                    if (dt >= 1.0) {
+                        fps.store(fpsCount / dt);
+                        fpsCount = 0;
+                        fpsT0    = now;
+                    }
                     const int w = static_cast<int>(result->GetWidth());
                     const int h = static_cast<int>(result->GetHeight());
 
@@ -271,15 +382,44 @@ struct PylonCamera::Impl {
 namespace firedog {
 
 struct PylonCamera::Impl {
-    std::atomic<bool> connected{false};
-    std::atomic<bool> grabbing{false};
+    std::atomic<bool>   connected{false};
+    std::atomic<bool>   grabbing{false};
+    std::atomic<double> exposureUs{10000.0};   // simulated setting
     int         phase = 0;
     std::string lastError;
+
+    static constexpr double kExpoMin = 20.0, kExpoMax = 1000000.0;
 
     bool IsConnected() const { return connected.load(); }
     bool IsGrabbing()  const { return grabbing.load(); }
     std::string Model() const { return "Test Pattern (no Pylon SDK)"; }
     std::string LastError() const { return lastError; }
+
+    PylonCamera::Info GetInfo() const
+    {
+        PylonCamera::Info info;
+        info.model    = Model();
+        info.serial   = "SIM-0001";
+        info.ip       = "simulated";
+        info.grabbing = grabbing.load();
+        if (info.grabbing) { info.width = 640; info.height = 480; info.fps = 30.0; }
+        return info;
+    }
+
+    double ExposureUs() const { return connected.load() ? exposureUs.load() : -1.0; }
+    bool SetExposureUs(double us)
+    {
+        if (!connected.load()) return false;
+        if (us < kExpoMin) us = kExpoMin;
+        if (us > kExpoMax) us = kExpoMax;
+        exposureUs.store(us);
+        return true;
+    }
+    void ExposureRange(double& minUs, double& maxUs) const
+    {
+        minUs = connected.load() ? kExpoMin : 0.0;
+        maxUs = connected.load() ? kExpoMax : 0.0;
+    }
 
     bool ConnectByIP(const std::string&) { connected.store(true); return true; }
     bool ConnectFirst()                  { connected.store(true); return true; }
@@ -327,6 +467,10 @@ bool PylonCamera::IsConnected() const                { return p_->IsConnected();
 bool PylonCamera::IsGrabbing()  const                { return p_->IsGrabbing(); }
 std::string PylonCamera::ModelName() const           { return p_->Model(); }
 std::string PylonCamera::LastError() const           { return p_->LastError(); }
+PylonCamera::Info PylonCamera::GetInfo() const       { return p_->GetInfo(); }
+double PylonCamera::ExposureUs() const               { return p_->ExposureUs(); }
+bool   PylonCamera::SetExposureUs(double us)         { return p_->SetExposureUs(us); }
+void   PylonCamera::ExposureRange(double& lo, double& hi) const { p_->ExposureRange(lo, hi); }
 
 bool PylonCamera::GetLatestFrame(std::vector<unsigned char>& rgb, int& w, int& h, bool& isNew)
 {

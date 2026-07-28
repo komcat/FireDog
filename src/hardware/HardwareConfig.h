@@ -39,6 +39,7 @@ struct CameraConfig {
     int         deviceIndex = 0;
     double      pixelToMmX  = 0.00248;   // camera-pixel -> mm calibration (X)
     double      pixelToMmY  = 0.00248;   // camera-pixel -> mm calibration (Y)
+    double      exposureUs  = 0.0;       // applied after connect; 0 = camera default
 };
 
 struct KeithleyConfig {
@@ -157,6 +158,13 @@ struct HardwareConfig {
     // editor window. Note: a rebuild recopies the repo's config/ over the
     // exe-side copy, so mirror durable edits into the repo file too.
     static bool SaveIoWatch(const std::string& path, const IoWatchConfig& cfg);
+
+    // Write ONLY one camera's calibration + exposure back into the config file
+    // (read-modify-write like SaveIoWatch; same rebuild caveat). Matches the
+    // cameras[] entry by id; exposureUs <= 0 leaves that field untouched.
+    static bool SaveCameraSettings(const std::string& path, const std::string& id,
+                                   double pixelToMmX, double pixelToMmY,
+                                   double exposureUs);
 };
 
 } // namespace firedog

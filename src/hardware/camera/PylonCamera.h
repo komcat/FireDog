@@ -35,6 +35,25 @@ public:
     // last call.
     bool GetLatestFrame(std::vector<unsigned char>& rgb, int& width, int& height, bool& isNew);
 
+    // One consistent snapshot of camera identity + live stats for the UI.
+    struct Info {
+        std::string model;
+        std::string serial;
+        std::string ip;
+        int    width  = 0;      // latest frame size (0 until a frame arrives)
+        int    height = 0;
+        double fps    = 0.0;    // measured grab rate
+        bool   grabbing = false;
+    };
+    Info GetInfo() const;
+
+    // Exposure in microseconds (SFNC "ExposureTime", legacy GigE
+    // "ExposureTimeAbs"; ExposureAuto is forced Off at connect). Get returns
+    // <= 0 when not connected/supported; Set clips to the camera's range.
+    double ExposureUs() const;
+    bool   SetExposureUs(double us);
+    void   ExposureRange(double& minUs, double& maxUs) const;   // 0,0 if unknown
+
     std::string ModelName() const;
     std::string LastError() const;
 

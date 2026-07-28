@@ -29,7 +29,7 @@ struct CanvasObject {
 // Which content the Main window shows. Hardware pages are selected via the
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
-enum class Page { Overview, Motion, IO, Pneumatic, WatchEdit, TransformEdit };
+enum class Page { Overview, Camera, Motion, IO, Pneumatic, WatchEdit, TransformEdit };
 
 class App {
 public:
@@ -45,6 +45,10 @@ private:
     void DrawJogWindow();      // undocked Jog window (toggled from View menu)
     void DrawJogPanel();       // jog controls: device/velocity/step/direction/keys
     void DrawVelocityCombo(std::size_t di);   // shared velocity combo (Jog + Motion page)
+    // Camera page — the (single) Pylon camera.
+    void DrawCameraListPanel();    // left:   status + connect/disconnect
+    void DrawCameraDetailPanel();  // middle: exposure + pixel->mm + preview
+    void DrawCameraInfoPanel();    // right:  identity + stream info
     // Motion page — all motion devices (PI + ACS) on one page.
     void DrawMotionListPanel();    // left:   device list + status
     void DrawMotionDetailPanel();  // middle: selected device + positions
@@ -81,10 +85,19 @@ private:
     HardwareManager hardware_;
     Workflow        workflow_{hardware_};
 
-    // UI-side camera texture — frames are pulled from hardware_.Camera() each frame.
+    // UI-side camera texture — frames are pulled from hardware_.Camera() via
+    // UpdateCameraTexture() by every view that shows the live image (Aux,
+    // Camera page); the isNew flag makes a second call per frame a no-op.
+    void UpdateCameraTexture();
     unsigned int               cameraTex_ = 0;
     int                        cameraW_ = 0, cameraH_ = 0;
     std::vector<unsigned char> frameBuf_;
+
+    // Camera page state: config id (for saving back into hardware.json) and
+    // the exposure edit value, pulled from the camera once per connection.
+    std::string cameraId_;
+    float camExposureUs_ = 0.0f;
+    bool  camExpoPulled_ = false;
 
     // Keithley chart buffers — pulled from the DataBus each frame.
     int                       chartCh_ = 2;   // 0 ch1, 1 ch2, 2 both

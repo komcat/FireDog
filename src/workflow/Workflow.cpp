@@ -336,23 +336,64 @@ void Workflow::StartCamera(const HardwareConfig& hw)
         return;
     }
 
-    const std::string name = cam->displayName.empty() ? cam->id : cam->displayName;
-    hw_.SetCameraName(name);
+    camCfg_      = *cam;   // kept so the Camera page can reconnect later
+    camCfgValid_ = true;
+    hw_.SetCameraName(cam->displayName.empty() ? cam->id : cam->displayName);
+    LaunchCameraConnect();
+}
+
+void Workflow::LaunchCameraConnect()
+{
     hw_.SetCameraState(ConnState::Connecting);
 
-    const std::string ip = cam->ipAddress;
-    const bool byIp = (cam->connectionType == "ip") && !ip.empty();
+    const std::string name = hw_.CameraName();
+    const std::string ip   = camCfg_.ipAddress;
+    const bool   byIp      = (camCfg_.connectionType == "ip") && !ip.empty();
+    const double expoUs    = camCfg_.exposureUs;   // 0 = leave camera default
     FD_INFO("workflow", "connecting camera '%s' (%s)", name.c_str(),
             byIp ? ip.c_str() : "first available");
 
-    camConnect_ = std::async(std::launch::async, [this, ip, byIp, name] {
+    camConnect_ = std::async(std::launch::async, [this, ip, byIp, name, expoUs] {
         PylonCamera& camera = hw_.Camera();
         const bool ok = (byIp ? camera.ConnectByIP(ip) : camera.ConnectFirst())
                         && camera.StartGrabbing();
+        if (ok && expoUs > 0.0) camera.SetExposureUs(expoUs);
         hw_.SetCameraState(ok ? ConnState::Connected : ConnState::Failed);
         if (ok) FD_INFO("workflow", "camera '%s' grabbing", name.c_str());
         else    FD_ERROR("workflow", "camera '%s' failed to start", name.c_str());
     });
+}
+
+bool Workflow::ConnectCamera()
+{
+    if (!camCfgValid_) {
+        FD_WARN("workflow", "camera connect: no camera configured");
+        return false;
+    }
+    if (hw_.CameraState() == ConnState::Connecting) return false;   // in flight
+    if (hw_.Camera().IsConnected()) return true;                    // already up
+    LaunchCameraConnect();
+    return true;
+}
+
+bool Workflow::DisconnectCamera()
+{
+    if (hw_.CameraState() == ConnState::Connecting) return false;   // let it finish
+    // Quick: StopGrabbing joins the grab thread (<=50 ms timeout) + Close.
+    hw_.Camera().Disconnect();
+    hw_.SetCameraState(ConnState::Disconnected);
+    FD_INFO("workflow", "camera '%s' disconnected", hw_.CameraName().c_str());
+    return true;
+}
+
+bool Workflow::SetCameraExposure(double us)
+{
+    if (hw_.CameraState() != ConnState::Connected) return false;
+    const bool ok = hw_.Camera().SetExposureUs(us);
+    if (ok) FD_INFO("camera", "exposure set to %.0f us", us);
+    else    FD_WARN("camera", "exposure set failed: %s",
+                    hw_.Camera().LastError().c_str());
+    return ok;
 }
 
 void Workflow::StartKeithley(const HardwareConfig& hw)
