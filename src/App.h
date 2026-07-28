@@ -3,12 +3,16 @@
 // DataBus. It owns no device and runs no connect — Workflow (layer 2) does that.
 #pragma once
 
+#include <map>
+#include <string>
 #include <vector>
 
 #include "imgui.h"
 
 #include "ui/GlHost.h"
 #include "core/Log.h"
+#include "core/Product.h"
+#include "core/SavedPositions.h"
 #include "hardware/HardwareManager.h"
 #include "hardware/HardwareConfig.h"
 #include "workflow/Workflow.h"
@@ -23,7 +27,7 @@ struct CanvasObject {
 };
 
 // Which content the Main window shows. Selected via the Hardware menu.
-enum class Page { Overview, PI, ACS };
+enum class Page { Overview, Motion };
 
 class App {
 public:
@@ -38,16 +42,25 @@ private:
     void DrawRightPanel();     // 15% column: Overview placeholder
     void DrawJogWindow();      // undocked Jog window (toggled from View menu)
     void DrawJogPanel();       // jog controls: device/velocity/step/direction/keys
-    // PI/ACS pages — same layout, motion-device content. `type` is "PI" | "ACS".
-    void DrawMotionListPanel(const char* type);    // left:   device list + status
-    void DrawMotionDetailPanel(const char* type);  // middle: selected device + positions
-    void DrawMotionInfoPanel(const char* type);    // right:  info / reserved
+    void DrawVelocityCombo(std::size_t di);   // shared velocity combo (Jog + Motion page)
+    // Motion page — all motion devices (PI + ACS) on one page.
+    void DrawMotionListPanel();    // left:   device list + status
+    void DrawMotionDetailPanel();  // middle: selected device + positions
+    void DrawMotionInfoPanel();    // right:  live axis positions
     void DrawAuxWindow();
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
     void DrawImageOverlay();   // image + vision overlay
     void DrawObjectCanvas();   // click-drag objects (unused; kept for reuse)
     void SaveUiSettings();     // persist font choice + size to disk
+    void SavePositions();      // persist savedPos_ (autosaved on every change)
+
+    // Product manifest (File menu). Load/New replace savedPos_ from the
+    // product's positions file; Save runs through the manifest entries.
+    void DrawProductPopups();  // Load/New modal dialogs (opened from File menu)
+    bool LoadProduct(const std::string& name);
+    void NewProduct(const char* name);
+    void SaveProduct();
 
     GlHost host_;
 
@@ -89,9 +102,19 @@ private:
     float lowerH_ = 0.0f;
     bool  splitterWasActive_ = false;   // to save panel sizes once a drag ends
 
-    // Main-window page + which motion device is selected on the PI/ACS pages.
+    // Main-window page + which motion device is selected on the Motion page.
     Page currentPage_    = Page::Overview;
     int  selectedMotion_ = -1;   // absolute index into the HardwareManager motion fleet
+    bool showHiddenPos_  = false;   // reveal hidden (system) positions in the table
+
+    // Rename-position dialog (name is a label; the uid never changes).
+    bool openRenamePos_ = false;    // row Edit button -> popup handoff
+    int  renameRow_     = -1;       // row index in the selected device's list
+    char renameBuf_[32] = "";
+
+    // Delete-position confirmation dialog (X button asks before erasing).
+    bool openDeletePos_ = false;
+    int  deleteRow_     = -1;
 
     // Camera pixel->mm calibration (loaded from CameraConfig): drives the Aux
     // world-distance overlay and the click-to-move offset.
@@ -110,10 +133,26 @@ private:
 
     // Jog panel (Overview right panel). Transforms + commands live in Workflow.
     int jogDevice_    = -1;  // index into the motion fleet
-    int jogVelIndex_  = 0;   // index into the device-type velocity list
     int jogStepIndex_ = 9;   // index into kSteps (default 100um)
     int jogRotAxis_   = 0;   // selected rotational axis (0 = first beyond XYZ)
-    int jogVelDevice_ = -1;  // device index we last pushed velocity to
+
+    // Per-device velocity selection, shared by the Jog panel and the Motion
+    // page so both always show the same value for a device.
+    std::map<int, int>    velIndex_;      // device index -> velocity-list index
+    std::map<int, bool>   velPushed_;     // device index -> UI value pushed once
+    std::map<int, double> velCustomEdit_; // device index -> custom input-box value
+    std::map<int, double> velCustomSet_;  // device index -> applied custom (0 = preset)
+
+    // Saved/taught positions per device (keyed by device name). Loaded at
+    // startup, autosaved on every change — into the current product's positions
+    // file when one is loaded, else config/positions.local.json.
+    SavedPosMap savedPos_;
+
+    // Current product (File menu). Not loaded => config-fallback persistence.
+    ProductManifest product_;
+    bool openLoadProduct_ = false;   // menu -> popup handoff (OpenPopup must
+    bool openNewProduct_  = false;   // be called outside the menu scope)
+    char newProductName_[64] = "";
 
 };
 

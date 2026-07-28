@@ -24,6 +24,10 @@ struct UiSettings {
     bool showChart   = true;
     bool clickToMove = false;
 
+    // Last-loaded product name (folder under products/); empty = none.
+    // Auto-reloaded at startup.
+    std::string lastProduct;
+
     static UiSettings Load(const std::string& path);
     bool Save(const std::string& path) const;   // best-effort; false if unwritable
 };

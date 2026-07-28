@@ -189,12 +189,12 @@ struct ACSController::Impl {
         if (!connected.load()) { lastError = "not connected"; return false; }
         const int idx = AxisIndex(axis);
         if (idx < 0) { lastError = "invalid axis: " + axis; return false; }
-        int    axesArr[2] = {idx, -1};
-        double pts[1]     = {position};
-        if (!acsc_ToPointM(handle, ACSC_AMF_WAIT, axesArr, pts, NULL) ||
-            !acsc_GoM(handle, axesArr, NULL)) {
+        // Immediate single-axis PTP (not multipoint): issuing a new point while
+        // moving re-targets the running move, so jog presses override the
+        // previous instead of queuing points. flags=0 => start immediately.
+        if (!acsc_ToPoint(handle, 0, idx, position, NULL)) {
             const int err = acsc_GetLastError();
-            lastError = "acsc move failed (" + std::to_string(err) + ")";
+            lastError = "acsc_ToPoint failed (" + std::to_string(err) + ")";
             FD_ERROR("acs", "%s move %s failed: %s", cfg.name.c_str(), axis.c_str(), lastError.c_str());
             return false;
         }

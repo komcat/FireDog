@@ -9,6 +9,7 @@
 #include <future>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace firedog {
@@ -43,6 +44,11 @@ public:
     // Stop all motion on one device (jog panel Stop button).
     bool StopMotion(std::size_t devIdx);
 
+    // Move to an absolute per-axis target set (a saved/taught position) in one
+    // coordinated command. Called by the saved-positions Move button.
+    bool MoveToPosition(std::size_t devIdx,
+                        const std::vector<std::pair<std::string, double>>& targets);
+
 private:
     void StartCamera(const HardwareConfig& hw);
     void StartKeithley(const HardwareConfig& hw);
@@ -57,6 +63,12 @@ private:
     std::vector<std::future<void>> motionConnect_;   // one per motion device
 
     std::map<std::string, AxisTransform> transforms_;   // global->local, per device
+
+    // Per-(device,axis) jog target: rapid presses accumulate onto one evolving
+    // target so the latest press overrides the previous instead of queuing; the
+    // target re-seeds from the live position after an idle gap (new burst).
+    struct JogTrack { double target = 0.0; double lastT = -1.0e9; };
+    std::map<std::string, JogTrack> jogTracks_;
 
     float clock_  = 0.0f;
     float sample_ = 0.0f;

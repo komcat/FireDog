@@ -158,6 +158,7 @@ int App::Run()
     Theme::Apply();
     // Restore the saved font choice + size (defaults to Segoe UI 26 px on first
     // run), validated against the current font table / slider range.
+    std::string lastProduct;
     {
         const UiSettings ui = UiSettings::Load(kUiSettingsPath);
         fontIndex_  = (ui.fontIndex >= 0 && ui.fontIndex < kFontCount) ? ui.fontIndex : 0;
@@ -168,6 +169,7 @@ int App::Run()
         if (ui.lowerH > 0.0f) lowerH_ = ui.lowerH;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
+        lastProduct      = ui.lastProduct;
     }
     host_.SetFont(kFonts[fontIndex_].path, uiFontSize_);
 
@@ -194,6 +196,9 @@ int App::Run()
         pixelToMmY_ = static_cast<float>(cam->pixelToMmY);
     }
     workflow_.SetTransforms(LoadMotionTransforms("config/motion_transforms.json"));
+    savedPos_ = LoadSavedPositions();   // config fallback (no product)
+    if (!lastProduct.empty() && !LoadProduct(lastProduct))
+        FD_WARN("product", "could not reload last product '%s'", lastProduct.c_str());
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
 
@@ -230,19 +235,27 @@ void App::DrawMainWindow()
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
                      ImGuiWindowFlags_MenuBar)) {
-        // ---- Menu bar placeholder (top strip) ----
+        // ---- Menu bar (top strip) ----
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("File")) {
+                if (ImGui::MenuItem("New Product..."))  openNewProduct_  = true;
+                if (ImGui::MenuItem("Load Product...")) openLoadProduct_ = true;
+                if (ImGui::MenuItem("Save Product", nullptr, false, product_.Loaded()))
+                    SaveProduct();
+                ImGui::Separator();
+                if (product_.Loaded())
+                    ImGui::MenuItem(("Product: " + product_.name).c_str(), nullptr, false, false);
+                else
+                    ImGui::MenuItem("Product: (none)", nullptr, false, false);
+                ImGui::Separator();
                 ImGui::MenuItem("Exit", nullptr, false, false);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Hardware")) {
                 if (ImGui::MenuItem("Overview", nullptr, currentPage_ == Page::Overview))
                     currentPage_ = Page::Overview;
-                if (ImGui::MenuItem("PI",       nullptr, currentPage_ == Page::PI))
-                    currentPage_ = Page::PI;
-                if (ImGui::MenuItem("ACS",      nullptr, currentPage_ == Page::ACS))
-                    currentPage_ = Page::ACS;
+                if (ImGui::MenuItem("Motion",   nullptr, currentPage_ == Page::Motion))
+                    currentPage_ = Page::Motion;
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
@@ -256,6 +269,7 @@ void App::DrawMainWindow()
             }
             ImGui::EndMenuBar();
         }
+        DrawProductPopups();   // modals opened via the File-menu flags above
 
         // ---- Panel layout (user-resizable via splitter bars) ----
         //   left | [ middle / lower ] | right. Sizes persist in leftW_/rightW_/
@@ -288,9 +302,8 @@ void App::DrawMainWindow()
         // Left column (content depends on the selected Hardware page)
         ImGui::BeginChild("LeftPanel", ImVec2(leftW_, avail.y), ImGuiChildFlags_Borders);
         switch (currentPage_) {
-            case Page::PI:  DrawMotionListPanel("PI");  break;
-            case Page::ACS: DrawMotionListPanel("ACS"); break;
-            default:        DrawLeftPanel();            break;
+            case Page::Motion: DrawMotionListPanel(); break;
+            default:           DrawLeftPanel();       break;
         }
         ImGui::EndChild();
 
@@ -303,9 +316,8 @@ void App::DrawMainWindow()
         ImGui::BeginGroup();
         ImGui::BeginChild("MiddlePanel", ImVec2(centerW, midH), ImGuiChildFlags_Borders);
         switch (currentPage_) {
-            case Page::PI:  DrawMotionDetailPanel("PI");  break;
-            case Page::ACS: DrawMotionDetailPanel("ACS"); break;
-            default:        DrawMiddlePanel();            break;
+            case Page::Motion: DrawMotionDetailPanel(); break;
+            default:           DrawMiddlePanel();       break;
         }
         ImGui::EndChild();
         if (Splitter("##splitM", false, sp, centerW)) { lowerH_ -= io.MouseDelta.y; splitterActive = true; }
@@ -321,9 +333,8 @@ void App::DrawMainWindow()
         // Right column (content depends on the selected Hardware page)
         ImGui::BeginChild("RightPanel", ImVec2(rightW_, avail.y), ImGuiChildFlags_Borders);
         switch (currentPage_) {
-            case Page::PI:  DrawMotionInfoPanel("PI");  break;
-            case Page::ACS: DrawMotionInfoPanel("ACS"); break;
-            default:        DrawRightPanel();           break;
+            case Page::Motion: DrawMotionInfoPanel(); break;
+            default:           DrawRightPanel();      break;
         }
         ImGui::EndChild();
 
@@ -370,7 +381,130 @@ void App::SaveUiSettings()
     s.lowerH    = lowerH_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
+    s.lastProduct = product_.name;
     s.Save(kUiSettingsPath);
+}
+
+void App::SavePositions()
+{
+    // Product loaded -> autosave into the product's positions file (with its
+    // uid); otherwise the machine-global config fallback. Warns if unwritable.
+    if (const ManifestFile* e = product_.Entry("positions"))
+        SaveSavedPositionsFile(product_.FilePath("positions"), savedPos_, e->uid);
+    else
+        SaveSavedPositions(savedPos_);
+}
+
+bool App::LoadProduct(const std::string& name)
+{
+    ProductManifest m = LoadProductManifest(name);
+    if (!m.Loaded()) return false;
+
+    const ManifestFile* e = m.Entry("positions");
+    if (e) {
+        std::string fileUid;
+        savedPos_ = LoadSavedPositionsFile(m.FilePath("positions"), &fileUid);
+        if (fileUid != e->uid)
+            FD_WARN("product", "positions uid mismatch: manifest %s vs file '%s'",
+                    e->uid.c_str(), fileUid.c_str());
+    } else {
+        FD_WARN("product", "'%s' has no positions entry; keeping current positions", name.c_str());
+    }
+    product_ = std::move(m);
+    SaveUiSettings();   // remember as last product for the next startup
+    FD_INFO("product", "loaded '%s'", product_.name.c_str());
+    return true;
+}
+
+void App::NewProduct(const char* name)
+{
+    ProductManifest m = CreateProduct(name);
+    if (!m.Loaded()) return;
+    product_ = std::move(m);
+    SavePositions();     // carry the current in-memory positions into the product
+    SaveUiSettings();
+}
+
+void App::SaveProduct()
+{
+    if (!product_.Loaded()) return;
+    // "Save runs through the manifest": each entry is dispatched by role.
+    // Future roles (recipes/programs) are skipped until they have real data.
+    for (const ManifestFile& e : product_.files) {
+        const std::string path = product_.Dir() + "/" + e.file;
+        if (e.role == "positions") {
+            SaveSavedPositionsFile(path, savedPos_, e.uid);
+        } else if (e.role == "recipes" || e.role == "programs") {
+            // placeholder data — leave the uid-stub file as-is
+        } else {
+            FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
+        }
+    }
+    SaveProductManifest(product_);
+    FD_INFO("product", "saved '%s' (%zu manifest file(s))",
+            product_.name.c_str(), product_.files.size());
+}
+
+void App::DrawProductPopups()
+{
+    // OpenPopup must run in this scope (not inside the menu), so the File menu
+    // only raises flags. Center both modals on the main viewport.
+    if (openLoadProduct_) { ImGui::OpenPopup("Load Product"); openLoadProduct_ = false; }
+    if (openNewProduct_)  { ImGui::OpenPopup("New Product");  openNewProduct_  = false; }
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::BeginPopupModal("Load Product", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const std::vector<std::string> products = ListProducts();
+        if (products.empty()) {
+            ImGui::TextDisabled("No products found under products\\ - use New Product.");
+        } else {
+            ImGui::TextUnformatted("Double-click a product to load it:");
+            if (ImGui::BeginListBox("##products", ImVec2(320.0f, 200.0f))) {
+                for (const std::string& p : products) {
+                    const bool current = (p == product_.name);
+                    if (ImGui::Selectable((p + (current ? "  [loaded]" : "")).c_str(), current,
+                                          ImGuiSelectableFlags_AllowDoubleClick)) {
+                        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                            LoadProduct(p);
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Double-click to load");
+                }
+                ImGui::EndListBox();
+            }
+        }
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("New Product", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Product name (folder under products\\):");
+        ImGui::SetNextItemWidth(320.0f);
+        const bool submit = ImGui::InputText("##newname", newProductName_, sizeof(newProductName_),
+                                             ImGuiInputTextFlags_EnterReturnsTrue);
+        // Valid: non-empty, no path separators, not already existing.
+        std::string nm = newProductName_;
+        const bool badChars = nm.find_first_of("\\/:*?\"<>|") != std::string::npos;
+        bool exists = false;
+        for (const std::string& p : ListProducts()) if (p == nm) { exists = true; break; }
+        const bool valid = !nm.empty() && !badChars && !exists;
+        if (badChars) ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f), "Name contains invalid characters.");
+        if (exists)   ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f), "A product with this name already exists.");
+
+        ImGui::BeginDisabled(!valid);
+        if (ImGui::Button("Create") || (submit && valid)) {
+            NewProduct(nm.c_str());
+            newProductName_[0] = '\0';
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) { newProductName_[0] = '\0'; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
 }
 
 void App::DrawMiddlePanel()
@@ -432,9 +566,8 @@ void App::DrawJogPanel()
 
     IMotionController* dev = hardware_.MotionDevice(static_cast<size_t>(jogDevice_));
     if (!dev) { ImGui::TextDisabled("select a device"); return; }
-    const std::string              devType = dev->Type();
-    const std::vector<std::string> axes    = dev->Axes();
-    const size_t                   di      = static_cast<size_t>(jogDevice_);
+    const std::vector<std::string> axes = dev->Axes();
+    const size_t                   di   = static_cast<size_t>(jogDevice_);
     dev->RequestFastPoll();   // keep positions fresh for accurate relative jogs
 
     // --- Arm toggle + Stop (Stop is always active) ---
@@ -448,29 +581,7 @@ void App::DrawJogPanel()
     ImGui::PopStyleColor(2);
     ImGui::Separator();
 
-    // --- Velocity combo (options depend on controller type) ---
-    const double* vels = (devType == "ACS") ? kVelACS : kVelPI;
-    const int     velN = (devType == "ACS") ? 5 : 4;
-    if (jogVelIndex_ >= velN) jogVelIndex_ = 0;
-    // Push the selected velocity to the (connected) device when it changes.
-    if (jogVelDevice_ != jogDevice_ && dev->IsConnected()) {
-        workflow_.SetJogVelocity(di, vels[jogVelIndex_]);
-        jogVelDevice_ = jogDevice_;
-    }
-    ImGui::TextUnformatted("Velocity (mm/s)");
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    char velPrev[16]; std::snprintf(velPrev, sizeof(velPrev), "%g", vels[jogVelIndex_]);
-    if (ImGui::BeginCombo("##vel", velPrev)) {
-        for (int i = 0; i < velN; ++i) {
-            char b[16]; std::snprintf(b, sizeof(b), "%g", vels[i]);
-            if (ImGui::Selectable(b, jogVelIndex_ == i)) {
-                jogVelIndex_ = i;
-                workflow_.SetJogVelocity(di, vels[i]);
-                jogVelDevice_ = jogDevice_;
-            }
-        }
-        ImGui::EndCombo();
-    }
+    DrawVelocityCombo(di);
 
     // --- Step size button array ---
     ImGui::TextUnformatted("Step size");
@@ -548,33 +659,25 @@ void App::DrawJogPanel()
 // already pulls camera frames — no device is *driven* from here (that stays in
 // the workflow layer). `type` filters the fleet to "PI" or "ACS".
 
-void App::DrawMotionListPanel(const char* type)
+void App::DrawMotionListPanel()
 {
     const size_t n = hardware_.MotionCount();
 
-    // Keep the current selection if it still matches this page's type; otherwise
-    // fall back to the first device of this type. The left panel draws before the
-    // middle/right, so this also resolves the selection they read.
-    auto matches = [&](int i) {
-        if (i < 0 || static_cast<size_t>(i) >= n) return false;
-        IMotionController* d = hardware_.MotionDevice(static_cast<size_t>(i));
-        return d && d->Type() == type;
-    };
-    if (!matches(selectedMotion_)) {
-        selectedMotion_ = -1;
-        for (size_t i = 0; i < n; ++i) {
-            IMotionController* d = hardware_.MotionDevice(i);
-            if (d && d->Type() == type) { selectedMotion_ = static_cast<int>(i); break; }
-        }
+    // Keep the current selection if still valid; otherwise fall back to the
+    // first device. The left panel draws before the middle/right, so this also
+    // resolves the selection they read.
+    if (selectedMotion_ < 0 || static_cast<size_t>(selectedMotion_) >= n ||
+        !hardware_.MotionDevice(static_cast<size_t>(selectedMotion_))) {
+        selectedMotion_ = n > 0 ? 0 : -1;
     }
 
-    ImGui::Text("%s devices", type);
+    ImGui::TextUnformatted("Motion devices");
     ImGui::Separator();
 
     bool any = false;
     for (size_t i = 0; i < n; ++i) {
         IMotionController* m = hardware_.MotionDevice(i);
-        if (!m || m->Type() != type) continue;
+        if (!m) continue;
         any = true;
         const ConnState st = hardware_.MotionState(i);
         ImGui::PushID(static_cast<int>(i));
@@ -587,20 +690,22 @@ void App::DrawMotionListPanel(const char* type)
             selectedMotion_ = static_cast<int>(i);
         }
         ImGui::SameLine();
+        ImGui::TextDisabled("%s", m->Type().c_str());
+        ImGui::SameLine();
         ImGui::TextColored(StateColor(st), "%s", StateText(st));
         ImGui::PopID();
     }
-    if (!any) ImGui::TextDisabled("no %s devices configured", type);
+    if (!any) ImGui::TextDisabled("no motion devices configured");
 }
 
-void App::DrawMotionDetailPanel(const char* type)
+void App::DrawMotionDetailPanel()
 {
     const size_t n = hardware_.MotionCount();
     IMotionController* m = (selectedMotion_ >= 0 && static_cast<size_t>(selectedMotion_) < n)
                              ? hardware_.MotionDevice(static_cast<size_t>(selectedMotion_))
                              : nullptr;
-    if (!m || m->Type() != type) {
-        ImGui::TextDisabled("Select a %s device from the list.", type);
+    if (!m) {
+        ImGui::TextDisabled("Select a device from the list.");
         return;
     }
     // This page is showing this device live — ask it to poll fast while we're here.
@@ -625,11 +730,244 @@ void App::DrawMotionDetailPanel(const char* type)
         ImGui::TextColored(StateColor(ConnState::Failed), "error: %s", m->LastError().c_str());
     }
 
+    // ---- Saved / taught positions (persisted; Move drives via Workflow) ----
     ImGui::Spacing();
-    ImGui::TextDisabled("Jog / move / stop run through the workflow layer (coming next).");
+    ImGui::Separator();
+    ImGui::TextUnformatted("Saved positions");
+    ImGui::SameLine();
+
+    const std::string      devName = hardware_.MotionName(idx);
+    std::vector<SavedPos>& saved   = savedPos_[devName];
+    if (saved.empty()) {                       // seed one placeholder row
+        SavedPos home;
+        std::snprintf(home.name, sizeof(home.name), "Home");
+        home.uid = GenerateUid();
+        for (const auto& a : axes) home.vals[a] = 0.0;
+        saved.push_back(std::move(home));
+    }
+
+    if (ImGui::SmallButton("+ Add current")) {
+        SavedPos p;
+        std::snprintf(p.name, sizeof(p.name), "P%zu", saved.size());
+        p.uid = GenerateUid();
+        const std::map<std::string, double> pos = m->Positions();
+        for (const auto& a : axes) { const auto it = pos.find(a); p.vals[a] = (it != pos.end()) ? it->second : 0.0; }
+        saved.push_back(std::move(p));
+        SavePositions();
+    }
+
+    // Per-position visibility widget: system positions stay hidden from the
+    // table unless revealed here. The hidden flag persists with the position.
+    ImGui::SameLine();
+    size_t hiddenCount = 0;
+    for (const SavedPos& sp : saved) if (sp.hidden) ++hiddenCount;
+    if (ImGui::SmallButton("Show/Hide...")) ImGui::OpenPopup("posvis");
+    if (hiddenCount > 0) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%zu hidden)", hiddenCount);
+    }
+    if (ImGui::BeginPopup("posvis")) {
+        ImGui::TextDisabled("Checked positions are shown in the table.");
+        ImGui::Checkbox("Reveal hidden rows (dimmed)", &showHiddenPos_);
+        ImGui::Separator();
+        for (size_t r = 0; r < saved.size(); ++r) {
+            ImGui::PushID(static_cast<int>(r));
+            bool visible = !saved[r].hidden;
+            if (ImGui::Checkbox(saved[r].name, &visible)) {
+                saved[r].hidden = !visible;
+                SavePositions();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndPopup();
+    }
+
+    const int cols = 5 + static_cast<int>(axes.size());
+    if (ImGui::BeginTable("savedpos", cols,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+            ImVec2(0.0f, ImGui::GetContentRegionAvail().y))) {   // fill the panel
+        ImGui::TableSetupColumn("##move", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("##upd",  ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Name",   ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("##ren",  ImGuiTableColumnFlags_WidthFixed);
+        for (const auto& a : axes) ImGui::TableSetupColumn(a.c_str(), ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("##del",  ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableHeadersRow();
+
+        for (size_t r = 0; r < saved.size(); ++r) {
+            SavedPos& sp = saved[r];
+            if (sp.hidden && !showHiddenPos_) continue;   // system position
+            ImGui::TableNextRow();
+            ImGui::PushID(static_cast<int>(r));
+            if (sp.hidden)   // revealed hidden row — dim the whole row's text
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+
+            ImGui::TableSetColumnIndex(0);
+            if (ImGui::SmallButton("Move")) {   // drive to the saved target, all axes together
+                std::vector<std::pair<std::string, double>> tgt;
+                for (const auto& a : axes) {
+                    const auto it = sp.vals.find(a);
+                    if (it != sp.vals.end()) tgt.emplace_back(a, it->second);
+                }
+                if (workflow_.MoveToPosition(static_cast<size_t>(selectedMotion_), tgt))
+                    FD_INFO("saved", "move %s -> '%s'", devName.c_str(), sp.name);
+                else
+                    FD_WARN("saved", "move %s -> '%s' failed", devName.c_str(), sp.name);
+            }
+            ImGui::TableSetColumnIndex(1);
+            if (ImGui::SmallButton("Upd")) {    // capture the live position (real)
+                const std::map<std::string, double> pos = m->Positions();
+                for (const auto& a : axes) { const auto it = pos.find(a); if (it != pos.end()) sp.vals[a] = it->second; }
+                FD_INFO("saved", "updated '%s' from current position", sp.name);
+                SavePositions();
+            }
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(sp.name);   // read-only — rename via the Edit dialog
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("uid: %s", sp.uid.c_str());
+            ImGui::TableSetColumnIndex(3);
+            if (ImGui::SmallButton("Edit")) {
+                renameRow_ = static_cast<int>(r);
+                std::snprintf(renameBuf_, sizeof(renameBuf_), "%s", sp.name);
+                openRenamePos_ = true;
+            }
+
+            int c = 4;
+            for (const auto& a : axes) {
+                ImGui::TableSetColumnIndex(c++);
+                const auto it = sp.vals.find(a);
+                ImGui::Text("%.4f", (it != sp.vals.end()) ? it->second : 0.0);
+            }
+            ImGui::TableSetColumnIndex(c);
+            if (ImGui::SmallButton("X")) {   // confirmed via dialog before erasing
+                deleteRow_     = static_cast<int>(r);
+                openDeletePos_ = true;
+            }
+            if (sp.hidden) ImGui::PopStyleColor();
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+
+    // ---- Delete confirmation dialog ----
+    if (openDeletePos_) { ImGui::OpenPopup("Delete Position"); openDeletePos_ = false; }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Delete Position", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const bool rowValid = deleteRow_ >= 0 && static_cast<size_t>(deleteRow_) < saved.size();
+        if (!rowValid) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            const SavedPos& sp = saved[static_cast<size_t>(deleteRow_)];
+            ImGui::Text("Delete position '%s' on %s?", sp.name, devName.c_str());
+            ImGui::TextDisabled("uid %s — anything referencing it will break. This cannot be undone.",
+                                sp.uid.c_str());
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.72f, 0.20f, 0.20f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.25f, 0.25f, 1.0f));
+            if (ImGui::Button("Delete")) {
+                FD_INFO("saved", "deleted '%s' (uid %s, %s)", sp.name, sp.uid.c_str(), devName.c_str());
+                saved.erase(saved.begin() + deleteRow_);
+                SavePositions();
+                if (renameRow_ == deleteRow_) renameRow_ = -1;   // row gone — drop pending rename
+                deleteRow_ = -1;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) { deleteRow_ = -1; ImGui::CloseCurrentPopup(); }
+        }
+        ImGui::EndPopup();
+    }
+
+    // ---- Rename dialog (name is a label; the uid never changes) ----
+    if (openRenamePos_) { ImGui::OpenPopup("Rename Position"); openRenamePos_ = false; }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Rename Position", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const bool rowValid = renameRow_ >= 0 && static_cast<size_t>(renameRow_) < saved.size();
+        if (!rowValid) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            SavedPos& sp = saved[static_cast<size_t>(renameRow_)];
+            ImGui::Text("Position uid %s (unchanged)", sp.uid.c_str());
+            ImGui::SetNextItemWidth(320.0f);
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            const bool submit = ImGui::InputText("##rename", renameBuf_, sizeof(renameBuf_),
+                                                 ImGuiInputTextFlags_EnterReturnsTrue);
+            const bool valid = renameBuf_[0] != '\0';
+            ImGui::BeginDisabled(!valid);
+            if (ImGui::Button("OK") || (submit && valid)) {
+                FD_INFO("saved", "renamed '%s' -> '%s' (uid %s)", sp.name, renameBuf_, sp.uid.c_str());
+                std::snprintf(sp.name, sizeof(sp.name), "%s", renameBuf_);
+                SavePositions();
+                renameRow_ = -1;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) { renameRow_ = -1; ImGui::CloseCurrentPopup(); }
+        }
+        ImGui::EndPopup();
+    }
 }
 
-void App::DrawMotionInfoPanel(const char* type)
+void App::DrawVelocityCombo(std::size_t di)
+{
+    IMotionController* dev = hardware_.MotionDevice(di);
+    if (!dev) return;
+    const bool    acs  = dev->Type() == "ACS";
+    const double* vels = acs ? kVelACS : kVelPI;
+    const int     velN = acs ? 5 : 4;
+    const int     key  = static_cast<int>(di);
+    int& idx = velIndex_[key];
+    if (idx < 0 || idx >= velN) idx = 0;
+
+    // Push the UI's velocity to the device once it is connected, so the combo
+    // and the hardware agree even before the user touches it.
+    if (dev->IsConnected() && !velPushed_[key]) {
+        workflow_.SetJogVelocity(di, vels[idx]);
+        velPushed_[key] = true;
+    }
+
+    ImGui::TextUnformatted("Velocity (mm/s)");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    char prev[24];
+    if (velCustomSet_[key] > 0.0)
+        std::snprintf(prev, sizeof(prev), "%g (custom)", velCustomSet_[key]);
+    else
+        std::snprintf(prev, sizeof(prev), "%g", vels[idx]);
+    if (ImGui::BeginCombo("##vel", prev)) {
+        for (int i = 0; i < velN; ++i) {
+            char b[16]; std::snprintf(b, sizeof(b), "%g", vels[i]);
+            if (ImGui::Selectable(b, velCustomSet_[key] <= 0.0 && idx == i)) {
+                idx = i;
+                velCustomSet_[key] = 0.0;   // back to a preset
+                workflow_.SetJogVelocity(di, vels[i]);
+                velPushed_[key] = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    // Custom velocity not in the preset list. Clamped to the preset ceiling for
+    // this controller type (PI 10, ACS 40 mm/s) — raise kVel* to allow more.
+    const double velMax = vels[velN - 1];
+    double& custom = velCustomEdit_[key];
+    if (custom <= 0.0) custom = vels[idx];   // seed the box on first show
+    ImGui::SetNextItemWidth(-64.0f);
+    ImGui::InputDouble("##velcustom", &custom, 0.0, 0.0, "%.3f");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Apply")) {
+        if (custom < 0.001)  custom = 0.001;
+        if (custom > velMax) custom = velMax;
+        velCustomSet_[key] = custom;
+        workflow_.SetJogVelocity(di, custom);
+        velPushed_[key] = true;
+        FD_INFO("motion", "%s custom velocity %.3f mm/s", dev->Name().c_str(), custom);
+    }
+}
+
+void App::DrawMotionInfoPanel()
 {
     // Right panel: the live axis-position table for the selected device.
     const size_t n = hardware_.MotionCount();
@@ -639,7 +977,7 @@ void App::DrawMotionInfoPanel(const char* type)
 
     ImGui::TextUnformatted("Axis positions");
     ImGui::Separator();
-    if (!m || m->Type() != type) { ImGui::TextDisabled("no selection"); return; }
+    if (!m) { ImGui::TextDisabled("no selection"); return; }
 
     const std::vector<std::string>      axes = m->Axes();
     const std::map<std::string, double> pos  = m->Positions();
@@ -659,6 +997,10 @@ void App::DrawMotionInfoPanel(const char* type)
         }
         ImGui::EndTable();
     }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    DrawVelocityCombo(static_cast<size_t>(selectedMotion_));
 }
 
 void App::DrawImageOverlay()

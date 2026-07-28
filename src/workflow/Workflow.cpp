@@ -8,10 +8,28 @@
 #include "core/Topics.h"
 #include "core/Log.h"
 
+#include <chrono>
 #include <cmath>
 #include <memory>
+#include <string>
 
 namespace firedog {
+namespace {
+double NowSec()
+{
+    return std::chrono::duration<double>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// Presses closer together than this accumulate onto one target; a longer gap
+// starts a fresh burst re-seeded from the live position.
+constexpr double kJogCoalesceSec = 0.4;
+
+// Velocity guardrail, enforced for EVERY caller (UI, recipes, programs) — the
+// UI's clamp is convenience, this is the hard limit per controller type.
+constexpr double kMinVelMMs    = 0.001;
+constexpr double kMaxVelPIMMs  = 10.0;   // hexapods
+constexpr double kMaxVelACSMMs = 40.0;   // gantry
+} // namespace
 
 Workflow::Workflow(HardwareManager& hw) : hw_(hw) {}
 
@@ -180,7 +198,17 @@ bool Workflow::SetJogVelocity(std::size_t devIdx, double mmPerSec)
 {
     if (devIdx >= hw_.MotionCount()) return false;
     IMotionController* m = hw_.MotionDevice(devIdx);
-    return m && m->SetVelocity(mmPerSec);
+    if (!m) return false;
+
+    const double maxVel = (m->Type() == "ACS") ? kMaxVelACSMMs : kMaxVelPIMMs;
+    double v = mmPerSec;
+    if (v < kMinVelMMs) v = kMinVelMMs;
+    if (v > maxVel) {
+        FD_WARN("workflow", "%s velocity %.3f mm/s over limit — clamped to %.1f",
+                m->Name().c_str(), mmPerSec, maxVel);
+        v = maxVel;
+    }
+    return m->SetVelocity(v);
 }
 
 bool Workflow::JogGlobal(std::size_t devIdx, float gx, float gy, float gz, double stepMM)
@@ -212,12 +240,22 @@ bool Workflow::JogLocalAxis(std::size_t devIdx, const std::string& axis, double 
     IMotionController* m = hw_.MotionDevice(devIdx);
     if (!m) return false;
 
-    const std::map<std::string, double> pos = m->Positions();
-    const auto it = pos.find(axis);
-    const double cur    = (it != pos.end()) ? it->second : 0.0;
-    const double target = cur + deltaMM;
-    FD_INFO("jog", "%s: %s %+.4f mm -> %.4f", m->Name().c_str(), axis.c_str(), deltaMM, target);
-    return m->MoveAbsolute(axis, target);
+    // Accumulate an evolving target so a new press OVERRIDES (extends) the
+    // previous target rather than queuing a move read from lagging feedback.
+    // After an idle gap, re-seed from the live position (a fresh burst).
+    const double      now = NowSec();
+    const std::string key = std::to_string(devIdx) + "/" + axis;
+    JogTrack&         jt  = jogTracks_[key];
+    if (now - jt.lastT > kJogCoalesceSec) {
+        const std::map<std::string, double> pos = m->Positions();
+        const auto it = pos.find(axis);
+        jt.target = (it != pos.end()) ? it->second : 0.0;
+    }
+    jt.target += deltaMM;
+    jt.lastT   = now;
+
+    FD_INFO("jog", "%s: %s %+.4f mm -> %.4f", m->Name().c_str(), axis.c_str(), deltaMM, jt.target);
+    return m->MoveAbsolute(axis, jt.target);   // driver retargets (PI_MOV / acsc_ToPoint)
 }
 
 bool Workflow::StopMotion(std::size_t devIdx)
@@ -227,6 +265,14 @@ bool Workflow::StopMotion(std::size_t devIdx)
     if (!m) return false;
     FD_WARN("workflow", "STOP %s", m->Name().c_str());
     return m->StopAll();
+}
+
+bool Workflow::MoveToPosition(std::size_t devIdx,
+                              const std::vector<std::pair<std::string, double>>& targets)
+{
+    if (devIdx >= hw_.MotionCount() || targets.empty()) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    return m && m->MoveAbsolute(targets);   // coordinated (PI_MOV / acsc_ToPointM+GoM)
 }
 
 } // namespace firedog
