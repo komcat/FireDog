@@ -38,6 +38,17 @@ public:
     bool SetVoltageBias(double volts);   // :SOUR:VOLT + :OUTP ON
     bool OutputOff();
 
+    // ---- Runtime measurement settings (safe against the poll loop: SCPI goes
+    // out under the same VISA mutex the :READ? transactions hold) ----
+    bool SetNplc(double nplc);        // both channels; governs the sample rate
+    bool SetRangeAuto();              // :SENSn:CURR:RANG:AUTO ON
+    bool SetRangeFixed(double amps);  // fixed range, e.g. 2e-6 for 2 uA
+
+    // ---- Cheap state reads for the UI (never blocks on VISA) ----
+    double BiasVolts() const;         // last applied bias (0 until set)
+    bool   OutputOn() const;
+    Config GetConfig() const;         // reflects runtime NPLC/range changes
+
     // Poll both channels every intervalMs and publish to the two DataBus topics.
     bool StartPolling(int intervalMs, const std::string& topicCh1, const std::string& topicCh2);
     void StopPolling();

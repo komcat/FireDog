@@ -53,6 +53,7 @@ struct KeithleyConfig {
     bool             autoRange = true;
     double           fixedRange = 0.0;
     int              pollIntervalMs = 100;
+    double           biasVoltage = 1.0;   // ch1 bias applied after connect
 };
 
 // One motion controller entry (from "motion_devices"): a PI hexapod or an ACS
@@ -165,6 +166,12 @@ struct HardwareConfig {
     static bool SaveCameraSettings(const std::string& path, const std::string& id,
                                    double pixelToMmX, double pixelToMmY,
                                    double exposureUs);
+
+    // Write ONLY one Keithley's measurement settings back into the config file
+    // (read-modify-write; same rebuild caveat). Matches instruments[] by name.
+    static bool SaveKeithleySettings(const std::string& path, const std::string& name,
+                                     double nplc, bool autoRange, double fixedRange,
+                                     int pollIntervalMs, double biasVoltage);
 };
 
 } // namespace firedog

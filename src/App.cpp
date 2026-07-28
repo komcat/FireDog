@@ -113,6 +113,26 @@ void DeviceStatusLine(ConnState s, const char* name) {
     ImGui::Text("%-12s %s", name, StateText(s));
 }
 
+// Keithley 6482 fixed current ranges (full-scale amps, decades).
+struct KeiRange { const char* label; double amps; };
+constexpr KeiRange kKeiRanges[] = {
+    {"2 nA", 2e-9}, {"20 nA", 2e-8}, {"200 nA", 2e-7}, {"2 uA", 2e-6},
+    {"20 uA", 2e-5}, {"200 uA", 2e-4}, {"2 mA", 2e-3}, {"20 mA", 2e-2},
+};
+constexpr int kKeiRangeCount = static_cast<int>(sizeof(kKeiRanges) / sizeof(kKeiRanges[0]));
+
+// Closest table row for a configured fixed range (default: 2 mA).
+int KeiRangeIndexFor(double amps) {
+    int best = 6;
+    if (amps <= 0.0) return best;
+    double bestErr = 1e300;
+    for (int i = 0; i < kKeiRangeCount; ++i) {
+        const double err = std::fabs(std::log10(amps / kKeiRanges[i].amps));
+        if (err < bestErr) { bestErr = err; best = i; }
+    }
+    return best;
+}
+
 // Format an amp value with an auto-scaled unit (mA / uA / nA / pA).
 std::string FormatCurrent(double a) {
     const double m = std::fabs(a);
@@ -198,6 +218,14 @@ int App::Run()
         pixelToMmX_ = static_cast<float>(cam->pixelToMmX);
         pixelToMmY_ = static_cast<float>(cam->pixelToMmY);
     }
+    if (const KeithleyConfig* kc = hw.FirstEnabledKeithley()) {
+        keithleyId_   = kc->name;   // for saving settings back into hardware.json
+        keiBias_      = static_cast<float>(kc->biasVoltage);
+        keiNplc_      = static_cast<float>(kc->nplc);
+        keiAutoRange_ = kc->autoRange;
+        keiRangeIdx_  = KeiRangeIndexFor(kc->fixedRange);
+        keiPollMs_    = kc->pollIntervalMs;
+    }
     transformCfg_ = LoadMotionTransforms("config/motion_transforms.json");
     workflow_.SetTransforms(transformCfg_);   // transformCfg_ stays the editor's working copy
     savedPos_ = LoadSavedPositions();   // config fallback (no product)
@@ -227,7 +255,8 @@ int App::Run()
 
 void App::Update(float dt)
 {
-    workflow_.Update(dt);   // layer 2 (kept for future orchestration)
+    workflow_.Update(dt);        // layer 2 (kept for future orchestration)
+    UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)
 }
 
 void App::DrawMainWindow()
@@ -260,6 +289,8 @@ void App::DrawMainWindow()
                     currentPage_ = Page::Overview;
                 if (ImGui::MenuItem("Camera",   nullptr, currentPage_ == Page::Camera))
                     currentPage_ = Page::Camera;
+                if (ImGui::MenuItem("Keithley", nullptr, currentPage_ == Page::Keithley))
+                    currentPage_ = Page::Keithley;
                 if (ImGui::MenuItem("Motion",   nullptr, currentPage_ == Page::Motion))
                     currentPage_ = Page::Motion;
                 if (ImGui::MenuItem("IO",       nullptr, currentPage_ == Page::IO))
@@ -360,6 +391,7 @@ void App::DrawMainWindow()
         ImGui::BeginChild("LeftPanel", ImVec2(leftW_, avail.y), ImGuiChildFlags_Borders);
         switch (currentPage_) {
             case Page::Camera:    DrawCameraListPanel();    break;
+            case Page::Keithley:  DrawKeithleyListPanel();  break;
             case Page::Motion:    DrawMotionListPanel();    break;
             case Page::IO:        DrawIoListPanel();        break;
             case Page::Pneumatic: DrawPneumaticListPanel(); break;
@@ -377,6 +409,7 @@ void App::DrawMainWindow()
         ImGui::BeginChild("MiddlePanel", ImVec2(centerW, midH), ImGuiChildFlags_Borders);
         switch (currentPage_) {
             case Page::Camera:    DrawCameraDetailPanel();    break;
+            case Page::Keithley:  DrawKeithleyDetailPanel();  break;
             case Page::Motion:    DrawMotionDetailPanel();    break;
             case Page::IO:        DrawIoDetailPanel();        break;
             case Page::Pneumatic: DrawPneumaticDetailPanel(); break;
@@ -397,6 +430,7 @@ void App::DrawMainWindow()
         ImGui::BeginChild("RightPanel", ImVec2(rightW_, avail.y), ImGuiChildFlags_Borders);
         switch (currentPage_) {
             case Page::Camera:    DrawCameraInfoPanel();    break;
+            case Page::Keithley:  DrawKeithleyInfoPanel();  break;
             case Page::Motion:    DrawMotionInfoPanel();    break;
             case Page::IO:        DrawIoInputPanel();       break;
             case Page::Pneumatic: DrawPneumaticInfoPanel(); break;
@@ -916,6 +950,218 @@ void App::DrawCameraInfoPanel()
     ImGui::TextDisabled("Calibration");
     ImGui::Text("X %.5f mm/px", pixelToMmX_);
     ImGui::Text("Y %.5f mm/px", pixelToMmY_);
+}
+
+// ---- Keithley page --------------------------------------------------------
+// Left: status + connect/disconnect. Middle: bias output + live-adjustable
+// measurement settings + the shared chart. Right: identity + current settings
+// + live values. Commands go through Workflow; reads come from the driver's
+// cheap state accessors (GetConfig/BiasVolts never touch VISA).
+
+void App::DrawKeithleyListPanel()
+{
+    ImGui::TextUnformatted("Keithley 6482");
+    ImGui::Separator();
+    if (keithleyId_.empty()) {
+        ImGui::TextDisabled("no instrument configured in hardware.json");
+        return;
+    }
+
+    const ConnState st = hardware_.KeithleyState();
+    ImGui::TextColored(StateColor(st), "%s", StateGlyph(st));
+    ImGui::SameLine();
+    ImGui::TextUnformatted(hardware_.KeithleyName().c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(StateColor(st), "%s", StateText(st));
+
+    ImGui::Spacing();
+    const bool busy = (st == ConnState::Connecting);
+    ImGui::BeginDisabled(busy || st == ConnState::Connected);
+    if (ImGui::Button("Connect", ImVec2(-FLT_MIN, 0.0f))) workflow_.ConnectKeithley();
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(busy || st != ConnState::Connected);
+    if (ImGui::Button("Disconnect", ImVec2(-FLT_MIN, 0.0f))) {
+        workflow_.DisconnectKeithley();
+        keiPulled_ = false;   // re-seed edits on the next connect
+    }
+    ImGui::EndDisabled();
+
+    Keithley6482* kei = hardware_.Keithley();
+    ImGui::Spacing();
+    if (kei && kei->IsPolling())
+        ImGui::Text("polling @ %.0f Hz", MeasuredHz(kT1_.empty() ? kT2_ : kT1_));
+    else
+        ImGui::TextDisabled("not polling");
+
+    if (st == ConnState::Failed && kei) {
+        const std::string err = kei->LastError();
+        if (!err.empty()) {
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, StateColor(ConnState::Failed));
+            ImGui::TextWrapped("%s", err.c_str());
+            ImGui::PopStyleColor();
+        }
+    }
+}
+
+void App::DrawKeithleyDetailPanel()
+{
+    const ConnState st  = hardware_.KeithleyState();
+    Keithley6482*   kei = hardware_.Keithley();
+    const bool connected = (st == ConnState::Connected) && kei;
+
+    if (connected && !keiPulled_) {   // seed edits from the live driver once
+        const Keithley6482::Config cfg = kei->GetConfig();
+        keiNplc_      = static_cast<float>(cfg.nplc);
+        keiAutoRange_ = cfg.autoRange;
+        if (cfg.fixedRange > 0.0) keiRangeIdx_ = KeiRangeIndexFor(cfg.fixedRange);
+        const double bias = kei->BiasVolts();
+        if (bias != 0.0) keiBias_ = static_cast<float>(bias);
+        keiPulled_ = true;
+    }
+    if (!connected) keiPulled_ = false;
+
+    // ---- Bias output (:SOUR:VOLT + :OUTP) ----
+    ImGui::TextUnformatted("Bias output");
+    ImGui::Separator();
+    ImGui::BeginDisabled(!connected);
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::InputFloat("V##bias", &keiBias_, 0.0f, 0.0f, "%.3f");
+    if (keiBias_ >  10.0f) keiBias_ =  10.0f;   // photodiode-bias sanity clamp
+    if (keiBias_ < -10.0f) keiBias_ = -10.0f;
+    ImGui::SameLine();
+    // Symmetric pair: ON applies the bias voltage AND enables the output.
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.60f, 0.25f, 1.0f));
+    if (ImGui::Button("Output ON")) workflow_.SetKeithleyBias(keiBias_);
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
+    if (ImGui::Button("Output OFF")) workflow_.KeithleyOutputOff();
+    ImGui::PopStyleColor();
+    ImGui::EndDisabled();
+    if (connected) {
+        if (kei->OutputOn())
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.20f, 1.0f),
+                               "output ON @ %.3f V", kei->BiasVolts());
+        else
+            ImGui::TextDisabled("output OFF");
+    } else {
+        ImGui::TextDisabled("connect the instrument to control it");
+    }
+
+    ImGui::Spacing();
+    // ---- Measurement settings (applied live; safe against the poll loop) ----
+    ImGui::TextUnformatted("Measurement");
+    ImGui::Separator();
+    ImGui::BeginDisabled(!connected);
+
+    ImGui::TextUnformatted("NPLC");
+    static constexpr float kNplcPresets[] = {0.01f, 0.1f, 1.0f, 5.0f, 10.0f};
+    for (int i = 0; i < 5; ++i) {
+        if (i > 0) ImGui::SameLine();
+        const float v   = kNplcPresets[i];
+        const bool  sel = std::fabs(keiNplc_ - v) < v * 0.01f;
+        if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.85f, 1.0f));
+        char lbl[16];
+        std::snprintf(lbl, sizeof(lbl), "%g", v);
+        if (ImGui::Button(lbl, ImVec2(52.0f, 0.0f))) {
+            keiNplc_ = v;
+            workflow_.SetKeithleyNplc(v);
+        }
+        if (sel) ImGui::PopStyleColor();
+    }
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::InputFloat("##nplcIn", &keiNplc_, 0.0f, 0.0f, "%.3f");
+    ImGui::SameLine();
+    if (ImGui::Button("Apply##nplc")) workflow_.SetKeithleyNplc(keiNplc_);
+    ImGui::TextDisabled("NPLC governs the sample rate: 0.1 = ~80 Hz, 1 = ~30 Hz, 5 = ~12 Hz");
+
+    ImGui::Spacing();
+    if (ImGui::Checkbox("Auto range", &keiAutoRange_)) {
+        if (keiAutoRange_) workflow_.SetKeithleyRangeAuto();
+        else               workflow_.SetKeithleyRangeFixed(kKeiRanges[keiRangeIdx_].amps);
+    }
+    if (!keiAutoRange_) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(140.0f);
+        if (ImGui::BeginCombo("##keirange", kKeiRanges[keiRangeIdx_].label)) {
+            for (int i = 0; i < kKeiRangeCount; ++i) {
+                if (ImGui::Selectable(kKeiRanges[i].label, keiRangeIdx_ == i)) {
+                    keiRangeIdx_ = i;
+                    workflow_.SetKeithleyRangeFixed(kKeiRanges[i].amps);
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::InputInt("Poll ms (0 = max)", &keiPollMs_);
+    if (keiPollMs_ < 0) keiPollMs_ = 0;
+    ImGui::SameLine();
+    if (ImGui::Button("Apply##poll")) workflow_.SetKeithleyPollInterval(keiPollMs_);
+
+    ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    if (ImGui::Button("Save to config")) {
+        const double fixed = keiAutoRange_ ? 0.0 : kKeiRanges[keiRangeIdx_].amps;
+        if (HardwareConfig::SaveKeithleySettings("config/hardware.json", keithleyId_,
+                                                 keiNplc_, keiAutoRange_, fixed,
+                                                 keiPollMs_, keiBias_))
+            FD_INFO("app", "Keithley settings saved to config/hardware.json");
+        else
+            FD_ERROR("app", "failed to save Keithley settings");
+    }
+    ImGui::TextDisabled("Save stores NPLC/range/poll/bias; a rebuild recopies the repo "
+                        "config over the exe-side file.");
+
+    ImGui::Spacing();
+    // ---- Live chart (shared with the Aux overlay) ----
+    ImGui::TextUnformatted("Live");
+    ImGui::Separator();
+    DrawKeithleyChart(ImVec2(-1, -1));   // fill the rest of the panel
+}
+
+void App::DrawKeithleyInfoPanel()
+{
+    ImGui::TextUnformatted("Instrument info");
+    ImGui::Separator();
+
+    const ConnState st  = hardware_.KeithleyState();
+    Keithley6482*   kei = hardware_.Keithley();
+
+    ImGui::TextDisabled("State");
+    ImGui::TextColored(StateColor(st), "%s", StateText(st));
+    ImGui::Spacing();
+    ImGui::TextDisabled("Device ID");
+    ImGui::TextWrapped("%s", (kei && !kei->DeviceId().empty()) ? kei->DeviceId().c_str() : "-");
+
+    if (kei) {
+        const Keithley6482::Config cfg = kei->GetConfig();
+        ImGui::TextDisabled("VISA");
+        ImGui::TextWrapped("%s", cfg.visaResource.c_str());
+        ImGui::Spacing();
+        ImGui::TextDisabled("Settings");
+        ImGui::Text("NPLC %.3g", cfg.nplc);
+        if (cfg.autoRange) ImGui::TextUnformatted("range: auto");
+        else               ImGui::Text("range: %.0e A", cfg.fixedRange);
+        if (kei->OutputOn()) ImGui::Text("bias ON @ %.3f V", kei->BiasVolts());
+        else                 ImGui::TextUnformatted("bias output OFF");
+    }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Live");
+    if (!kV1_.empty())
+        ImGui::TextColored(ImVec4(0.00f, 0.85f, 1.00f, 1.0f), "Ch1 %s",
+                           FormatCurrent(kV1_.back()).c_str());
+    else ImGui::TextDisabled("Ch1 --");
+    if (!kV2_.empty())
+        ImGui::TextColored(ImVec4(1.00f, 0.55f, 0.10f, 1.0f), "Ch2 %s",
+                           FormatCurrent(kV2_.back()).c_str());
+    else ImGui::TextDisabled("Ch2 --");
+    if (kei && kei->IsPolling())
+        ImGui::Text("%.0f Hz", MeasuredHz(kT1_.empty() ? kT2_ : kT1_));
 }
 
 // ---- PI / ACS pages (motion fleet) ---------------------------------------
@@ -2006,12 +2252,28 @@ void App::DrawAuxWindow()
     ImGui::End();
 }
 
-void App::DrawSignalOverlay()
+// Per-frame pull of the Keithley streams + rolling-clock update. Called once
+// from Update() so every chart view (Aux overlay + Keithley page) renders the
+// same buffers without double-advancing the clock.
+void App::UpdateKeithleyChartData(float dt)
 {
-    // ---- Keithley current stream (subscribed from the DataBus) ----
     DataBus::Instance().Stream(topics::kKeithleyCh1).Snapshot(kT1_, kV1_);
     DataBus::Instance().Stream(topics::kKeithleyCh2).Snapshot(kT2_, kV2_);
 
+    // chartClock_ is the rolling "now" the data is rebased against; it advances
+    // by real frame time and re-syncs to the newest sample.
+    const std::vector<float>& tref = kT1_.empty() ? kT2_ : kT1_;
+    if (!tref.empty()) {
+        const double last = tref.back();
+        chartClock_ += dt;
+        if (last > chartClock_ || chartClock_ - last > 0.5) chartClock_ = last;
+    }
+}
+
+// Readout + channel selector + rolling chart — shared by the Aux overlay and
+// the Keithley page (chartCh_ keeps both views on the same channel selection).
+void App::DrawKeithleyChart(const ImVec2& size)
+{
     // Live readout: latest value per channel + achieved sample rate.
     if (!kV1_.empty()) ImGui::TextColored(ImVec4(0.00f, 0.85f, 1.00f, 1.0f), "Ch1: %s", FormatCurrent(kV1_.back()).c_str());
     else               ImGui::TextDisabled("Ch1: --");
@@ -2025,19 +2287,11 @@ void App::DrawSignalOverlay()
     ImGui::RadioButton("Ch2", &chartCh_, 1); ImGui::SameLine();
     ImGui::RadioButton("Both", &chartCh_, 2);
 
-    if (ImPlot::BeginPlot("##keithley", ImVec2(-1, -1))) {
+    if (ImPlot::BeginPlot("##keithley", size)) {
         // Y auto-fits to the visible data; X is a fixed relative-time window:
-        // 0 s at the right edge (now), running back to -kChartWindowSec on the
-        // left. chartClock_ is the rolling "now" that data is rebased against;
-        // it advances by real frame time and re-syncs to the newest sample.
+        // 0 s at the right edge (now), running back to -kChartWindowSec.
         ImPlot::SetupAxes("t (s)", "current (A)",
                           ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
-        const std::vector<float>& tref = kT1_.empty() ? kT2_ : kT1_;
-        if (!tref.empty()) {
-            const double last = tref.back();
-            chartClock_ += ImGui::GetIO().DeltaTime;
-            if (last > chartClock_ || chartClock_ - last > 0.5) chartClock_ = last;
-        }
         ImPlot::SetupAxisLimits(ImAxis_X1, -kChartWindowSec, 0.0, ImGuiCond_Always);
         ImPlot::SetupAxisFormat(ImAxis_X1, "%.0fs");
 
@@ -2053,6 +2307,11 @@ void App::DrawSignalOverlay()
         }
         ImPlot::EndPlot();
     }
+}
+
+void App::DrawSignalOverlay()
+{
+    DrawKeithleyChart(ImVec2(-1, -1));   // fill the overlay child
 }
 
 void App::DrawLogPanel()

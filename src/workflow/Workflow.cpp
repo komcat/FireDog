@@ -405,30 +405,113 @@ void Workflow::StartKeithley(const HardwareConfig& hw)
         return;
     }
 
+    keiCfg_      = *k;   // kept so the Keithley page can reconnect later
+    keiCfgValid_ = true;
     hw_.SetKeithleyName(k->name);
+    LaunchKeithleyConnect();
+}
+
+void Workflow::LaunchKeithleyConnect()
+{
     hw_.SetKeithleyState(ConnState::Connecting);
-    FD_INFO("workflow", "connecting Keithley '%s' (%s)", k->name.c_str(), k->visaResource.c_str());
+    FD_INFO("workflow", "connecting Keithley '%s' (%s)",
+            keiCfg_.name.c_str(), keiCfg_.visaResource.c_str());
 
     Keithley6482::Config cfg;
-    cfg.name            = k->name;
-    cfg.visaResource    = k->visaResource;
-    cfg.channelCount    = k->channelCount;
-    cfg.enabledChannels = k->enabledChannels;
-    cfg.nplc            = k->nplc;
-    cfg.autoRange       = k->autoRange;
-    cfg.fixedRange      = k->fixedRange;
+    cfg.name            = keiCfg_.name;
+    cfg.visaResource    = keiCfg_.visaResource;
+    cfg.channelCount    = keiCfg_.channelCount;
+    cfg.enabledChannels = keiCfg_.enabledChannels;
+    cfg.nplc            = keiCfg_.nplc;
+    cfg.autoRange       = keiCfg_.autoRange;
+    cfg.fixedRange      = keiCfg_.fixedRange;
     hw_.SetKeithley(std::make_unique<Keithley6482>(cfg));
 
-    const int interval = k->pollIntervalMs;
-    keiConnect_ = std::async(std::launch::async, [this, interval] {
+    const int    interval = keiCfg_.pollIntervalMs;
+    const double bias     = keiCfg_.biasVoltage;   // ch1 alignment bias, from config
+    keiConnect_ = std::async(std::launch::async, [this, interval, bias] {
         Keithley6482* kei = hw_.Keithley();
         bool ok = kei && kei->Connect();
-        if (ok) ok = kei->SetVoltageBias(1.0);   // ch1 bias = 1 V (alignment policy)
+        // Bias is verified against the instrument (:OUTP?); a refusal is
+        // logged but doesn't abort bring-up — measurement works unbiased.
+        if (ok && !kei->SetVoltageBias(bias))
+            FD_WARN("workflow", "Keithley bias not confirmed (see keithley log) — polling anyway");
         if (ok) ok = kei->StartPolling(interval, topics::kKeithleyCh1, topics::kKeithleyCh2);
         hw_.SetKeithleyState(ok ? ConnState::Connected : ConnState::Failed);
         if (!ok) FD_ERROR("workflow", "Keithley bring-up failed: %s",
                           kei ? kei->LastError().c_str() : "no driver");
     });
+}
+
+bool Workflow::ConnectKeithley()
+{
+    if (!keiCfgValid_) {
+        FD_WARN("workflow", "Keithley connect: no instrument configured");
+        return false;
+    }
+    if (hw_.KeithleyState() == ConnState::Connecting) return false;   // in flight
+    Keithley6482* kei = hw_.Keithley();
+    if (kei && kei->IsConnected()) return true;                       // already up
+    LaunchKeithleyConnect();   // rebuilds the driver from keiCfg_
+    return true;
+}
+
+bool Workflow::DisconnectKeithley()
+{
+    if (hw_.KeithleyState() == ConnState::Connecting) return false;   // let it finish
+    Keithley6482* kei = hw_.Keithley();
+    if (!kei) return false;
+    kei->Disconnect();   // stops polling, :OUTP OFF, restores the display
+    hw_.SetKeithleyState(ConnState::Disconnected);
+    FD_INFO("workflow", "Keithley '%s' disconnected", hw_.KeithleyName().c_str());
+    return true;
+}
+
+// The runtime-settings commands all require a live connection.
+Keithley6482* Workflow::ConnectedKeithley() const
+{
+    if (hw_.KeithleyState() != ConnState::Connected) return nullptr;
+    return hw_.Keithley();
+}
+
+bool Workflow::SetKeithleyBias(double volts)
+{
+    Keithley6482* kei = ConnectedKeithley();
+    return kei && kei->SetVoltageBias(volts);
+}
+
+bool Workflow::KeithleyOutputOff()
+{
+    Keithley6482* kei = ConnectedKeithley();
+    return kei && kei->OutputOff();
+}
+
+bool Workflow::SetKeithleyNplc(double nplc)
+{
+    Keithley6482* kei = ConnectedKeithley();
+    return kei && kei->SetNplc(nplc);
+}
+
+bool Workflow::SetKeithleyRangeAuto()
+{
+    Keithley6482* kei = ConnectedKeithley();
+    return kei && kei->SetRangeAuto();
+}
+
+bool Workflow::SetKeithleyRangeFixed(double amps)
+{
+    Keithley6482* kei = ConnectedKeithley();
+    return kei && kei->SetRangeFixed(amps);
+}
+
+bool Workflow::SetKeithleyPollInterval(int ms)
+{
+    Keithley6482* kei = ConnectedKeithley();
+    if (!kei) return false;
+    kei->StopPolling();
+    const bool ok = kei->StartPolling(ms, topics::kKeithleyCh1, topics::kKeithleyCh2);
+    if (ok) keiCfg_.pollIntervalMs = ms;   // so a later reconnect keeps it
+    return ok;
 }
 
 void Workflow::Update(float dt)

@@ -29,7 +29,7 @@ struct CanvasObject {
 // Which content the Main window shows. Hardware pages are selected via the
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
-enum class Page { Overview, Camera, Motion, IO, Pneumatic, WatchEdit, TransformEdit };
+enum class Page { Overview, Camera, Keithley, Motion, IO, Pneumatic, WatchEdit, TransformEdit };
 
 class App {
 public:
@@ -49,6 +49,10 @@ private:
     void DrawCameraListPanel();    // left:   status + connect/disconnect
     void DrawCameraDetailPanel();  // middle: exposure + pixel->mm + preview
     void DrawCameraInfoPanel();    // right:  identity + stream info
+    // Keithley page — the 6482 picoammeter.
+    void DrawKeithleyListPanel();    // left:   status + connect/disconnect
+    void DrawKeithleyDetailPanel();  // middle: bias + measurement settings + chart
+    void DrawKeithleyInfoPanel();    // right:  identity + settings + live values
     // Motion page — all motion devices (PI + ACS) on one page.
     void DrawMotionListPanel();    // left:   device list + status
     void DrawMotionDetailPanel();  // middle: selected device + positions
@@ -99,7 +103,21 @@ private:
     float camExposureUs_ = 0.0f;
     bool  camExpoPulled_ = false;
 
-    // Keithley chart buffers — pulled from the DataBus each frame.
+    // Keithley page state — edit values seeded from config at startup, then
+    // re-seeded from the driver once per connection (camera-exposure pattern).
+    std::string keithleyId_;       // config instrument name (for saving)
+    float keiBias_      = 1.0f;    // bias voltage edit (V)
+    float keiNplc_      = 5.0f;    // NPLC edit
+    bool  keiAutoRange_ = true;
+    int   keiRangeIdx_  = 0;       // index into kKeiRanges (App.cpp)
+    int   keiPollMs_    = 0;       // poll interval edit (0 = as fast as possible)
+    bool  keiPulled_    = false;
+
+    // Keithley chart buffers — refreshed once per frame by
+    // UpdateKeithleyChartData (from Update); rendered by DrawKeithleyChart in
+    // both the Aux overlay and the Keithley page.
+    void UpdateKeithleyChartData(float dt);
+    void DrawKeithleyChart(const ImVec2& size);
     int                       chartCh_ = 2;   // 0 ch1, 1 ch2, 2 both
     std::vector<float>        kT1_, kV1_, kT2_, kV2_;
     std::vector<float>        kX1_, kX2_;      // X shifted to relative time (t - now)

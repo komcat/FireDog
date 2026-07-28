@@ -235,7 +235,8 @@
       "measurement_nplc": 0.1,
       "auto_range": true,
       "fixed_range": 0.0,
-      "poll_interval_ms": 0
+      "poll_interval_ms": 0,
+      "bias_voltage": 1.0
     }
   ]
 }

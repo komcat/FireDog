@@ -19,6 +19,7 @@
 namespace firedog {
 
 class HardwareManager;
+class Keithley6482;
 
 class Workflow {
 public:
@@ -65,6 +66,18 @@ public:
     bool DisconnectCamera();     // stop grabbing + close (quick, synchronous)
     bool SetCameraExposure(double us);   // requires Connected
 
+    // ---- Keithley commands (Keithley page) ----------------------------------
+    // Reconnect rebuilds the driver from the config captured at Start; the
+    // runtime setters require Connected and are safe against the poll loop.
+    bool ConnectKeithley();
+    bool DisconnectKeithley();
+    bool SetKeithleyBias(double volts);
+    bool KeithleyOutputOff();
+    bool SetKeithleyNplc(double nplc);
+    bool SetKeithleyRangeAuto();
+    bool SetKeithleyRangeFixed(double amps);
+    bool SetKeithleyPollInterval(int ms);   // restart polling at the new rate
+
     // ---- Digital IO commands (IO page + future procedures) ------------------
     // devIdx indexes the HardwareManager IO fleet. Writes require Connected.
     bool SetIoOutput(std::size_t devIdx, int pin, bool on);
@@ -96,6 +109,8 @@ public:
 private:
     void StartCamera(const HardwareConfig& hw);
     void LaunchCameraConnect();   // async connect from camCfg_ (Start + reconnect)
+    void LaunchKeithleyConnect(); // async connect from keiCfg_ (Start + reconnect)
+    Keithley6482* ConnectedKeithley() const;   // null unless state == Connected
     void StartKeithley(const HardwareConfig& hw);
     void StartMotion(const HardwareConfig& hw);
     void StartIO(const HardwareConfig& hw);
@@ -123,6 +138,10 @@ private:
     // Camera config captured at Start so the Camera page can reconnect later.
     CameraConfig camCfg_;
     bool         camCfgValid_ = false;
+
+    // Keithley config captured at Start (same pattern as the camera).
+    KeithleyConfig keiCfg_;
+    bool           keiCfgValid_ = false;
 
     // Per-(device,axis) jog target: rapid presses accumulate onto one evolving
     // target so the latest press overrides the previous instead of queuing; the

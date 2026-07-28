@@ -173,6 +173,7 @@ HardwareConfig HardwareConfig::Load(const std::string& path)
                 kc.autoRange      = inst.value("auto_range", true);
                 kc.fixedRange     = inst.value("fixed_range", 0.0);
                 kc.pollIntervalMs = inst.value("poll_interval_ms", 100);
+                kc.biasVoltage    = inst.value("bias_voltage", 1.0);
                 hc.keithleys.push_back(kc);
             }
         }
@@ -256,6 +257,49 @@ bool HardwareConfig::SaveCameraSettings(const std::string& path, const std::stri
     }
     if (!found) {
         std::cerr << "[config] camera id '" << id << "' not found in " << path << std::endl;
+        return false;
+    }
+
+    std::ofstream out(path);
+    if (!out) {
+        std::cerr << "[config] cannot write " << path << std::endl;
+        return false;
+    }
+    out << j.dump(2) << "\n";
+    return true;
+}
+
+bool HardwareConfig::SaveKeithleySettings(const std::string& path, const std::string& name,
+                                          double nplc, bool autoRange, double fixedRange,
+                                          int pollIntervalMs, double biasVoltage)
+{
+    nlohmann::json j;
+    {
+        std::ifstream f(path);
+        if (f) {
+            try { f >> j; }
+            catch (const std::exception& e) {
+                std::cerr << "[config] cannot rewrite " << path << ": " << e.what() << std::endl;
+                return false;   // don't clobber a file we couldn't parse
+            }
+        }
+    }
+
+    bool found = false;
+    if (j.contains("instruments")) {
+        for (auto& inst : j["instruments"]) {
+            if (inst.value("name", std::string()) != name) continue;
+            inst["measurement_nplc"] = nplc;
+            inst["auto_range"]       = autoRange;
+            inst["fixed_range"]      = fixedRange;
+            inst["poll_interval_ms"] = pollIntervalMs;
+            inst["bias_voltage"]     = biasVoltage;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        std::cerr << "[config] instrument '" << name << "' not found in " << path << std::endl;
         return false;
     }
 
