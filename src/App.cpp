@@ -3611,18 +3611,17 @@ void App::DrawVelocityCombo(std::size_t di)
     int& idx = velIndex_[key];
     if (idx < 0 || idx >= velN) idx = 0;
 
-    // Push the UI's velocity to the device once it is connected, so the combo
-    // and the hardware agree even before the user touches it.
-    if (dev->IsConnected() && !velPushed_[key]) {
-        workflow_.SetJogVelocity(di, vels[idx]);
-        velPushed_[key] = true;
-    }
-
+    // Deliberately NO velocity push at connect (and none at disconnect/exit):
+    // the device keeps whatever velocity it already has until the operator —
+    // or a recipe/script velocity override — explicitly sets one. Until then
+    // the combo shows "(device)" instead of pretending to know the value.
     ImGui::TextUnformatted("Velocity (mm/s)");
     ImGui::SetNextItemWidth(-FLT_MIN);
     char prev[24];
     if (velCustomSet_[key] > 0.0)
         std::snprintf(prev, sizeof(prev), "%g (custom)", velCustomSet_[key]);
+    else if (!velPushed_[key])
+        std::snprintf(prev, sizeof(prev), "(device)");
     else
         std::snprintf(prev, sizeof(prev), "%g", vels[idx]);
     if (ImGui::BeginCombo("##vel", prev)) {

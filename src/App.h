@@ -295,7 +295,9 @@ private:
     // Per-device velocity selection, shared by the Jog panel and the Motion
     // page so both always show the same value for a device.
     std::map<int, int>    velIndex_;      // device index -> velocity-list index
-    std::map<int, bool>   velPushed_;     // device index -> UI value pushed once
+    std::map<int, bool>   velPushed_;     // device index -> user explicitly set a
+                                          // velocity this session ("(device)" before;
+                                          // nothing is pushed at connect or exit)
     std::map<int, double> velCustomEdit_; // device index -> custom input-box value
     std::map<int, double> velCustomSet_;  // device index -> applied custom (0 = preset)
 
