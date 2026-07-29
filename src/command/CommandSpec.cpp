@@ -18,6 +18,7 @@ const char* ParamTypeName(ParamType t)
     case ParamType::MapName:      return "map name";
     case ParamType::PinName:      return "pin name";
     case ParamType::TopicName:    return "topic";
+    case ParamType::ScriptFile:   return "script file";
     case ParamType::Enum:         return "enum";
     }
     return "?";
@@ -69,6 +70,7 @@ bool TypeMatches(ParamType t, const nlohmann::json& v)
     case ParamType::MapName:
     case ParamType::PinName:
     case ParamType::TopicName:
+    case ParamType::ScriptFile:
     case ParamType::Enum:
         return v.is_string();
     }

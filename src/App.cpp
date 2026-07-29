@@ -1002,6 +1002,10 @@ std::string App::AutoNickname(const RecipeStep& s) const
                 for (const SavedPos& sp : it->second)
                     if (sp.uid == piece) { piece = sp.name; break; }
             }
+        } else if (p.type == ParamType::ScriptFile && v.is_string()) {
+            piece = v.get<std::string>();   // show the file name, not the path
+            const std::size_t cut = piece.find_last_of("/\\");
+            if (cut != std::string::npos) piece = piece.substr(cut + 1);
         } else if (v.is_string()) {
             piece = v.get<std::string>();
         } else if (v.is_boolean()) {
@@ -1500,6 +1504,30 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
                 }
                 ImGui::EndCombo();
             }
+        }
+        break;
+    }
+    case ParamType::ScriptFile: {
+        // Picker over the same scanned list the Scripts page shows (product
+        // scripts dir, else config/scripts). Stores the path; shows the name.
+        const std::string v = cur.is_string() ? cur.get<std::string>() : "";
+        std::string preview = v.empty() ? "(pick)" : v;
+        for (const ScriptInfo& si : scripts_) {
+            if (si.path == v) { preview = si.name; break; }
+        }
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::BeginCombo(label, preview.c_str())) {
+            if (scripts_.empty())
+                ImGui::TextDisabled("(no scripts in %s)", scriptsDirUsed_.c_str());
+            for (const ScriptInfo& si : scripts_) {
+                if (ImGui::Selectable(si.name.c_str(), si.path == v)) {
+                    params[p.name] = si.path;
+                    changed = true;
+                }
+                if (ImGui::IsItemHovered() && !si.description.empty())
+                    ImGui::SetTooltip("%s", si.description.c_str());
+            }
+            ImGui::EndCombo();
         }
         break;
     }

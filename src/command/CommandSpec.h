@@ -34,6 +34,7 @@ enum class ParamType {
     MapName,        // MotionMap name (resolved against the step's "device")
     PinName,        // IO pin name (resolved against the step's "device")
     TopicName,      // DataBus topic (no validation — topics create on demand)
+    ScriptFile,     // .lua path (editor: picker over the scripts dir; validated to exist)
     Enum,           // one of `options`
 };
 

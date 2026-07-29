@@ -180,6 +180,17 @@ handles `fd.prompt` (same engine-side pending-prompt pattern).
    pauses land at line boundaries, so a blocking fd.* command finishes first;
    Stop and safety aborts always release a pause). Still usage-driven and NOT
    built: script-local `positions` teaching helpers.
+4. **C4 — FUTURE: in-app script editor, VS-Code-style (not scheduled)**. The
+   Scripts page's read-only source view grows into a real editor: editable
+   text with Lua syntax highlighting, line numbers + breakpoint gutter,
+   auto-indent, find, and save back to the script file (dirty guard like the
+   recipe editor's). Candidate approach: port/embed an ImGui code-editor
+   widget (e.g. the ImGuiColorTextEdit family — needs vetting for ImGui 1.92
+   dynamic fonts) rather than hand-rolling one; `fd.*` completion could come
+   straight from `CommandRegistry::List()` + each command's `ParamSpec`s
+   (the registry is the completion database for free). This is a RICH-FEATURE
+   task — sizeable UI work with no new engine capability — which is why
+   authoring deliberately stays in external editors until it is scheduled.
 
 ## 9. Open questions (decide at review)
 

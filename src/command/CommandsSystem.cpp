@@ -148,7 +148,7 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
     reg.Register({"run_script", "System",
                   "Run a .lua program file inline (shared ctx; cannot start recipes)",
                   {
-                      {"file", PT::String, true, {}, 0, 0, {},
+                      {"file", PT::ScriptFile, true, {}, 0, 0, {},
                        "path relative to the exe, e.g. config/scripts/foo.lua"},
                   },
                   CommandSpec::Needs::None,

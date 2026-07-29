@@ -352,6 +352,11 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
                 Issue(env, where, path, "map '" + v + "' not found for device '" + device + "'");
             break;
         }
+        case ParamType::ScriptFile: {
+            if (!std::ifstream(v).is_open())
+                Issue(env, where, path, "script file '" + v + "' not found");
+            break;
+        }
         case ParamType::PinName: {
             const int idx = IoIdx(env.hw, device);
             if (idx >= 0) {
