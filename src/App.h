@@ -361,6 +361,7 @@ private:
     double xcanTravelUm_   = 200.0;
     double xcanImprovePct_ = 1.0;
     double xcanMinSignal_  = 0.0;
+    double xcanExitThr_    = 0.0;   // early-exit threshold (0 = disabled)
     double xcanTolMm_      = 0.001;
 
     // DUT Records viewer state: scanned serials + the loaded record.

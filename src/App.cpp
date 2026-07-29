@@ -3306,6 +3306,11 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
     ImGui::SetNextItemWidth(w);
     ImGui::InputDouble("min signal (abort below)", &xcanMinSignal_, 0.0, 0.0, "%g");
     ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("exit threshold (0 = off)", &xcanExitThr_, 0.0, 0.0, "%g");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Stop scanning the moment a sample reaches this value\n"
+                          "and STAY at that point (good-enough early exit).");
+    ImGui::SetNextItemWidth(w);
     ImGui::InputDouble("move tolerance (mm)", &xcanTolMm_, 0.0, 0.0, "%g");
     ImGui::EndDisabled();
 
@@ -3334,6 +3339,7 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
             {"align_improve_pct", xcanImprovePct_},
             {"align_avg_count", static_cast<double>(xcanAvg_)},
             {"align_min_signal", xcanMinSignal_},
+            {"align_exit_threshold", xcanExitThr_},
             {"align_tol_mm", xcanTolMm_},
         };
         scriptStartErr_.clear();
@@ -3365,7 +3371,9 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
     }
     if (thisScan) {
         for (const auto& [key, val] : st.ctx) {
-            if (key == "align_baseline" || key == "align_best" || key == "align_gain")
+            if (key == "align_baseline" || key == "align_best" ||
+                key == "align_delta" || key == "align_gain" ||
+                key == "align_exit_hit")
                 ImGui::Text("%s: %s", key.c_str(), CtxValueToString(val).c_str());
         }
         if (!st.error.empty() && st.state != LuaEngine::State::Running)

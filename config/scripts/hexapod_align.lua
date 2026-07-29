@@ -18,9 +18,14 @@ local P = {
   improve_pct    = fd.param("align_improve_pct", 1),    -- global-peak recovery threshold
   avg_count      = fd.param("align_avg_count", 3),      -- baseline averaging samples
   min_signal     = fd.param("align_min_signal", 0),     -- abort if |baseline| below this
+  exit_threshold = fd.param("align_exit_threshold", 0), -- stop when a sample >= this (0 = off)
   tol_mm         = fd.param("align_tol_mm", 0.001),     -- move arrival tolerance
   move_timeout   = fd.param("align_move_timeout_ms", 10000),
 }
+
+-- Early exit (bobcat XCAN Extended): the moment any measurement reaches
+-- exit_threshold, the whole scan unwinds and STAYS at that point.
+local exit_hit = false
 
 -- ---- Helpers ----------------------------------------------------------------
 local function split(s)
@@ -57,7 +62,13 @@ local function measure()
   local t0 = fd.clock()
   while true do
     local v = fd.read(P.topic)
-    if v ~= nil then return v end
+    if v ~= nil then
+      if P.exit_threshold ~= 0 and v >= P.exit_threshold and not exit_hit then
+        exit_hit = true
+        fd.logf("exit threshold reached: %.4g >= %.4g", v, P.exit_threshold)
+      end
+      return v
+    end
     if fd.clock() - t0 > 5.0 then error("no signal on " .. P.topic) end
     fd.sleep(50)
   end
@@ -84,7 +95,8 @@ local function scan_direction(axis, step, dir)
   local maxV, maxPos = measure(), pos(axis)
   update_gpeak(maxV)
   local prev, consec, dist, movedFromMax = maxV, 0, 0.0, false
-  while consec < P.consec_limit and dist < P.max_travel_um / 1000.0 do
+  while not exit_hit and consec < P.consec_limit and
+        dist < P.max_travel_um / 1000.0 do
     move_rel(axis, dir * step)
     local v = measure()
     dist = dist + step
@@ -99,7 +111,8 @@ local function scan_direction(axis, step, dir)
     end
     prev = v
   end
-  if movedFromMax then
+  -- On threshold exit we STAY at the point that hit it - no walk-back.
+  if movedFromMax and not exit_hit then
     move_abs(axis, maxPos)
     local v = measure()
     if v > maxV then maxV = v end
@@ -111,8 +124,10 @@ end
 local function scan_axis(axis, step)
   local p0 = pos(axis)
   local vP, pP = scan_direction(axis, step, 1)
+  if exit_hit then return vP end          -- stay at the threshold point
   move_abs(axis, p0)
   local vN, pN = scan_direction(axis, step, -1)
+  if exit_hit then return vN end
   local bestV, bestP = vP, pP
   if vN > vP then bestV, bestP = vN, pN end
   move_abs(axis, bestP)
@@ -142,10 +157,12 @@ for _, step in ipairs(STEPS) do
   fd.logf("pass @ %g um", step * 1000)
   for _, axis in ipairs(AXES) do
     scan_axis(axis, step)
+    if exit_hit then goto scan_done end
     fd.sleep(100)
     -- Global-peak recovery: if the signal here is worse than the best ever
     -- seen by more than improve_pct, go back to that best point.
     local cur = measure()
+    if exit_hit then goto scan_done end
     if cur > 0 and gpeak.pos ~= nil and
        (gpeak.v - cur) / cur > P.improve_pct / 100.0 then
       fd.logf("  recovering to global peak (%.4g > %.4g)", gpeak.v, cur)
@@ -153,10 +170,12 @@ for _, step in ipairs(STEPS) do
     end
   end
 end
+::scan_done::
 
--- Finish at the best point ever seen, and report.
+-- Finish: at the threshold point when the early exit fired, else at the best
+-- point ever seen.
 local finalV = measure()
-if gpeak.pos ~= nil and gpeak.v > finalV then
+if not exit_hit and gpeak.pos ~= nil and gpeak.v > finalV then
   goto_snapshot(gpeak.pos)
   finalV = measure()
 end
@@ -164,6 +183,7 @@ end
 fd.ctx.align_baseline = baseline
 fd.ctx.align_best     = finalV
 fd.ctx.align_delta    = finalV - baseline
+fd.ctx.align_exit_hit = exit_hit
 -- A ratio only means something when both readings are real positive signal;
 -- on dark-noise runs it would be a ratio of noise samples.
 fd.ctx.align_gain = (baseline > 0 and finalV > 0) and (finalV / baseline) or 0
