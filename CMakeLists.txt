@@ -51,6 +51,23 @@ FetchContent_Declare(spdlog
     GIT_TAG v1.14.1 GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(spdlog)
 
+# ---- Lua 5.4 + sol2 (layer 2.5 Lua program tier) ----
+# CMake-wrapped Lua mirror (builds lua_static as C — trivial under MSVC);
+# sol2 is header-only. See docs/lua-tier-design.md.
+set(LUA_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(LUA_BUILD_BINARY   OFF CACHE BOOL "" FORCE)
+set(LUA_BUILD_COMPILER OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(lua
+    GIT_REPOSITORY https://github.com/walterschell/Lua.git
+    GIT_TAG master GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(lua)
+
+set(SOL2_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(sol2
+    GIT_REPOSITORY https://github.com/ThePhD/sol2.git
+    GIT_TAG v3.3.0 GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(sol2)
+
 # ---- Basler Pylon SDK (layer 1 camera) — optional ----
 # Prefer a vendored copy under external/, else a system Basler install (PYLON_DEV_DIR).
 set(PYLON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/external/pylon 8")
@@ -174,7 +191,10 @@ target_include_directories(FireDog PRIVATE
 # opengl32 for the base GL calls in GlHost (texture upload, clear).
 # ws2_32 for the WAGO Modbus TCP client (always compiled — no vendor SDK).
 target_link_libraries(FireDog PRIVATE glfw imgui_lib implot_lib opengl32 ws2_32
-    nlohmann_json::nlohmann_json spdlog::spdlog)
+    nlohmann_json::nlohmann_json spdlog::spdlog lua_static sol2::sol2)
+# sol2 safety checks (argument/type validation on every boundary crossing) —
+# cheap insurance for a layer that commands real hardware.
+target_compile_definitions(FireDog PRIVATE SOL_ALL_SAFETIES_ON=1)
 
 # Pylon camera (real SDK if found; otherwise PylonCamera.cpp compiles its stub).
 if(PYLON_FOUND)

@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
@@ -244,6 +245,7 @@ int App::Run()
     if (!lastProduct.empty() && !LoadProduct(lastProduct))
         FD_WARN("product", "could not reload last product '%s'", lastProduct.c_str());
     if (!product_.Loaded()) LoadRecipesFromDisk();   // else LoadProduct did it
+    LoadScriptsList();             // .lua programs (product dir, else config/scripts)
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
     RegisterBuiltinCommands(cmdRegistry_, workflow_, hardware_);   // layer 2.5
@@ -337,7 +339,7 @@ void App::DrawMainWindow()
                 auto toggleEditor = [this](Page p) {
                     if (currentPage_ == p) { currentPage_ = prevPage_; return; }
                     if (currentPage_ != Page::WatchEdit && currentPage_ != Page::TransformEdit &&
-                        currentPage_ != Page::RecipeEdit)
+                        currentPage_ != Page::RecipeEdit && currentPage_ != Page::Scripts)
                         prevPage_ = currentPage_;
                     currentPage_ = p;
                 };
@@ -347,6 +349,8 @@ void App::DrawMainWindow()
                     toggleEditor(Page::TransformEdit);
                 if (ImGui::MenuItem("Recipe Editor", nullptr, currentPage_ == Page::RecipeEdit))
                     toggleEditor(Page::RecipeEdit);
+                if (ImGui::MenuItem("Programs", nullptr, currentPage_ == Page::Scripts))
+                    toggleEditor(Page::Scripts);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Help")) {
@@ -365,10 +369,11 @@ void App::DrawMainWindow()
         // ---- Editor pages (View menu) replace the whole panel layout until
         // closed via the top-right Close button (back to the previous page).
         if (currentPage_ == Page::WatchEdit || currentPage_ == Page::TransformEdit ||
-            currentPage_ == Page::RecipeEdit) {
+            currentPage_ == Page::RecipeEdit || currentPage_ == Page::Scripts) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
-                                                                      : "Recipe Editor";
+                                : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
+                                                                      : "Programs";
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
             ImGui::TextUnformatted(title);
@@ -386,7 +391,8 @@ void App::DrawMainWindow()
             ImGui::Separator();
             if (currentPage_ == Page::WatchEdit)          DrawWatchEditPanel();
             else if (currentPage_ == Page::TransformEdit) DrawTransformEditPanel();
-            else                                          DrawRecipeEditPanel();
+            else if (currentPage_ == Page::RecipeEdit)    DrawRecipeEditPanel();
+            else                                          DrawScriptsPanel();
             ImGui::EndChild();
             ImGui::End();
             return;
@@ -577,6 +583,7 @@ bool App::LoadProduct(const std::string& name)
     }
     product_ = std::move(m);
     LoadRecipesFromDisk();   // product recipes replace the config-fallback set
+    LoadScriptsList();       // product scripts likewise (config fallback)
     SaveUiSettings();   // remember as last product for the next startup
     FD_INFO("product", "loaded '%s'", product_.name.c_str());
     return true;
@@ -1611,7 +1618,7 @@ void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues)
     const bool running = recipeEngine_.Running();
     ImGui::BeginChild("edRunStrip", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
 
-    const bool canRun = !running && recipeSel_ >= 0 &&
+    const bool canRun = !OrchestrationBusy() && recipeSel_ >= 0 &&
                         recipeSel_ < static_cast<int>(recipes_.size());
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
@@ -1699,34 +1706,187 @@ void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues)
     ImGui::EndChild();
 }
 
-// Global recipe prompt — drawn every frame from DrawMainWindow (like the
-// safety modal), so a blocking `prompt` step surfaces no matter which page or
-// window the operator is on. Pinned to the main window's center.
+// Global orchestration prompt — drawn every frame from DrawMainWindow (like
+// the safety modal), so a blocking recipe `prompt` step or script fd.prompt()
+// surfaces no matter which page or window the operator is on. Only one engine
+// runs at a time, so at most one prompt can be pending.
 void App::DrawRecipePromptModal()
 {
-    const RecipeEngine::Status st = recipeEngine_.GetStatus();
-    if (!st.pendingPrompt.empty() && !ImGui::IsPopupOpen("Recipe Prompt"))
+    const RecipeEngine::Status rst = recipeEngine_.GetStatus();
+    const LuaEngine::Status    lst = luaEngine_.GetStatus();
+    const bool fromScript = rst.pendingPrompt.empty() && !lst.pendingPrompt.empty();
+    const std::string& pending = fromScript ? lst.pendingPrompt : rst.pendingPrompt;
+
+    if (!pending.empty() && !ImGui::IsPopupOpen("Recipe Prompt"))
         ImGui::OpenPopup("Recipe Prompt");
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("Recipe Prompt", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 420.0f);
-        ImGui::TextUnformatted(st.pendingPrompt.c_str());
+        ImGui::TextUnformatted(pending.c_str());
         ImGui::PopTextWrapPos();
         ImGui::Separator();
+        const auto answer = [&](bool ok) {
+            if (fromScript) luaEngine_.AnswerPrompt(ok);
+            else            recipeEngine_.AnswerPrompt(ok);
+        };
         if (ImGui::Button("OK", ImVec2(100.0f, 0.0f))) {
-            recipeEngine_.AnswerPrompt(true);
+            answer(true);
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) {
-            recipeEngine_.AnswerPrompt(false);
+            answer(false);
             ImGui::CloseCurrentPopup();
         }
-        if (st.pendingPrompt.empty()) ImGui::CloseCurrentPopup();   // stop released it
+        if (pending.empty()) ImGui::CloseCurrentPopup();   // stop released it
         ImGui::EndPopup();
     }
+}
+
+// ---- Programs page (View menu, full page) — Phase C1: list + run .lua -------
+// Authoring happens in an external editor; this page lists, shows read-only
+// source (executing line highlighted), and runs/stops programs.
+
+std::string App::ScriptsDir() const
+{
+    return product_.Loaded() ? product_.Dir() + "/scripts" : "config/scripts";
+}
+
+void App::LoadScriptsList()
+{
+    scripts_ = ListScripts(ScriptsDir());
+    if (scripts_.empty() && product_.Loaded()) {
+        // Product without a scripts folder — fall back like recipes do.
+        scripts_ = ListScripts("config/scripts");
+    }
+    if (scriptSel_ >= static_cast<int>(scripts_.size()))
+        scriptSel_ = scripts_.empty() ? -1 : 0;
+    scriptSrcPath_.clear();   // force a source re-read on next draw
+    scriptSrc_.clear();
+    scriptStartErr_.clear();
+}
+
+void App::DrawScriptsPanel()
+{
+    const LuaEngine::Status st = luaEngine_.GetStatus();
+    const bool running = luaEngine_.Running();
+
+    const float  stripH = ImGui::GetFrameHeightWithSpacing() * 3.2f;
+    const ImVec2 avail  = ImGui::GetContentRegionAvail();
+    const float  paneH  = avail.y - stripH;
+    const float  leftW  = 230.0f;
+    const float  rightW = 300.0f;
+
+    // ---- Left: script list ----
+    ImGui::BeginChild("scList", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
+    ImGui::TextUnformatted("Programs");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(running);
+    if (ImGui::SmallButton("Reload")) LoadScriptsList();
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%s", ScriptsDir().c_str());
+    ImGui::Separator();
+    if (scripts_.empty())
+        ImGui::TextWrapped("No .lua scripts found. Author them in an external "
+                           "editor and hit Reload.");
+    for (int i = 0; i < static_cast<int>(scripts_.size()); ++i) {
+        ImGui::PushID(i);
+        if (ImGui::Selectable(scripts_[i].name.c_str(), scriptSel_ == i))
+            scriptSel_ = i;
+        if (ImGui::IsItemHovered() && !scripts_[i].description.empty())
+            ImGui::SetTooltip("%s", scripts_[i].description.c_str());
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    // ---- Middle: read-only source, executing line highlighted ----
+    const float midW = avail.x - leftW - rightW - ImGui::GetStyle().ItemSpacing.x * 2.0f;
+    ImGui::BeginChild("scSrc", ImVec2(midW, paneH), ImGuiChildFlags_Borders);
+    if (scriptSel_ >= 0 && scriptSel_ < static_cast<int>(scripts_.size())) {
+        const ScriptInfo& si = scripts_[scriptSel_];
+        if (scriptSrcPath_ != si.path) {   // (re)load on selection change / Reload
+            scriptSrcPath_ = si.path;
+            scriptSrc_.clear();
+            std::ifstream f(si.path);
+            std::string line;
+            while (std::getline(f, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                scriptSrc_.push_back(line);
+            }
+        }
+        if (!si.description.empty()) ImGui::TextWrapped("%s", si.description.c_str());
+        ImGui::Separator();
+        ImGui::BeginChild("##srclines");
+        const bool thisRunning = running && st.scriptName == si.name;
+        for (int n = 0; n < static_cast<int>(scriptSrc_.size()); ++n) {
+            const bool cur = thisRunning && (n + 1) == st.currentLine;
+            if (cur) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+            ImGui::Text("%4d  %s", n + 1, scriptSrc_[n].c_str());
+            if (cur) {
+                ImGui::PopStyleColor();
+                ImGui::SetScrollHereY(0.5f);   // follow the execution
+            }
+        }
+        ImGui::EndChild();
+    } else {
+        ImGui::TextDisabled("Select a program on the left.");
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    // ---- Right: run info ----
+    ImGui::BeginChild("scInfo", ImVec2(rightW, paneH), ImGuiChildFlags_Borders);
+    ImGui::Text("State: %s", LuaEngine::StateName(st.state));
+    if (!st.scriptName.empty()) ImGui::Text("Script: %s", st.scriptName.c_str());
+    if (running && st.currentLine > 0) ImGui::Text("Line: %d", st.currentLine);
+    if (!st.lastCommand.empty()) ImGui::Text("Last command: %s", st.lastCommand.c_str());
+    if (!st.error.empty() && st.state != LuaEngine::State::Running)
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
+    if (!st.ctx.empty()) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Context");
+        if (ImGui::BeginTable("##scctx", 2,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            for (const auto& [key, val] : st.ctx) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(key.c_str());
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(CtxValueToString(val).c_str());
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::EndChild();
+
+    // ---- Bottom strip: Run / Stop ----
+    ImGui::BeginChild("scStrip", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
+    const bool canRun = !OrchestrationBusy() && scriptSel_ >= 0 &&
+                        scriptSel_ < static_cast<int>(scripts_.size());
+    ImGui::BeginDisabled(!canRun);
+    if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
+        LuaEngine::Env env;
+        env.positions = savedPos_;
+        env.maps      = motionMaps_;
+        env.library   = recipes_;
+        scriptStartErr_.clear();
+        if (!luaEngine_.Start(scripts_[scriptSel_].path, std::move(env), &scriptStartErr_))
+            FD_WARN("script", "start rejected: %s", scriptStartErr_.c_str());
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!running);
+    if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) luaEngine_.RequestStop();
+    ImGui::EndDisabled();
+    if (!scriptStartErr_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "start rejected: %s",
+                           scriptStartErr_.c_str());
+    }
+    ImGui::EndChild();
 }
 
 void App::NewProduct(const char* name)
@@ -3384,8 +3544,8 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         ImGui::EndCombo();
     }
     ImGui::SameLine();
-    ImGui::BeginDisabled(running || recipeEngine_.Running() || !m->IsConnected() ||
-                         goNodes.empty() || mapTo_ < 0);
+    ImGui::BeginDisabled(running || recipeEngine_.Running() || luaEngine_.Running() ||
+                         !m->IsConnected() || goNodes.empty() || mapTo_ < 0);
     if (ImGui::Button("Go")) {
         std::string fromUid;
         if (mapFrom_ == 0) {   // nearest node to the live position

@@ -11,6 +11,7 @@
 
 #include "ui/GlHost.h"
 #include "command/CommandRegistry.h"
+#include "command/LuaEngine.h"
 #include "command/Recipe.h"
 #include "command/RecipeEngine.h"
 #include "core/Log.h"
@@ -34,7 +35,7 @@ struct CanvasObject {
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
-                  WatchEdit, TransformEdit, RecipeEdit };
+                  WatchEdit, TransformEdit, RecipeEdit, Scripts };
 
 class App {
 public:
@@ -97,7 +98,11 @@ private:
     bool DrawParamWidget(const ParamSpec& p, nlohmann::json& params);  // schema form row
     bool DrawConditionEditor(nlohmann::json& cond);   // if / loop-while / wait_until
     void DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues);
-    void DrawRecipePromptModal();     // GLOBAL blocking prompt (like safety modal)
+    void DrawRecipePromptModal();     // GLOBAL blocking prompt (recipe + script)
+    // Programs page (View menu, full-page) — Phase C1: list/run .lua programs.
+    void DrawScriptsPanel();          // page body: scripts | source | run info
+    void LoadScriptsList();           // scan the scripts dir (product, else config)
+    std::string ScriptsDir() const;
     void LoadRecipesFromDisk();       // product recipes file, else config fallback
     void SaveRecipes();               // product recipes file, else config local
     std::string RecipesDump() const;  // canonical serialization (dirty compare)
@@ -132,6 +137,13 @@ private:
     // Workflow::Start; the registry is read-only afterwards.
     CommandRegistry cmdRegistry_;
     RecipeEngine    recipeEngine_{workflow_, hardware_, cmdRegistry_};
+    LuaEngine       luaEngine_{workflow_, hardware_, cmdRegistry_};
+    // One orchestration owner at a time: App keeps the two engines mutually
+    // exclusive (each Run surface checks the other engine + the path executor).
+    bool OrchestrationBusy() const
+    {
+        return recipeEngine_.Running() || luaEngine_.Running() || workflow_.PathActive();
+    }
 
     // UI-side camera texture — frames are pulled from hardware_.Camera() via
     // UpdateCameraTexture() by every view that shows the live image (Aux,
@@ -312,6 +324,13 @@ private:
     bool edOpenDeleteStep_    = false;
     char edNameBuf_[64]       = "";
     char edSearchBuf_[64]     = "";      // palette search filter
+
+    // Programs page state: scanned scripts + the loaded source view.
+    std::vector<ScriptInfo>  scripts_;
+    int                      scriptSel_ = -1;
+    std::string              scriptSrcPath_;    // which file scriptSrc_ holds
+    std::vector<std::string> scriptSrc_;        // source lines (view only)
+    std::string              scriptStartErr_;   // last Start() rejection
 
     // Current product (File menu). Not loaded => config-fallback persistence.
     ProductManifest product_;
