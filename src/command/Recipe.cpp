@@ -261,9 +261,10 @@ struct ValidateEnv {
     std::vector<RecipeIssue>* issues = nullptr;
 };
 
-void Issue(const ValidateEnv& env, const std::string& where, std::string msg)
+void Issue(const ValidateEnv& env, const std::string& where,
+           const std::vector<std::size_t>& path, std::string msg)
 {
-    env.issues->push_back({where, std::move(msg)});
+    env.issues->push_back({where, std::move(msg), path});
 }
 
 int MotionIdx(const HardwareManager& hw, const std::string& name)
@@ -294,6 +295,7 @@ bool SlideKnown(const HardwareManager& hw, const std::string& name)
 // MapName / PinName types resolve against the step's "device" param (the
 // vocabulary convention: commands with such params also carry a device param).
 void CheckReferences(const ValidateEnv& env, const std::string& where,
+                     const std::vector<std::size_t>& path,
                      const CommandSpec& spec, const nlohmann::json& merged)
 {
     const std::string device = merged.value("device", std::string());
@@ -305,25 +307,25 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
         case ParamType::DeviceMotion: {
             const int idx = MotionIdx(env.hw, v);
             if (idx < 0) {
-                Issue(env, where, "unknown motion device '" + v + "'");
+                Issue(env, where, path, "unknown motion device '" + v + "'");
             } else if (env.requireConnected &&
                        env.hw.MotionState(static_cast<std::size_t>(idx)) != ConnState::Connected) {
-                Issue(env, where, "motion device '" + v + "' is not connected");
+                Issue(env, where, path, "motion device '" + v + "' is not connected");
             }
             break;
         }
         case ParamType::DeviceIo: {
             const int idx = IoIdx(env.hw, v);
             if (idx < 0) {
-                Issue(env, where, "unknown io device '" + v + "'");
+                Issue(env, where, path, "unknown io device '" + v + "'");
             } else if (env.requireConnected &&
                        env.hw.IoState(static_cast<std::size_t>(idx)) != ConnState::Connected) {
-                Issue(env, where, "io device '" + v + "' is not connected");
+                Issue(env, where, path, "io device '" + v + "' is not connected");
             }
             break;
         }
         case ParamType::Slide:
-            if (!SlideKnown(env.hw, v)) Issue(env, where, "unknown slide '" + v + "'");
+            if (!SlideKnown(env.hw, v)) Issue(env, where, path, "unknown slide '" + v + "'");
             break;
         case ParamType::PositionUid: {
             const auto it = env.positions.find(device);
@@ -334,7 +336,7 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
                 }
             }
             if (!found)
-                Issue(env, where, "position uid '" + v + "' not found for device '" +
+                Issue(env, where, path, "position uid '" + v + "' not found for device '" +
                                       device + "'");
             break;
         }
@@ -347,7 +349,7 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
                 }
             }
             if (!found)
-                Issue(env, where, "map '" + v + "' not found for device '" + device + "'");
+                Issue(env, where, path, "map '" + v + "' not found for device '" + device + "'");
             break;
         }
         case ParamType::PinName: {
@@ -363,7 +365,7 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
                     const char* dir = p.pinDir == PinDir::Input    ? "input "
                                       : p.pinDir == PinDir::Output ? "output "
                                                                    : "";
-                    Issue(env, where, std::string(dir) + "pin '" + v +
+                    Issue(env, where, path, std::string(dir) + "pin '" + v +
                                           "' unknown on device '" + device + "'");
                 }
             }
@@ -384,15 +386,17 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
         case CommandSpec::Needs::None:     break;
         }
         if (what && st != ConnState::Connected)
-            Issue(env, where, std::string(what) + " is not connected");
+            Issue(env, where, path, std::string(what) + " is not connected");
     }
 }
 
 void ValidateSteps(const ValidateEnv& env, const std::vector<RecipeStep>& steps,
-                   const std::string& pathPrefix, int depth)
+                   const std::string& pathPrefix,
+                   const std::vector<std::size_t>& basePath, bool elseBranch,
+                   int depth)
 {
     if (depth > kMaxRecipeDepth) {
-        Issue(env, pathPrefix.empty() ? "(root)" : pathPrefix,
+        Issue(env, pathPrefix.empty() ? "(root)" : pathPrefix, basePath,
               "nesting exceeds depth " + std::to_string(kMaxRecipeDepth));
         return;
     }
@@ -401,36 +405,38 @@ void ValidateSteps(const ValidateEnv& env, const std::vector<RecipeStep>& steps,
         const std::string where =
             (pathPrefix.empty() ? "" : pathPrefix + ".") + std::to_string(i + 1) +
             " (" + s.type + ")";
+        std::vector<std::size_t> path = basePath;
+        path.push_back(elseBranch ? kElseBranchBase + i : i);
         if (!s.enabled) continue;
 
         if (s.type == "loop") {
             const bool hasCount = s.params.contains("count") && s.params["count"].is_number();
             const bool hasWhile = s.params.contains("while") && s.params["while"].is_object();
             if (hasCount == hasWhile) {
-                Issue(env, where, "loop needs exactly one of \"count\" or \"while\"");
+                Issue(env, where, path, "loop needs exactly one of \"count\" or \"while\"");
             } else if (hasCount && s.params["count"].get<double>() < 1) {
-                Issue(env, where, "loop count must be >= 1");
+                Issue(env, where, path, "loop count must be >= 1");
             } else if (hasWhile) {
                 const std::string e = CheckConditionShape(s.params["while"]);
-                if (!e.empty()) Issue(env, where, e);
+                if (!e.empty()) Issue(env, where, path, e);
             }
-            if (s.children.empty()) Issue(env, where, "loop has no children");
-            ValidateSteps(env, s.children, where, depth + 1);
+            if (s.children.empty()) Issue(env, where, path, "loop has no children");
+            ValidateSteps(env, s.children, where, path, false, depth + 1);
         } else if (s.type == "if") {
             const std::string e = CheckConditionShape(s.params);
-            if (!e.empty()) Issue(env, where, e);
+            if (!e.empty()) Issue(env, where, path, e);
             if (s.children.empty() && s.elseChildren.empty())
-                Issue(env, where, "if has no children");
-            ValidateSteps(env, s.children, where, depth + 1);
-            ValidateSteps(env, s.elseChildren, where, depth + 1);
+                Issue(env, where, path, "if has no children");
+            ValidateSteps(env, s.children, where, path, false, depth + 1);
+            ValidateSteps(env, s.elseChildren, where, path, true, depth + 1);
         } else if (s.type == "group") {
-            ValidateSteps(env, s.children, where, depth + 1);
+            ValidateSteps(env, s.children, where, path, false, depth + 1);
         } else if (s.type == "sub_recipe") {
             const std::string uid = s.params.value("uid", std::string());
             if (uid.empty()) {
-                Issue(env, where, "sub_recipe needs a \"uid\" param");
+                Issue(env, where, path, "sub_recipe needs a \"uid\" param");
             } else if (!FindByUid(env.library, uid)) {
-                Issue(env, where, "sub-recipe uid '" + uid + "' not found");
+                Issue(env, where, path, "sub-recipe uid '" + uid + "' not found");
             }
             // Its steps are validated when the referenced recipe is validated /
             // after inlining at run start; cycles are caught by InlineSubRecipes.
@@ -439,16 +445,16 @@ void ValidateSteps(const ValidateEnv& env, const std::vector<RecipeStep>& steps,
         } else {
             const CommandSpec* spec = env.reg.Find(s.type);
             if (!spec) {
-                Issue(env, where, "unknown command '" + s.type + "'");
+                Issue(env, where, path, "unknown command '" + s.type + "'");
                 continue;
             }
             nlohmann::json merged;
             const std::string e = ValidateParams(*spec, s.params, &merged);
             if (!e.empty()) {
-                Issue(env, where, e);
+                Issue(env, where, path, e);
                 continue;
             }
-            CheckReferences(env, where, *spec, merged);
+            CheckReferences(env, where, path, *spec, merged);
             if (s.type == "wait_until") {
                 // Its flat params form a condition — check the shape now so a
                 // typo fails at load, not mid-run.
@@ -458,7 +464,7 @@ void ValidateSteps(const ValidateEnv& env, const std::vector<RecipeStep>& steps,
                 cond["op"] = merged["op"];
                 if (merged.contains("value")) cond["value"] = merged["value"];
                 const std::string ce = CheckConditionShape(cond);
-                if (!ce.empty()) Issue(env, where, ce);
+                if (!ce.empty()) Issue(env, where, path, ce);
             }
         }
     }
@@ -475,8 +481,8 @@ std::vector<RecipeIssue> ValidateRecipe(const Recipe& r, const CommandRegistry& 
 {
     std::vector<RecipeIssue> issues;
     ValidateEnv env{reg, hw, positions, maps, library, requireConnected, &issues};
-    if (r.steps.empty()) issues.push_back({"(root)", "recipe has no steps"});
-    ValidateSteps(env, r.steps, "", 1);
+    if (r.steps.empty()) issues.push_back({"(root)", "recipe has no steps", {}});
+    ValidateSteps(env, r.steps, "", {}, false, 1);
     return issues;
 }
 

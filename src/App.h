@@ -96,10 +96,12 @@ private:
     void DrawRecipePalette(Recipe& r, bool canEdit);       // searchable add-step column
     bool DrawParamWidget(const ParamSpec& p, nlohmann::json& params);  // schema form row
     bool DrawConditionEditor(nlohmann::json& cond);   // if / loop-while / wait_until
-    void DrawRecipeRunStrip();        // bottom strip: run/stop/save + progress
+    void DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues);
     void DrawRecipePromptModal();     // GLOBAL blocking prompt (like safety modal)
     void LoadRecipesFromDisk();       // product recipes file, else config fallback
     void SaveRecipes();               // product recipes file, else config local
+    std::string RecipesDump() const;  // canonical serialization (dirty compare)
+    bool RecipesDirty() const { return RecipesDump() != recipesBaseline_; }
     void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
     void DrawAuxWindow();
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
@@ -296,6 +298,7 @@ private:
     // editor gains editing (Phase B2).
     std::vector<Recipe> recipes_;
     std::string         recipesUid_;       // file uid (product integrity check)
+    std::string         recipesBaseline_;  // serialized state at load/save (dirty compare)
     int                 recipeSel_ = -1;   // selected recipe (editor left panel)
     std::string         recipeStartErr_;   // last Start() rejection message
     // Selected step as a numeric path into the nested step tree; components
@@ -303,6 +306,7 @@ private:
     std::vector<std::size_t> edStepSel_;
     // Editor dialogs/palette state (menu -> popup handoff, like the products).
     int  edAddMode_           = 0;       // palette insert: 0 after, 1 into, 2 else
+    int  edConfirmAction_     = 0;       // unsaved-changes guard: 1 close, 2 reload
     bool edOpenRenameRecipe_  = false;
     bool edOpenDeleteRecipe_  = false;
     bool edOpenDeleteStep_    = false;

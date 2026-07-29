@@ -79,9 +79,15 @@ nlohmann::json RecipeToJson(const Recipe& r);
 Recipe         RecipeFromJson(const nlohmann::json& j);   // tolerant
 
 // ---- Validation -------------------------------------------------------------
+// Numeric step-path convention (shared with the editor UI): a component
+// >= kElseBranchBase addresses an if-step's ELSE branch (component -
+// kElseBranchBase = index into elseChildren).
+inline constexpr std::size_t kElseBranchBase = static_cast<std::size_t>(1) << 20;
+
 struct RecipeIssue {
     std::string where;     // step path, e.g. "3.2.1 (move_to_position)"
     std::string message;
+    std::vector<std::size_t> path;   // numeric path (empty = recipe-level issue)
 };
 
 // Structure + params + reference resolution. With requireConnected also checks

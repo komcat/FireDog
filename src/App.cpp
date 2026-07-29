@@ -376,7 +376,13 @@ void App::DrawMainWindow()
             const float closeW = ImGui::CalcTextSize("Close").x +
                                  ImGui::GetStyle().FramePadding.x * 2.0f;
             ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - closeW);
-            if (ImGui::Button("Close")) currentPage_ = prevPage_;
+            if (ImGui::Button("Close")) {
+                // The recipe editor guards unsaved edits with a confirm modal.
+                if (currentPage_ == Page::RecipeEdit && RecipesDirty())
+                    edConfirmAction_ = 1;
+                else
+                    currentPage_ = prevPage_;
+            }
             ImGui::Separator();
             if (currentPage_ == Page::WatchEdit)          DrawWatchEditPanel();
             else if (currentPage_ == Page::TransformEdit) DrawTransformEditPanel();
@@ -588,6 +594,7 @@ void App::LoadRecipesFromDisk()
                 if (!recipesUid_.empty() && recipesUid_ != e->uid)
                     FD_WARN("product", "recipes uid mismatch: manifest %s vs file '%s'",
                             e->uid.c_str(), recipesUid_.c_str());
+                recipesBaseline_ = RecipesDump();
                 return;
             }
             // New products carry an empty seed file (no editor yet in Phase A) —
@@ -601,6 +608,16 @@ void App::LoadRecipesFromDisk()
     }
     recipesUid_.clear();
     recipes_ = LoadRecipes();   // config/recipes.local.json -> recipes.json
+    recipesBaseline_ = RecipesDump();
+}
+
+// Canonical serialization of the in-memory recipes, compared against the
+// baseline captured at load/save to answer "are there unsaved edits?".
+std::string App::RecipesDump() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const Recipe& r : recipes_) arr.push_back(RecipeToJson(r));
+    return arr.dump();
 }
 
 // ---- Recipe Editor (View menu, full page) — Phase B1: browse + run ----------
@@ -609,10 +626,12 @@ void App::LoadRecipesFromDisk()
 
 namespace {
 // Step-path components >= kElsePathBase address an if-step's ELSE branch
-// (component - kElsePathBase = index into elseChildren). The engine never
-// emits else-marked paths (it addresses whichever branch ran by plain index),
-// so run highlighting lands on the then-branch row — a documented B1 quirk.
-constexpr std::size_t kElsePathBase = static_cast<std::size_t>(1) << 20;
+// (component - kElsePathBase = index into elseChildren). Shared with the
+// validation layer (Recipe.h kElseBranchBase) so issue paths select tree rows
+// directly. The engine never emits else-marked paths (it addresses whichever
+// branch ran by plain index), so run highlighting lands on the then-branch
+// row — a documented quirk.
+constexpr std::size_t kElsePathBase = kElseBranchBase;
 
 const RecipeStep* FindStepByPath(const std::vector<RecipeStep>* list,
                                  const std::vector<std::size_t>& path)
@@ -702,15 +721,28 @@ bool PaletteMatch(const std::string& hay, const char* needle)
 
 void App::DrawRecipeEditPanel()
 {
-    const float  stripH = ImGui::GetFrameHeightWithSpacing() * 3.2f;
+    const RecipeEngine::Status st = recipeEngine_.GetStatus();
+    const bool running = recipeEngine_.Running();
+    const bool haveSel = recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size());
+
+    // Live author-time validation of the selected recipe (WITHOUT the
+    // devices-Connected requirement — that stays a run-start check, so
+    // authoring offline doesn't drown in noise).
+    std::vector<RecipeIssue> issues;
+    if (haveSel)
+        issues = ValidateRecipe(recipes_[recipeSel_], cmdRegistry_, hardware_,
+                                savedPos_, motionMaps_, recipes_, false);
+    const std::size_t shownIssues = issues.size() < 3 ? issues.size() : 3;
+    const float issuesH =
+        issues.empty() ? 0.0f
+                       : ImGui::GetTextLineHeightWithSpacing() *
+                                 static_cast<float>(shownIssues + 1) + 10.0f;
+
+    const float  stripH = ImGui::GetFrameHeightWithSpacing() * 3.2f + issuesH;
     const ImVec2 avail  = ImGui::GetContentRegionAvail();
     const float  paneH  = avail.y - stripH;
     const float  leftW  = 230.0f;
     const float  rightW = 320.0f;
-
-    const RecipeEngine::Status st = recipeEngine_.GetStatus();
-    const bool running = recipeEngine_.Running();
-    const bool haveSel = recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size());
 
     // ---- Left: recipe list + CRUD ----
     ImGui::BeginChild("edRecipes", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
@@ -718,8 +750,12 @@ void App::DrawRecipeEditPanel()
     ImGui::SameLine();
     ImGui::BeginDisabled(running);
     if (ImGui::SmallButton("Reload")) {
-        LoadRecipesFromDisk();
-        FD_INFO("recipe", "%zu recipe(s) loaded", recipes_.size());
+        if (RecipesDirty()) {
+            edConfirmAction_ = 2;   // guard: reload discards unsaved edits
+        } else {
+            LoadRecipesFromDisk();
+            FD_INFO("recipe", "%zu recipe(s) loaded", recipes_.size());
+        }
     }
     ImGui::EndDisabled();
     ImGui::BeginDisabled(running);
@@ -813,7 +849,38 @@ void App::DrawRecipeEditPanel()
     }
     ImGui::EndChild();
 
-    DrawRecipeRunStrip();
+    DrawRecipeRunStrip(issues);
+
+    // ---- Unsaved-changes guard (Close button / Reload raise the flag) ----
+    if (edConfirmAction_ != 0 && !ImGui::IsPopupOpen("Unsaved Changes"))
+        ImGui::OpenPopup("Unsaved Changes");
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Unsaved Changes", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("There are unsaved recipe changes.");
+        ImGui::Separator();
+        if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) {
+            SaveRecipes();
+            if (edConfirmAction_ == 1) currentPage_ = prevPage_;
+            else                       LoadRecipesFromDisk();
+            edConfirmAction_ = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Discard", ImVec2(90.0f, 0.0f))) {
+            LoadRecipesFromDisk();   // throw away the in-memory edits
+            if (edConfirmAction_ == 1) currentPage_ = prevPage_;
+            edConfirmAction_ = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
+            edConfirmAction_ = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 
     // ---- Editor modals (opened via the flags raised above) ----
     if (edOpenRenameRecipe_) { ImGui::OpenPopup("Rename Recipe"); edOpenRenameRecipe_ = false; }
@@ -1082,11 +1149,16 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
     for (const StructuralStepInfo& t : kStructuralSteps) {
         if (PaletteMatch(t.type, edSearchBuf_)) { anyStruct = true; break; }
     }
+    // Insert on DOUBLE-click only — a stray single click must not add steps
+    // (same convention as the product list's double-click-to-load).
     if (anyStruct) ImGui::TextDisabled("Structure");
     for (const StructuralStepInfo& t : kStructuralSteps) {
         if (!PaletteMatch(t.type, edSearchBuf_)) continue;
-        if (ImGui::Selectable(t.type)) insert(t.type);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", t.description);
+        if (ImGui::Selectable(t.type, false, ImGuiSelectableFlags_AllowDoubleClick) &&
+            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            insert(t.type);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s\n(double-click to insert)", t.description);
     }
     std::string lastCat;
     for (const CommandSpec* c : cmdRegistry_.List()) {
@@ -1098,8 +1170,12 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
             ImGui::Separator();
             ImGui::TextDisabled("%s", lastCat.c_str());
         }
-        if (ImGui::Selectable(c->name.c_str())) insert(c->name.c_str());
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", c->description.c_str());
+        if (ImGui::Selectable(c->name.c_str(), false,
+                              ImGuiSelectableFlags_AllowDoubleClick) &&
+            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            insert(c->name.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s\n(double-click to insert)", c->description.c_str());
     }
     ImGui::EndChild();
     ImGui::EndDisabled();
@@ -1517,16 +1593,19 @@ void App::SaveRecipes()
     }
     if (uid.empty()) uid = GenerateUid();
     recipesUid_ = uid;
-    if (SaveRecipesFile(path, recipes_, uid))
+    if (SaveRecipesFile(path, recipes_, uid)) {
+        recipesBaseline_ = RecipesDump();
         FD_INFO("recipe", "saved %zu recipe(s) to %s", recipes_.size(), path.c_str());
-    else
+    } else {
         FD_WARN("recipe", "could not save recipes to %s", path.c_str());
+    }
 }
 
-// Bottom strip: Run/Stop + state + executing step + progress. Runs the recipe
-// selected in the left panel through the engine (positions/maps copied at
-// Start, so mid-run edits elsewhere in the UI can't disturb the run).
-void App::DrawRecipeRunStrip()
+// Bottom strip: Run/Stop/Save + state + executing step + progress + the
+// clickable validation-issues list. Runs the recipe selected in the left
+// panel through the engine (positions/maps copied at Start, so mid-run edits
+// elsewhere in the UI can't disturb the run).
+void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues)
 {
     const RecipeEngine::Status st = recipeEngine_.GetStatus();
     const bool running = recipeEngine_.Running();
@@ -1546,13 +1625,42 @@ void App::DrawRecipeRunStrip()
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
+    // Run ONLY the selected row (children included), as a throwaway one-step
+    // recipe through the same engine — same validation, stop, and progress.
+    const RecipeStep* selStep =
+        (canRun && !edStepSel_.empty())
+            ? FindStepByPath(&recipes_[recipeSel_].steps, edStepSel_)
+            : nullptr;
+    ImGui::BeginDisabled(!selStep);
+    if (ImGui::Button("Run Step", ImVec2(90.0f, 0.0f)) && selStep) {
+        Recipe one;
+        one.uid  = "step-run";
+        one.name = "step: " + (selStep->nickname.empty() ? AutoNickname(*selStep)
+                                                         : selStep->nickname);
+        one.steps.push_back(*selStep);
+        one.steps.front().enabled = true;   // a disabled row can still be tested
+        RecipeEngine::Env env;
+        env.positions = savedPos_;
+        env.maps      = motionMaps_;
+        env.library   = recipes_;   // sub_recipe references still resolve
+        recipeStartErr_.clear();
+        if (!recipeEngine_.Start(one, std::move(env), &recipeStartErr_))
+            FD_WARN("recipe", "step run rejected: %s", recipeStartErr_.c_str());
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Run only the selected step (its children included)");
+    ImGui::SameLine();
     ImGui::BeginDisabled(!running);
     if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) recipeEngine_.RequestStop();
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(running);
-    if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) SaveRecipes();
+    if (ImGui::Button(RecipesDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
+        SaveRecipes();
     ImGui::EndDisabled();
+    if (ImGui::IsItemHovered() && RecipesDirty())
+        ImGui::SetTooltip("Unsaved changes");
     ImGui::SameLine();
     ImGui::Text("State: %s", RecipeEngine::StateName(st.state));
     if (!st.currentStep.empty()) {
@@ -1573,6 +1681,20 @@ void App::DrawRecipeRunStrip()
         char overlay[48];
         std::snprintf(overlay, sizeof(overlay), "%zu / %zu", st.leafDone, st.leafTotal);
         ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay);
+    }
+    if (!issues.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%zu issue(s) - click to select:",
+                           issues.size());
+        ImGui::BeginChild("##valList");   // scrolls when more than the strip shows
+        for (std::size_t k = 0; k < issues.size(); ++k) {
+            const RecipeIssue& is = issues[k];
+            ImGui::PushID(static_cast<int>(k));
+            if (ImGui::Selectable((is.where + ": " + is.message).c_str()) &&
+                !is.path.empty())
+                edStepSel_ = is.path;
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
     }
     ImGui::EndChild();
 }
@@ -1625,8 +1747,12 @@ void App::SaveProduct()
         const std::string path = product_.Dir() + "/" + e.file;
         if (e.role == "positions") {
             SaveSavedPositionsFile(path, savedPos_, e.uid);
-        } else if (e.role == "recipes" || e.role == "programs") {
-            // placeholder data — leave the uid-stub file as-is
+        } else if (e.role == "recipes") {
+            SaveRecipesFile(path, recipes_, e.uid);
+            recipesUid_      = e.uid;
+            recipesBaseline_ = RecipesDump();
+        } else if (e.role == "programs") {
+            // placeholder — Lua programs arrive in Phase C
         } else {
             FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
         }
