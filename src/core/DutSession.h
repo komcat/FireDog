@@ -61,10 +61,12 @@ public:
                      std::string* err);
 
     // Automatic run attribution ($run event) from the engines' terminal
-    // states. Deliberately a soft no-op when no DUT is open: testing without
-    // a part must not fail runs.
+    // states and the ProgramRunner. Deliberately a soft no-op when no DUT is
+    // open: testing without a part must not fail runs. `uid` (program uid)
+    // and `recipesDone` (>= 0) are included when provided.
     void RecordRun(const std::string& kind, const std::string& name,
-                   const std::string& result);
+                   const std::string& result, const std::string& uid = std::string(),
+                   int recipesDone = -1);
 
 private:
     DutSession() = default;

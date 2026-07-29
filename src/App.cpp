@@ -248,6 +248,7 @@ int App::Run()
     if (!lastProduct.empty() && !LoadProduct(lastProduct))
         FD_WARN("product", "could not reload last product '%s'", lastProduct.c_str());
     if (!product_.Loaded()) LoadRecipesFromDisk();   // else LoadProduct did it
+    if (!product_.Loaded()) LoadProgramsFromDisk();
     LoadScriptsList();             // .lua programs (product dir, else config/scripts)
     if (product_.Loaded())         // DUT records live under the product's data/
         DutSession::Instance().SetProduct(product_.name, product_.uid,
@@ -279,6 +280,7 @@ int App::Run()
 void App::Update(float dt)
 {
     workflow_.Update(dt);        // layer 2 (kept for future orchestration)
+    programRunner_.Tick();       // sequences program/slot runs between frames
     UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)
 }
 
@@ -346,7 +348,7 @@ void App::DrawMainWindow()
                     if (currentPage_ == p) { currentPage_ = prevPage_; return; }
                     if (currentPage_ != Page::WatchEdit && currentPage_ != Page::TransformEdit &&
                         currentPage_ != Page::RecipeEdit && currentPage_ != Page::Scripts &&
-                        currentPage_ != Page::DutView)
+                        currentPage_ != Page::DutView && currentPage_ != Page::Run)
                         prevPage_ = currentPage_;
                     currentPage_ = p;
                 };
@@ -362,6 +364,8 @@ void App::DrawMainWindow()
                     if (currentPage_ != Page::DutView) LoadDutList();
                     toggleEditor(Page::DutView);
                 }
+                if (ImGui::MenuItem("Run", nullptr, currentPage_ == Page::Run))
+                    toggleEditor(Page::Run);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Help")) {
@@ -381,12 +385,13 @@ void App::DrawMainWindow()
         // closed via the top-right Close button (back to the previous page).
         if (currentPage_ == Page::WatchEdit || currentPage_ == Page::TransformEdit ||
             currentPage_ == Page::RecipeEdit || currentPage_ == Page::Scripts ||
-            currentPage_ == Page::DutView) {
+            currentPage_ == Page::DutView || currentPage_ == Page::Run) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
                                 : currentPage_ == Page::Scripts       ? "Scripts"
-                                                                      : "DUT Records";
+                                : currentPage_ == Page::DutView       ? "DUT Records"
+                                                                      : "Run";
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
             ImGui::TextUnformatted(title);
@@ -406,7 +411,8 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::TransformEdit) DrawTransformEditPanel();
             else if (currentPage_ == Page::RecipeEdit)    DrawRecipeEditPanel();
             else if (currentPage_ == Page::Scripts)       DrawScriptsPanel();
-            else                                          DrawDutViewPanel();
+            else if (currentPage_ == Page::DutView)       DrawDutViewPanel();
+            else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();
             return;
@@ -502,6 +508,345 @@ void App::DrawMainWindow()
         splitterWasActive_ = splitterActive;
     }
     ImGui::End();
+}
+
+// ---- Run page (View menu, full page) — programs = slots of recipes ----------
+// Operator surface: deck on the left (slots + recipes, selectable), execution
+// in the middle (queue with marks + progress), DUT on the right. Three run
+// granularities fill the SAME runner queue; one Stop kills the whole chain.
+// Design: docs/run-page-design.md.
+
+// mode: 0 = whole program, 1 = selected slot, 2 = selected recipe.
+void App::StartDeckRun(int mode)
+{
+    runStartErr_.clear();
+    if (progSel_ < 0 || progSel_ >= static_cast<int>(programs_.size())) {
+        runStartErr_ = "no program selected";
+        return;
+    }
+    const Program& prog = programs_[progSel_];
+
+    std::vector<ProgramRunner::Item> queue;
+    const auto addRecipe = [&](const std::string& slotName, const std::string& uid) {
+        const Recipe* r = RecipeByUid(recipes_, uid);
+        if (!r) {
+            runStartErr_ = "recipe uid '" + uid + "' not found (slot '" + slotName + "')";
+            return false;
+        }
+        queue.push_back({slotName, *r});
+        return true;
+    };
+
+    std::string label = prog.name;
+    std::string kind  = "program";
+    if (mode == 0) {
+        for (const ProgramSlot& s : prog.slots)
+            for (const std::string& uid : s.recipes)
+                if (!addRecipe(s.name, uid)) return;
+    } else {
+        if (deckSlot_ < 0 || deckSlot_ >= static_cast<int>(prog.slots.size())) {
+            runStartErr_ = "no slot selected";
+            return;
+        }
+        const ProgramSlot& s = prog.slots[deckSlot_];
+        if (mode == 1) {
+            kind  = "slot";
+            label = prog.name + " / " + s.name;
+            for (const std::string& uid : s.recipes)
+                if (!addRecipe(s.name, uid)) return;
+        } else {
+            if (deckRecipe_ < 0 || deckRecipe_ >= static_cast<int>(s.recipes.size())) {
+                runStartErr_ = "no recipe selected";
+                return;
+            }
+            kind = "recipe";
+            if (!addRecipe(s.name, s.recipes[deckRecipe_])) return;
+            label = prog.name + " / " + s.name + " / " + queue.front().recipe.name;
+        }
+    }
+
+    RecipeEngine::Env env;
+    env.positions = savedPos_;
+    env.maps      = motionMaps_;
+    env.library   = recipes_;
+    if (!programRunner_.Start(kind, label, prog.uid, std::move(queue), std::move(env),
+                              &runStartErr_))
+        FD_WARN("program", "run rejected: %s", runStartErr_.c_str());
+}
+
+void App::DrawRunPanel()
+{
+    const ProgramRunner::Status& rs = programRunner_.GetStatus();
+    const RecipeEngine::Status   es = recipeEngine_.GetStatus();
+    const bool running = programRunner_.Active();
+
+    const float  stripH = ImGui::GetFrameHeightWithSpacing() * 3.2f;
+    const ImVec2 avail  = ImGui::GetContentRegionAvail();
+    const float  paneH  = avail.y - stripH;
+    const float  leftW  = 300.0f;
+    const float  rightW = 280.0f;
+
+    const bool haveProg = progSel_ >= 0 && progSel_ < static_cast<int>(programs_.size());
+
+    // ---- Left: the deck ----
+    ImGui::BeginChild("runDeck", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
+    ImGui::BeginDisabled(running);
+    ImGui::SetNextItemWidth(160.0f);
+    if (ImGui::BeginCombo("##prog", haveProg ? programs_[progSel_].name.c_str()
+                                             : "(program)")) {
+        for (int i = 0; i < static_cast<int>(programs_.size()); ++i) {
+            ImGui::PushID(i);
+            if (ImGui::Selectable(programs_[i].name.c_str(), progSel_ == i)) {
+                progSel_    = i;
+                deckSlot_   = -1;
+                deckRecipe_ = -1;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Edit", &runEdit_);
+    if (runEdit_) {
+        if (ImGui::SmallButton("New")) {
+            Program p;
+            p.uid = GenerateUid();   // the traceability identity, minted once
+            programs_.push_back(std::move(p));
+            progSel_    = static_cast<int>(programs_.size()) - 1;
+            deckSlot_   = -1;
+            deckRecipe_ = -1;
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!haveProg);
+        if (ImGui::SmallButton("Del")) runOpenDelete_ = true;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+ Slot")) programs_[progSel_].slots.push_back({});
+        ImGui::EndDisabled();
+        if (haveProg) {
+            Program& prog = programs_[progSel_];
+            char nbuf[64];
+            std::snprintf(nbuf, sizeof(nbuf), "%s", prog.name.c_str());
+            ImGui::SetNextItemWidth(-40.0f);
+            if (ImGui::InputText("name", nbuf, sizeof(nbuf))) prog.name = nbuf;
+            ImGui::TextDisabled("uid: %s", prog.uid.c_str());
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::Separator();
+
+    if (!haveProg) {
+        ImGui::TextWrapped(programs_.empty()
+                               ? "No programs yet - Edit > New creates one."
+                               : "Pick a program above.");
+    } else {
+        Program& prog = programs_[progSel_];
+        for (int si = 0; si < static_cast<int>(prog.slots.size()); ++si) {
+            ProgramSlot& slot = prog.slots[si];
+            ImGui::PushID(si);
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                                       ImGuiTreeNodeFlags_SpanAvailWidth |
+                                       ImGuiTreeNodeFlags_DefaultOpen;
+            if (deckSlot_ == si && deckRecipe_ < 0) flags |= ImGuiTreeNodeFlags_Selected;
+            const bool open = ImGui::TreeNodeEx("##slot", flags, "%d  %s", si + 1,
+                                                slot.name.c_str());
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+                deckSlot_   = si;
+                deckRecipe_ = -1;
+            }
+            if (open) {
+                if (runEdit_ && !running) {
+                    char sbuf[48];
+                    std::snprintf(sbuf, sizeof(sbuf), "%s", slot.name.c_str());
+                    ImGui::SetNextItemWidth(120.0f);
+                    if (ImGui::InputText("##sname", sbuf, sizeof(sbuf))) slot.name = sbuf;
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(si == 0);
+                    if (ImGui::SmallButton("^")) std::swap(prog.slots[si - 1], prog.slots[si]);
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(si + 1 >= static_cast<int>(prog.slots.size()));
+                    if (ImGui::SmallButton("v")) std::swap(prog.slots[si], prog.slots[si + 1]);
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("x slot")) {
+                        prog.slots.erase(prog.slots.begin() + si);
+                        deckSlot_ = -1;
+                        deckRecipe_ = -1;
+                        ImGui::TreePop();
+                        ImGui::PopID();
+                        break;   // container changed; redraw next frame
+                    }
+                }
+                for (int ri = 0; ri < static_cast<int>(slot.recipes.size()); ++ri) {
+                    ImGui::PushID(ri);
+                    const Recipe* r = RecipeByUid(recipes_, slot.recipes[ri]);
+                    const bool missing = (r == nullptr);
+                    const bool sel = deckSlot_ == si && deckRecipe_ == ri;
+                    // Gold while this exact item runs.
+                    const bool cur = running && rs.index < rs.items.size() &&
+                                     rs.items[rs.index].slotName == slot.name &&
+                                     !missing && rs.items[rs.index].recipeName == r->name;
+                    if (cur)
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+                    else if (missing)
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.3f, 1.0f));
+                    char row[96];
+                    std::snprintf(row, sizeof(row), "   %s", missing
+                                      ? (slot.recipes[ri] + " (missing!)").c_str()
+                                      : r->name.c_str());
+                    if (ImGui::Selectable(row, sel)) {
+                        deckSlot_   = si;
+                        deckRecipe_ = ri;
+                    }
+                    if (cur || missing) ImGui::PopStyleColor();
+                    if (runEdit_ && !running) {
+                        ImGui::SameLine();
+                        ImGui::BeginDisabled(ri == 0);
+                        if (ImGui::SmallButton("^"))
+                            std::swap(slot.recipes[ri - 1], slot.recipes[ri]);
+                        ImGui::EndDisabled();
+                        ImGui::SameLine();
+                        ImGui::BeginDisabled(ri + 1 >= static_cast<int>(slot.recipes.size()));
+                        if (ImGui::SmallButton("v"))
+                            std::swap(slot.recipes[ri], slot.recipes[ri + 1]);
+                        ImGui::EndDisabled();
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("x")) {
+                            slot.recipes.erase(slot.recipes.begin() + ri);
+                            if (deckRecipe_ == ri) deckRecipe_ = -1;
+                            ImGui::PopID();
+                            break;
+                        }
+                    }
+                    ImGui::PopID();
+                }
+                if (runEdit_ && !running) {
+                    ImGui::SetNextItemWidth(140.0f);
+                    if (ImGui::BeginCombo("##addrcp", "+ recipe")) {
+                        for (const Recipe& r : recipes_) {
+                            if (ImGui::Selectable(r.name.c_str()))
+                                slot.recipes.push_back(r.uid);
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    // ---- Middle: execution / idle ----
+    const float midW = avail.x - leftW - rightW - ImGui::GetStyle().ItemSpacing.x * 2.0f;
+    ImGui::BeginChild("runExec", ImVec2(midW, paneH), ImGuiChildFlags_Borders);
+    if (running || !rs.result.empty()) {
+        ImGui::Text("%s: %s", rs.kind.c_str(), rs.label.c_str());
+        if (running) {
+            ImGui::Text("recipe %zu / %zu", rs.index + 1, rs.total);
+            if (!es.currentStep.empty()) ImGui::TextDisabled("%s", es.currentStep.c_str());
+            if (es.leafTotal > 0) {
+                float frac = static_cast<float>(es.leafDone) /
+                             static_cast<float>(es.leafTotal);
+                if (frac > 1.0f) frac = 1.0f;
+                ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f));
+            }
+        } else {
+            const bool ok = rs.result.rfind("Completed", 0) == 0;
+            ImGui::TextColored(ok ? ImVec4(0.4f, 1.0f, 0.5f, 1.0f)
+                                  : ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+                               "%s", rs.result.c_str());
+        }
+        ImGui::Separator();
+        for (const ProgramRunner::ItemStatus& it : rs.items) {
+            const char* mark = "  ";
+            ImVec4 col = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+            switch (it.mark) {
+            case ProgramRunner::Mark::Running: mark = "> "; col = ImVec4(1.0f, 0.85f, 0.3f, 1.0f); break;
+            case ProgramRunner::Mark::Done:    mark = "OK"; col = ImVec4(0.4f, 1.0f, 0.5f, 1.0f); break;
+            case ProgramRunner::Mark::Failed:  mark = "X "; col = ImVec4(1.0f, 0.4f, 0.3f, 1.0f); break;
+            case ProgramRunner::Mark::Stopped: mark = "! "; col = ImVec4(1.0f, 0.7f, 0.3f, 1.0f); break;
+            case ProgramRunner::Mark::Pending: break;
+            }
+            ImGui::TextColored(col, "%s  %s / %s", mark, it.slotName.c_str(),
+                               it.recipeName.c_str());
+        }
+    } else {
+        ImGui::TextDisabled("Select a slot or recipe on the left, then Run.");
+        if (haveProg && !programs_[progSel_].description.empty()) {
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", programs_[progSel_].description.c_str());
+        }
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    // ---- Right: DUT (the operator flow is scan -> run -> pass/fail) ----
+    ImGui::BeginChild("runDut", ImVec2(rightW, paneH), ImGuiChildFlags_Borders);
+    DrawDutBlock();
+    ImGui::Separator();
+    ImGui::Text("Engine: %s", RecipeEngine::StateName(es.state));
+    if (!es.error.empty() && es.state != RecipeEngine::State::Running)
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", es.error.c_str());
+    ImGui::EndChild();
+
+    // ---- Bottom strip: run controls ----
+    ImGui::BeginChild("runStrip", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
+    const bool canRun = !OrchestrationBusy() && haveProg;
+    ImGui::BeginDisabled(!canRun);
+    if (ImGui::Button("Run Program", ImVec2(110.0f, 0.0f))) StartDeckRun(0);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canRun || deckSlot_ < 0);
+    if (ImGui::Button("Run Slot", ImVec2(100.0f, 0.0f))) StartDeckRun(1);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canRun || deckSlot_ < 0 || deckRecipe_ < 0);
+    if (ImGui::Button("Run Recipe", ImVec2(100.0f, 0.0f))) StartDeckRun(2);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!running);
+    if (ImGui::Button("Stop", ImVec2(100.0f, 0.0f))) programRunner_.Stop();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(running);
+    if (ImGui::Button(ProgramsDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
+        SavePrograms();
+    ImGui::EndDisabled();
+    {
+        const DutSession::Info di = DutSession::Instance().GetInfo();
+        ImGui::SameLine();
+        ImGui::TextDisabled("DUT: %s", di.open ? di.serial.c_str() : "none");
+    }
+    if (!runStartErr_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", runStartErr_.c_str());
+    }
+    ImGui::EndChild();
+
+    // ---- Delete-program confirm ----
+    if (runOpenDelete_) {
+        ImGui::OpenPopup("Delete Program");
+        runOpenDelete_ = false;
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Delete Program", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (haveProg)
+            ImGui::Text("Delete program '%s'?", programs_[progSel_].name.c_str());
+        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveProg) {
+            programs_.erase(programs_.begin() + progSel_);
+            progSel_    = programs_.empty() ? -1 : 0;
+            deckSlot_   = -1;
+            deckRecipe_ = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 }
 
 // ---- DUT Records viewer (View menu, full page, read-only) — Phase D2 -------
@@ -772,6 +1117,7 @@ bool App::LoadProduct(const std::string& name)
     }
     product_ = std::move(m);
     LoadRecipesFromDisk();   // product recipes replace the config-fallback set
+    LoadProgramsFromDisk();  // product programs likewise
     LoadScriptsList();       // product scripts likewise (config fallback)
     DutSession::Instance().SetProduct(product_.name, product_.uid,
                                       product_.DataDir());   // auto-closes any DUT
@@ -816,6 +1162,63 @@ std::string App::RecipesDump() const
     nlohmann::json arr = nlohmann::json::array();
     for (const Recipe& r : recipes_) arr.push_back(RecipeToJson(r));
     return arr.dump();
+}
+
+// ---- Programs (Run page) — same persistence conventions as recipes ---------
+
+std::string App::ProgramsDump() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const Program& p : programs_) arr.push_back(ProgramToJson(p));
+    return arr.dump();
+}
+
+void App::LoadProgramsFromDisk()
+{
+    progSel_    = -1;
+    deckSlot_   = -1;
+    deckRecipe_ = -1;
+    runStartErr_.clear();
+    if (product_.Loaded()) {
+        const ManifestFile* e = product_.Entry("programs");
+        if (e) {
+            programs_ = LoadProgramsFile(product_.FilePath("programs"), &programsUid_);
+            if (!programs_.empty()) {
+                if (!programsUid_.empty() && programsUid_ != e->uid)
+                    FD_WARN("product", "programs uid mismatch: manifest %s vs file '%s'",
+                            e->uid.c_str(), programsUid_.c_str());
+                programsBaseline_ = ProgramsDump();
+                if (!programs_.empty()) progSel_ = 0;
+                return;
+            }
+            FD_INFO("program", "product '%s' has no programs yet - using config programs",
+                    product_.name.c_str());
+        }
+    }
+    programsUid_.clear();
+    programs_ = LoadPrograms();
+    programsBaseline_ = ProgramsDump();
+    if (!programs_.empty()) progSel_ = 0;
+}
+
+void App::SavePrograms()
+{
+    std::string path = "config/programs.local.json";
+    std::string uid  = programsUid_;
+    if (product_.Loaded()) {
+        if (const ManifestFile* e = product_.Entry("programs")) {
+            path = product_.FilePath("programs");
+            uid  = e->uid;
+        }
+    }
+    if (uid.empty()) uid = GenerateUid();
+    programsUid_ = uid;
+    if (SaveProgramsFile(path, programs_, uid)) {
+        programsBaseline_ = ProgramsDump();
+        FD_INFO("program", "saved %zu program(s) to %s", programs_.size(), path.c_str());
+    } else {
+        FD_WARN("program", "could not save programs to %s", path.c_str());
+    }
 }
 
 // ---- Recipe Editor (View menu, full page) — Phase B1: browse + run ----------
@@ -2221,7 +2624,9 @@ void App::SaveProduct()
             recipesUid_      = e.uid;
             recipesBaseline_ = RecipesDump();
         } else if (e.role == "programs") {
-            // placeholder — Lua programs arrive in Phase C
+            SaveProgramsFile(path, programs_, e.uid);
+            programsUid_      = e.uid;
+            programsBaseline_ = ProgramsDump();
         } else {
             FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
         }

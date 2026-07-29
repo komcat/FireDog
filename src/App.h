@@ -13,6 +13,8 @@
 #include "ui/GlHost.h"
 #include "command/CommandRegistry.h"
 #include "command/LuaEngine.h"
+#include "command/Program.h"
+#include "command/ProgramRunner.h"
 #include "command/Recipe.h"
 #include "command/RecipeEngine.h"
 #include "core/Log.h"
@@ -36,7 +38,7 @@ struct CanvasObject {
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
-                  WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView };
+                  WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run };
 
 class App {
 public:
@@ -109,6 +111,13 @@ private:
     // DUT Records viewer (View menu, full-page, read-only) — Phase D2.
     void DrawDutViewPanel();          // serial list | entries table | summary
     void LoadDutList();               // scan the product's data/ for records
+    // Run page (View menu, full-page) — programs = slots of recipes. R1.
+    void DrawRunPanel();              // deck | execution | DUT
+    void StartDeckRun(int mode);      // 0 = program, 1 = slot, 2 = recipe
+    void LoadProgramsFromDisk();      // product programs role, else config
+    void SavePrograms();
+    std::string ProgramsDump() const;
+    bool ProgramsDirty() const { return ProgramsDump() != programsBaseline_; }
     void LoadRecipesFromDisk();       // product recipes file, else config fallback
     void SaveRecipes();               // product recipes file, else config local
     std::string RecipesDump() const;  // canonical serialization (dirty compare)
@@ -144,11 +153,13 @@ private:
     CommandRegistry cmdRegistry_;
     RecipeEngine    recipeEngine_{workflow_, hardware_, cmdRegistry_};
     LuaEngine       luaEngine_{workflow_, hardware_, cmdRegistry_};
-    // One orchestration owner at a time: App keeps the two engines mutually
-    // exclusive (each Run surface checks the other engine + the path executor).
+    ProgramRunner   programRunner_{recipeEngine_};   // ticked from Update
+    // One orchestration owner at a time: App keeps the engines + runner + path
+    // executor mutually exclusive (each Run surface checks all of them).
     bool OrchestrationBusy() const
     {
-        return recipeEngine_.Running() || luaEngine_.Running() || workflow_.PathActive();
+        return recipeEngine_.Running() || luaEngine_.Running() ||
+               programRunner_.Active() || workflow_.PathActive();
     }
 
     // UI-side camera texture — frames are pulled from hardware_.Camera() via
@@ -363,6 +374,18 @@ private:
     double xcanMinSignal_  = 0.0;
     double xcanExitThr_    = 0.0;   // early-exit threshold (0 = disabled)
     double xcanTolMm_      = 0.001;
+
+    // Run page state: the program deck + selection (recipe -1 = slot-level),
+    // light edit mode, and the runner's last start rejection.
+    std::vector<Program> programs_;
+    std::string          programsUid_;       // file uid (product integrity)
+    std::string          programsBaseline_;  // dirty compare
+    int  progSel_       = -1;
+    int  deckSlot_      = -1;
+    int  deckRecipe_    = -1;
+    bool runEdit_       = false;
+    bool runOpenDelete_ = false;
+    std::string runStartErr_;
 
     // DUT Records viewer state: scanned serials + the loaded record.
     std::vector<std::string> dutList_;

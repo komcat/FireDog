@@ -227,7 +227,8 @@ bool DutSession::InsertImage(const std::string& key, const std::string& relPath,
 }
 
 void DutSession::RecordRun(const std::string& kind, const std::string& name,
-                           const std::string& result)
+                           const std::string& result, const std::string& uid,
+                           int recipesDone)
 {
     const std::scoped_lock lock(mu_);
     if (!open_) return;   // deliberate soft path: runs without a part are fine
@@ -235,6 +236,8 @@ void DutSession::RecordRun(const std::string& kind, const std::string& name,
     v["kind"]   = kind;
     v["name"]   = name;
     v["result"] = result;
+    if (!uid.empty()) v["uid"] = uid;
+    if (recipesDone >= 0) v["recipes_done"] = recipesDone;
     std::string aerr;
     if (!AppendLocked("$run", "object", std::move(v), &aerr))
         FD_WARN("dut", "run event write failed: %s", aerr.c_str());
