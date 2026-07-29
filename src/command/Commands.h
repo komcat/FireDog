@@ -16,6 +16,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
 void RegisterIoCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
+void RegisterDutCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 
 inline void RegisterBuiltinCommands(CommandRegistry& reg, Workflow& wf,
                                     HardwareManager& hw)
@@ -24,6 +25,7 @@ inline void RegisterBuiltinCommands(CommandRegistry& reg, Workflow& wf,
     RegisterIoCommands(reg, wf, hw);
     RegisterInstrumentCommands(reg, wf, hw);
     RegisterSystemCommands(reg, wf, hw);
+    RegisterDutCommands(reg, wf, hw);
 }
 
 } // namespace firedog

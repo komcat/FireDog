@@ -8,6 +8,7 @@
 #include "ui/UiSettings.h"
 #include "command/Commands.h"
 #include "core/DataBus.h"
+#include "core/DutSession.h"
 #include "core/Topics.h"
 #include "core/Log.h"
 
@@ -246,6 +247,9 @@ int App::Run()
         FD_WARN("product", "could not reload last product '%s'", lastProduct.c_str());
     if (!product_.Loaded()) LoadRecipesFromDisk();   // else LoadProduct did it
     LoadScriptsList();             // .lua programs (product dir, else config/scripts)
+    if (product_.Loaded())         // DUT records live under the product's data/
+        DutSession::Instance().SetProduct(product_.name, product_.uid,
+                                          product_.DataDir());
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
     RegisterBuiltinCommands(cmdRegistry_, workflow_, hardware_);   // layer 2.5
@@ -490,6 +494,46 @@ void App::DrawMainWindow()
     ImGui::End();
 }
 
+// Active-DUT status + open/close controls (Overview left panel). The operator
+// path: type/scan a serial, Open (load-or-create). Recipes/scripts drive the
+// same DutSession through the dut_* commands. Design: docs/dut-design.md.
+void App::DrawDutBlock()
+{
+    const DutSession::Info di = DutSession::Instance().GetInfo();
+    ImGui::TextUnformatted("DUT");
+    ImGui::Separator();
+    if (!di.productSet) {
+        ImGui::TextDisabled("(load a product first)");
+        return;
+    }
+    if (di.open) {
+        ImGui::Text("%s", di.serial.c_str());
+        ImGui::TextDisabled("%zu entrie(s)%s%s", di.entries,
+                            di.status.empty() ? "" : " - ", di.status.c_str());
+        std::string err;
+        if (ImGui::SmallButton("Pass")) DutSession::Instance().Close("pass", &err);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Fail")) DutSession::Instance().Close("fail", &err);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Close")) DutSession::Instance().Close("", &err);
+        if (!err.empty()) FD_WARN("dut", "close failed: %s", err.c_str());
+    } else {
+        ImGui::SetNextItemWidth(-64.0f);
+        // Barcode scanners type + Enter, so Enter submits like the button.
+        const bool enter = ImGui::InputTextWithHint(
+            "##dutserial", "serial...", dutSerialBuf_, sizeof(dutSerialBuf_),
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if ((ImGui::SmallButton("Open") || enter) && dutSerialBuf_[0] != '\0') {
+            std::string err;
+            if (!DutSession::Instance().Open(dutSerialBuf_, false, &err))
+                FD_WARN("dut", "open failed: %s", err.c_str());
+            else
+                dutSerialBuf_[0] = '\0';
+        }
+    }
+}
+
 void App::DrawLeftPanel()
 {
     ImGui::TextUnformatted("Hardware");
@@ -498,6 +542,8 @@ void App::DrawLeftPanel()
         DeviceStatusLine(d.state, d.name.c_str());
     }
 
+    ImGui::Spacing();
+    DrawDutBlock();
     ImGui::Spacing();
     if (ImGui::CollapsingHeader("Display")) {
         // Theme picker — hot-applies (mid-frame style changes are fine in
@@ -584,6 +630,8 @@ bool App::LoadProduct(const std::string& name)
     product_ = std::move(m);
     LoadRecipesFromDisk();   // product recipes replace the config-fallback set
     LoadScriptsList();       // product scripts likewise (config fallback)
+    DutSession::Instance().SetProduct(product_.name, product_.uid,
+                                      product_.DataDir());   // auto-closes any DUT
     SaveUiSettings();   // remember as last product for the next startup
     FD_INFO("product", "loaded '%s'", product_.name.c_str());
     return true;
@@ -1698,6 +1746,11 @@ void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues)
         ImGui::SetTooltip("Unsaved changes");
     ImGui::SameLine();
     ImGui::Text("State: %s", RecipeEngine::StateName(st.state));
+    {
+        const DutSession::Info di = DutSession::Instance().GetInfo();
+        ImGui::SameLine();
+        ImGui::TextDisabled("| DUT: %s", di.open ? di.serial.c_str() : "none");
+    }
     if (!st.currentStep.empty()) {
         ImGui::SameLine();
         ImGui::TextDisabled("| %s", st.currentStep.c_str());
@@ -1744,9 +1797,13 @@ void App::DrawRecipePromptModal()
     const LuaEngine::Status    lst = luaEngine_.GetStatus();
     const bool fromScript = rst.pendingPrompt.empty() && !lst.pendingPrompt.empty();
     const std::string& pending = fromScript ? lst.pendingPrompt : rst.pendingPrompt;
+    const bool wantsInput =
+        fromScript ? lst.pendingPromptInput : rst.pendingPromptInput;
 
-    if (!pending.empty() && !ImGui::IsPopupOpen("Recipe Prompt"))
+    if (!pending.empty() && !ImGui::IsPopupOpen("Recipe Prompt")) {
+        promptInputBuf_[0] = '\0';
         ImGui::OpenPopup("Recipe Prompt");
+    }
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("Recipe Prompt", nullptr,
@@ -1754,12 +1811,21 @@ void App::DrawRecipePromptModal()
         ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 420.0f);
         ImGui::TextUnformatted(pending.c_str());
         ImGui::PopTextWrapPos();
-        ImGui::Separator();
         const auto answer = [&](bool ok) {
-            if (fromScript) luaEngine_.AnswerPrompt(ok);
-            else            recipeEngine_.AnswerPrompt(ok);
+            if (fromScript) luaEngine_.AnswerPrompt(ok, promptInputBuf_);
+            else            recipeEngine_.AnswerPrompt(ok, promptInputBuf_);
         };
-        if (ImGui::Button("OK", ImVec2(100.0f, 0.0f))) {
+        bool submit = false;
+        if (wantsInput) {
+            // Barcode scanners type + Enter, so Enter submits like OK.
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(300.0f);
+            submit = ImGui::InputText("##promptin", promptInputBuf_,
+                                      sizeof(promptInputBuf_),
+                                      ImGuiInputTextFlags_EnterReturnsTrue);
+        }
+        ImGui::Separator();
+        if (ImGui::Button("OK", ImVec2(100.0f, 0.0f)) || submit) {
             answer(true);
             ImGui::CloseCurrentPopup();
         }
@@ -1974,6 +2040,11 @@ void App::DrawScriptsPanel()
     ImGui::BeginDisabled(!running);
     if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) luaEngine_.RequestStop();
     ImGui::EndDisabled();
+    {
+        const DutSession::Info di = DutSession::Instance().GetInfo();
+        ImGui::SameLine();
+        ImGui::TextDisabled("DUT: %s", di.open ? di.serial.c_str() : "none");
+    }
     if (!scriptStartErr_.empty()) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "start rejected: %s",
@@ -1987,6 +2058,8 @@ void App::NewProduct(const char* name)
     ProductManifest m = CreateProduct(name);
     if (!m.Loaded()) return;
     product_ = std::move(m);
+    DutSession::Instance().SetProduct(product_.name, product_.uid,
+                                      product_.DataDir());
     SavePositions();     // carry the current in-memory positions into the product
     SaveUiSettings();
 }

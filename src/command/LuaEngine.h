@@ -80,7 +80,8 @@ public:
 
     bool Start(const std::string& scriptPath, Env env, std::string* err = nullptr);
     void RequestStop();            // cooperative; fd waits + the Lua hook honor it
-    void AnswerPrompt(bool ok);    // resolves a blocking fd.prompt()
+    // Resolves a blocking fd.prompt() / fd.input() (text used by input).
+    void AnswerPrompt(bool ok, std::string text = std::string());
 
     // ---- Debugger (C3) — all built on the existing line hook ---------------
     // Breakpoints are hot-swappable while running (the UI passes the selected
@@ -102,7 +103,8 @@ public:
         bool        paused = false;    // blocked at a breakpoint / pause / step
         std::string lastCommand;       // last fd.* command issued
         std::string error;             // terminal cause when Failed/Stopped
-        std::string pendingPrompt;     // non-empty while fd.prompt blocks
+        std::string pendingPrompt;     // non-empty while fd.prompt/input blocks
+        bool        pendingPromptInput = false;   // the prompt wants a text answer
         std::vector<std::pair<std::string, CtxValue>> ctx;
         // Current function's locals, captured at the pause point.
         std::vector<std::pair<std::string, std::string>> locals;
@@ -118,7 +120,8 @@ public:
 
 private:
     void ThreadMain(std::string path, Env env);
-    bool AwaitPromptInternal(const std::string& message);
+    bool AwaitPromptInternal(const std::string& message, bool wantsInput,
+                             std::string* textOut);
     bool SafetyAborted() const;
 
     Workflow&              wf_;
@@ -142,6 +145,8 @@ private:
     std::string lastCommand_;
     std::string error_;
     std::string prompt_;
+    bool        promptWantsInput_ = false;
+    std::string promptText_;
     bool        promptAnswered_ = false;
     bool        promptAnswer_   = false;
     ExecutionContext* runCtx_ = nullptr;   // valid only while the worker runs

@@ -4,6 +4,7 @@
 #include "command/CommandRegistry.h"
 #include "command/StepRunner.h"
 #include "core/DataBus.h"
+#include "core/DutSession.h"
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
@@ -213,10 +214,29 @@ std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
         fd.set_function("prompt", [&ctx](const std::string& msg) {
             return ctx.AwaitPrompt(msg);
         });
+        // Text-input prompt (operator keyboard / barcode scanner): returns
+        // the string, or nil on Cancel.
+        fd.set_function("input", [&ctx](sol::this_state ts, const std::string& msg)
+                                     -> sol::object {
+            std::string text;
+            if (!ctx.AwaitInput(msg, &text)) return sol::make_object(ts, sol::lua_nil);
+            return sol::make_object(ts, text);
+        });
         fd.set_function("clock", [] {
             using clock = std::chrono::steady_clock;
             return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
         });
+        // fd.dut: read accessors over the active DUT (writes go through the
+        // generated dut_* commands) — lets a script reuse the open DUT
+        // without re-prompting.
+        {
+            sol::table dut = lua.create_table();
+            dut.set_function("is_open", [] { return DutSession::Instance().GetInfo().open; });
+            dut.set_function("serial",  [] { return DutSession::Instance().GetInfo().serial; });
+            dut.set_function("product", [] { return DutSession::Instance().GetInfo().product; });
+            fd["dut"] = dut;
+        }
+
         fd.set_function("positions", [&ctx](sol::this_state ts,
                                             const std::string& device) {
             sol::state_view sv(ts);
@@ -436,12 +456,13 @@ void LuaEngine::RequestStop()
     cv_.notify_all();
 }
 
-void LuaEngine::AnswerPrompt(bool ok)
+void LuaEngine::AnswerPrompt(bool ok, std::string text)
 {
     {
         const std::scoped_lock lock(mu_);
         if (prompt_.empty()) return;
         prompt_.clear();
+        promptText_     = std::move(text);
         promptAnswer_   = ok;
         promptAnswered_ = true;
     }
@@ -457,24 +478,31 @@ LuaEngine::Status LuaEngine::GetStatus() const
     s.currentLine   = curLine_.load();
     s.paused        = paused_;
     s.lastCommand   = lastCommand_;
-    s.error         = error_;
-    s.pendingPrompt = prompt_;
-    s.locals        = locals_;
+    s.error              = error_;
+    s.pendingPrompt      = prompt_;
+    s.pendingPromptInput = promptWantsInput_;
+    s.locals             = locals_;
     if (runCtx_) s.ctx = runCtx_->CtxSnapshot();
     return s;
 }
 
-bool LuaEngine::AwaitPromptInternal(const std::string& message)
+bool LuaEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
+                                    std::string* textOut)
 {
     std::unique_lock lock(mu_);
-    prompt_         = message;
+    prompt_           = message;
+    promptWantsInput_ = wantsInput;
+    promptText_.clear();
     promptAnswered_ = false;
     promptAnswer_   = false;
     while (!promptAnswered_ && !stopReq_.load()) {
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
     prompt_.clear();
-    return promptAnswered_ && promptAnswer_ && !stopReq_.load();
+    promptWantsInput_ = false;
+    const bool ok = promptAnswered_ && promptAnswer_ && !stopReq_.load();
+    if (ok && textOut) *textOut = promptText_;
+    return ok;
 }
 
 void LuaEngine::ThreadMain(std::string path, Env env)
@@ -485,7 +513,10 @@ void LuaEngine::ThreadMain(std::string path, Env env)
         wf_, hw_, env.positions, env.maps,
         ExecutionContext::Hooks{
             [this] { return HookShouldStop(); },
-            [this](const std::string& m) { return AwaitPromptInternal(m); },
+            [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },
+            [this](const std::string& m, std::string* out) {
+                return AwaitPromptInternal(m, true, out);
+            },
         });
     {
         const std::scoped_lock lock(mu_);
@@ -509,6 +540,8 @@ void LuaEngine::ThreadMain(std::string path, Env env)
         }
         FD_INFO("script", "run '%s' finished: %s%s%s", scriptName_.c_str(),
                 StateName(state_), error_.empty() ? "" : " - ", error_.c_str());
+        // Traceability: attribute this run to the open DUT (soft no-op if none).
+        DutSession::Instance().RecordRun("script", scriptName_, StateName(state_));
     }
     curLine_.store(0);
     running_.store(false);

@@ -76,6 +76,16 @@ CommandResult ExecPrompt(ExecutionContext& ctx, const ParamValues& p)
                : CommandResult::Fail("cancelled by operator");
 }
 
+CommandResult ExecPromptInput(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string msg = ctx.Substitute(p.GetString("message"));
+    std::string text;
+    if (!ctx.AwaitInput(msg, &text))
+        return CommandResult::Fail("cancelled by operator");
+    ctx.CtxSet(p.GetString("ctx"), text);
+    return CommandResult::Success();
+}
+
 } // namespace
 
 void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
@@ -138,6 +148,15 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"message", PT::String, true, {}, 0, 0, {}, "text shown to the operator"},
                   },
                   CommandSpec::Needs::None, ExecPrompt});
+
+    reg.Register({"prompt_input", "System",
+                  "Ask the operator for TEXT (keyboard or barcode scanner) into a ctx key",
+                  {
+                      {"message", PT::String, true, {}, 0, 0, {}, "text shown to the operator"},
+                      {"ctx", PT::String, true, {}, 0, 0, {},
+                       "destination ctx key (e.g. 'serial' for dut_open)"},
+                  },
+                  CommandSpec::Needs::None, ExecPromptInput});
 
     // The Lua escape hatch (bobcat's proven "Run Script" pattern): execute a
     // .lua file inline on the recipe worker with the same fd bindings and the

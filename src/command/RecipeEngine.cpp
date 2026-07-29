@@ -4,6 +4,7 @@
 
 #include "command/CommandRegistry.h"
 #include "command/StepRunner.h"
+#include "core/DutSession.h"
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
@@ -95,12 +96,13 @@ void RecipeEngine::RequestStop()
     cv_.notify_all();   // release a blocked prompt
 }
 
-void RecipeEngine::AnswerPrompt(bool ok)
+void RecipeEngine::AnswerPrompt(bool ok, std::string text)
 {
     {
         const std::scoped_lock lock(mu_);
         if (prompt_.empty()) return;   // nothing pending
         prompt_.clear();
+        promptText_     = std::move(text);
         promptAnswer_   = ok;
         promptAnswered_ = true;
     }
@@ -117,8 +119,9 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.stepPath      = curPath_;
     s.leafDone      = leafDone_;
     s.leafTotal     = leafTotal_;
-    s.error         = error_;
-    s.pendingPrompt = prompt_;
+    s.error              = error_;
+    s.pendingPrompt      = prompt_;
+    s.pendingPromptInput = promptWantsInput_;
     if (runCtx_) s.ctx = runCtx_->CtxSnapshot();   // its own mutex; no deadlock
     return s;
 }
@@ -128,10 +131,13 @@ bool RecipeEngine::SafetyAborted() const
     return wf_.SafetyAlertActive() && wf_.SafetyAlert().critical;
 }
 
-bool RecipeEngine::AwaitPromptInternal(const std::string& message)
+bool RecipeEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
+                                       std::string* textOut)
 {
     std::unique_lock lock(mu_);
-    prompt_         = message;
+    prompt_           = message;
+    promptWantsInput_ = wantsInput;
+    promptText_.clear();
     promptAnswered_ = false;
     promptAnswer_   = false;
     // Wait in slices so a stop request always gets through.
@@ -139,7 +145,10 @@ bool RecipeEngine::AwaitPromptInternal(const std::string& message)
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
     prompt_.clear();
-    return promptAnswered_ && promptAnswer_ && !stopReq_.load();
+    promptWantsInput_ = false;
+    const bool ok = promptAnswered_ && promptAnswer_ && !stopReq_.load();
+    if (ok && textOut) *textOut = promptText_;
+    return ok;
 }
 
 void RecipeEngine::ThreadMain(Recipe recipe, Env env)
@@ -148,7 +157,10 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
         wf_, hw_, env.positions, env.maps,
         ExecutionContext::Hooks{
             [this] { return stopReq_.load() || SafetyAborted(); },
-            [this](const std::string& m) { return AwaitPromptInternal(m); },
+            [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },
+            [this](const std::string& m, std::string* out) {
+                return AwaitPromptInternal(m, true, out);
+            },
         });
     {
         const std::scoped_lock lock(mu_);
@@ -203,6 +215,8 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
         curPath_.clear();
         FD_INFO("recipe", "run '%s' finished: %s%s%s", recipeName_.c_str(),
                 StateName(state_), error_.empty() ? "" : " - ", error_.c_str());
+        // Traceability: attribute this run to the open DUT (soft no-op if none).
+        DutSession::Instance().RecordRun("recipe", recipeName_, StateName(state_));
     }
     running_.store(false);
 }

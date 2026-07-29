@@ -54,7 +54,8 @@ public:
     // active, the UI path executor is busy, or validation fails.
     bool Start(const Recipe& recipe, Env env, std::string* err = nullptr);
     void RequestStop();            // cooperative; honored within one poll interval
-    void AnswerPrompt(bool ok);    // resolves a blocking `prompt` step
+    // Resolves a blocking `prompt` / `prompt_input` step (text used by input).
+    void AnswerPrompt(bool ok, std::string text = std::string());
 
     enum class State { Idle, Running, Completed, Failed, Stopped };
     static const char* StateName(State s);
@@ -71,6 +72,7 @@ public:
         std::size_t leafDone = 0, leafTotal = 0;
         std::string error;            // terminal cause when Failed/Stopped
         std::string pendingPrompt;    // non-empty while a prompt blocks
+        bool        pendingPromptInput = false;   // the prompt wants a text answer
         std::vector<std::pair<std::string, CtxValue>> ctx;   // display snapshot
     };
     Status GetStatus() const;        // mutex-guarded copy — cheap, UI-safe
@@ -83,7 +85,8 @@ private:
     bool SafetyAborted() const;   // critical unacknowledged alert?
 
     // Prompt handshake (worker blocks; UI answers). Guarded by mu_.
-    bool AwaitPromptInternal(const std::string& message);
+    bool AwaitPromptInternal(const std::string& message, bool wantsInput,
+                             std::string* textOut);
 
     Workflow&              wf_;
     HardwareManager&       hw_;
@@ -100,6 +103,8 @@ private:
     std::vector<std::size_t> curPath_;   // numeric path of currentStep_
     std::string error_;
     std::string prompt_;               // pending prompt text ("" = none)
+    bool        promptWantsInput_ = false;
+    std::string promptText_;           // the UI's typed answer
     bool        promptAnswered_ = false;
     bool        promptAnswer_   = false;
     std::size_t leafDone_ = 0, leafTotal_ = 0;

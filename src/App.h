@@ -45,7 +45,8 @@ public:
 private:
     void Update(float dt);
     void DrawMainWindow();
-    void DrawLeftPanel();      // 20% column: hardware status + display controls
+    void DrawLeftPanel();      // 20% column: hardware status + DUT + display
+    void DrawDutBlock();       // active-DUT status + open/close (Overview left)
     void DrawMiddlePanel();    // main content: vision image + overlay
     void DrawLowerPanel();     // 15%-height strip: drag-object canvas
     void DrawRightPanel();     // 15% column: Overview placeholder
@@ -336,6 +337,11 @@ private:
     // shift+click for a range from the anchor = last plainly clicked row).
     std::map<std::string, std::set<int>> scriptBps_;
     int scriptBpAnchor_ = -1;
+
+    // DUT block (Overview left panel) + the input-prompt modal's text buffer
+    // (barcode scanners type + Enter, so EnterReturnsTrue submits).
+    char dutSerialBuf_[64]   = "";
+    char promptInputBuf_[128] = "";
     std::string              scriptSrcPath_;    // which file scriptSrc_ holds
     std::vector<std::string> scriptSrc_;        // source lines (view only)
     std::string              scriptStartErr_;   // last Start() rejection

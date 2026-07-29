@@ -166,6 +166,12 @@ bool ExecutionContext::AwaitPrompt(const std::string& message)
     return hooks_.awaitPrompt(message);
 }
 
+bool ExecutionContext::AwaitInput(const std::string& message, std::string* textOut)
+{
+    if (!hooks_.awaitInput) return false;
+    return hooks_.awaitInput(message, textOut);
+}
+
 // ---- Condition evaluation ---------------------------------------------------
 
 namespace {

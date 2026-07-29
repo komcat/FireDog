@@ -37,11 +37,13 @@ std::string CtxValueToString(const CtxValue& v);
 
 class ExecutionContext {
 public:
-    // Hooks installed by RecipeEngine (the engine owns the stop flag and the
-    // prompt handshake with the UI).
+    // Hooks installed by the engines (they own the stop flag and the prompt
+    // handshakes with the UI).
     struct Hooks {
         std::function<bool()> shouldStop;                     // required
         std::function<bool(const std::string&)> awaitPrompt;  // null => prompt fails
+        // Text-input prompt (operator types / barcode-scans); false = cancel.
+        std::function<bool(const std::string&, std::string*)> awaitInput;
     };
 
     ExecutionContext(Workflow& wf, HardwareManager& hw,
@@ -81,8 +83,9 @@ public:
     const SavedPos* FindPosition(const std::string& device, const std::string& uid) const;
     const MotionMap* FindMap(const std::string& device, const std::string& mapName) const;
 
-    // ---- Operator prompt (blocks; false = cancelled or stopped) -------------
+    // ---- Operator prompts (block; false = cancelled or stopped) -------------
     bool AwaitPrompt(const std::string& message);
+    bool AwaitInput(const std::string& message, std::string* textOut);
 
 private:
     Workflow&           wf_;
