@@ -74,7 +74,8 @@ void LuaStopHook(lua_State* L, lua_Debug* ar)
 {
     HookCtx* h = HookOf(L);
     if (!h || !h->ctx) return;
-    if (ar->event == LUA_HOOKLINE && h->engine) h->engine->HookLine(ar->currentline);
+    if (ar->event == LUA_HOOKLINE && h->engine)
+        h->engine->OnLineHook(L, ar);   // line report + debugger (may block)
     if (h->ctx->ShouldStop()) luaL_error(L, "stopped");
 }
 
@@ -323,6 +324,78 @@ void LuaEngine::NoteCommand(const std::string& name)
     lastCommand_ = name;
 }
 
+// ---- Debugger (C3) ----------------------------------------------------------
+
+void LuaEngine::SetBreakpoints(std::set<int> lines)
+{
+    const std::scoped_lock lock(mu_);
+    breakpoints_ = std::move(lines);
+}
+
+void LuaEngine::Pause()
+{
+    pauseReq_.store(true);
+}
+
+void LuaEngine::Resume()
+{
+    {
+        const std::scoped_lock lock(mu_);
+        resumeGo_ = true;
+    }
+    cv_.notify_all();
+}
+
+void LuaEngine::StepLine()
+{
+    stepReq_.store(true);   // pause again at the very next line event
+    Resume();
+}
+
+// Runs ON THE LUA WORKER from the line hook. Decides whether to break here
+// (explicit pause, a step landing, or a breakpoint), captures the current
+// function's locals, then blocks until Resume/Step/Stop releases it.
+void LuaEngine::OnLineHook(lua_State* L, lua_Debug* ar)
+{
+    const int line = ar->currentline;
+    curLine_.store(line);
+
+    bool brk = pauseReq_.exchange(false);
+    if (stepReq_.exchange(false)) brk = true;
+    if (!brk) {
+        const std::scoped_lock lock(mu_);
+        brk = breakpoints_.count(line) != 0;
+    }
+    if (!brk || HookShouldStop()) return;
+
+    // Locals of the current function (skip Lua-internal "(temporary)" slots).
+    std::vector<std::pair<std::string, std::string>> locs;
+    for (int i = 1;; ++i) {
+        const char* name = lua_getlocal(L, ar, i);
+        if (!name) break;
+        if (name[0] != '(') {
+            const char* sv = luaL_tolstring(L, -1, nullptr);   // pushes a string
+            locs.emplace_back(name, sv ? sv : "?");
+            lua_pop(L, 1);   // tolstring result
+        }
+        lua_pop(L, 1);       // the local's value
+    }
+
+    FD_INFO("script", "paused at line %d", line);
+    {
+        std::unique_lock lock(mu_);
+        paused_   = true;
+        locals_   = std::move(locs);
+        resumeGo_ = false;
+        // Sliced wait so Stop and safety aborts always get through.
+        while (!resumeGo_ && !HookShouldStop()) {
+            cv_.wait_for(lock, std::chrono::milliseconds(100));
+        }
+        paused_ = false;
+        locals_.clear();
+    }
+}
+
 bool LuaEngine::Start(const std::string& scriptPath, Env env, std::string* err)
 {
     if (running_.load()) {
@@ -349,6 +422,8 @@ bool LuaEngine::Start(const std::string& scriptPath, Env env, std::string* err)
     }
     curLine_.store(0);
     stopReq_.store(false);
+    pauseReq_.store(false);
+    stepReq_.store(false);
     running_.store(true);
     FD_INFO("script", "run started: '%s'", scriptPath.c_str());
     worker_ = std::thread(&LuaEngine::ThreadMain, this, scriptPath, std::move(env));
@@ -380,9 +455,11 @@ LuaEngine::Status LuaEngine::GetStatus() const
     s.state         = state_;
     s.scriptName    = scriptName_;
     s.currentLine   = curLine_.load();
+    s.paused        = paused_;
     s.lastCommand   = lastCommand_;
     s.error         = error_;
     s.pendingPrompt = prompt_;
+    s.locals        = locals_;
     if (runCtx_) s.ctx = runCtx_->CtxSnapshot();
     return s;
 }

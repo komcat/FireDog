@@ -1769,6 +1769,7 @@ void App::LoadScriptsList()
     scriptSrcPath_.clear();   // force a source re-read on next draw
     scriptSrc_.clear();
     scriptStartErr_.clear();
+    scriptBpAnchor_ = -1;
 }
 
 void App::DrawScriptsPanel()
@@ -1796,8 +1797,10 @@ void App::DrawScriptsPanel()
                            "editor and hit Reload.");
     for (int i = 0; i < static_cast<int>(scripts_.size()); ++i) {
         ImGui::PushID(i);
-        if (ImGui::Selectable(scripts_[i].name.c_str(), scriptSel_ == i))
-            scriptSel_ = i;
+        if (ImGui::Selectable(scripts_[i].name.c_str(), scriptSel_ == i)) {
+            scriptSel_      = i;
+            scriptBpAnchor_ = -1;   // anchor is per-script
+        }
         if (ImGui::IsItemHovered() && !scripts_[i].description.empty())
             ImGui::SetTooltip("%s", scripts_[i].description.c_str());
         ImGui::PopID();
@@ -1821,17 +1824,45 @@ void App::DrawScriptsPanel()
             }
         }
         if (!si.description.empty()) ImGui::TextWrapped("%s", si.description.c_str());
+        ImGui::TextDisabled("click: toggle breakpoint  |  shift+click: range from last click");
         ImGui::Separator();
         ImGui::BeginChild("##srclines");
         const bool thisRunning = running && st.scriptName == si.name;
+        std::set<int>& bps = scriptBps_[si.path];
         for (int n = 0; n < static_cast<int>(scriptSrc_.size()); ++n) {
-            const bool cur = thisRunning && (n + 1) == st.currentLine;
+            const int  lineNo = n + 1;
+            const bool bp     = bps.count(lineNo) != 0;
+            const bool cur    = thisRunning && lineNo == st.currentLine;
+            char row[512];
+            std::snprintf(row, sizeof(row), "%c%4d  %s", bp ? '*' : ' ', lineNo,
+                          scriptSrc_[n].c_str());
             if (cur) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
-            ImGui::Text("%4d  %s", n + 1, scriptSrc_[n].c_str());
-            if (cur) {
-                ImGui::PopStyleColor();
-                ImGui::SetScrollHereY(0.5f);   // follow the execution
+            else if (bp) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.45f, 1.0f));
+            ImGui::PushID(n);
+            if (ImGui::Selectable(row)) {   // toggle breakpoint (IDE gutter metaphor)
+                if (ImGui::GetIO().KeyShift && scriptBpAnchor_ > 0) {
+                    // Range from the anchor: set every line, or clear the
+                    // whole range when it is already fully set.
+                    const int lo = scriptBpAnchor_ < lineNo ? scriptBpAnchor_ : lineNo;
+                    const int hi = scriptBpAnchor_ < lineNo ? lineNo : scriptBpAnchor_;
+                    bool allSet = true;
+                    for (int l = lo; l <= hi; ++l) {
+                        if (bps.count(l) == 0) { allSet = false; break; }
+                    }
+                    for (int l = lo; l <= hi; ++l) {
+                        if (allSet) bps.erase(l);
+                        else        bps.insert(l);
+                    }
+                } else {   // plain or ctrl+click: individual toggle, new anchor
+                    if (bp) bps.erase(lineNo);
+                    else    bps.insert(lineNo);
+                    scriptBpAnchor_ = lineNo;
+                }
+                if (thisRunning) luaEngine_.SetBreakpoints(bps);   // hot-swap live
             }
+            ImGui::PopID();
+            if (cur || bp) ImGui::PopStyleColor();
+            if (cur && !st.paused) ImGui::SetScrollHereY(0.5f);   // follow execution
         }
         ImGui::EndChild();
     } else {
@@ -1842,10 +1873,30 @@ void App::DrawScriptsPanel()
 
     // ---- Right: run info ----
     ImGui::BeginChild("scInfo", ImVec2(rightW, paneH), ImGuiChildFlags_Borders);
-    ImGui::Text("State: %s", LuaEngine::StateName(st.state));
+    if (st.paused)
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "State: Paused @ line %d",
+                           st.currentLine);
+    else
+        ImGui::Text("State: %s", LuaEngine::StateName(st.state));
     if (!st.scriptName.empty()) ImGui::Text("Script: %s", st.scriptName.c_str());
-    if (running && st.currentLine > 0) ImGui::Text("Line: %d", st.currentLine);
+    if (running && st.currentLine > 0 && !st.paused)
+        ImGui::Text("Line: %d", st.currentLine);
     if (!st.lastCommand.empty()) ImGui::Text("Last command: %s", st.lastCommand.c_str());
+    if (st.paused && !st.locals.empty()) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Locals");
+        if (ImGui::BeginTable("##sclocals", 2,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            for (const auto& [name, val] : st.locals) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(name.c_str());
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(val.c_str());
+            }
+            ImGui::EndTable();
+        }
+    }
     if (!st.error.empty() && st.state != LuaEngine::State::Running)
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
     if (!st.ctx.empty()) {
@@ -1876,10 +1927,21 @@ void App::DrawScriptsPanel()
         env.maps      = motionMaps_;
         env.library   = recipes_;
         scriptStartErr_.clear();
+        luaEngine_.SetBreakpoints(scriptBps_[scripts_[scriptSel_].path]);
         if (!luaEngine_.Start(scripts_[scriptSel_].path, std::move(env), &scriptStartErr_))
             FD_WARN("script", "start rejected: %s", scriptStartErr_.c_str());
     }
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (!st.paused) {
+        ImGui::BeginDisabled(!running);
+        if (ImGui::Button("Pause", ImVec2(90.0f, 0.0f))) luaEngine_.Pause();
+        ImGui::EndDisabled();
+    } else {
+        if (ImGui::Button("Continue", ImVec2(90.0f, 0.0f))) luaEngine_.Resume();
+        ImGui::SameLine();
+        if (ImGui::Button("Step", ImVec2(90.0f, 0.0f))) luaEngine_.StepLine();
+    }
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
     if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) luaEngine_.RequestStop();

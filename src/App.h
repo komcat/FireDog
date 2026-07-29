@@ -4,6 +4,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -331,6 +332,10 @@ private:
     std::vector<ScriptInfo>  scripts_;
     int                      scriptSel_ = -1;
     std::string              scriptsDirUsed_;   // the dir the list came from
+    // Per-script breakpoints (keyed by path; click a source row to toggle,
+    // shift+click for a range from the anchor = last plainly clicked row).
+    std::map<std::string, std::set<int>> scriptBps_;
+    int scriptBpAnchor_ = -1;
     std::string              scriptSrcPath_;    // which file scriptSrc_ holds
     std::vector<std::string> scriptSrc_;        // source lines (view only)
     std::string              scriptStartErr_;   // last Start() rejection

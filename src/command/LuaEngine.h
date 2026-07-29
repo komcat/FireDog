@@ -23,10 +23,16 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
+
+// Lua's C typedefs name the same struct tags — forward-declared so the
+// debugger entry point can appear here without leaking Lua headers.
+struct lua_State;
+struct lua_Debug;
 
 namespace firedog {
 
@@ -76,6 +82,16 @@ public:
     void RequestStop();            // cooperative; fd waits + the Lua hook honor it
     void AnswerPrompt(bool ok);    // resolves a blocking fd.prompt()
 
+    // ---- Debugger (C3) — all built on the existing line hook ---------------
+    // Breakpoints are hot-swappable while running (the UI passes the selected
+    // script's set). Pause breaks at the next executed line; Step runs to the
+    // next line event and pauses again. While paused the Lua worker blocks in
+    // the hook (Stop and safety aborts still release it).
+    void SetBreakpoints(std::set<int> lines);
+    void Pause();
+    void Resume();
+    void StepLine();
+
     enum class State { Idle, Running, Completed, Failed, Stopped };
     static const char* StateName(State s);
 
@@ -83,10 +99,13 @@ public:
         State       state = State::Idle;
         std::string scriptName;
         int         currentLine = 0;   // from the line hook (source highlight)
+        bool        paused = false;    // blocked at a breakpoint / pause / step
         std::string lastCommand;       // last fd.* command issued
         std::string error;             // terminal cause when Failed/Stopped
         std::string pendingPrompt;     // non-empty while fd.prompt blocks
         std::vector<std::pair<std::string, CtxValue>> ctx;
+        // Current function's locals, captured at the pause point.
+        std::vector<std::pair<std::string, std::string>> locals;
     };
     Status GetStatus() const;
     bool   Running() const { return running_.load(); }
@@ -94,7 +113,7 @@ public:
     // Internal — called from the Lua hook thunk (must be public-ish for the
     // C callback; not part of the user API).
     bool HookShouldStop() const;
-    void HookLine(int line) { curLine_.store(line); }
+    void OnLineHook(lua_State* L, lua_Debug* ar);   // line update + debugger
     void NoteCommand(const std::string& name);
 
 private:
@@ -109,9 +128,15 @@ private:
     std::atomic<bool> stopReq_{false};
     std::atomic<bool> running_{false};
     std::atomic<int>  curLine_{0};
+    std::atomic<bool> pauseReq_{false};   // break at the next executed line
+    std::atomic<bool> stepReq_{false};    // one line, then pause again
 
     mutable std::mutex      mu_;   // guards everything below
-    std::condition_variable cv_;   // prompt handshake
+    std::condition_variable cv_;   // prompt + pause handshakes
+    std::set<int> breakpoints_;
+    bool          paused_   = false;
+    bool          resumeGo_ = false;
+    std::vector<std::pair<std::string, std::string>> locals_;
     State       state_ = State::Idle;
     std::string scriptName_;
     std::string lastCommand_;

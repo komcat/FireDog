@@ -174,8 +174,12 @@ handles `fd.prompt` (same engine-side pending-prompt pattern).
    script. Verified: demo runs/stops/fails correctly against sim + hardware.
 2. **C2 — cross-calls**: StepRunner extraction (pure refactor, recipes must
    behave identically), `fd.run_recipe`, `run_script` command + palette entry.
-3. **C3 (optional, later)**: line breakpoints/pause on the existing hook, ctx
-   watch, script-local `positions` teaching helpers — driven by real usage.
+3. **C3 — debugger (IMPLEMENTED)**: line breakpoints on the existing hook
+   (click a source row; hot-swappable mid-run), Pause / Continue / Step-line,
+   and locals inspection while paused (the Lua worker blocks inside the hook;
+   pauses land at line boundaries, so a blocking fd.* command finishes first;
+   Stop and safety aborts always release a pause). Still usage-driven and NOT
+   built: script-local `positions` teaching helpers.
 
 ## 9. Open questions (decide at review)
 
