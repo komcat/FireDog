@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -205,8 +206,10 @@ std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
             if (s.Count() == 0) return sol::make_object(ts, sol::lua_nil);
             return sol::make_object(ts, s.LatestValue());
         });
-        fd.set_function("sleep", [&ctx](int ms) {
-            if (!ctx.Sleep(ms)) throw std::runtime_error("stopped");
+        // Takes double: ctx-injected numbers are Lua floats (150.0), and sol's
+        // safeties reject float->int even when integral.
+        fd.set_function("sleep", [&ctx](double ms) {
+            if (!ctx.Sleep(static_cast<int>(ms))) throw std::runtime_error("stopped");
         });
         fd.set_function("log", [](const std::string& msg) {
             FD_INFO("script", "%s", msg.c_str());
@@ -225,6 +228,30 @@ std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
         fd.set_function("clock", [] {
             using clock = std::chrono::steady_clock;
             return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+        });
+        // Script parameter with a default: reads the ctx key (which a recipe
+        // injects via ctx_set steps ahead of run_script), falls back to the
+        // default otherwise, and LOGS the resolved value so every run records
+        // what the algorithm actually used.
+        fd.set_function("param", [&ctx](sol::this_state ts, const std::string& name,
+                                        sol::object def) -> sol::object {
+            const std::optional<CtxValue> v = ctx.CtxGet(name);
+            if (v) {
+                FD_INFO("script", "param %s = %s (from recipe/ctx)", name.c_str(),
+                        CtxValueToString(*v).c_str());
+                return CtxValueToLua(ts, *v);
+            }
+            std::string shown = "nil";
+            if (def.get_type() == sol::type::string) shown = def.as<std::string>();
+            else if (def.get_type() == sol::type::number) {
+                char b[32];
+                std::snprintf(b, sizeof(b), "%g", def.as<double>());
+                shown = b;
+            } else if (def.get_type() == sol::type::boolean) {
+                shown = def.as<bool>() ? "true" : "false";
+            }
+            FD_INFO("script", "param %s = %s (default)", name.c_str(), shown.c_str());
+            return def;
         });
         // fd.dut: read accessors over the active DUT (writes go through the
         // generated dut_* commands) — lets a script reuse the open DUT
@@ -518,6 +545,7 @@ void LuaEngine::ThreadMain(std::string path, Env env)
                 return AwaitPromptInternal(m, true, out);
             },
         });
+    for (const auto& [key, val] : env.initialCtx) ctx.CtxSet(key, val);
     {
         const std::scoped_lock lock(mu_);
         runCtx_ = &ctx;

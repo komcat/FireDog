@@ -77,6 +77,7 @@ private:
     void DrawMotionDetailPanel();  // middle: device header + tab bar
     void DrawMotionPositionsTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionMapTab(std::size_t devIdx, IMotionController* m);
+    void DrawMotionScanTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionInfoPanel();    // right:  live axis positions
     // IO page — all IO devices (Ezi-IO + WAGO) on one page.
     void DrawIoListPanel();        // left:   device list + status
@@ -345,6 +346,22 @@ private:
     // (barcode scanners type + Enter, so EnterReturnsTrue submits).
     char dutSerialBuf_[64]   = "";
     char promptInputBuf_[128] = "";
+
+    // Scanning tab (Motion page): XCAN parameter fields, injected into
+    // hexapod_align.lua via LuaEngine::Env::initialCtx (same channel as
+    // recipe ctx_set steps). Defaults = bobcat's XCAN coarse mode.
+    int    xcanDevice_     = -1;   // -1 = seed from the page's selected device
+    char   xcanTopic_[64]  = "keithley/ch1";
+    char   xcanAxes_[32]   = "Z,Y,X";
+    char   xcanSteps_[64]  = "10,5,2,1";
+    int    xcanSettleMs_   = 300;
+    int    xcanConsec_     = 3;
+    int    xcanAvg_        = 3;
+    double xcanSigDropPct_ = 5.0;
+    double xcanTravelUm_   = 200.0;
+    double xcanImprovePct_ = 1.0;
+    double xcanMinSignal_  = 0.0;
+    double xcanTolMm_      = 0.001;
 
     // DUT Records viewer state: scanned serials + the loaded record.
     std::vector<std::string> dutList_;

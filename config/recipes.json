@@ -17,6 +17,29 @@
       ]
     },
     {
+      "uid": "rcp-align01",
+      "name": "Active align (hexapod)",
+      "description": "Coordinate-descent hill climb (bobcat XCAN port) as a script; the 'align parameters' group injects ctx values that hexapod_align.lua reads via fd.param - edit them here, not in the script.",
+      "steps": [
+        { "type": "group", "nickname": "align parameters",
+          "children": [
+            { "type": "ctx_set", "params": { "key": "align_device",   "value": "hex-left" } },
+            { "type": "ctx_set", "params": { "key": "align_topic",    "value": "keithley/ch1" } },
+            { "type": "ctx_set", "params": { "key": "align_axes",     "value": "Z,Y,X" } },
+            { "type": "ctx_set", "params": { "key": "align_steps_um", "value": "10,5,2,1" } },
+            { "type": "ctx_set", "params": { "key": "align_settle_ms", "value": 300 } },
+            { "type": "ctx_set", "params": { "key": "align_max_travel_um", "value": 200 } },
+            { "type": "ctx_set", "params": { "key": "align_min_signal", "value": 1e-10 } }
+          ] },
+        { "type": "run_script", "nickname": "run alignment",
+          "params": { "file": "config/scripts/hexapod_align.lua" } },
+        { "type": "log",
+          "params": { "message": "aligned: baseline={align_baseline} best={align_best} gain={align_gain}x" } },
+        { "type": "dut_record_all", "nickname": "record to DUT",
+          "params": { "prefix": "align_" }, "on_error": "continue" }
+      ]
+    },
+    {
       "uid": "rcp-demo02",
       "name": "Demo: wait_until on Keithley ch1",
       "description": "Needs the Keithley connected: samples ch1 into ctx, then waits for ch1 > 1e-9 A.",

@@ -3235,7 +3235,141 @@ void App::DrawMotionDetailPanel()
             DrawMotionMapTab(idx, m);
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Scanning")) {
+            DrawMotionScanTab(idx, m);
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
+    }
+}
+
+// Scanning tab — test bench for the script-level XCAN aligner: edit the
+// algorithm parameters here, hit XCAN, and they are injected into
+// hexapod_align.lua exactly as a recipe would inject them (Env.initialCtx ==
+// ctx_set steps == fd.param sources). The script is the single algorithm
+// implementation — this tab owns no scan logic.
+void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
+{
+    (void)m;
+    const LuaEngine::Status st = luaEngine_.GetStatus();
+    const bool running = luaEngine_.Running();
+
+    ImGui::TextUnformatted("XCAN active alignment (config/scripts/hexapod_align.lua)");
+    ImGui::Separator();
+
+    // Device to scan: defaults to the page's selected device, changeable here.
+    if (xcanDevice_ < 0 || xcanDevice_ >= static_cast<int>(hardware_.MotionCount()))
+        xcanDevice_ = static_cast<int>(devIdx);
+    IMotionController* dev =
+        hardware_.MotionDevice(static_cast<std::size_t>(xcanDevice_));
+
+    ImGui::BeginDisabled(running);
+    const float w = 180.0f;
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::BeginCombo("device", hardware_.MotionName(
+                                        static_cast<std::size_t>(xcanDevice_)).c_str())) {
+        for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+            if (ImGui::Selectable(hardware_.MotionName(i).c_str(),
+                                  xcanDevice_ == static_cast<int>(i)))
+                xcanDevice_ = static_cast<int>(i);
+        }
+        ImGui::EndCombo();
+    }
+    // Feedback signal: only channels that actually exist on the DataBus.
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::BeginCombo("feedback topic", xcanTopic_)) {
+        const std::vector<std::string> topics = DataBus::Instance().Topics();
+        if (topics.empty())
+            ImGui::TextDisabled("(no channels published yet)");
+        for (const std::string& t : topics) {
+            if (ImGui::Selectable(t.c_str(), t == xcanTopic_))
+                std::snprintf(xcanTopic_, sizeof(xcanTopic_), "%s", t.c_str());
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputText("axes (descent order)", xcanAxes_, sizeof(xcanAxes_));
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputText("step ladder (um)", xcanSteps_, sizeof(xcanSteps_));
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("settle (ms)", &xcanSettleMs_);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("consecutive decreases", &xcanConsec_);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("significant drop (%)", &xcanSigDropPct_, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("max travel per dir (um)", &xcanTravelUm_, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("peak recovery (%)", &xcanImprovePct_, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("baseline averages", &xcanAvg_);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("min signal (abort below)", &xcanMinSignal_, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("move tolerance (mm)", &xcanTolMm_, 0.0, 0.0, "%g");
+    ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    const bool canRun = !OrchestrationBusy() && dev && dev->IsConnected();
+    ImGui::BeginDisabled(!canRun);
+    if (ImGui::Button("XCAN", ImVec2(110.0f, 0.0f))) {
+        // The product's script overrides the config one when present.
+        std::string script = "config/scripts/hexapod_align.lua";
+        for (const ScriptInfo& si : scripts_) {
+            if (si.name == "hexapod_align") { script = si.path; break; }
+        }
+        LuaEngine::Env env;
+        env.positions = savedPos_;
+        env.maps      = motionMaps_;
+        env.library   = recipes_;
+        env.initialCtx = {
+            {"align_device", hardware_.MotionName(static_cast<std::size_t>(xcanDevice_))},
+            {"align_topic", std::string(xcanTopic_)},
+            {"align_axes", std::string(xcanAxes_)},
+            {"align_steps_um", std::string(xcanSteps_)},
+            {"align_settle_ms", static_cast<double>(xcanSettleMs_)},
+            {"align_consec_limit", static_cast<double>(xcanConsec_)},
+            {"align_sig_drop_pct", xcanSigDropPct_},
+            {"align_max_travel_um", xcanTravelUm_},
+            {"align_improve_pct", xcanImprovePct_},
+            {"align_avg_count", static_cast<double>(xcanAvg_)},
+            {"align_min_signal", xcanMinSignal_},
+            {"align_tol_mm", xcanTolMm_},
+        };
+        scriptStartErr_.clear();
+        if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
+            FD_WARN("script", "xcan start rejected: %s", scriptStartErr_.c_str());
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!running);
+    if (ImGui::Button("Stop", ImVec2(110.0f, 0.0f))) luaEngine_.RequestStop();
+    ImGui::EndDisabled();
+    if (!canRun && !running) {
+        ImGui::SameLine();
+        ImGui::TextDisabled(!dev || !dev->IsConnected() ? "(device not connected)"
+                                                        : "(another run is active)");
+    }
+    if (!scriptStartErr_.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "start rejected: %s",
+                           scriptStartErr_.c_str());
+    }
+
+    // ---- Live status + results (from the shared engine/ctx) ----
+    ImGui::Separator();
+    const bool thisScan = st.scriptName == "hexapod_align";
+    ImGui::Text("State: %s", LuaEngine::StateName(st.state));
+    if (running && thisScan && !st.lastCommand.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("| %s", st.lastCommand.c_str());
+    }
+    if (thisScan) {
+        for (const auto& [key, val] : st.ctx) {
+            if (key == "align_baseline" || key == "align_best" || key == "align_gain")
+                ImGui::Text("%s: %s", key.c_str(), CtxValueToString(val).c_str());
+        }
+        if (!st.error.empty() && st.state != LuaEngine::State::Running)
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
     }
 }
 

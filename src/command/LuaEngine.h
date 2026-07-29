@@ -75,7 +75,11 @@ public:
     struct Env {
         SavedPosMap         positions;
         MotionMapSet        maps;
-        std::vector<Recipe> library;   // reserved for fd.run_recipe (Phase C2)
+        std::vector<Recipe> library;   // fd.run_recipe resolves against this
+        // Seeded into the run's ctx before the script starts — the UI-side
+        // parameter injection (fd.param reads these exactly like values a
+        // recipe injected with ctx_set steps).
+        std::vector<std::pair<std::string, CtxValue>> initialCtx;
     };
 
     bool Start(const std::string& scriptPath, Env env, std::string* err = nullptr);
