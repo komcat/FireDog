@@ -11,6 +11,7 @@
 #include "core/Topics.h"
 #include "core/Log.h"
 
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
@@ -630,6 +631,73 @@ const RecipeStep* FindStepByPath(const std::vector<RecipeStep>* list,
     }
     return cur;
 }
+
+// Safe: the caller passes non-const storage; only the view was const.
+RecipeStep* FindStepByPathMut(std::vector<RecipeStep>* list,
+                              const std::vector<std::size_t>& path)
+{
+    return const_cast<RecipeStep*>(FindStepByPath(list, path));
+}
+
+// The list CONTAINING the addressed step, plus its index there — the handle
+// needed for insert / move / delete.
+std::vector<RecipeStep>* FindStepParent(std::vector<RecipeStep>* list,
+                                        const std::vector<std::size_t>& path,
+                                        std::size_t* idxOut)
+{
+    RecipeStep* cur = nullptr;
+    for (std::size_t k = 0; k < path.size(); ++k) {
+        const std::size_t c      = path[k];
+        const bool        inElse = c >= kElsePathBase;
+        const std::size_t idx    = inElse ? c - kElsePathBase : c;
+        if (inElse) {
+            if (!cur) return nullptr;
+            list = &cur->elseChildren;
+        }
+        if (!list || idx >= list->size()) return nullptr;
+        if (k + 1 == path.size()) {
+            *idxOut = idx;
+            return list;
+        }
+        cur  = &(*list)[idx];
+        list = &cur->children;
+    }
+    return nullptr;
+}
+
+// A fresh step of `type`: structural types get a minimal valid shape,
+// commands get their non-required params prefilled with the schema defaults
+// (required ones are left for the form + validation to demand).
+RecipeStep MakeStep(const std::string& type, const CommandRegistry& reg)
+{
+    RecipeStep s;
+    s.type = type;
+    if (type == "loop") {
+        s.params["count"] = 1;
+    } else if (type == "if") {
+        s.params["key"] = "";
+        s.params["op"]  = "is_true";
+    } else if (type == "stop_recipe") {
+        s.params["ok"] = true;
+    } else if (const CommandSpec* spec = reg.Find(type)) {
+        for (const ParamSpec& p : spec->params) {
+            if (!p.required) s.params[p.name] = p.defaultValue;
+        }
+    }
+    return s;
+}
+
+// Case-insensitive substring match for the palette search box ("" = all).
+bool PaletteMatch(const std::string& hay, const char* needle)
+{
+    if (!needle[0]) return true;
+    const auto lower = [](std::string s) {
+        for (char& c : s)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+    return lower(hay).find(lower(needle)) != std::string::npos;
+}
 } // namespace
 
 void App::DrawRecipeEditPanel()
@@ -642,8 +710,9 @@ void App::DrawRecipeEditPanel()
 
     const RecipeEngine::Status st = recipeEngine_.GetStatus();
     const bool running = recipeEngine_.Running();
+    const bool haveSel = recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size());
 
-    // ---- Left: recipe list ----
+    // ---- Left: recipe list + CRUD ----
     ImGui::BeginChild("edRecipes", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
     ImGui::TextUnformatted("Recipes");
     ImGui::SameLine();
@@ -653,9 +722,37 @@ void App::DrawRecipeEditPanel()
         FD_INFO("recipe", "%zu recipe(s) loaded", recipes_.size());
     }
     ImGui::EndDisabled();
+    ImGui::BeginDisabled(running);
+    if (ImGui::SmallButton("New")) {
+        Recipe r;
+        r.uid  = GenerateUid();
+        r.name = "new recipe";
+        recipes_.push_back(std::move(r));
+        recipeSel_ = static_cast<int>(recipes_.size()) - 1;
+        edStepSel_.clear();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!haveSel);
+    if (ImGui::SmallButton("Dup")) {
+        Recipe r = recipes_[recipeSel_];
+        r.uid  = GenerateUid();
+        r.name += " copy";
+        recipes_.push_back(std::move(r));
+        recipeSel_ = static_cast<int>(recipes_.size()) - 1;
+        edStepSel_.clear();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Ren")) {
+        std::snprintf(edNameBuf_, sizeof(edNameBuf_), "%s", recipes_[recipeSel_].name.c_str());
+        edOpenRenameRecipe_ = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Del")) edOpenDeleteRecipe_ = true;
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
     ImGui::Separator();
     if (recipes_.empty())
-        ImGui::TextWrapped("No recipes found (config/recipes.json or the product's file).");
+        ImGui::TextWrapped("No recipes yet - New creates one, or Reload from disk.");
     for (int i = 0; i < static_cast<int>(recipes_.size()); ++i) {
         ImGui::PushID(i);
         if (ImGui::Selectable(recipes_[i].name.c_str(), recipeSel_ == i)) {
@@ -667,32 +764,182 @@ void App::DrawRecipeEditPanel()
     ImGui::EndChild();
     ImGui::SameLine();
 
-    // ---- Middle: step tree ----
+    // ---- Middle: searchable palette column + step tree ----
     const float midW = avail.x - leftW - rightW - ImGui::GetStyle().ItemSpacing.x * 2.0f;
-    ImGui::BeginChild("edTree", ImVec2(midW, paneH), ImGuiChildFlags_Borders);
-    if (recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size())) {
-        const Recipe& r = recipes_[recipeSel_];
-        if (!r.description.empty()) ImGui::TextWrapped("%s", r.description.c_str());
+    const float palW = 200.0f;
+    ImGui::BeginChild("edMiddle", ImVec2(midW, paneH));
+    if (haveSel) {
+        Recipe& r = recipes_[recipeSel_];
+        ImGui::BeginChild("edPalette", ImVec2(palW, 0.0f), ImGuiChildFlags_Borders);
+        DrawRecipePalette(r, !running);
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("edTree", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
+        DrawRecipeTreeToolbar(r, !running);
         ImGui::Separator();
         std::vector<std::size_t> path;
         DrawRecipeTreeNodes(r.steps, path, false, st.stepPath, running);
+        ImGui::EndChild();
     } else {
         ImGui::TextDisabled("Select a recipe on the left.");
     }
     ImGui::EndChild();
     ImGui::SameLine();
 
-    // ---- Right: inspector (read-only in B1) ----
+    // ---- Right: inspector (step form, or recipe fields when no step) ----
     ImGui::BeginChild("edInspect", ImVec2(rightW, paneH), ImGuiChildFlags_Borders);
-    const RecipeStep* sel = nullptr;
-    if (recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size()) &&
-        !edStepSel_.empty())
-        sel = FindStepByPath(&recipes_[recipeSel_].steps, edStepSel_);
-    if (sel) DrawRecipeInspector(*sel);
-    else     ImGui::TextDisabled("Select a step to inspect it.");
+    RecipeStep* sel = nullptr;
+    if (haveSel && !edStepSel_.empty())
+        sel = FindStepByPathMut(&recipes_[recipeSel_].steps, edStepSel_);
+    if (sel) {
+        DrawRecipeInspector(*sel, !running);
+    } else if (haveSel) {
+        Recipe& r = recipes_[recipeSel_];
+        ImGui::BeginDisabled(running);
+        char nbuf[64];
+        std::snprintf(nbuf, sizeof(nbuf), "%s", r.name.c_str());
+        if (ImGui::InputText("name", nbuf, sizeof(nbuf))) r.name = nbuf;
+        char dbuf[512];
+        std::snprintf(dbuf, sizeof(dbuf), "%s", r.description.c_str());
+        if (ImGui::InputTextMultiline("description", dbuf, sizeof(dbuf),
+                                      ImVec2(-1.0f, 60.0f)))
+            r.description = dbuf;
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("uid: %s", r.uid.c_str());
+        ImGui::Separator();
+        ImGui::TextDisabled("Select a step to edit it.");
+    } else {
+        ImGui::TextDisabled("Select a recipe first.");
+    }
     ImGui::EndChild();
 
     DrawRecipeRunStrip();
+
+    // ---- Editor modals (opened via the flags raised above) ----
+    if (edOpenRenameRecipe_) { ImGui::OpenPopup("Rename Recipe"); edOpenRenameRecipe_ = false; }
+    if (edOpenDeleteRecipe_) { ImGui::OpenPopup("Delete Recipe"); edOpenDeleteRecipe_ = false; }
+    if (edOpenDeleteStep_)   { ImGui::OpenPopup("Delete Step");   edOpenDeleteStep_   = false; }
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Rename Recipe", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::InputText("##recname", edNameBuf_, sizeof(edNameBuf_));
+        if (ImGui::Button("OK", ImVec2(100.0f, 0.0f)) && haveSel) {
+            recipes_[recipeSel_].name = edNameBuf_;   // label only; uid unchanged
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Delete Recipe", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (haveSel)
+            ImGui::Text("Delete recipe '%s'?", recipes_[recipeSel_].name.c_str());
+        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveSel) {
+            recipes_.erase(recipes_.begin() + recipeSel_);
+            recipeSel_ = -1;
+            edStepSel_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Delete Step", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const RecipeStep* ds = (haveSel && !edStepSel_.empty())
+                                   ? FindStepByPath(&recipes_[recipeSel_].steps, edStepSel_)
+                                   : nullptr;
+        ImGui::Text("Delete step '%s'%s?", ds ? ds->type.c_str() : "?",
+                    ds && !ds->children.empty() ? " and its children" : "");
+        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveSel && ds) {
+            std::size_t idx = 0;
+            if (std::vector<RecipeStep>* parent =
+                    FindStepParent(&recipes_[recipeSel_].steps, edStepSel_, &idx)) {
+                parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(idx));
+                edStepSel_.clear();
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
+// Live-generated step label from the params: shown in the tree whenever the
+// nickname is empty (so it always tracks edits), and materialized into the
+// nickname field by the inspector's "gen" button. Skips plumbing params
+// (timeouts, tolerances, poll rates) and resolves position uids to names.
+std::string App::AutoNickname(const RecipeStep& s) const
+{
+    const auto num = [](double v) {
+        char b[32];
+        std::snprintf(b, sizeof(b), "%g", v);
+        return std::string(b);
+    };
+    const auto condText = [&num](const nlohmann::json& c) {
+        std::string t = c.value("key", c.value("topic", std::string()));
+        t += " " + c.value("op", std::string());
+        if (c.contains("value")) {
+            const nlohmann::json& v = c["value"];
+            t += " " + (v.is_string() ? v.get<std::string>()
+                                      : v.is_number() ? num(v.get<double>()) : v.dump());
+        }
+        return t;
+    };
+
+    if (s.type == "loop") {
+        if (s.params.contains("while"))
+            return "loop while " + condText(s.params["while"]);
+        return "loop x" + num(s.params.value("count", 1.0));
+    }
+    if (s.type == "if") return "if " + condText(s.params);
+    if (s.type == "group") return "group";
+    if (s.type == "sub_recipe") {
+        const std::string uid = s.params.value("uid", std::string());
+        for (const Recipe& r : recipes_)
+            if (r.uid == uid) return "run " + r.name;
+        return "sub_recipe";
+    }
+    if (s.type == "stop_recipe")
+        return s.params.value("ok", true) ? "stop (ok)" : "stop (fail)";
+
+    const CommandSpec* spec = cmdRegistry_.Find(s.type);
+    if (!spec) return s.type;
+
+    const auto skip = [](const std::string& n) {
+        return n == "timeout_ms" || n == "leg_timeout_ms" || n == "tol_mm" ||
+               n == "start_tol_mm" || n == "poll_ms" || n == "max_iterations" ||
+               n == "velocity_mm_s" || n == "exposure_us";
+    };
+    std::string out = s.type;
+    const std::string dev = s.params.value("device", std::string());
+    int added = 0;
+    for (const ParamSpec& p : spec->params) {
+        if (added >= 3) break;
+        if (skip(p.name) || !s.params.contains(p.name)) continue;
+        const nlohmann::json& v = s.params[p.name];
+        std::string piece;
+        if (p.type == ParamType::PositionUid && v.is_string()) {
+            piece = v.get<std::string>();
+            const auto it = savedPos_.find(dev);
+            if (it != savedPos_.end()) {
+                for (const SavedPos& sp : it->second)
+                    if (sp.uid == piece) { piece = sp.name; break; }
+            }
+        } else if (v.is_string()) {
+            piece = v.get<std::string>();
+        } else if (v.is_boolean()) {
+            piece = v.get<bool>() ? "on" : "off";
+        } else if (v.is_number()) {
+            piece = num(v.get<double>());
+        }
+        if (piece.empty()) continue;
+        out += " " + piece;
+        ++added;
+    }
+    return out;
 }
 
 // One row per step; structural steps (except stop_recipe) are tree nodes.
@@ -709,9 +956,9 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
         const bool selected   = (path == edStepSel_);
         const bool executing  = running && path == runPath;
 
+        const std::string shown = s.nickname.empty() ? AutoNickname(s) : s.nickname;
         char label[160];
-        std::snprintf(label, sizeof(label), "%zu  %s%s", i + 1,
-                      s.nickname.empty() ? s.type.c_str() : s.nickname.c_str(),
+        std::snprintf(label, sizeof(label), "%zu  %s%s", i + 1, shown.c_str(),
                       s.enabled ? "" : "  [off]");
 
         const bool dim = !s.enabled && !executing;
@@ -748,61 +995,532 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
     }
 }
 
-// Read-only step details: common fields, then the params laid out from the
-// registry's ParamSpec schema (B2 turns these rows into editable widgets).
-void App::DrawRecipeInspector(const RecipeStep& s)
+// Tree toolbar: move within siblings + delete. Adding steps lives in the
+// palette column. Mutations address steps through the tree's path encoding,
+// so selection follows the edited step.
+void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
 {
+    std::size_t idx = 0;
+    std::vector<RecipeStep>* parent =
+        edStepSel_.empty() ? nullptr : FindStepParent(&r.steps, edStepSel_, &idx);
+
+    ImGui::BeginDisabled(!canEdit);
+    ImGui::BeginDisabled(!parent || idx == 0);
+    if (ImGui::SmallButton("^")) {
+        std::swap((*parent)[idx - 1], (*parent)[idx]);
+        edStepSel_.back() -= 1;   // else-marker offset survives the +-1
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!parent || idx + 1 >= parent->size());
+    if (ImGui::SmallButton("v")) {
+        std::swap((*parent)[idx], (*parent)[idx + 1]);
+        edStepSel_.back() += 1;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!parent);
+    if (ImGui::SmallButton("Delete")) edOpenDeleteStep_ = true;
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();   // canEdit
+}
+
+// Searchable add-step palette — its own scrolling column (the command list
+// outgrew a popup). Insert target: after the selection, into a selected
+// structural step, or a selected if-step's else branch.
+void App::DrawRecipePalette(Recipe& r, bool canEdit)
+{
+    ImGui::BeginDisabled(!canEdit);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##palSearch", "search...", edSearchBuf_,
+                             sizeof(edSearchBuf_));
+
+    const RecipeStep* sel =
+        edStepSel_.empty() ? nullptr : FindStepByPath(&r.steps, edStepSel_);
+    const bool canChild = sel && IsStructuralStep(sel->type) && sel->type != "stop_recipe";
+    const bool canElse  = sel && sel->type == "if";
+    if (!canChild && edAddMode_ == 1) edAddMode_ = 0;
+    if (!canElse && edAddMode_ == 2) edAddMode_ = 0;
+    if (ImGui::RadioButton("after", edAddMode_ == 0)) edAddMode_ = 0;
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canChild);
+    if (ImGui::RadioButton("into", edAddMode_ == 1)) edAddMode_ = 1;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canElse);
+    if (ImGui::RadioButton("else", edAddMode_ == 2)) edAddMode_ = 2;
+    ImGui::EndDisabled();
+    ImGui::Separator();
+
+    const auto insert = [this, &r](const char* type) {
+        RecipeStep ns = MakeStep(type, cmdRegistry_);
+        if (edAddMode_ == 1) {          // child of the selected structural step
+            if (RecipeStep* p = FindStepByPathMut(&r.steps, edStepSel_)) {
+                p->children.push_back(std::move(ns));
+                edStepSel_.push_back(p->children.size() - 1);
+            }
+        } else if (edAddMode_ == 2) {   // else-branch of the selected if
+            if (RecipeStep* p = FindStepByPathMut(&r.steps, edStepSel_)) {
+                p->elseChildren.push_back(std::move(ns));
+                edStepSel_.push_back(kElsePathBase + p->elseChildren.size() - 1);
+            }
+        } else if (!edStepSel_.empty()) {   // sibling after the selection
+            std::size_t i = 0;
+            if (std::vector<RecipeStep>* pl = FindStepParent(&r.steps, edStepSel_, &i)) {
+                pl->insert(pl->begin() + static_cast<std::ptrdiff_t>(i) + 1,
+                           std::move(ns));
+                edStepSel_.back() += 1;
+            }
+        } else {                        // nothing selected: append at root
+            r.steps.push_back(std::move(ns));
+            edStepSel_ = {r.steps.size() - 1};
+        }
+    };
+
+    ImGui::BeginChild("##palList");   // scrolls independently of the tree
+    bool anyStruct = false;
+    for (const StructuralStepInfo& t : kStructuralSteps) {
+        if (PaletteMatch(t.type, edSearchBuf_)) { anyStruct = true; break; }
+    }
+    if (anyStruct) ImGui::TextDisabled("Structure");
+    for (const StructuralStepInfo& t : kStructuralSteps) {
+        if (!PaletteMatch(t.type, edSearchBuf_)) continue;
+        if (ImGui::Selectable(t.type)) insert(t.type);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", t.description);
+    }
+    std::string lastCat;
+    for (const CommandSpec* c : cmdRegistry_.List()) {
+        if (!PaletteMatch(c->name, edSearchBuf_) &&
+            !PaletteMatch(c->category, edSearchBuf_))
+            continue;
+        if (c->category != lastCat) {
+            lastCat = c->category;
+            ImGui::Separator();
+            ImGui::TextDisabled("%s", lastCat.c_str());
+        }
+        if (ImGui::Selectable(c->name.c_str())) insert(c->name.c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", c->description.c_str());
+    }
+    ImGui::EndChild();
+    ImGui::EndDisabled();
+}
+
+// Step inspector: common fields + the schema-driven parameter form. Editable
+// unless a run is active (then everything renders disabled).
+void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
+{
+    ImGui::BeginDisabled(!canEdit);
     ImGui::Text("Type: %s", s.type.c_str());
-    if (!s.nickname.empty()) ImGui::Text("Nickname: %s", s.nickname.c_str());
-    ImGui::Text("Enabled: %s", s.enabled ? "yes" : "no");
-    switch (s.onError) {
-    case RecipeStep::OnError::Abort:    ImGui::TextUnformatted("On error: abort");    break;
-    case RecipeStep::OnError::Continue: ImGui::TextUnformatted("On error: continue"); break;
-    case RecipeStep::OnError::Retry:    ImGui::Text("On error: retry x%d", s.retryCount); break;
+    char nbuf[64];
+    std::snprintf(nbuf, sizeof(nbuf), "%s", s.nickname.c_str());
+    if (ImGui::InputText("nickname", nbuf, sizeof(nbuf))) s.nickname = nbuf;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("gen")) s.nickname = AutoNickname(s);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Fill the nickname from the params.\n"
+                          "An EMPTY nickname already shows this text in the tree,\n"
+                          "auto-updating as params change.");
+    ImGui::Checkbox("enabled", &s.enabled);
+    int oe = static_cast<int>(s.onError);
+    ImGui::SetNextItemWidth(120.0f);
+    if (ImGui::Combo("on error", &oe, "abort\0continue\0retry\0"))
+        s.onError = static_cast<RecipeStep::OnError>(oe);
+    if (s.onError == RecipeStep::OnError::Retry) {
+        ImGui::SetNextItemWidth(120.0f);
+        if (ImGui::InputInt("retries", &s.retryCount) && s.retryCount < 0)
+            s.retryCount = 0;
     }
     ImGui::Separator();
 
-    const CommandSpec* spec =
-        IsStructuralStep(s.type) ? nullptr : cmdRegistry_.Find(s.type);
-    if (!IsStructuralStep(s.type) && !spec) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "unknown command '%s'",
-                           s.type.c_str());
-        return;
-    }
-    if (spec) {
+    if (s.type == "loop") {
+        const bool isWhile = s.params.contains("while");
+        if (ImGui::RadioButton("count", !isWhile) && isWhile) {
+            s.params.erase("while");
+            s.params.erase("max_iterations");
+            s.params["count"] = 1;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("while", isWhile) && !isWhile) {
+            s.params.erase("count");
+            s.params["while"] = nlohmann::json::object();
+        }
+        if (s.params.contains("count")) {
+            int c = s.params["count"].is_number()
+                        ? static_cast<int>(s.params["count"].get<double>()) : 1;
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputInt("count##loop", &c)) s.params["count"] = c < 1 ? 1 : c;
+        } else if (s.params.contains("while")) {
+            DrawConditionEditor(s.params["while"]);
+            int mi = s.params.value("max_iterations", kDefaultMaxIterations);
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputInt("max iterations", &mi))
+                s.params["max_iterations"] = mi < 1 ? 1 : mi;
+        }
+    } else if (s.type == "if") {
+        DrawConditionEditor(s.params);
+        ImGui::TextDisabled("Palette 'else' mode adds else-branch steps.");
+    } else if (s.type == "sub_recipe") {
+        const std::string uid = s.params.value("uid", std::string());
+        const Recipe* target = nullptr;
+        for (const Recipe& rr : recipes_) {
+            if (rr.uid == uid) { target = &rr; break; }
+        }
+        if (ImGui::BeginCombo("recipe", target ? target->name.c_str() : "(pick)")) {
+            for (const Recipe& rr : recipes_) {
+                // Obvious self-reference filtered; deeper cycles are caught by
+                // InlineSubRecipes at run start.
+                if (recipeSel_ >= 0 && rr.uid == recipes_[recipeSel_].uid) continue;
+                if (ImGui::Selectable(rr.name.c_str(), target == &rr))
+                    s.params["uid"] = rr.uid;
+            }
+            ImGui::EndCombo();
+        }
+    } else if (s.type == "stop_recipe") {
+        bool ok = s.params.value("ok", true);
+        if (ImGui::Checkbox("success", &ok)) s.params["ok"] = ok;
+        char mbuf[128];
+        std::snprintf(mbuf, sizeof(mbuf), "%s", s.params.value("message", std::string()).c_str());
+        if (ImGui::InputText("message", mbuf, sizeof(mbuf)))
+            s.params["message"] = std::string(mbuf);
+    } else if (s.type == "group") {
+        ImGui::TextDisabled("Group: organizational only.");
+    } else if (const CommandSpec* spec = cmdRegistry_.Find(s.type)) {
         ImGui::TextWrapped("%s", spec->description.c_str());
         ImGui::Spacing();
-        nlohmann::json merged;
-        const std::string err = ValidateParams(*spec, s.params, &merged);
-        if (!err.empty()) {
+        for (const ParamSpec& p : spec->params) DrawParamWidget(p, s.params);
+        const std::string err = ValidateParams(*spec, s.params, nullptr);
+        if (!err.empty())
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", err.c_str());
-            merged = s.params;   // still show what is there
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "unknown command '%s'",
+                           s.type.c_str());
+    }
+    ImGui::EndDisabled();
+}
+
+// One schema-driven form row: reads params[p.name] (schema default when
+// absent), writes back on edit. The widget is chosen by ParamType — the whole
+// reason the typed registry exists. Returns true when the value changed.
+bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
+{
+    bool changed = false;
+    ImGui::PushID(p.name.c_str());
+    nlohmann::json cur = params.contains(p.name) ? params[p.name] : p.defaultValue;
+    const char* label = p.name.c_str();
+    const float w = 170.0f;
+
+    switch (p.type) {
+    case ParamType::Bool: {
+        bool v = cur.is_boolean() && cur.get<bool>();
+        if (ImGui::Checkbox(label, &v)) { params[p.name] = v; changed = true; }
+        break;
+    }
+    case ParamType::Int: {
+        int v = cur.is_number() ? static_cast<int>(cur.get<double>()) : 0;
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::InputInt(label, &v)) {
+            if (p.minVal < p.maxVal) {
+                if (v < p.minVal) v = static_cast<int>(p.minVal);
+                if (v > p.maxVal) v = static_cast<int>(p.maxVal);
+            }
+            params[p.name] = v;
+            changed = true;
         }
-        for (const ParamSpec& p : spec->params) {
-            if (!merged.contains(p.name)) continue;
-            const nlohmann::json& v = merged[p.name];
-            std::string shown = v.is_string() ? v.get<std::string>() : v.dump();
-            if (p.type == ParamType::PositionUid) {
-                // Resolve position uids to their taught names for readability.
-                const std::string dev = merged.value("device", std::string());
-                const auto it = savedPos_.find(dev);
-                if (it != savedPos_.end()) {
-                    for (const SavedPos& sp : it->second) {
-                        if (sp.uid == shown) {
-                            shown += std::string("  (") + sp.name + ")";
-                            break;
-                        }
-                    }
+        break;
+    }
+    case ParamType::Double: {
+        double v = cur.is_number() ? cur.get<double>() : 0.0;
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::InputDouble(label, &v, 0.0, 0.0, "%g")) {
+            if (p.minVal < p.maxVal) {
+                if (v < p.minVal) v = p.minVal;
+                if (v > p.maxVal) v = p.maxVal;
+            }
+            params[p.name] = v;
+            changed = true;
+        }
+        break;
+    }
+    case ParamType::String: {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "%s",
+                      cur.is_string() ? cur.get<std::string>().c_str() : "");
+        if (ImGui::InputText(label, buf, sizeof(buf))) {
+            params[p.name] = std::string(buf);
+            changed = true;
+        }
+        break;
+    }
+    case ParamType::Value: {
+        int t = cur.is_boolean() ? 0 : cur.is_number() ? 1 : 2;
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::Combo("##vtype", &t, "bool\0number\0string\0")) {
+            params[p.name] = t == 0   ? nlohmann::json(false)
+                             : t == 1 ? nlohmann::json(0.0)
+                                      : nlohmann::json("");
+            cur     = params[p.name];
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (t == 0) {
+            bool v = cur.is_boolean() && cur.get<bool>();
+            if (ImGui::Checkbox(label, &v)) { params[p.name] = v; changed = true; }
+        } else if (t == 1) {
+            double v = cur.is_number() ? cur.get<double>() : 0.0;
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputDouble(label, &v, 0.0, 0.0, "%g")) {
+                params[p.name] = v;
+                changed = true;
+            }
+        } else {
+            char buf[256];
+            std::snprintf(buf, sizeof(buf), "%s",
+                          cur.is_string() ? cur.get<std::string>().c_str() : "");
+            if (ImGui::InputText(label, buf, sizeof(buf))) {
+                params[p.name] = std::string(buf);
+                changed = true;
+            }
+        }
+        break;
+    }
+    case ParamType::Enum: {
+        const std::string v = cur.is_string() ? cur.get<std::string>() : "";
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::BeginCombo(label, v.c_str())) {
+            for (const std::string& o : p.options) {
+                if (ImGui::Selectable(o.c_str(), o == v)) {
+                    params[p.name] = o;
+                    changed = true;
                 }
             }
-            ImGui::Text("%s: %s", p.name.c_str(), shown.c_str());
-            if (!p.help.empty() && ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", p.help.c_str());
+            ImGui::EndCombo();
         }
-    } else if (!s.params.empty()) {
-        // Structural step: show its raw params (condition/count/uid...).
-        ImGui::TextWrapped("%s", s.params.dump(2).c_str());
+        break;
     }
+    case ParamType::DeviceMotion:
+    case ParamType::DeviceIo:
+    case ParamType::Slide: {
+        const std::string v = cur.is_string() ? cur.get<std::string>() : "";
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str())) {
+            const auto item = [&](const std::string& name) {
+                if (ImGui::Selectable(name.c_str(), name == v)) {
+                    params[p.name] = name;
+                    changed = true;
+                }
+            };
+            if (p.type == ParamType::DeviceMotion) {
+                for (std::size_t i = 0; i < hardware_.MotionCount(); ++i)
+                    item(hardware_.MotionName(i));
+            } else if (p.type == ParamType::DeviceIo) {
+                for (std::size_t i = 0; i < hardware_.IoCount(); ++i)
+                    item(hardware_.IoName(i));
+            } else {
+                for (std::size_t i = 0; i < hardware_.SlideCount(); ++i)
+                    if (hardware_.Slide(i)) item(hardware_.Slide(i)->Name());
+            }
+            ImGui::EndCombo();
+        }
+        break;
+    }
+    case ParamType::PositionUid: {
+        const std::string dev = params.value("device", std::string());
+        const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
+        std::string preview   = v.empty() ? "(pick)" : v;
+        const auto it = savedPos_.find(dev);
+        if (it != savedPos_.end()) {
+            for (const SavedPos& sp : it->second)
+                if (sp.uid == v) { preview = sp.name; break; }
+        }
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::BeginCombo(label, preview.c_str())) {
+            if (it == savedPos_.end() || it->second.empty())
+                ImGui::TextDisabled("(no saved positions for '%s')", dev.c_str());
+            else
+                for (const SavedPos& sp : it->second) {
+                    if (ImGui::Selectable(sp.name, sp.uid == v)) {
+                        params[p.name] = sp.uid;   // stores the uid, shows the name
+                        changed = true;
+                    }
+                }
+            ImGui::EndCombo();
+        }
+        break;
+    }
+    case ParamType::MapName: {
+        const std::string dev = params.value("device", std::string());
+        const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str())) {
+            const auto it = motionMaps_.find(dev);
+            if (it == motionMaps_.end() || it->second.empty())
+                ImGui::TextDisabled("(no maps for '%s')", dev.c_str());
+            else
+                for (const MotionMap& m : it->second) {
+                    if (ImGui::Selectable(m.name.c_str(), m.name == v)) {
+                        params[p.name] = m.name;
+                        changed = true;
+                    }
+                }
+            ImGui::EndCombo();
+        }
+        break;
+    }
+    case ParamType::PinName: {
+        const std::string dev = params.value("device", std::string());
+        const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
+        const IIoDevice* d = nullptr;
+        for (std::size_t i = 0; i < hardware_.IoCount(); ++i)
+            if (hardware_.IoName(i) == dev) { d = hardware_.IoDevice(i); break; }
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str())) {
+            if (!d) {
+                ImGui::TextDisabled("(pick a device first)");
+            } else {
+                const auto pins = [&](bool inputs) {
+                    const int n = inputs ? d->InputCount() : d->OutputCount();
+                    for (int pin = 0; pin < n; ++pin) {
+                        const std::string name =
+                            inputs ? d->InputPinName(pin) : d->OutputPinName(pin);
+                        if (name.empty()) continue;
+                        if (ImGui::Selectable(name.c_str(), name == v)) {
+                            params[p.name] = name;
+                            changed = true;
+                        }
+                    }
+                };
+                if (p.pinDir != PinDir::Output) pins(true);    // inputs
+                if (p.pinDir != PinDir::Input)  pins(false);   // outputs
+            }
+            ImGui::EndCombo();
+        }
+        break;
+    }
+    case ParamType::TopicName: {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%s",
+                      cur.is_string() ? cur.get<std::string>().c_str() : "");
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::InputText(label, buf, sizeof(buf))) {
+            params[p.name] = std::string(buf);
+            changed = true;
+        }
+        const std::vector<std::string> topics = DataBus::Instance().Topics();
+        if (!topics.empty()) {
+            ImGui::SameLine();
+            if (ImGui::BeginCombo("##topics", "", ImGuiComboFlags_NoPreview)) {
+                for (const std::string& t : topics) {
+                    if (ImGui::Selectable(t.c_str())) {
+                        params[p.name] = t;
+                        changed = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+        break;
+    }
+    }
+    if (!p.help.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", p.help.c_str());
+    ImGui::PopID();
+    return changed;
+}
+
+// Shared editor for {key|topic, op, value} condition objects (an if step's
+// params, a loop's "while"). Normalizes the object in place so a fresh
+// condition is immediately valid.
+bool App::DrawConditionEditor(nlohmann::json& cond)
+{
+    bool changed = false;
+    if (!cond.is_object()) { cond = nlohmann::json::object(); changed = true; }
+    if (!cond.contains("op")) { cond["op"] = "is_true"; changed = true; }
+    if (!cond.contains("key") && !cond.contains("topic")) {
+        cond["key"] = "";
+        changed = true;
+    }
+
+    int src = cond.contains("topic") ? 1 : 0;
+    ImGui::SetNextItemWidth(100.0f);
+    if (ImGui::Combo("source", &src, "ctx key\0topic\0")) {
+        const std::string old = src == 1 ? cond.value("key", std::string())
+                                         : cond.value("topic", std::string());
+        cond.erase("key");
+        cond.erase("topic");
+        cond[src == 1 ? "topic" : "key"] = old;
+        changed = true;
+    }
+    const char* fk = cond.contains("topic") ? "topic" : "key";
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "%s", cond.value(fk, std::string()).c_str());
+    if (ImGui::InputText(fk, buf, sizeof(buf))) {
+        cond[fk] = std::string(buf);
+        changed = true;
+    }
+
+    static const char* kOps[] = {">", "<", ">=", "<=", "==", "!=",
+                                 "is_true", "is_false", "exists", "not_exists"};
+    const std::string op = cond.value("op", std::string("is_true"));
+    ImGui::SetNextItemWidth(120.0f);
+    if (ImGui::BeginCombo("op", op.c_str())) {
+        for (const char* o : kOps) {
+            if (ImGui::Selectable(o, op == o)) {
+                cond["op"] = o;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    const bool needsValue = op != "is_true" && op != "is_false" &&
+                            op != "exists" && op != "not_exists";
+    if (needsValue) {
+        nlohmann::json v = cond.contains("value") ? cond["value"] : nlohmann::json(0.0);
+        int t = v.is_string() ? 1 : 0;
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::Combo("##ctype", &t, "number\0string\0")) {
+            cond["value"] = t == 1 ? nlohmann::json("") : nlohmann::json(0.0);
+            v             = cond["value"];
+            changed       = true;
+        }
+        ImGui::SameLine();
+        if (t == 1) {
+            char vb[128];
+            std::snprintf(vb, sizeof(vb), "%s",
+                          v.is_string() ? v.get<std::string>().c_str() : "");
+            if (ImGui::InputText("value", vb, sizeof(vb))) {
+                cond["value"] = std::string(vb);
+                changed = true;
+            }
+        } else {
+            double d = v.is_number() ? v.get<double>() : 0.0;
+            ImGui::SetNextItemWidth(130.0f);
+            if (ImGui::InputDouble("value", &d, 0.0, 0.0, "%g")) {
+                cond["value"] = d;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+// Write the in-memory recipes to the product's recipes file when a product is
+// loaded (manifest uid stamped), else config/recipes.local.json — the same
+// precedence LoadRecipesFromDisk reads with.
+void App::SaveRecipes()
+{
+    std::string path = "config/recipes.local.json";
+    std::string uid  = recipesUid_;
+    if (product_.Loaded()) {
+        if (const ManifestFile* e = product_.Entry("recipes")) {
+            path = product_.FilePath("recipes");
+            uid  = e->uid;
+        }
+    }
+    if (uid.empty()) uid = GenerateUid();
+    recipesUid_ = uid;
+    if (SaveRecipesFile(path, recipes_, uid))
+        FD_INFO("recipe", "saved %zu recipe(s) to %s", recipes_.size(), path.c_str());
+    else
+        FD_WARN("recipe", "could not save recipes to %s", path.c_str());
 }
 
 // Bottom strip: Run/Stop + state + executing step + progress. Runs the recipe
@@ -830,6 +1548,10 @@ void App::DrawRecipeRunStrip()
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
     if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) recipeEngine_.RequestStop();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(running);
+    if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) SaveRecipes();
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::Text("State: %s", RecipeEngine::StateName(st.state));

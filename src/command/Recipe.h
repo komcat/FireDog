@@ -54,6 +54,20 @@ struct Recipe {
 // Structural step types interpreted by the engine (not registry commands).
 bool IsStructuralStep(const std::string& type);
 
+// Palette metadata for the structural types (the editor's add-step palette
+// lists these alongside the registry commands).
+struct StructuralStepInfo {
+    const char* type;
+    const char* description;
+};
+inline constexpr StructuralStepInfo kStructuralSteps[] = {
+    {"group",       "Organizational container - runs its children in order"},
+    {"loop",        "Repeat children a fixed count, or while a condition holds"},
+    {"if",          "Run children when a condition holds; else-branch otherwise"},
+    {"sub_recipe",  "Run another recipe inline (referenced by uid)"},
+    {"stop_recipe", "End the run early, as success or failure"},
+};
+
 // ---- Persistence ------------------------------------------------------------
 // File shape: { "uid": "...", "recipes": [ {...}, ... ] }.
 std::vector<Recipe> LoadRecipesFile(const std::string& path, std::string* uidOut = nullptr);

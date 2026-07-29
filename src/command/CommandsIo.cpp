@@ -102,7 +102,8 @@ void RegisterIoCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
     reg.Register({"set_output", "IO", "Set a digital output by pin name",
                   {
                       {"device", PT::DeviceIo, true, {}, 0, 0, {}, "io device name"},
-                      {"pin", PT::PinName, true, {}, 0, 0, {}, "output pin name"},
+                      {"pin", PT::PinName, true, {}, 0, 0, {}, "output pin name",
+                       PinDir::Output},
                       {"on", PT::Bool, true, {}, 0, 0, {}, "true = ON"},
                   },
                   CommandSpec::Needs::None, ExecSetOutput});
@@ -111,7 +112,8 @@ void RegisterIoCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
                   "Set an output ON for a duration, then OFF (OFF even if stopped)",
                   {
                       {"device", PT::DeviceIo, true, {}, 0, 0, {}, "io device name"},
-                      {"pin", PT::PinName, true, {}, 0, 0, {}, "output pin name"},
+                      {"pin", PT::PinName, true, {}, 0, 0, {}, "output pin name",
+                       PinDir::Output},
                       {"ms", PT::Int, false, 100, 1, 60000, {}, "pulse width"},
                   },
                   CommandSpec::Needs::None, ExecPulseOutput});
@@ -119,7 +121,8 @@ void RegisterIoCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
     reg.Register({"wait_input", "IO", "Wait for a digital input to reach a state",
                   {
                       {"device", PT::DeviceIo, true, {}, 0, 0, {}, "io device name"},
-                      {"pin", PT::PinName, true, {}, 0, 0, {}, "input pin name"},
+                      {"pin", PT::PinName, true, {}, 0, 0, {}, "input pin name",
+                       PinDir::Input},
                       {"state", PT::Bool, false, true, 0, 0, {}, "wanted state"},
                       {"timeout_ms", PT::Int, false, 10000, 10, 600000, {}, "wait timeout"},
                       {"poll_ms", PT::Int, false, 20, 1, 5000, {}, "poll interval"},
@@ -130,7 +133,8 @@ void RegisterIoCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
                   "Clear latched input edges (one pin by name, or all)",
                   {
                       {"device", PT::DeviceIo, true, {}, 0, 0, {}, "io device name"},
-                      {"pin", PT::PinName, false, "", 0, 0, {}, "input pin name; empty = all"},
+                      {"pin", PT::PinName, false, "", 0, 0, {}, "input pin name; empty = all",
+                       PinDir::Input},
                   },
                   CommandSpec::Needs::None, ExecClearLatch});
 }

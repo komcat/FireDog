@@ -39,6 +39,10 @@ enum class ParamType {
 
 const char* ParamTypeName(ParamType t);
 
+// Direction hint for PinName params: which pin list the editor offers and
+// validation resolves against (Any = either).
+enum class PinDir { Any, Input, Output };
+
 struct ParamSpec {
     std::string    name;
     ParamType      type = ParamType::String;
@@ -46,7 +50,8 @@ struct ParamSpec {
     nlohmann::json defaultValue;               // substituted when !required
     double         minVal = 0.0, maxVal = 0.0; // numeric bounds; active when minVal < maxVal
     std::vector<std::string> options;          // Enum choices
-    std::string    help;                       // one line (future editor tooltip)
+    std::string    help;                       // one line (editor tooltip)
+    PinDir         pinDir = PinDir::Any;       // PinName params only
 };
 
 struct CommandResult {

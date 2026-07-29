@@ -85,15 +85,21 @@ private:
     void DrawPneumaticInfoPanel();    // right:  live output/sensor states
     void DrawWatchEditPanel();        // IO Watch editor (full-page, View menu)
     void DrawTransformEditPanel();    // axis-transform editor (full-page, View menu)
-    // Recipe editor (full-page, View menu) — Phase B. B1: browse + run.
+    // Recipe editor (full-page, View menu) — Phase B. B1 browse+run, B2 edit.
     void DrawRecipeEditPanel();       // page body: recipes | step tree | inspector
     void DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
                              std::vector<std::size_t>& path, bool elseBranch,
                              const std::vector<std::size_t>& runPath, bool running);
-    void DrawRecipeInspector(const RecipeStep& s);   // read-only in B1
-    void DrawRecipeRunStrip();        // bottom strip: run/stop + progress
+    void DrawRecipeInspector(RecipeStep& s, bool canEdit);
+    std::string AutoNickname(const RecipeStep& s) const;   // live label from params
+    void DrawRecipeTreeToolbar(Recipe& r, bool canEdit);   // move/delete row
+    void DrawRecipePalette(Recipe& r, bool canEdit);       // searchable add-step column
+    bool DrawParamWidget(const ParamSpec& p, nlohmann::json& params);  // schema form row
+    bool DrawConditionEditor(nlohmann::json& cond);   // if / loop-while / wait_until
+    void DrawRecipeRunStrip();        // bottom strip: run/stop/save + progress
     void DrawRecipePromptModal();     // GLOBAL blocking prompt (like safety modal)
     void LoadRecipesFromDisk();       // product recipes file, else config fallback
+    void SaveRecipes();               // product recipes file, else config local
     void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
     void DrawAuxWindow();
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
@@ -295,6 +301,13 @@ private:
     // Selected step as a numeric path into the nested step tree; components
     // >= kElsePathBase (App.cpp) address an if-step's else branch.
     std::vector<std::size_t> edStepSel_;
+    // Editor dialogs/palette state (menu -> popup handoff, like the products).
+    int  edAddMode_           = 0;       // palette insert: 0 after, 1 into, 2 else
+    bool edOpenRenameRecipe_  = false;
+    bool edOpenDeleteRecipe_  = false;
+    bool edOpenDeleteStep_    = false;
+    char edNameBuf_[64]       = "";
+    char edSearchBuf_[64]     = "";      // palette search filter
 
     // Current product (File menu). Not loaded => config-fallback persistence.
     ProductManifest product_;

@@ -23,6 +23,18 @@ CommandResult BoolResult(bool ok, const char* what)
               : CommandResult::Fail(std::string(what) + " rejected (not connected?)");
 }
 
+// Latest published sample of `topic` into ctx[key]; fails when the stream has
+// no data yet (instrument connected but not polled, or polling stopped).
+CommandResult ReadTopicToCtx(ExecutionContext& ctx, const std::string& topic,
+                             const std::string& key)
+{
+    DataStream& s = DataBus::Instance().Stream(topic);
+    if (s.Count() == 0)
+        return CommandResult::Fail("no data on topic '" + topic + "'");
+    ctx.CtxSet(key, s.LatestValue());
+    return CommandResult::Success();
+}
+
 CommandResult ExecWaitForTemperature(ExecutionContext& ctx, const ParamValues& p)
 {
     const double target = p.GetDouble("target_c");
@@ -83,6 +95,19 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
                       return BoolResult(w->SetKeithleyRangeFixed(p.GetDouble("amps")),
                                         "keithley range");
                   }});
+    reg.Register({"keithley_read", "Instruments",
+                  "Read a Keithley channel current (A) into the run context",
+                  {
+                      {"channel", PT::Int, false, 1, 1, 2, {}, "channel 1..2"},
+                      {"ctx", PT::String, true, {}, 0, 0, {}, "destination ctx key"},
+                  },
+                  Needs::Keithley,
+                  [](ExecutionContext& c, const ParamValues& p) {
+                      return ReadTopicToCtx(c,
+                                            p.GetInt("channel") == 2 ? topics::kKeithleyCh2
+                                                                     : topics::kKeithleyCh1,
+                                            p.GetString("ctx"));
+                  }});
 
     // ---- CLD101x laser / TEC ------------------------------------------------
     reg.Register({"cld_tec", "Instruments", "Switch the CLD101x TEC on/off",
@@ -121,6 +146,24 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
                       return BoolResult(w->SetCldLaserCurrentMA(p.GetDouble("ma")),
                                         "cld laser current");
                   }});
+    reg.Register({"cld_read_temperature", "Instruments",
+                  "Read the CLD101x temperature (deg C) into the run context",
+                  {
+                      {"ctx", PT::String, true, {}, 0, 0, {}, "destination ctx key"},
+                  },
+                  Needs::Cld,
+                  [](ExecutionContext& c, const ParamValues& p) {
+                      return ReadTopicToCtx(c, topics::kCldTemp, p.GetString("ctx"));
+                  }});
+    reg.Register({"cld_read_laser_current", "Instruments",
+                  "Read the CLD101x laser current (mA) into the run context",
+                  {
+                      {"ctx", PT::String, true, {}, 0, 0, {}, "destination ctx key"},
+                  },
+                  Needs::Cld,
+                  [](ExecutionContext& c, const ParamValues& p) {
+                      return ReadTopicToCtx(c, topics::kCldCurrent, p.GetString("ctx"));
+                  }});
     reg.Register({"wait_for_temperature", "Instruments",
                   "Wait until the CLD101x temperature settles at a target",
                   {
@@ -155,6 +198,23 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
                       return BoolResult(p.GetBool("on") ? w->PsuOutputOn(ch)
                                                         : w->PsuOutputOff(ch),
                                         "psu output");
+                  }});
+
+    reg.Register({"psu_read", "Instruments",
+                  "Read a PSU channel's measured voltage (V) or current (A) into the run context",
+                  {
+                      {"channel", PT::Int, true, {}, 1, 3, {}, "channel 1..3"},
+                      {"what", PT::Enum, false, "voltage", 0, 0, {"voltage", "current"},
+                       "which measurement"},
+                      {"ctx", PT::String, true, {}, 0, 0, {}, "destination ctx key"},
+                  },
+                  Needs::Psu,
+                  [](ExecutionContext& c, const ParamValues& p) {
+                      const int ch = p.GetInt("channel");
+                      const std::string topic = p.GetString("what") == "current"
+                                                    ? topics::PsuCurrent(ch)
+                                                    : topics::PsuVoltage(ch);
+                      return ReadTopicToCtx(c, topic, p.GetString("ctx"));
                   }});
 
     // ---- Camera -------------------------------------------------------------

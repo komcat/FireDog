@@ -300,6 +300,7 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
     for (const ParamSpec& p : spec.params) {
         if (!merged.contains(p.name) || !merged[p.name].is_string()) continue;
         const std::string v = merged[p.name].get<std::string>();
+        if (v.empty() && !p.required) continue;   // optional and unset (e.g. clear_latch pin)
         switch (p.type) {
         case ParamType::DeviceMotion: {
             const int idx = MotionIdx(env.hw, v);
@@ -353,8 +354,18 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             const int idx = IoIdx(env.hw, device);
             if (idx >= 0) {
                 const IIoDevice* dev = env.hw.IoDevice(static_cast<std::size_t>(idx));
-                if (dev && dev->InputPinByName(v) < 0 && dev->OutputPinByName(v) < 0)
-                    Issue(env, where, "pin '" + v + "' unknown on device '" + device + "'");
+                bool ok = false;
+                if (dev) {   // resolve against the declared pin direction
+                    if (p.pinDir != PinDir::Output) ok = dev->InputPinByName(v) >= 0;
+                    if (!ok && p.pinDir != PinDir::Input) ok = dev->OutputPinByName(v) >= 0;
+                }
+                if (dev && !ok) {
+                    const char* dir = p.pinDir == PinDir::Input    ? "input "
+                                      : p.pinDir == PinDir::Output ? "output "
+                                                                   : "";
+                    Issue(env, where, std::string(dir) + "pin '" + v +
+                                          "' unknown on device '" + device + "'");
+                }
             }
             break;
         }
