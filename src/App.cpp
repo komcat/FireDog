@@ -349,7 +349,7 @@ void App::DrawMainWindow()
                     toggleEditor(Page::TransformEdit);
                 if (ImGui::MenuItem("Recipe Editor", nullptr, currentPage_ == Page::RecipeEdit))
                     toggleEditor(Page::RecipeEdit);
-                if (ImGui::MenuItem("Programs", nullptr, currentPage_ == Page::Scripts))
+                if (ImGui::MenuItem("Scripts", nullptr, currentPage_ == Page::Scripts))
                     toggleEditor(Page::Scripts);
                 ImGui::EndMenu();
             }
@@ -373,7 +373,7 @@ void App::DrawMainWindow()
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
-                                                                      : "Programs";
+                                                                      : "Scripts";
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
             ImGui::TextUnformatted(title);
@@ -1756,10 +1756,13 @@ std::string App::ScriptsDir() const
 
 void App::LoadScriptsList()
 {
-    scripts_ = ListScripts(ScriptsDir());
+    scriptsDirUsed_ = ScriptsDir();
+    scripts_ = ListScripts(scriptsDirUsed_);
     if (scripts_.empty() && product_.Loaded()) {
-        // Product without a scripts folder — fall back like recipes do.
-        scripts_ = ListScripts("config/scripts");
+        // Product without a scripts folder — fall back like recipes do, and
+        // show the directory ACTUALLY used, not the one we wished for.
+        scriptsDirUsed_ = "config/scripts";
+        scripts_ = ListScripts(scriptsDirUsed_);
     }
     if (scriptSel_ >= static_cast<int>(scripts_.size()))
         scriptSel_ = scripts_.empty() ? -1 : 0;
@@ -1781,12 +1784,12 @@ void App::DrawScriptsPanel()
 
     // ---- Left: script list ----
     ImGui::BeginChild("scList", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
-    ImGui::TextUnformatted("Programs");
+    ImGui::TextUnformatted("Scripts");
     ImGui::SameLine();
     ImGui::BeginDisabled(running);
     if (ImGui::SmallButton("Reload")) LoadScriptsList();
     ImGui::EndDisabled();
-    ImGui::TextDisabled("%s", ScriptsDir().c_str());
+    ImGui::TextDisabled("%s", scriptsDirUsed_.c_str());
     ImGui::Separator();
     if (scripts_.empty())
         ImGui::TextWrapped("No .lua scripts found. Author them in an external "

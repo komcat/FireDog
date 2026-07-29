@@ -1,7 +1,9 @@
-// RecipeEngine.cpp
+// RecipeEngine.cpp — the worker thread + status plumbing; step execution
+// itself lives in StepRunner (shared with the Lua tier's fd.run_recipe).
 #include "command/RecipeEngine.h"
 
 #include "command/CommandRegistry.h"
+#include "command/StepRunner.h"
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
@@ -78,6 +80,7 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err)
         prompt_      = "";
         leafDone_    = 0;
         leafTotal_   = CountLeafSteps(run.steps);
+        curPath_.clear();
     }
     stopReq_.store(false);
     running_.store(true);
@@ -120,14 +123,6 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     return s;
 }
 
-void RecipeEngine::SetCurrentStep(const std::string& s,
-                                  const std::vector<std::size_t>& path)
-{
-    const std::scoped_lock lock(mu_);
-    currentStep_ = s;
-    curPath_     = path;
-}
-
 bool RecipeEngine::SafetyAborted() const
 {
     return wf_.SafetyAlertActive() && wf_.SafetyAlert().critical;
@@ -160,28 +155,46 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
         runCtx_ = &ctx;
     }
 
-    Outcome out = Outcome::Fail;
+    StepRunner::Outcome out = StepRunner::Outcome::Fail;
+    std::string runErr;
     try {
-        out = ExecSteps(recipe.steps, ctx, "", {}, 1);
+        StepRunner runner(
+            reg_, ctx,
+            StepRunner::Callbacks{
+                [this](const std::string& label, const std::vector<std::size_t>& path) {
+                    const std::scoped_lock lock(mu_);
+                    currentStep_ = label;
+                    curPath_     = path;
+                },
+                [this] {
+                    const std::scoped_lock lock(mu_);
+                    ++leafDone_;
+                },
+            });
+        out    = runner.Run(recipe.steps);
+        runErr = runner.Error();
     } catch (const std::exception& e) {
         // Should have been contained at the step boundary — last line of defense.
         FD_ERROR("recipe", "unexpected engine exception: %s", e.what());
-        const std::scoped_lock lock(mu_);
-        if (error_.empty()) error_ = e.what();
+        runErr = e.what();
     } catch (...) {
         FD_ERROR("recipe", "unexpected non-standard engine exception");
+        runErr = "unknown error";
     }
 
     // Terminal state — every path lands here with the cause logged.
     {
         const std::scoped_lock lock(mu_);
         runCtx_ = nullptr;   // ctx dies with this frame; status stops reading it
-        if (stopReq_.load() || out == Outcome::Aborted) {
+        error_  = runErr;
+        if (stopReq_.load() || out == StepRunner::Outcome::Aborted) {
             state_ = State::Stopped;
             if (error_.empty())
                 error_ = SafetyAborted() ? "safety alert" : "stopped by operator";
-        } else if (out == Outcome::Ok || out == Outcome::StopOk) {
+        } else if (out == StepRunner::Outcome::Ok ||
+                   out == StepRunner::Outcome::StopOk) {
             state_ = State::Completed;
+            error_.clear();
         } else {
             state_ = State::Failed;
             if (error_.empty()) error_ = "step failed";
@@ -192,157 +205,6 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
                 StateName(state_), error_.empty() ? "" : " - ", error_.c_str());
     }
     running_.store(false);
-}
-
-RecipeEngine::Outcome RecipeEngine::ExecSteps(const std::vector<RecipeStep>& steps,
-                                              ExecutionContext& ctx,
-                                              const std::string& pathPrefix,
-                                              const std::vector<std::size_t>& basePath,
-                                              int depth)
-{
-    if (depth > kMaxRecipeDepth) {   // validated at load; belt and braces
-        const std::scoped_lock lock(mu_);
-        error_ = "nesting exceeds depth " + std::to_string(kMaxRecipeDepth);
-        return Outcome::Fail;
-    }
-
-    for (std::size_t i = 0; i < steps.size(); ++i) {
-        const RecipeStep& s = steps[i];
-        if (!s.enabled) continue;
-        if (stopReq_.load() || SafetyAborted()) return Outcome::Aborted;
-
-        const std::string where =
-            (pathPrefix.empty() ? "" : pathPrefix + ".") + std::to_string(i + 1) +
-            " (" + (s.nickname.empty() ? s.type : s.nickname) + ")";
-        std::vector<std::size_t> path = basePath;
-        path.push_back(i);
-
-        if (s.type == "group" || s.type == "sub_recipe") {
-            const Outcome o = ExecSteps(s.children, ctx, where, path, depth + 1);
-            if (o != Outcome::Ok) return o;
-        } else if (s.type == "loop") {
-            if (s.params.contains("count")) {
-                const int count = s.params["count"].get<int>();
-                for (int k = 0; k < count; ++k) {
-                    if (stopReq_.load() || SafetyAborted()) return Outcome::Aborted;
-                    const Outcome o = ExecSteps(s.children, ctx, where, path, depth + 1);
-                    if (o != Outcome::Ok) return o;
-                }
-            } else {   // while-form; bounded by max_iterations
-                const int maxIter = s.params.value("max_iterations", kDefaultMaxIterations);
-                int k = 0;
-                for (;; ++k) {
-                    if (stopReq_.load() || SafetyAborted()) return Outcome::Aborted;
-                    if (k >= maxIter) {
-                        FD_WARN("recipe", "%s: while-loop hit max_iterations (%d)",
-                                where.c_str(), maxIter);
-                        break;
-                    }
-                    std::string condErr;
-                    const std::optional<bool> go =
-                        EvalCondition(s.params["while"], ctx, &condErr);
-                    if (!go.has_value()) {
-                        const std::scoped_lock lock(mu_);
-                        error_ = where + ": " + condErr;
-                        return Outcome::Fail;
-                    }
-                    if (!*go) break;
-                    const Outcome o = ExecSteps(s.children, ctx, where, path, depth + 1);
-                    if (o != Outcome::Ok) return o;
-                }
-            }
-        } else if (s.type == "if") {
-            std::string condErr;
-            const std::optional<bool> v = EvalCondition(s.params, ctx, &condErr);
-            if (!v.has_value()) {
-                const std::scoped_lock lock(mu_);
-                error_ = where + ": " + condErr;
-                return Outcome::Fail;
-            }
-            const Outcome o =
-                ExecSteps(*v ? s.children : s.elseChildren, ctx, where, path, depth + 1);
-            if (o != Outcome::Ok) return o;
-        } else if (s.type == "stop_recipe") {
-            const bool ok = s.params.value("ok", true);
-            const std::string msg = s.params.value("message", std::string());
-            FD_INFO("recipe", "%s: stop_recipe (%s)%s%s", where.c_str(),
-                    ok ? "success" : "fail", msg.empty() ? "" : " - ", msg.c_str());
-            if (!ok) {
-                const std::scoped_lock lock(mu_);
-                if (error_.empty()) error_ = msg.empty() ? "stopped by recipe" : msg;
-            }
-            return ok ? Outcome::StopOk : Outcome::StopFail;
-        } else {
-            const Outcome o = ExecLeaf(s, ctx, where, path);
-            if (o != Outcome::Ok) return o;
-        }
-    }
-    return Outcome::Ok;
-}
-
-RecipeEngine::Outcome RecipeEngine::ExecLeaf(const RecipeStep& s,
-                                             ExecutionContext& ctx,
-                                             const std::string& where,
-                                             const std::vector<std::size_t>& path)
-{
-    const CommandSpec* spec = reg_.Find(s.type);
-    if (!spec) {   // validated at Start; belt and braces
-        const std::scoped_lock lock(mu_);
-        error_ = where + ": unknown command";
-        return Outcome::Fail;
-    }
-    nlohmann::json merged;
-    const std::string pe = ValidateParams(*spec, s.params, &merged);
-    if (!pe.empty()) {
-        const std::scoped_lock lock(mu_);
-        error_ = where + ": " + pe;
-        return Outcome::Fail;
-    }
-    const ParamValues pv(std::move(merged));
-
-    const int attempts = s.onError == RecipeStep::OnError::Retry ? s.retryCount + 1 : 1;
-    std::string lastErr;
-    for (int a = 0; a < attempts; ++a) {
-        if (stopReq_.load() || SafetyAborted()) return Outcome::Aborted;
-        if (attempts > 1) {
-            SetCurrentStep(where + " attempt " + std::to_string(a + 1) + "/" +
-                           std::to_string(attempts), path);
-        } else {
-            SetCurrentStep(where, path);
-        }
-
-        CommandResult r;
-        try {
-            r = spec->execute(ctx, pv);
-        } catch (const std::exception& e) {
-            r = CommandResult::Fail(std::string("exception: ") + e.what());
-        } catch (...) {
-            r = CommandResult::Fail("non-standard exception");
-        }
-
-        if (r.ok) {
-            const std::scoped_lock lock(mu_);
-            ++leafDone_;
-            return Outcome::Ok;
-        }
-        lastErr = r.error;
-        FD_WARN("recipe", "%s failed: %s%s", where.c_str(), r.error.c_str(),
-                a + 1 < attempts ? " - retrying" : "");
-    }
-
-    if (stopReq_.load() || SafetyAborted()) return Outcome::Aborted;
-    if (s.onError == RecipeStep::OnError::Continue) {
-        FD_WARN("recipe", "%s: continuing past failure (on_error: continue)",
-                where.c_str());
-        const std::scoped_lock lock(mu_);
-        ++leafDone_;
-        return Outcome::Ok;
-    }
-    {
-        const std::scoped_lock lock(mu_);
-        error_ = where + ": " + lastErr;
-    }
-    return Outcome::Fail;
 }
 
 } // namespace firedog

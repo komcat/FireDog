@@ -45,6 +45,19 @@ struct ScriptInfo {
 // Scan `dir` for *.lua (sorted by name). Missing dir -> empty, never throws.
 std::vector<ScriptInfo> ListScripts(const std::string& dir);
 
+class LuaEngine;
+
+// Run a .lua file synchronously on the CALLING thread with the standard fd
+// bindings over `ctx`. `library` + `allowRunRecipe` gate fd.run_recipe — a
+// script started by a recipe step gets false (recursion cap: depth 1, no
+// script->recipe->script re-entrancy). `engine` (nullable) receives line /
+// last-command reporting. Returns "" on success, else the first error line
+// (full traceback goes to the Logger; a stop surfaces as "stopped"). Never
+// throws. Used by LuaEngine's worker and by the run_script command.
+std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
+                       ExecutionContext& ctx, const std::vector<Recipe>& library,
+                       bool allowRunRecipe, LuaEngine* engine);
+
 class LuaEngine {
 public:
     LuaEngine(Workflow& wf, HardwareManager& hw, const CommandRegistry& reg);

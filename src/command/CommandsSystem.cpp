@@ -1,9 +1,11 @@
 // CommandsSystem.cpp : system/data commands — delay, log, ctx ops, DataBus
-// bridge (read_topic), the generic wait_until, and the operator prompt.
+// bridge (read_topic), the generic wait_until, the operator prompt, and the
+// Lua escape hatch (run_script).
 #include "command/Commands.h"
 
 #include "command/CommandRegistry.h"
 #include "command/ExecutionContext.h"
+#include "command/LuaEngine.h"   // RunLuaFile (run_script)
 #include "core/DataBus.h"
 #include "core/Log.h"
 
@@ -136,6 +138,26 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"message", PT::String, true, {}, 0, 0, {}, "text shown to the operator"},
                   },
                   CommandSpec::Needs::None, ExecPrompt});
+
+    // The Lua escape hatch (bobcat's proven "Run Script" pattern): execute a
+    // .lua file inline on the recipe worker with the same fd bindings and the
+    // SAME run context (ctx values shared both ways). The sub-run cannot
+    // start recipes (depth cap 1 — no script->recipe->script re-entrancy).
+    // The registry pointer is stable: App owns it for the process lifetime.
+    CommandRegistry* rp = &reg;
+    reg.Register({"run_script", "System",
+                  "Run a .lua program file inline (shared ctx; cannot start recipes)",
+                  {
+                      {"file", PT::String, true, {}, 0, 0, {},
+                       "path relative to the exe, e.g. config/scripts/foo.lua"},
+                  },
+                  CommandSpec::Needs::None,
+                  [rp](ExecutionContext& c, const ParamValues& p) {
+                      const std::string err =
+                          RunLuaFile(p.GetString("file"), *rp, c, {}, false, nullptr);
+                      return err.empty() ? CommandResult::Success()
+                                         : CommandResult::Fail(err);
+                  }});
 }
 
 } // namespace firedog

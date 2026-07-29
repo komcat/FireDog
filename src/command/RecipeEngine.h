@@ -77,17 +77,10 @@ public:
     bool   Running() const { return running_.load(); }
 
 private:
-    enum class Outcome { Ok, Fail, StopOk, StopFail, Aborted };
-
-    void    ThreadMain(Recipe recipe, Env env);
-    Outcome ExecSteps(const std::vector<RecipeStep>& steps, ExecutionContext& ctx,
-                      const std::string& pathPrefix,
-                      const std::vector<std::size_t>& basePath, int depth);
-    Outcome ExecLeaf(const RecipeStep& s, ExecutionContext& ctx,
-                     const std::string& where,
-                     const std::vector<std::size_t>& path);
-    bool    SafetyAborted() const;   // critical unacknowledged alert?
-    void    SetCurrentStep(const std::string& s, const std::vector<std::size_t>& path);
+    // Step execution itself lives in StepRunner (shared with fd.run_recipe);
+    // this class is the worker thread + status plumbing around it.
+    void ThreadMain(Recipe recipe, Env env);
+    bool SafetyAborted() const;   // critical unacknowledged alert?
 
     // Prompt handshake (worker blocks; UI answers). Guarded by mu_.
     bool AwaitPromptInternal(const std::string& message);

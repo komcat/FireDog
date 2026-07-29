@@ -327,9 +327,10 @@ private:
     char edNameBuf_[64]       = "";
     char edSearchBuf_[64]     = "";      // palette search filter
 
-    // Programs page state: scanned scripts + the loaded source view.
+    // Scripts page state: scanned scripts + the loaded source view.
     std::vector<ScriptInfo>  scripts_;
     int                      scriptSel_ = -1;
+    std::string              scriptsDirUsed_;   // the dir the list came from
     std::string              scriptSrcPath_;    // which file scriptSrc_ holds
     std::vector<std::string> scriptSrc_;        // source lines (view only)
     std::string              scriptStartErr_;   // last Start() rejection

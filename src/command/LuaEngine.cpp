@@ -2,6 +2,7 @@
 #include "command/LuaEngine.h"
 
 #include "command/CommandRegistry.h"
+#include "command/StepRunner.h"
 #include "core/DataBus.h"
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"
@@ -49,26 +50,32 @@ std::vector<ScriptInfo> ListScripts(const std::string& dir)
 }
 
 // ---- Lua hook (stop + line reporting) ---------------------------------------
-// The engine pointer travels in the lua_State's extra space; the hook fires
-// every LINE (source highlight) and every N instructions (so a pure-Lua
-// `while true do end` still honors Stop). Raising a Lua error from the hook
-// is the sanctioned abort path (longjmp through interpreter C frames only).
+// A pointer to this stack-resident context travels in the lua_State's extra
+// space; the hook fires every LINE (source highlight, engine runs only) and
+// every N instructions, so a pure-Lua `while true do end` still honors Stop.
+// Raising a Lua error from the hook is the sanctioned abort path (longjmp
+// through interpreter C frames only).
 
 namespace {
 
 constexpr int kHookInstrCount = 200;
 
-LuaEngine* EngineOf(lua_State* L)
+struct HookCtx {
+    ExecutionContext* ctx    = nullptr;
+    LuaEngine*        engine = nullptr;   // null for run_script sub-runs
+};
+
+HookCtx* HookOf(lua_State* L)
 {
-    return *static_cast<LuaEngine**>(lua_getextraspace(L));
+    return *static_cast<HookCtx**>(lua_getextraspace(L));
 }
 
 void LuaStopHook(lua_State* L, lua_Debug* ar)
 {
-    LuaEngine* e = EngineOf(L);
-    if (!e) return;
-    if (ar->event == LUA_HOOKLINE) e->HookLine(ar->currentline);
-    if (e->HookShouldStop()) luaL_error(L, "stopped");
+    HookCtx* h = HookOf(L);
+    if (!h || !h->ctx) return;
+    if (ar->event == LUA_HOOKLINE && h->engine) h->engine->HookLine(ar->currentline);
+    if (h->ctx->ShouldStop()) luaL_error(L, "stopped");
 }
 
 // Lua argument -> json (bool / number / string; integral doubles become json
@@ -98,6 +105,182 @@ sol::object CtxValueToLua(sol::this_state ts, const CtxValue& v)
 }
 
 } // namespace
+
+// ---- RunLuaFile: state + bindings + execution (shared) ----------------------
+// LuaEngine's worker calls this with engine=this + allowRunRecipe=true; the
+// run_script command calls it inline on the recipe worker with engine=null +
+// allowRunRecipe=false (recursion cap).
+
+std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
+                       ExecutionContext& ctx, const std::vector<Recipe>& library,
+                       bool allowRunRecipe, LuaEngine* engine)
+{
+    std::string firstErr;
+    try {
+        sol::state lua;
+        lua.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
+                           sol::lib::table);
+        HookCtx hookCtx{&ctx, engine};
+        *static_cast<HookCtx**>(lua_getextraspace(lua.lua_state())) = &hookCtx;
+        lua_sethook(lua.lua_state(), &LuaStopHook,
+                    LUA_MASKCOUNT | LUA_MASKLINE, kHookInstrCount);
+
+        // ---- fd: one generated function per registered command ----------
+        sol::table fd = lua.create_named_table("fd");
+        for (const CommandSpec* c : reg.List()) {
+            const CommandSpec* spec = c;
+            fd.set_function(spec->name,
+                            [spec, engine, &ctx](sol::optional<sol::table> args) {
+                nlohmann::json params = nlohmann::json::object();
+                if (args) {
+                    for (const auto& [k, v] : *args) {
+                        if (k.get_type() != sol::type::string)
+                            throw std::runtime_error(spec->name +
+                                                     ": argument keys must be names");
+                        std::string convErr;
+                        nlohmann::json jv = LuaValueToJson(v, &convErr);
+                        if (!convErr.empty())
+                            throw std::runtime_error(spec->name + "." +
+                                                     k.as<std::string>() + ": " + convErr);
+                        params[k.as<std::string>()] = std::move(jv);
+                    }
+                }
+                nlohmann::json merged;
+                const std::string ve = ValidateParams(*spec, params, &merged);
+                if (!ve.empty()) throw std::runtime_error(spec->name + ": " + ve);
+                if (engine) engine->NoteCommand(spec->name);
+                const CommandResult r = spec->execute(ctx, ParamValues(std::move(merged)));
+                if (!r.ok) throw std::runtime_error(spec->name + ": " + r.error);
+            });
+        }
+
+        // ---- fd.run_recipe (Lua worker only — recursion cap depth 1) -----
+        if (allowRunRecipe) {
+            fd.set_function("run_recipe",
+                            [&reg, &ctx, &library, engine](const std::string& ref) {
+                const Recipe* found = nullptr;
+                for (const Recipe& r : library) {
+                    if (r.uid == ref || r.name == ref) { found = &r; break; }
+                }
+                if (!found)
+                    throw std::runtime_error("run_recipe: '" + ref + "' not found");
+                const std::vector<RecipeIssue> issues = ValidateRecipe(
+                    *found, reg, ctx.Hw(), ctx.Positions(), ctx.Maps(), library, true);
+                if (!issues.empty())
+                    throw std::runtime_error("run_recipe '" + found->name + "': " +
+                                             issues.front().where + ": " +
+                                             issues.front().message);
+                Recipe run = *found;
+                std::string ie;
+                if (!InlineSubRecipes(run, library, &ie))
+                    throw std::runtime_error("run_recipe '" + found->name + "': " + ie);
+                FD_INFO("script", "run_recipe '%s' (%zu leaf step(s))",
+                        run.name.c_str(), CountLeafSteps(run.steps));
+                // Same ExecutionContext: shared ctx values, same stop token.
+                StepRunner runner(
+                    reg, ctx,
+                    StepRunner::Callbacks{
+                        [engine, &run](const std::string& label,
+                                       const std::vector<std::size_t>&) {
+                            if (engine) engine->NoteCommand(run.name + " " + label);
+                        },
+                        nullptr,
+                    });
+                const StepRunner::Outcome out = runner.Run(run.steps);
+                if (out == StepRunner::Outcome::Aborted)
+                    throw std::runtime_error("stopped");
+                if (out == StepRunner::Outcome::Fail ||
+                    out == StepRunner::Outcome::StopFail)
+                    throw std::runtime_error("run_recipe '" + run.name + "': " +
+                                             runner.Error());
+            });
+        }
+
+        // ---- Hand-written conveniences ----------------------------------
+        fd.set_function("read", [](sol::this_state ts, const std::string& topic)
+                                    -> sol::object {
+            DataStream& s = DataBus::Instance().Stream(topic);
+            if (s.Count() == 0) return sol::make_object(ts, sol::lua_nil);
+            return sol::make_object(ts, s.LatestValue());
+        });
+        fd.set_function("sleep", [&ctx](int ms) {
+            if (!ctx.Sleep(ms)) throw std::runtime_error("stopped");
+        });
+        fd.set_function("log", [](const std::string& msg) {
+            FD_INFO("script", "%s", msg.c_str());
+        });
+        fd.set_function("prompt", [&ctx](const std::string& msg) {
+            return ctx.AwaitPrompt(msg);
+        });
+        fd.set_function("clock", [] {
+            using clock = std::chrono::steady_clock;
+            return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+        });
+        fd.set_function("positions", [&ctx](sol::this_state ts,
+                                            const std::string& device) {
+            sol::state_view sv(ts);
+            sol::table t = sv.create_table();
+            const auto it = ctx.Positions().find(device);
+            if (it != ctx.Positions().end()) {
+                for (const SavedPos& sp : it->second) t[sp.name] = sp.uid;
+            }
+            return t;
+        });
+
+        // fd.ctx: metatable-backed view of the run context (read AND write).
+        {
+            sol::table ctxT = lua.create_table();
+            sol::table meta = lua.create_table();
+            meta[sol::meta_function::index] =
+                [&ctx](sol::this_state ts, sol::table, const std::string& key)
+                    -> sol::object {
+                const std::optional<CtxValue> v = ctx.CtxGet(key);
+                if (!v) return sol::make_object(ts, sol::lua_nil);
+                return CtxValueToLua(ts, *v);
+            };
+            meta[sol::meta_function::new_index] =
+                [&ctx](sol::table, const std::string& key, sol::object v) {
+                std::string convErr;
+                const nlohmann::json j = LuaValueToJson(v, &convErr);
+                if (!convErr.empty())
+                    throw std::runtime_error("fd.ctx." + key + ": " + convErr);
+                if (j.is_boolean())     ctx.CtxSet(key, j.get<bool>());
+                else if (j.is_number()) ctx.CtxSet(key, j.get<double>());
+                else                    ctx.CtxSet(key, j.get<std::string>());
+            };
+            ctxT[sol::metatable_key] = meta;
+            fd["ctx"] = ctxT;
+        }
+
+        // print -> Logger; fd.logf = printf-style convenience.
+        lua.script(R"(
+            function print(...)
+                local t = {}
+                for i = 1, select('#', ...) do t[i] = tostring(select(i, ...)) end
+                fd.log(table.concat(t, '\t'))
+            end
+            function fd.logf(fmt, ...) fd.log(string.format(fmt, ...)) end
+        )");
+
+        // ---- Run the program ---------------------------------------------
+        const sol::protected_function_result r =
+            lua.safe_script_file(path, sol::script_pass_on_error);
+        if (!r.valid()) {
+            const sol::error e = r;
+            const std::string what = e.what();
+            FD_WARN("script", "%s", what.c_str());
+            firstErr = what.substr(0, what.find('\n'));
+            if (firstErr.empty()) firstErr = "script error";
+        }
+    } catch (const std::exception& e) {
+        FD_ERROR("script", "engine exception: %s", e.what());
+        firstErr = e.what();
+    } catch (...) {
+        FD_ERROR("script", "non-standard engine exception");
+        firstErr = "unknown error";
+    }
+    return firstErr;
+}
 
 // ---- Engine -----------------------------------------------------------------
 
@@ -219,8 +402,8 @@ bool LuaEngine::AwaitPromptInternal(const std::string& message)
 
 void LuaEngine::ThreadMain(std::string path, Env env)
 {
-    // ctx BEFORE lua: the Lua state (whose bindings capture &ctx) must be
-    // destroyed first when this frame unwinds.
+    // ctx BEFORE the Lua run: everything the bindings capture must outlive
+    // the lua_State (created and destroyed inside RunLuaFile).
     ExecutionContext ctx(
         wf_, hw_, env.positions, env.maps,
         ExecutionContext::Hooks{
@@ -232,129 +415,7 @@ void LuaEngine::ThreadMain(std::string path, Env env)
         runCtx_ = &ctx;
     }
 
-    bool ok = false;
-    std::string firstErr;
-    try {
-        sol::state lua;
-        lua.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
-                           sol::lib::table);
-        *static_cast<LuaEngine**>(lua_getextraspace(lua.lua_state())) = this;
-        lua_sethook(lua.lua_state(), &LuaStopHook,
-                    LUA_MASKCOUNT | LUA_MASKLINE, kHookInstrCount);
-
-        // ---- fd: one generated function per registered command ----------
-        sol::table fd = lua.create_named_table("fd");
-        for (const CommandSpec* c : reg_.List()) {
-            const CommandSpec* spec = c;
-            fd.set_function(spec->name,
-                            [this, spec, &ctx](sol::optional<sol::table> args) {
-                nlohmann::json params = nlohmann::json::object();
-                if (args) {
-                    for (const auto& [k, v] : *args) {
-                        if (k.get_type() != sol::type::string)
-                            throw std::runtime_error(spec->name +
-                                                     ": argument keys must be names");
-                        std::string convErr;
-                        nlohmann::json jv = LuaValueToJson(v, &convErr);
-                        if (!convErr.empty())
-                            throw std::runtime_error(spec->name + "." +
-                                                     k.as<std::string>() + ": " + convErr);
-                        params[k.as<std::string>()] = std::move(jv);
-                    }
-                }
-                nlohmann::json merged;
-                const std::string ve = ValidateParams(*spec, params, &merged);
-                if (!ve.empty()) throw std::runtime_error(spec->name + ": " + ve);
-                NoteCommand(spec->name);
-                const CommandResult r = spec->execute(ctx, ParamValues(std::move(merged)));
-                if (!r.ok) throw std::runtime_error(spec->name + ": " + r.error);
-            });
-        }
-
-        // ---- Hand-written conveniences ----------------------------------
-        fd.set_function("read", [](sol::this_state ts, const std::string& topic)
-                                    -> sol::object {
-            DataStream& s = DataBus::Instance().Stream(topic);
-            if (s.Count() == 0) return sol::make_object(ts, sol::lua_nil);
-            return sol::make_object(ts, s.LatestValue());
-        });
-        fd.set_function("sleep", [&ctx](int ms) {
-            if (!ctx.Sleep(ms)) throw std::runtime_error("stopped");
-        });
-        fd.set_function("log", [](const std::string& msg) {
-            FD_INFO("script", "%s", msg.c_str());
-        });
-        fd.set_function("prompt", [&ctx](const std::string& msg) {
-            return ctx.AwaitPrompt(msg);
-        });
-        fd.set_function("clock", [] {
-            using clock = std::chrono::steady_clock;
-            return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
-        });
-        fd.set_function("positions", [&ctx](sol::this_state ts,
-                                            const std::string& device) {
-            sol::state_view sv(ts);
-            sol::table t = sv.create_table();
-            const auto it = ctx.Positions().find(device);
-            if (it != ctx.Positions().end()) {
-                for (const SavedPos& sp : it->second) t[sp.name] = sp.uid;
-            }
-            return t;
-        });
-
-        // fd.ctx: metatable-backed view of the run context (read AND write).
-        {
-            sol::table ctxT = lua.create_table();
-            sol::table meta = lua.create_table();
-            meta[sol::meta_function::index] =
-                [&ctx](sol::this_state ts, sol::table, const std::string& key)
-                    -> sol::object {
-                const std::optional<CtxValue> v = ctx.CtxGet(key);
-                if (!v) return sol::make_object(ts, sol::lua_nil);
-                return CtxValueToLua(ts, *v);
-            };
-            meta[sol::meta_function::new_index] =
-                [&ctx](sol::table, const std::string& key, sol::object v) {
-                std::string convErr;
-                const nlohmann::json j = LuaValueToJson(v, &convErr);
-                if (!convErr.empty())
-                    throw std::runtime_error("fd.ctx." + key + ": " + convErr);
-                if (j.is_boolean())     ctx.CtxSet(key, j.get<bool>());
-                else if (j.is_number()) ctx.CtxSet(key, j.get<double>());
-                else                    ctx.CtxSet(key, j.get<std::string>());
-            };
-            ctxT[sol::metatable_key] = meta;
-            fd["ctx"] = ctxT;
-        }
-
-        // print -> Logger; fd.logf = printf-style convenience.
-        lua.script(R"(
-            function print(...)
-                local t = {}
-                for i = 1, select('#', ...) do t[i] = tostring(select(i, ...)) end
-                fd.log(table.concat(t, '\t'))
-            end
-            function fd.logf(fmt, ...) fd.log(string.format(fmt, ...)) end
-        )");
-
-        // ---- Run the program ---------------------------------------------
-        const sol::protected_function_result r =
-            lua.safe_script_file(path, sol::script_pass_on_error);
-        if (r.valid()) {
-            ok = true;
-        } else {
-            const sol::error e = r;
-            const std::string what = e.what();
-            FD_WARN("script", "%s", what.c_str());
-            firstErr = what.substr(0, what.find('\n'));
-        }
-    } catch (const std::exception& e) {
-        FD_ERROR("script", "engine exception: %s", e.what());
-        firstErr = e.what();
-    } catch (...) {
-        FD_ERROR("script", "non-standard engine exception");
-        firstErr = "unknown error";
-    }
+    const std::string firstErr = RunLuaFile(path, reg_, ctx, env.library, true, this);
 
     {
         const std::scoped_lock lock(mu_);
@@ -362,11 +423,12 @@ void LuaEngine::ThreadMain(std::string path, Env env)
         if (stopReq_.load() || SafetyAborted()) {
             state_ = State::Stopped;
             error_ = SafetyAborted() ? "safety alert" : "stopped by operator";
-        } else if (ok) {
+        } else if (firstErr.empty()) {
             state_ = State::Completed;
+            error_.clear();
         } else {
             state_ = State::Failed;
-            error_ = firstErr.empty() ? "script error" : firstErr;
+            error_ = firstErr;
         }
         FD_INFO("script", "run '%s' finished: %s%s%s", scriptName_.c_str(),
                 StateName(state_), error_.empty() ? "" : " - ", error_.c_str());
