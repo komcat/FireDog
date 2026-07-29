@@ -154,9 +154,12 @@ scripted path, where scripts had a private context and no serial).
 1. **D1 — core + commands**: `DutSession` (atomic persistence, lifecycle,
    events), the five `dut_*` commands, `prompt_input` + modal upgrade,
    engine `$run` events, Overview DUT block + run-strip serial display.
-2. **D2 (later, usage-driven)**: `dut_capture_image` (camera frame → the
-   `images/` folder + a linked path entry — fixing bobcat's unlinked,
-   date-less image names), record viewer page, retention/backup.
+2. **D2 (IMPLEMENTED)**: `dut_capture_image` — latest camera frame → PNG in
+   the record's `images/` (stb_image_write; filename `<key>_<UTC stamp>.png`,
+   fixing bobcat's unlinked date-less names) + a `type="image"` entry with the
+   record-relative path. **DUT Records** viewer (View menu, read-only): serial
+   list from the product's `data/`, entry table, header + run history.
+   Still future: in-viewer image preview, retention/backup.
 
 ## 7. Open questions (decide at review)
 

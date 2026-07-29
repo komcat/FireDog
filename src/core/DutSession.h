@@ -52,6 +52,14 @@ public:
     bool Insert(const std::string& key, const nlohmann::json& value,
                 std::string* err);
 
+    // Image support (dut_capture_image): the record's images/ folder while a
+    // DUT is open ("" otherwise), and a type="image" entry whose value is the
+    // record-relative file path — images stay LINKED to the record (bobcat's
+    // were joined by folder convention alone).
+    std::string ImagesDir() const;
+    bool InsertImage(const std::string& key, const std::string& relPath,
+                     std::string* err);
+
     // Automatic run attribution ($run event) from the engines' terminal
     // states. Deliberately a soft no-op when no DUT is open: testing without
     // a part must not fail runs.

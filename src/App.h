@@ -36,7 +36,7 @@ struct CanvasObject {
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
-                  WatchEdit, TransformEdit, RecipeEdit, Scripts };
+                  WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView };
 
 class App {
 public:
@@ -105,6 +105,9 @@ private:
     void DrawScriptsPanel();          // page body: scripts | source | run info
     void LoadScriptsList();           // scan the scripts dir (product, else config)
     std::string ScriptsDir() const;
+    // DUT Records viewer (View menu, full-page, read-only) — Phase D2.
+    void DrawDutViewPanel();          // serial list | entries table | summary
+    void LoadDutList();               // scan the product's data/ for records
     void LoadRecipesFromDisk();       // product recipes file, else config fallback
     void SaveRecipes();               // product recipes file, else config local
     std::string RecipesDump() const;  // canonical serialization (dirty compare)
@@ -342,6 +345,12 @@ private:
     // (barcode scanners type + Enter, so EnterReturnsTrue submits).
     char dutSerialBuf_[64]   = "";
     char promptInputBuf_[128] = "";
+
+    // DUT Records viewer state: scanned serials + the loaded record.
+    std::vector<std::string> dutList_;
+    int                      dutSel_ = -1;
+    std::string              dutRecSerial_;   // which serial dutRec_ holds
+    nlohmann::json           dutRec_;         // loaded dut.json (view only)
     std::string              scriptSrcPath_;    // which file scriptSrc_ holds
     std::vector<std::string> scriptSrc_;        // source lines (view only)
     std::string              scriptStartErr_;   // last Start() rejection

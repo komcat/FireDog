@@ -205,6 +205,27 @@ bool DutSession::Insert(const std::string& key, const nlohmann::json& value,
     return AppendLocked(key, TypeOf(value), value, err);
 }
 
+std::string DutSession::ImagesDir() const
+{
+    const std::scoped_lock lock(mu_);
+    return open_ ? dirPath_ + "/images" : std::string();
+}
+
+bool DutSession::InsertImage(const std::string& key, const std::string& relPath,
+                             std::string* err)
+{
+    const std::scoped_lock lock(mu_);
+    if (!open_) {
+        if (err) *err = "no DUT is open (dut_open first)";
+        return false;
+    }
+    if (key.empty() || key[0] == '$') {
+        if (err) *err = "invalid DUT key ('$' prefix is reserved for events)";
+        return false;
+    }
+    return AppendLocked(key, "image", relPath, err);
+}
+
 void DutSession::RecordRun(const std::string& kind, const std::string& name,
                            const std::string& result)
 {

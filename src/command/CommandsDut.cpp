@@ -5,6 +5,19 @@
 #include "command/CommandRegistry.h"
 #include "command/ExecutionContext.h"
 #include "core/DutSession.h"
+#include "core/Log.h"
+#include "hardware/HardwareManager.h"
+
+#pragma warning(push)
+#pragma warning(disable : 4244 4456 4996)
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+#pragma warning(pop)
+
+#include <chrono>
+#include <cstdio>
+#include <ctime>
+#include <vector>
 
 namespace firedog {
 
@@ -91,6 +104,54 @@ CommandResult ExecDutRecordAll(ExecutionContext& ctx, const ParamValues& p)
                : CommandResult::Fail(err);
 }
 
+// Timestamped, collision-safe filename piece (UTC): 20260728_193104_120.
+// Bobcat's image names were time-only (no date) and collided across days.
+std::string FileStamp()
+{
+    using namespace std::chrono;
+    const auto   now = system_clock::now();
+    const time_t t   = system_clock::to_time_t(now);
+    const int    ms  = static_cast<int>(
+        duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000);
+    std::tm tm{};
+    gmtime_s(&tm, &t);
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d%02d%02d_%02d%02d%02d_%03d",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                  tm.tm_min, tm.tm_sec, ms);
+    return buf;
+}
+
+CommandResult ExecDutCaptureImage(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string imgDir = DutSession::Instance().ImagesDir();
+    if (imgDir.empty()) return CommandResult::Fail("no DUT is open (dut_open first)");
+
+    std::vector<unsigned char> rgb;
+    int  w = 0, h = 0;
+    bool isNew = false;
+    if (!ctx.Hw().Camera().GetLatestFrame(rgb, w, h, isNew) || w <= 0 || h <= 0)
+        return CommandResult::Fail("no camera frame available (camera grabbing?)");
+
+    // Filesystem-safe key for the filename (the entry keeps the raw key).
+    std::string safe = p.GetString("key");
+    for (char& c : safe) {
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                        (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '.';
+        if (!ok) c = '_';
+    }
+    const std::string file = safe + "_" + FileStamp() + ".png";
+    const std::string path = imgDir + "/" + file;
+    if (!stbi_write_png(path.c_str(), w, h, 3, rgb.data(), w * 3))
+        return CommandResult::Fail("png write failed: " + path);
+
+    std::string err;
+    if (!DutSession::Instance().InsertImage(p.GetString("key"), "images/" + file, &err))
+        return CommandResult::Fail(err);
+    FD_INFO("dut", "captured %dx%d frame -> %s", w, h, path.c_str());
+    return CommandResult::Success();
+}
+
 } // namespace
 
 void RegisterDutCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
@@ -138,6 +199,14 @@ void RegisterDutCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw
                        "ctx key prefix filter; empty = everything"},
                   },
                   CommandSpec::Needs::None, ExecDutRecordAll});
+
+    reg.Register({"dut_capture_image", "DUT",
+                  "Save the latest camera frame into the DUT's images/ (linked entry)",
+                  {
+                      {"key", PT::String, true, {}, 0, 0, {},
+                       "entry key; also the filename prefix"},
+                  },
+                  CommandSpec::Needs::Camera, ExecDutCaptureImage});
 }
 
 } // namespace firedog

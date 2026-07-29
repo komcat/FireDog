@@ -68,6 +68,13 @@ FetchContent_Declare(sol2
     GIT_TAG v3.3.0 GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(sol2)
 
+# ---- stb (single-header PNG writing for dut_capture_image) ----
+# Header-only collection, no CMakeLists — MakeAvailable just populates.
+FetchContent_Declare(stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG master GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(stb)
+
 # ---- Basler Pylon SDK (layer 1 camera) — optional ----
 # Prefer a vendored copy under external/, else a system Basler install (PYLON_DEV_DIR).
 set(PYLON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/external/pylon 8")
@@ -186,7 +193,8 @@ add_executable(FireDog
 
 target_include_directories(FireDog PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${stb_SOURCE_DIR})
 
 # opengl32 for the base GL calls in GlHost (texture upload, clear).
 # ws2_32 for the WAGO Modbus TCP client (always compiled — no vendor SDK).
