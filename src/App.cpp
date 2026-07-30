@@ -305,6 +305,39 @@ void App::Update(float dt)
     UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)
 }
 
+namespace {
+// Full-page takeovers (View menu) vs the Hardware pages.
+bool IsTakeoverPage(Page p)
+{
+    return p == Page::WatchEdit || p == Page::TransformEdit ||
+           p == Page::RecipeEdit || p == Page::Scripts ||
+           p == Page::DutView || p == Page::Run;
+}
+} // namespace
+
+// ALL page switches route here. Leaving the Recipe Editor with unsaved edits
+// blocks: the editor stays up and its Unsaved Changes modal (Save / Discard /
+// Cancel) completes the switch to edLeaveTarget_. Entering a takeover page
+// from a hardware page remembers it so the editor's Close returns there.
+void App::SwitchPage(Page p)
+{
+    if (currentPage_ == p) return;
+    if (currentPage_ == Page::RecipeEdit && RecipesDirty()) {
+        edConfirmAction_ = 1;
+        edLeaveTarget_   = p;
+        return;
+    }
+    if (IsTakeoverPage(p) && !IsTakeoverPage(currentPage_))
+        prevPage_ = currentPage_;
+    currentPage_ = p;
+}
+
+// Selecting the active editor page again toggles back to the remembered page.
+void App::ToggleEditorPage(Page p)
+{
+    SwitchPage(currentPage_ == p ? prevPage_ : p);
+}
+
 void App::DrawMainWindow()
 {
     const ImGuiViewport* mv = ImGui::GetMainViewport();
@@ -332,21 +365,21 @@ void App::DrawMainWindow()
             }
             if (ImGui::BeginMenu("Hardware")) {
                 if (ImGui::MenuItem("Overview", nullptr, currentPage_ == Page::Overview))
-                    currentPage_ = Page::Overview;
+                    SwitchPage(Page::Overview);
                 if (ImGui::MenuItem("Camera",   nullptr, currentPage_ == Page::Camera))
-                    currentPage_ = Page::Camera;
+                    SwitchPage(Page::Camera);
                 if (ImGui::MenuItem("Keithley", nullptr, currentPage_ == Page::Keithley))
-                    currentPage_ = Page::Keithley;
+                    SwitchPage(Page::Keithley);
                 if (ImGui::MenuItem("CLD101x",  nullptr, currentPage_ == Page::CLD))
-                    currentPage_ = Page::CLD;
+                    SwitchPage(Page::CLD);
                 if (ImGui::MenuItem("PSU",      nullptr, currentPage_ == Page::PSU))
-                    currentPage_ = Page::PSU;
-                if (ImGui::MenuItem("Motion",   nullptr, currentPage_ == Page::Motion))
-                    currentPage_ = Page::Motion;
+                    SwitchPage(Page::PSU);
+                if (ImGui::MenuItem("Motion",   "F3", currentPage_ == Page::Motion))
+                    SwitchPage(Page::Motion);
                 if (ImGui::MenuItem("IO",       nullptr, currentPage_ == Page::IO))
-                    currentPage_ = Page::IO;
+                    SwitchPage(Page::IO);
                 if (ImGui::MenuItem("Pneumatics", nullptr, currentPage_ == Page::Pneumatic))
-                    currentPage_ = Page::Pneumatic;
+                    SwitchPage(Page::Pneumatic);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
@@ -363,30 +396,23 @@ void App::DrawMainWindow()
                     ImGui::EndMenu();
                 }
                 ImGui::Separator();
-                // Editor pages replace the main-window content; selecting one
-                // remembers the current hardware page so Close returns to it.
-                auto toggleEditor = [this](Page p) {
-                    if (currentPage_ == p) { currentPage_ = prevPage_; return; }
-                    if (currentPage_ != Page::WatchEdit && currentPage_ != Page::TransformEdit &&
-                        currentPage_ != Page::RecipeEdit && currentPage_ != Page::Scripts &&
-                        currentPage_ != Page::DutView && currentPage_ != Page::Run)
-                        prevPage_ = currentPage_;
-                    currentPage_ = p;
-                };
+                // Operator pages first (Run + Recipe Editor, with F-key
+                // shortcuts), then the machine-setup editors.
+                if (ImGui::MenuItem("Run", "F1", currentPage_ == Page::Run))
+                    ToggleEditorPage(Page::Run);
+                if (ImGui::MenuItem("Recipe Editor", "F2", currentPage_ == Page::RecipeEdit))
+                    ToggleEditorPage(Page::RecipeEdit);
+                ImGui::Separator();
                 if (ImGui::MenuItem("IO Watch Editor", nullptr, currentPage_ == Page::WatchEdit))
-                    toggleEditor(Page::WatchEdit);
+                    ToggleEditorPage(Page::WatchEdit);
                 if (ImGui::MenuItem("Transforms Editor", nullptr, currentPage_ == Page::TransformEdit))
-                    toggleEditor(Page::TransformEdit);
-                if (ImGui::MenuItem("Recipe Editor", nullptr, currentPage_ == Page::RecipeEdit))
-                    toggleEditor(Page::RecipeEdit);
+                    ToggleEditorPage(Page::TransformEdit);
                 if (ImGui::MenuItem("Scripts", nullptr, currentPage_ == Page::Scripts))
-                    toggleEditor(Page::Scripts);
+                    ToggleEditorPage(Page::Scripts);
                 if (ImGui::MenuItem("DUT Records", nullptr, currentPage_ == Page::DutView)) {
                     if (currentPage_ != Page::DutView) LoadDutList();
-                    toggleEditor(Page::DutView);
+                    ToggleEditorPage(Page::DutView);
                 }
-                if (ImGui::MenuItem("Run", nullptr, currentPage_ == Page::Run))
-                    toggleEditor(Page::Run);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Help")) {
@@ -398,6 +424,16 @@ void App::DrawMainWindow()
             }
             ImGui::EndMenuBar();
         }
+
+        // Global page shortcuts: F1 Run, F2 Recipe Editor, F3 Motion. Activate
+        // (not toggle) — pressing the key on its own page is a no-op.
+        if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && currentPage_ != Page::Run)
+            ToggleEditorPage(Page::Run);
+        if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && currentPage_ != Page::RecipeEdit)
+            ToggleEditorPage(Page::RecipeEdit);
+        if (ImGui::IsKeyPressed(ImGuiKey_F3, false))
+            SwitchPage(Page::Motion);
+
         DrawProductPopups();   // modals opened via the File-menu flags above
         DrawSafetyAlertModal();   // blocking safety alert (highest priority)
         DrawRecipePromptModal();  // global recipe prompt (any page, any time)
@@ -421,13 +457,8 @@ void App::DrawMainWindow()
             const float closeW = ImGui::CalcTextSize("Close").x +
                                  ImGui::GetStyle().FramePadding.x * 2.0f;
             ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - closeW);
-            if (ImGui::Button("Close")) {
-                // The recipe editor guards unsaved edits with a confirm modal.
-                if (currentPage_ == Page::RecipeEdit && RecipesDirty())
-                    edConfirmAction_ = 1;
-                else
-                    currentPage_ = prevPage_;
-            }
+            if (ImGui::Button("Close"))
+                SwitchPage(prevPage_);   // dirty recipe edits raise the guard
             ImGui::Separator();
             if (currentPage_ == Page::WatchEdit)          DrawWatchEditPanel();
             else if (currentPage_ == Page::TransformEdit) DrawTransformEditPanel();
@@ -1515,16 +1546,18 @@ void App::DrawRecipeEditPanel()
         ImGui::Separator();
         if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) {
             SaveRecipes();
-            if (edConfirmAction_ == 1) currentPage_ = prevPage_;
-            else                       LoadRecipesFromDisk();
+            const int action = edConfirmAction_;
             edConfirmAction_ = 0;
+            if (action == 1) SwitchPage(edLeaveTarget_);   // no longer dirty
+            else             LoadRecipesFromDisk();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         if (ImGui::Button("Discard", ImVec2(90.0f, 0.0f))) {
             LoadRecipesFromDisk();   // throw away the in-memory edits
-            if (edConfirmAction_ == 1) currentPage_ = prevPage_;
+            const int action = edConfirmAction_;
             edConfirmAction_ = 0;
+            if (action == 1) SwitchPage(edLeaveTarget_);
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();

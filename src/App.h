@@ -47,6 +47,8 @@ public:
 private:
     void Update(float dt);
     void DrawMainWindow();
+    void ToggleEditorPage(Page p);   // enter/leave a full-page takeover (View menu + F-keys)
+    void SwitchPage(Page p);         // ALL page switches route here (dirty-editor guard)
     void DrawLeftPanel();      // 20% column: hardware status + DUT + display
     void DrawDutBlock();       // active-DUT status + open/close (Overview left)
     void DrawMiddlePanel();    // main content: vision image + overlay
@@ -338,7 +340,8 @@ private:
     std::vector<std::size_t> edStepSel_;
     // Editor dialogs/palette state (menu -> popup handoff, like the products).
     int  edAddMode_           = 0;       // palette insert: 0 after, 1 into, 2 else
-    int  edConfirmAction_     = 0;       // unsaved-changes guard: 1 close, 2 reload
+    int  edConfirmAction_     = 0;       // unsaved-changes guard: 1 leave page, 2 reload
+    Page edLeaveTarget_ = Page::Overview;   // where action 1 goes after Save/Discard
     bool edOpenRenameRecipe_  = false;
     bool edOpenDeleteRecipe_  = false;
     bool edOpenDeleteStep_    = false;
