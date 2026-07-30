@@ -115,8 +115,10 @@ private:
     void DrawDutViewPanel();          // serial list | entries table | summary
     void LoadDutList();               // scan the product's data/ for records
     // Run page (View menu, full-page) — programs = slots of recipes. R1.
-    void DrawRunPanel();              // deck | execution | DUT
+    void DrawRunPanel();              // deck | execution + XCAN + log | DUT
     void StartDeckRun(int mode);      // 0 = program, 1 = slot, 2 = recipe
+    void DrawRunXcanBlock();          // hex-left/right Coarse/Fine presets + channel
+    void StartXcanPreset(const std::string& device, const char* stepsUm);
     void LoadProgramsFromDisk();      // product programs role, else config
     void SavePrograms();
     std::string ProgramsDump() const;
@@ -338,6 +340,10 @@ private:
     // Selected step as a numeric path into the nested step tree; components
     // >= kElsePathBase (App.cpp) address an if-step's else branch.
     std::vector<std::size_t> edStepSel_;
+    // Visible tree rows in draw order (rebuilt every frame) — arrow-key
+    // navigation walks this list; collapsed children never appear in it.
+    std::vector<std::vector<std::size_t>> edTreeRows_;
+    bool edScrollToSel_ = false;   // keyboard move: bring selection into view
     // Editor dialogs/palette state (menu -> popup handoff, like the products).
     int  edAddMode_           = 0;       // palette insert: 0 after, 1 into, 2 else
     int  edConfirmAction_     = 0;       // unsaved-changes guard: 1 leave page, 2 reload
@@ -394,6 +400,8 @@ private:
     bool runEdit_       = false;
     bool runOpenDelete_ = false;
     std::string runStartErr_;
+    // Run page XCAN block: feedback channel for the preset scans + live value.
+    char runXcanTopic_[64] = "keithley/ch1";
 
     // DUT Records viewer state: scanned serials + the loaded record.
     std::vector<std::string> dutList_;

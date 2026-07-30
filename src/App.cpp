@@ -843,9 +843,16 @@ void App::DrawRunPanel()
     ImGui::EndChild();
     ImGui::SameLine();
 
-    // ---- Middle: execution / idle ----
+    // ---- Middle column: execution view / XCAN presets / log ----
     const float midW = avail.x - leftW - rightW - ImGui::GetStyle().ItemSpacing.x * 2.0f;
-    ImGui::BeginChild("runExec", ImVec2(midW, paneH), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("runMid", ImVec2(midW, paneH));
+    const float xcanH = ImGui::GetFrameHeightWithSpacing() * 3.0f +
+                        ImGui::GetStyle().WindowPadding.y * 2.0f;
+    const float logH  = 190.0f;
+    float execH = ImGui::GetContentRegionAvail().y - xcanH - logH -
+                  ImGui::GetStyle().ItemSpacing.y * 2.0f;
+    if (execH < 60.0f) execH = 60.0f;
+    ImGui::BeginChild("runExec", ImVec2(0.0f, execH), ImGuiChildFlags_Borders);
     if (running || !rs.result.empty()) {
         ImGui::Text("%s: %s", rs.kind.c_str(), rs.label.c_str());
         if (running) {
@@ -885,6 +892,18 @@ void App::DrawRunPanel()
         }
     }
     ImGui::EndChild();
+
+    // XCAN preset band (bobcat Run page scan controls).
+    ImGui::BeginChild("runXcan", ImVec2(0.0f, xcanH), ImGuiChildFlags_Borders);
+    DrawRunXcanBlock();
+    ImGui::EndChild();
+
+    // Log band (same viewer as the Overview lower panel).
+    ImGui::BeginChild("runLog", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
+    DrawLogPanel();
+    ImGui::EndChild();
+
+    ImGui::EndChild();   // runMid
     ImGui::SameLine();
 
     // ---- Right: DUT (the operator flow is scan -> run -> pass/fail) ----
@@ -917,6 +936,112 @@ void App::DrawRunPanel()
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
+    }
+}
+
+// XCAN preset launcher (bobcat Run page scan controls): hexapod_align.lua with
+// the preset step ladder; everything else stays at the script's defaults. Uses
+// the same product-script override and Env wiring as the Scanning tab.
+void App::StartXcanPreset(const std::string& device, const char* stepsUm)
+{
+    std::string script = "config/scripts/hexapod_align.lua";
+    for (const ScriptInfo& si : scripts_) {
+        if (si.name == "hexapod_align") { script = si.path; break; }
+    }
+    LuaEngine::Env env;
+    env.positions = savedPos_;
+    env.maps      = motionMaps_;
+    env.library   = recipes_;
+    env.initialCtx = {
+        {"align_device", device},
+        {"align_topic", std::string(runXcanTopic_)},
+        {"align_steps_um", std::string(stepsUm)},
+        {"align_settle_ms", 150.0},
+    };
+    scriptStartErr_.clear();
+    if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
+        FD_WARN("script", "xcan preset rejected: %s", scriptStartErr_.c_str());
+}
+
+// The Run page's XCAN band: feedback-channel picker + live value, and the
+// bobcat scan presets — Coarse (10,5,2,1 um) / Fine (2,1,0.5 um) per hexapod.
+void App::DrawRunXcanBlock()
+{
+    const LuaEngine::Status st = luaEngine_.GetStatus();
+    const bool running = luaEngine_.Running();
+
+    // Header row: channel picker (live DataBus topics) + current value.
+    ImGui::TextUnformatted("XCAN");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(180.0f);
+    if (ImGui::BeginCombo("##xcanch", runXcanTopic_)) {
+        const std::vector<std::string> topics = DataBus::Instance().Topics();
+        if (topics.empty()) ImGui::TextDisabled("(no channels published yet)");
+        for (const std::string& t : topics) {
+            if (ImGui::Selectable(t.c_str(), t == runXcanTopic_))
+                std::snprintf(runXcanTopic_, sizeof(runXcanTopic_), "%s", t.c_str());
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    {
+        std::vector<float> t, v;
+        DataBus::Instance().Stream(runXcanTopic_).Snapshot(t, v);
+        if (!v.empty()) ImGui::Text("= %.6g", static_cast<double>(v.back()));
+        else            ImGui::TextDisabled("= (no data)");
+    }
+
+    // Preset row: hex-left [Coarse][Fine]   hex-right [Coarse][Fine]   Stop.
+    const bool busy = OrchestrationBusy();
+    const auto presets = [&](const char* dev) {
+        int idx = -1;
+        for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+            if (hardware_.MotionName(i) == dev) { idx = static_cast<int>(i); break; }
+        }
+        IMotionController* m =
+            idx >= 0 ? hardware_.MotionDevice(static_cast<std::size_t>(idx)) : nullptr;
+        ImGui::TextDisabled("%s", dev);
+        ImGui::SameLine();
+        ImGui::PushID(dev);
+        ImGui::BeginDisabled(busy || !m || !m->IsConnected());
+        if (ImGui::Button("Coarse", ImVec2(70.0f, 0.0f)))
+            StartXcanPreset(dev, "10,5,2,1");
+        ImGui::SameLine();
+        if (ImGui::Button("Fine", ImVec2(70.0f, 0.0f)))
+            StartXcanPreset(dev, "2,1,0.5");
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    };
+    presets("hex-left");
+    ImGui::SameLine();
+    ImGui::TextDisabled(" | ");
+    ImGui::SameLine();
+    presets("hex-right");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!running);
+    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) luaEngine_.RequestStop();
+    ImGui::EndDisabled();
+
+    // Status line: the running/last hexapod_align result (shared engine ctx).
+    if (st.scriptName == "hexapod_align") {
+        ImGui::Text("%s", LuaEngine::StateName(st.state));
+        for (const auto& [key, val] : st.ctx) {
+            if (key == "align_baseline" || key == "align_best" ||
+                key == "align_gain" || key == "align_exit_hit") {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s=%s", key.c_str() + 6,   // strip "align_"
+                                    CtxValueToString(val).c_str());
+            }
+        }
+        if (!st.error.empty() && st.state != LuaEngine::State::Running) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
+        }
+    } else if (!scriptStartErr_.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "start rejected: %s",
+                           scriptStartErr_.c_str());
+    } else {
+        ImGui::TextDisabled("Coarse: 10,5,2,1 um   Fine: 2,1,0.5 um   (bobcat presets)");
     }
 }
 
@@ -1497,8 +1622,35 @@ void App::DrawRecipeEditPanel()
         ImGui::BeginChild("edTree", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
         DrawRecipeTreeToolbar(r, !running);
         ImGui::Separator();
+        edTreeRows_.clear();
         std::vector<std::size_t> path;
         DrawRecipeTreeNodes(r.steps, path, false, st.stepPath, running);
+        // Arrow keys walk the visible rows (Up/Down; Left jumps to the
+        // parent). Skipped while a text field or popup owns the keyboard.
+        if (!ImGui::GetIO().WantTextInput &&
+            !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId |
+                                        ImGuiPopupFlags_AnyPopupLevel) &&
+            !edTreeRows_.empty()) {
+            const int d = (ImGui::IsKeyPressed(ImGuiKey_DownArrow) ? 1 : 0) -
+                          (ImGui::IsKeyPressed(ImGuiKey_UpArrow) ? 1 : 0);
+            if (d != 0) {
+                int cur = -1;
+                for (int k = 0; k < static_cast<int>(edTreeRows_.size()); ++k) {
+                    if (edTreeRows_[k] == edStepSel_) { cur = k; break; }
+                }
+                const int next =
+                    cur < 0 ? (d > 0 ? 0 : static_cast<int>(edTreeRows_.size()) - 1)
+                            : cur + d;
+                if (next >= 0 && next < static_cast<int>(edTreeRows_.size())) {
+                    edStepSel_     = edTreeRows_[next];
+                    edScrollToSel_ = true;
+                }
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) && edStepSel_.size() > 1) {
+                edStepSel_.pop_back();   // parent (also from an else-branch child)
+                edScrollToSel_ = true;
+            }
+        }
         ImGui::EndChild();
     } else {
         ImGui::TextDisabled("Select a recipe on the left.");
@@ -1732,6 +1884,11 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
                                        ImGuiTreeNodeFlags_DefaultOpen;
             if (selected) flags |= ImGuiTreeNodeFlags_Selected;
             const bool open = ImGui::TreeNodeEx("##node", flags, "%s", label);
+            edTreeRows_.push_back(path);
+            if (selected && edScrollToSel_) {
+                ImGui::SetScrollHereY(0.35f);
+                edScrollToSel_ = false;
+            }
             if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
                 edStepSel_ = path;
             if (open) {
@@ -1744,6 +1901,11 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
             }
         } else {
             if (ImGui::Selectable(label, selected)) edStepSel_ = path;
+            edTreeRows_.push_back(path);
+            if (selected && edScrollToSel_) {
+                ImGui::SetScrollHereY(0.35f);
+                edScrollToSel_ = false;
+            }
         }
         ImGui::PopID();
 
@@ -1835,37 +1997,60 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
     };
 
     ImGui::BeginChild("##palList");   // scrolls independently of the tree
-    bool anyStruct = false;
-    for (const StructuralStepInfo& t : kStructuralSteps) {
-        if (PaletteMatch(t.type, edSearchBuf_)) { anyStruct = true; break; }
-    }
+    const bool searching = edSearchBuf_[0] != '\0';
+
     // Insert on DOUBLE-click only — a stray single click must not add steps
     // (same convention as the product list's double-click-to-load).
-    if (anyStruct) ImGui::TextDisabled("Structure");
-    for (const StructuralStepInfo& t : kStructuralSteps) {
-        if (!PaletteMatch(t.type, edSearchBuf_)) continue;
-        if (ImGui::Selectable(t.type, false, ImGuiSelectableFlags_AllowDoubleClick) &&
+    const auto drawEntry = [&](const char* name, const char* desc) {
+        if (ImGui::Selectable(name, false, ImGuiSelectableFlags_AllowDoubleClick) &&
             ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-            insert(t.type);
+            insert(name);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s\n(double-click to insert)", t.description);
-    }
-    std::string lastCat;
-    for (const CommandSpec* c : cmdRegistry_.List()) {
-        if (!PaletteMatch(c->name, edSearchBuf_) &&
-            !PaletteMatch(c->category, edSearchBuf_))
-            continue;
-        if (c->category != lastCat) {
-            lastCat = c->category;
-            ImGui::Separator();
-            ImGui::TextDisabled("%s", lastCat.c_str());
+            ImGui::SetTooltip("%s\n(double-click to insert)", desc);
+    };
+    // One collapsible node per category (open by default; collapse state
+    // persists for the session). While searching, matching categories are
+    // forced open so results are always visible.
+    const auto beginCat = [&](const char* cat) {
+        if (searching) ImGui::SetNextItemOpen(true);
+        return ImGui::TreeNodeEx(cat, ImGuiTreeNodeFlags_DefaultOpen |
+                                          ImGuiTreeNodeFlags_SpanAvailWidth);
+    };
+
+    {   // Structure (engine-native step types)
+        const bool catMatch = PaletteMatch("Structure", edSearchBuf_);
+        bool any = catMatch;
+        for (const StructuralStepInfo& t : kStructuralSteps) {
+            if (any) break;
+            any = PaletteMatch(t.type, edSearchBuf_);
         }
-        if (ImGui::Selectable(c->name.c_str(), false,
-                              ImGuiSelectableFlags_AllowDoubleClick) &&
-            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-            insert(c->name.c_str());
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s\n(double-click to insert)", c->description.c_str());
+        if (any && beginCat("Structure")) {
+            for (const StructuralStepInfo& t : kStructuralSteps) {
+                if (catMatch || PaletteMatch(t.type, edSearchBuf_))
+                    drawEntry(t.type, t.description);
+            }
+            ImGui::TreePop();
+        }
+    }
+
+    // Registry commands, grouped by category (List() is category-ordered).
+    const std::vector<const CommandSpec*> cmds = cmdRegistry_.List();
+    for (std::size_t i = 0; i < cmds.size();) {
+        const std::string& cat = cmds[i]->category;
+        std::size_t end = i;
+        while (end < cmds.size() && cmds[end]->category == cat) ++end;
+        const bool catMatch = PaletteMatch(cat.c_str(), edSearchBuf_);
+        bool any = catMatch;
+        for (std::size_t k = i; k < end && !any; ++k)
+            any = PaletteMatch(cmds[k]->name, edSearchBuf_);
+        if (any && beginCat(cat.c_str())) {
+            for (std::size_t k = i; k < end; ++k) {
+                if (catMatch || PaletteMatch(cmds[k]->name, edSearchBuf_))
+                    drawEntry(cmds[k]->name.c_str(), cmds[k]->description.c_str());
+            }
+            ImGui::TreePop();
+        }
+        i = end;
     }
     ImGui::EndChild();
     ImGui::EndDisabled();
