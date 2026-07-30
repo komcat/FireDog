@@ -401,6 +401,7 @@ void App::DrawMainWindow()
         DrawProductPopups();   // modals opened via the File-menu flags above
         DrawSafetyAlertModal();   // blocking safety alert (highest priority)
         DrawRecipePromptModal();  // global recipe prompt (any page, any time)
+        DrawManualAdjustModal();  // global manual_adjust jog modal
 
         // ---- Editor pages (View menu) replace the whole panel layout until
         // closed via the top-right Close button (back to the previous page).
@@ -2434,6 +2435,129 @@ void App::DrawRecipePromptModal()
         if (pending.empty()) ImGui::CloseCurrentPopup();   // stop released it
         ImGui::EndPopup();
     }
+}
+
+// The manual_adjust modal (bobcat's ManualAdjustWidget): the engine worker
+// blocks in AwaitAdjustInternal while the operator jogs the device from here.
+// Jogs go through Workflow::JogGlobal exactly like the Jog window (transform-
+// mapped, safety-inhibited); positions stay fresh via RequestFastPoll.
+void App::DrawManualAdjustModal()
+{
+    const RecipeEngine::Status rst = recipeEngine_.GetStatus();
+    const LuaEngine::Status    lst = luaEngine_.GetStatus();
+    const bool fromScript = !rst.pendingAdjust && lst.pendingAdjust;
+    const bool pending    = rst.pendingAdjust || lst.pendingAdjust;
+    const ExecutionContext::AdjustRequest& req =
+        fromScript ? lst.adjustReq : rst.adjustReq;
+
+    if (pending && !ImGui::IsPopupOpen("Manual Adjust")) {
+        // Seed the preset selection from the step's step_um (closest match).
+        adjustStepIdx_ = 0;
+        const double stepMm = req.stepUm / 1000.0;
+        for (int i = 1; i < kStepCount; ++i) {
+            if (std::fabs(kSteps[i].mm - stepMm) <
+                std::fabs(kSteps[adjustStepIdx_].mm - stepMm))
+                adjustStepIdx_ = i;
+        }
+        ImGui::OpenPopup("Manual Adjust");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("Manual Adjust", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 460.0f);
+    ImGui::TextUnformatted(req.message.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::Separator();
+
+    // Resolve the device each frame (cheap; the command validated it exists).
+    int di = -1;
+    for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+        if (hardware_.MotionName(i) == req.device) { di = static_cast<int>(i); break; }
+    }
+    IMotionController* dev =
+        di >= 0 ? hardware_.MotionDevice(static_cast<std::size_t>(di)) : nullptr;
+
+    ImGui::TextDisabled("Device: %s", req.device.c_str());
+    if (dev) {
+        dev->RequestFastPoll();   // live readout + accurate relative jogs
+        std::string line;
+        for (const auto& [axis, val] : dev->Positions()) {
+            char buf[48];
+            std::snprintf(buf, sizeof(buf), "%s%s %.4f", line.empty() ? "" : "  ",
+                          axis.c_str(), val);
+            line += buf;
+        }
+        ImGui::TextUnformatted(line.empty() ? "(no position data)" : line.c_str());
+    }
+    ImGui::Spacing();
+
+    // Step presets (same table as the Jog window).
+    ImGui::TextUnformatted("Step");
+    ImGui::SameLine();
+    for (int i = 0; i < kStepCount; ++i) {
+        if (i % 8 != 0) ImGui::SameLine();
+        const bool sel = (adjustStepIdx_ == i);
+        if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.85f, 1.0f));
+        if (ImGui::SmallButton(kSteps[i].label)) adjustStepIdx_ = i;
+        if (sel) ImGui::PopStyleColor();
+    }
+    ImGui::Spacing();
+
+    // Jog row (global frame, like the Jog window; per-axis enables from the
+    // step). Workflow inhibits motion during a critical safety alert anyway —
+    // the visual disable just says so up front.
+    const double step = kSteps[adjustStepIdx_].mm;
+    // Same critical-alert query the engines use (SafetyBlocked is private).
+    const bool safetyBlocked =
+        workflow_.SafetyAlertActive() && workflow_.SafetyAlert().critical;
+    const bool canJog = dev && !safetyBlocked;
+    const std::size_t udi = static_cast<std::size_t>(di < 0 ? 0 : di);
+    const ImVec2 jb(52.0f, 0.0f);
+    ImGui::BeginDisabled(!canJog || !req.enableX);
+    if (ImGui::Button("X-", jb)) workflow_.JogGlobal(udi, -1.0f, 0.0f, 0.0f, step);
+    ImGui::SameLine();
+    if (ImGui::Button("X+", jb)) workflow_.JogGlobal(udi, 1.0f, 0.0f, 0.0f, step);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canJog || !req.enableY);
+    if (ImGui::Button("Y-", jb)) workflow_.JogGlobal(udi, 0.0f, -1.0f, 0.0f, step);
+    ImGui::SameLine();
+    if (ImGui::Button("Y+", jb)) workflow_.JogGlobal(udi, 0.0f, 1.0f, 0.0f, step);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canJog || !req.enableZ);
+    if (ImGui::Button("Z-", jb)) workflow_.JogGlobal(udi, 0.0f, 0.0f, -1.0f, step);
+    ImGui::SameLine();
+    if (ImGui::Button("Z+", jb)) workflow_.JogGlobal(udi, 0.0f, 0.0f, 1.0f, step);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.88f, 0.26f, 0.26f, 1.0f));
+    if (ImGui::Button("STOP", jb) && di >= 0) workflow_.StopMotion(udi);
+    ImGui::PopStyleColor(2);
+    if (safetyBlocked)
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+                           "Safety alert active - motion inhibited");
+    ImGui::Separator();
+
+    const auto answer = [&](bool ok) {
+        if (fromScript) luaEngine_.AnswerAdjust(ok);
+        else            recipeEngine_.AnswerAdjust(ok);
+    };
+    if (ImGui::Button("OK (Complete)", ImVec2(140.0f, 0.0f))) {
+        answer(true);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel (Fail Step)", ImVec2(140.0f, 0.0f))) {
+        answer(false);
+        ImGui::CloseCurrentPopup();
+    }
+    if (!pending) ImGui::CloseCurrentPopup();   // stop released it
+    ImGui::EndPopup();
 }
 
 // ---- Programs page (View menu, full page) — Phase C1: list + run .lua -------

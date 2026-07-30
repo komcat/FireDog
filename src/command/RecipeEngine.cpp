@@ -109,6 +109,18 @@ void RecipeEngine::AnswerPrompt(bool ok, std::string text)
     cv_.notify_all();
 }
 
+void RecipeEngine::AnswerAdjust(bool ok)
+{
+    {
+        const std::scoped_lock lock(mu_);
+        if (!adjustPending_) return;   // nothing pending
+        adjustPending_  = false;
+        adjustAnswer_   = ok;
+        adjustAnswered_ = true;
+    }
+    cv_.notify_all();
+}
+
 RecipeEngine::Status RecipeEngine::GetStatus() const
 {
     const std::scoped_lock lock(mu_);
@@ -122,6 +134,8 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.error              = error_;
     s.pendingPrompt      = prompt_;
     s.pendingPromptInput = promptWantsInput_;
+    s.pendingAdjust      = adjustPending_;
+    s.adjustReq          = adjustReq_;
     if (runCtx_) s.ctx = runCtx_->CtxSnapshot();   // its own mutex; no deadlock
     return s;
 }
@@ -151,6 +165,21 @@ bool RecipeEngine::AwaitPromptInternal(const std::string& message, bool wantsInp
     return ok;
 }
 
+bool RecipeEngine::AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req)
+{
+    std::unique_lock lock(mu_);
+    adjustReq_      = req;
+    adjustPending_  = true;
+    adjustAnswered_ = false;
+    adjustAnswer_   = false;
+    // Wait in slices so a stop request always gets through.
+    while (!adjustAnswered_ && !stopReq_.load()) {
+        cv_.wait_for(lock, std::chrono::milliseconds(100));
+    }
+    adjustPending_ = false;
+    return adjustAnswered_ && adjustAnswer_ && !stopReq_.load();
+}
+
 void RecipeEngine::ThreadMain(Recipe recipe, Env env)
 {
     ExecutionContext ctx(
@@ -160,6 +189,9 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
             [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },
             [this](const std::string& m, std::string* out) {
                 return AwaitPromptInternal(m, true, out);
+            },
+            [this](const ExecutionContext::AdjustRequest& r) {
+                return AwaitAdjustInternal(r);
             },
         });
     {

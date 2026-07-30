@@ -56,6 +56,8 @@ public:
     void RequestStop();            // cooperative; honored within one poll interval
     // Resolves a blocking `prompt` / `prompt_input` step (text used by input).
     void AnswerPrompt(bool ok, std::string text = std::string());
+    // Resolves a blocking `manual_adjust` step (jogging happened UI-side).
+    void AnswerAdjust(bool ok);
 
     enum class State { Idle, Running, Completed, Failed, Stopped };
     static const char* StateName(State s);
@@ -73,6 +75,9 @@ public:
         std::string error;            // terminal cause when Failed/Stopped
         std::string pendingPrompt;    // non-empty while a prompt blocks
         bool        pendingPromptInput = false;   // the prompt wants a text answer
+        // Manual-adjust handshake: valid while pendingAdjust is true.
+        bool        pendingAdjust = false;
+        ExecutionContext::AdjustRequest adjustReq;
         std::vector<std::pair<std::string, CtxValue>> ctx;   // display snapshot
     };
     Status GetStatus() const;        // mutex-guarded copy — cheap, UI-safe
@@ -84,9 +89,10 @@ private:
     void ThreadMain(Recipe recipe, Env env);
     bool SafetyAborted() const;   // critical unacknowledged alert?
 
-    // Prompt handshake (worker blocks; UI answers). Guarded by mu_.
+    // Prompt handshakes (worker blocks; UI answers). Guarded by mu_.
     bool AwaitPromptInternal(const std::string& message, bool wantsInput,
                              std::string* textOut);
+    bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
 
     Workflow&              wf_;
     HardwareManager&       hw_;
@@ -107,6 +113,11 @@ private:
     std::string promptText_;           // the UI's typed answer
     bool        promptAnswered_ = false;
     bool        promptAnswer_   = false;
+    // Manual-adjust handshake (same shape as the prompt one).
+    bool        adjustPending_  = false;
+    ExecutionContext::AdjustRequest adjustReq_;
+    bool        adjustAnswered_ = false;
+    bool        adjustAnswer_   = false;
     std::size_t leafDone_ = 0, leafTotal_ = 0;
     ExecutionContext* runCtx_ = nullptr;   // valid only while the worker runs;
                                            // set/cleared under mu_

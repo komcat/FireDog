@@ -86,6 +86,8 @@ public:
     void RequestStop();            // cooperative; fd waits + the Lua hook honor it
     // Resolves a blocking fd.prompt() / fd.input() (text used by input).
     void AnswerPrompt(bool ok, std::string text = std::string());
+    // Resolves a blocking fd.manual_adjust{} (jogging happened UI-side).
+    void AnswerAdjust(bool ok);
 
     // ---- Debugger (C3) — all built on the existing line hook ---------------
     // Breakpoints are hot-swappable while running (the UI passes the selected
@@ -109,6 +111,9 @@ public:
         std::string error;             // terminal cause when Failed/Stopped
         std::string pendingPrompt;     // non-empty while fd.prompt/input blocks
         bool        pendingPromptInput = false;   // the prompt wants a text answer
+        // Manual-adjust handshake: valid while pendingAdjust is true.
+        bool        pendingAdjust = false;
+        ExecutionContext::AdjustRequest adjustReq;
         std::vector<std::pair<std::string, CtxValue>> ctx;
         // Current function's locals, captured at the pause point.
         std::vector<std::pair<std::string, std::string>> locals;
@@ -126,6 +131,7 @@ private:
     void ThreadMain(std::string path, Env env);
     bool AwaitPromptInternal(const std::string& message, bool wantsInput,
                              std::string* textOut);
+    bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
     bool SafetyAborted() const;
 
     Workflow&              wf_;
@@ -153,6 +159,11 @@ private:
     std::string promptText_;
     bool        promptAnswered_ = false;
     bool        promptAnswer_   = false;
+    // Manual-adjust handshake (same shape as the prompt one).
+    bool        adjustPending_  = false;
+    ExecutionContext::AdjustRequest adjustReq_;
+    bool        adjustAnswered_ = false;
+    bool        adjustAnswer_   = false;
     ExecutionContext* runCtx_ = nullptr;   // valid only while the worker runs
 
     std::thread worker_;   // declared last so everything it uses outlives it

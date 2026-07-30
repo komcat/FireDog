@@ -172,6 +172,12 @@ bool ExecutionContext::AwaitInput(const std::string& message, std::string* textO
     return hooks_.awaitInput(message, textOut);
 }
 
+bool ExecutionContext::AwaitAdjust(const AdjustRequest& req)
+{
+    if (!hooks_.awaitAdjust) return false;
+    return hooks_.awaitAdjust(req);
+}
+
 // ---- Condition evaluation ---------------------------------------------------
 
 namespace {

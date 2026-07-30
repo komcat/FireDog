@@ -8,6 +8,9 @@
 #include "command/LuaEngine.h"   // RunLuaFile (run_script)
 #include "core/DataBus.h"
 #include "core/Log.h"
+#include "hardware/HardwareManager.h"   // final-position capture (manual_adjust)
+
+#include <cctype>
 
 namespace firedog {
 
@@ -86,6 +89,39 @@ CommandResult ExecPromptInput(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+CommandResult ExecManualAdjust(ExecutionContext& ctx, const ParamValues& p)
+{
+    ExecutionContext::AdjustRequest req;
+    req.message = ctx.Substitute(p.GetString("message"));
+    req.device  = p.GetString("device");
+    req.stepUm  = p.GetDouble("step_um");
+    req.enableX = p.GetBool("enable_x");
+    req.enableY = p.GetBool("enable_y");
+    req.enableZ = p.GetBool("enable_z");
+    const int devIdx = ctx.MotionIndexByName(req.device);
+    if (devIdx < 0)
+        return CommandResult::Fail("unknown motion device '" + req.device + "'");
+    if (!ctx.AwaitAdjust(req))
+        return CommandResult::Fail("cancelled by operator");
+    // The confirmed position, into ctx as <prefix>_<axis> (lowercase axis, so
+    // a hexapod yields adj_x/adj_y/adj_z/adj_u/... — same style as align_*).
+    const std::string prefix = p.GetString("ctx_prefix");
+    if (!prefix.empty()) {
+        IMotionController* m =
+            ctx.Hw().MotionDevice(static_cast<std::size_t>(devIdx));
+        if (m) {
+            for (const auto& [axis, val] : m->Positions()) {
+                std::string key = prefix + "_";
+                for (const char c : axis)
+                    key += static_cast<char>(
+                        std::tolower(static_cast<unsigned char>(c)));
+                ctx.CtxSet(key, val);
+            }
+        }
+    }
+    return CommandResult::Success();
+}
+
 } // namespace
 
 void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
@@ -157,6 +193,26 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "destination ctx key (e.g. 'serial' for dut_open)"},
                   },
                   CommandSpec::Needs::None, ExecPromptInput});
+
+    // bobcat's ManualAdjust: pause the run, let the operator jog the device
+    // from a modal (step presets, live position), then OK to continue or
+    // Cancel to fail the step. The jog itself is UI-issued via Workflow.
+    reg.Register({"manual_adjust", "System",
+                  "Pause while the operator jogs a motion device (OK continues, Cancel fails)",
+                  {
+                      {"message", PT::String, true, {}, 0, 0, {},
+                       "instruction shown to the operator"},
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {},
+                       "motion device to jog"},
+                      {"step_um", PT::Double, false, 10.0, 0.01, 1000.0, {},
+                       "initial jog step (um); modal presets override"},
+                      {"enable_x", PT::Bool, false, true, 0, 0, {}, "allow X jog"},
+                      {"enable_y", PT::Bool, false, true, 0, 0, {}, "allow Y jog"},
+                      {"enable_z", PT::Bool, false, true, 0, 0, {}, "allow Z jog"},
+                      {"ctx_prefix", PT::String, false, "", 0, 0, {},
+                       "if set, record the confirmed position as <prefix>_<axis>"},
+                  },
+                  CommandSpec::Needs::None, ExecManualAdjust});
 
     // The Lua escape hatch (bobcat's proven "Run Script" pattern): execute a
     // .lua file inline on the recipe worker with the same fd bindings and the

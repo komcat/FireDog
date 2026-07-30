@@ -104,6 +104,7 @@ private:
     bool DrawConditionEditor(nlohmann::json& cond);   // if / loop-while / wait_until
     void DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues);
     void DrawRecipePromptModal();     // GLOBAL blocking prompt (recipe + script)
+    void DrawManualAdjustModal();     // GLOBAL manual_adjust jog modal
     // Programs page (View menu, full-page) — Phase C1: list/run .lua programs.
     void DrawScriptsPanel();          // page body: scripts | source | run info
     void LoadScriptsList();           // scan the scripts dir (product, else config)
@@ -357,6 +358,10 @@ private:
     // (barcode scanners type + Enter, so EnterReturnsTrue submits).
     char dutSerialBuf_[64]   = "";
     char promptInputBuf_[128] = "";
+
+    // manual_adjust modal: selected kSteps preset, re-seeded from the step's
+    // step_um each time the modal appears.
+    int adjustStepIdx_ = 9;
 
     // Scanning tab (Motion page): XCAN parameter fields, injected into
     // hexapod_align.lua via LuaEngine::Env::initialCtx (same channel as

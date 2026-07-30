@@ -37,6 +37,17 @@ std::string CtxValueToString(const CtxValue& v);
 
 class ExecutionContext {
 public:
+    // Manual position adjustment (bobcat's ManualAdjust): the run pauses while
+    // the UI shows a jog surface for `device`; the operator nudges the stage
+    // and confirms. What the modal needs to draw, nothing more — the jog
+    // itself is UI-issued through Workflow like the Jog window.
+    struct AdjustRequest {
+        std::string message;
+        std::string device;            // motion fleet device name
+        double      stepUm = 10.0;     // initial jog step (presets override)
+        bool        enableX = true, enableY = true, enableZ = true;
+    };
+
     // Hooks installed by the engines (they own the stop flag and the prompt
     // handshakes with the UI).
     struct Hooks {
@@ -44,6 +55,8 @@ public:
         std::function<bool(const std::string&)> awaitPrompt;  // null => prompt fails
         // Text-input prompt (operator types / barcode-scans); false = cancel.
         std::function<bool(const std::string&, std::string*)> awaitInput;
+        // Manual jog-adjust prompt; false = cancel (or stop released it).
+        std::function<bool(const AdjustRequest&)> awaitAdjust;
     };
 
     ExecutionContext(Workflow& wf, HardwareManager& hw,
@@ -86,6 +99,7 @@ public:
     // ---- Operator prompts (block; false = cancelled or stopped) -------------
     bool AwaitPrompt(const std::string& message);
     bool AwaitInput(const std::string& message, std::string* textOut);
+    bool AwaitAdjust(const AdjustRequest& req);
 
 private:
     Workflow&           wf_;

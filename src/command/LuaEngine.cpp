@@ -496,6 +496,18 @@ void LuaEngine::AnswerPrompt(bool ok, std::string text)
     cv_.notify_all();
 }
 
+void LuaEngine::AnswerAdjust(bool ok)
+{
+    {
+        const std::scoped_lock lock(mu_);
+        if (!adjustPending_) return;
+        adjustPending_  = false;
+        adjustAnswer_   = ok;
+        adjustAnswered_ = true;
+    }
+    cv_.notify_all();
+}
+
 LuaEngine::Status LuaEngine::GetStatus() const
 {
     const std::scoped_lock lock(mu_);
@@ -508,6 +520,8 @@ LuaEngine::Status LuaEngine::GetStatus() const
     s.error              = error_;
     s.pendingPrompt      = prompt_;
     s.pendingPromptInput = promptWantsInput_;
+    s.pendingAdjust      = adjustPending_;
+    s.adjustReq          = adjustReq_;
     s.locals             = locals_;
     if (runCtx_) s.ctx = runCtx_->CtxSnapshot();
     return s;
@@ -532,6 +546,20 @@ bool LuaEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
     return ok;
 }
 
+bool LuaEngine::AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req)
+{
+    std::unique_lock lock(mu_);
+    adjustReq_      = req;
+    adjustPending_  = true;
+    adjustAnswered_ = false;
+    adjustAnswer_   = false;
+    while (!adjustAnswered_ && !stopReq_.load()) {
+        cv_.wait_for(lock, std::chrono::milliseconds(100));
+    }
+    adjustPending_ = false;
+    return adjustAnswered_ && adjustAnswer_ && !stopReq_.load();
+}
+
 void LuaEngine::ThreadMain(std::string path, Env env)
 {
     // ctx BEFORE the Lua run: everything the bindings capture must outlive
@@ -543,6 +571,9 @@ void LuaEngine::ThreadMain(std::string path, Env env)
             [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },
             [this](const std::string& m, std::string* out) {
                 return AwaitPromptInternal(m, true, out);
+            },
+            [this](const ExecutionContext::AdjustRequest& r) {
+                return AwaitAdjustInternal(r);
             },
         });
     for (const auto& [key, val] : env.initialCtx) ctx.CtxSet(key, val);
