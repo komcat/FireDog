@@ -87,6 +87,12 @@ DutSession::Info DutSession::GetInfo() const
     return i;
 }
 
+std::string DutSession::BrowseDir() const
+{
+    const std::scoped_lock lock(mu_);
+    return open_ ? dirPath_ : dataDir_;
+}
+
 bool DutSession::Open(const std::string& serial, bool destructiveNew,
                       std::string* err)
 {

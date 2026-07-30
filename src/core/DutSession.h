@@ -42,6 +42,10 @@ public:
     };
     Info GetInfo() const;
 
+    // Folder for the UI's "open data folder" shortcut: the open record's own
+    // folder, else the product's data/ root ("" when no product is set).
+    std::string BrowseDir() const;
+
     // Lifecycle. Serial must be filesystem-safe (alnum - _ .). Open validates
     // and loads/creates the NEW record before auto-closing the previous one.
     bool Open(const std::string& serial, bool destructiveNew, std::string* err);

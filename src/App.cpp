@@ -1,4 +1,11 @@
 // App.cpp : layer 3 (UI) implementation.
+// windows.h first (lean, no min/max macros) so anything that defines APIENTRY
+// later sees it already set; used only for ShellExecuteA (open-in-Explorer).
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <shellapi.h>
+
 #include "App.h"
 
 #include "imgui.h"
@@ -56,6 +63,20 @@ constexpr StepSize kSteps[] = {
     {"1mm",   1.0},    {"2mm",   2.0},    {"5mm",   5.0},
 };
 constexpr int kStepCount = static_cast<int>(sizeof(kSteps) / sizeof(kSteps[0]));
+
+// Open a folder in Windows Explorer (best-effort). Paths from the session are
+// cwd-relative (products/ lives next to the exe), so resolve to absolute; the
+// folder may not exist yet (product data/ before the first DUT) — create it.
+void OpenFolderInExplorer(const std::string& dir)
+{
+    if (dir.empty()) return;
+    std::error_code ec;
+    const std::filesystem::path abs = std::filesystem::absolute(dir, ec);
+    if (ec) return;
+    std::filesystem::create_directories(abs, ec);
+    ShellExecuteA(nullptr, "open", abs.string().c_str(), nullptr, nullptr,
+                  SW_SHOWNORMAL);
+}
 
 // Jog velocities (mm/s) per controller type.
 constexpr double kVelPI[]  = {1.0, 2.0, 5.0, 10.0};
@@ -580,13 +601,53 @@ void App::DrawRunPanel()
     const RecipeEngine::Status   es = recipeEngine_.GetStatus();
     const bool running = programRunner_.Active();
 
-    const float  stripH = ImGui::GetFrameHeightWithSpacing() * 3.2f;
+    const ImGuiStyle& style  = ImGui::GetStyle();
+    const float  stripH = ImGui::GetFrameHeight() + style.WindowPadding.y * 2.0f +
+                          style.ChildBorderSize * 2.0f;
     const ImVec2 avail  = ImGui::GetContentRegionAvail();
-    const float  paneH  = avail.y - stripH;
+    const float  paneH  = avail.y - stripH - style.ItemSpacing.y;
     const float  leftW  = 300.0f;
     const float  rightW = 280.0f;
 
     const bool haveProg = progSel_ >= 0 && progSel_ < static_cast<int>(programs_.size());
+
+    // ---- Top strip: run controls ----
+    ImGui::BeginChild("runStrip", ImVec2(0.0f, stripH), ImGuiChildFlags_Borders);
+    const bool canRun = !OrchestrationBusy() && haveProg;
+    // One Start button; granularity follows the deck selection
+    // (recipe if one is selected, else slot, else the whole program).
+    // While a run is active it becomes the Stop button.
+    const bool onRecipe = deckSlot_ >= 0 && deckRecipe_ >= 0;
+    const bool onSlot   = deckSlot_ >= 0 && deckRecipe_ < 0;
+    if (running) {
+        if (ImGui::Button("Stop", ImVec2(110.0f, 0.0f))) programRunner_.Stop();
+    } else {
+        ImGui::BeginDisabled(!canRun);
+        if (ImGui::Button("Start", ImVec2(110.0f, 0.0f)))
+            StartDeckRun(onRecipe ? 2 : onSlot ? 1 : 0);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(onRecipe ? "Run the selected recipe"
+                              : onSlot ? "Run the selected slot"
+                                       : "Run the whole program");
+        ImGui::EndDisabled();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled(onRecipe ? "recipe" : onSlot ? "slot" : "program");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(running);
+    if (ImGui::Button(ProgramsDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
+        SavePrograms();
+    ImGui::EndDisabled();
+    {
+        const DutSession::Info di = DutSession::Instance().GetInfo();
+        ImGui::SameLine();
+        ImGui::TextDisabled("DUT: %s", di.open ? di.serial.c_str() : "none");
+    }
+    if (!runStartErr_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", runStartErr_.c_str());
+    }
+    ImGui::EndChild();
 
     // ---- Left: the deck ----
     ImGui::BeginChild("runDeck", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
@@ -698,6 +759,18 @@ void App::DrawRunPanel()
                         deckSlot_   = si;
                         deckRecipe_ = ri;
                     }
+                    // Right-click shortcut: open this recipe in the Recipe Editor.
+                    if (!missing && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                        deckSlot_   = si;
+                        deckRecipe_ = ri;
+                        for (int k = 0; k < static_cast<int>(recipes_.size()); ++k)
+                            if (recipes_[k].uid == slot.recipes[ri]) { recipeSel_ = k; break; }
+                        edStepSel_.clear();
+                        prevPage_    = Page::Run;   // editor Close comes back here
+                        currentPage_ = Page::RecipeEdit;
+                    }
+                    if (!missing && ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Right-click: open in Recipe Editor");
                     if (cur || missing) ImGui::PopStyleColor();
                     if (runEdit_ && !running) {
                         ImGui::SameLine();
@@ -789,40 +862,6 @@ void App::DrawRunPanel()
     ImGui::Text("Engine: %s", RecipeEngine::StateName(es.state));
     if (!es.error.empty() && es.state != RecipeEngine::State::Running)
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", es.error.c_str());
-    ImGui::EndChild();
-
-    // ---- Bottom strip: run controls ----
-    ImGui::BeginChild("runStrip", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
-    const bool canRun = !OrchestrationBusy() && haveProg;
-    ImGui::BeginDisabled(!canRun);
-    if (ImGui::Button("Run Program", ImVec2(110.0f, 0.0f))) StartDeckRun(0);
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!canRun || deckSlot_ < 0);
-    if (ImGui::Button("Run Slot", ImVec2(100.0f, 0.0f))) StartDeckRun(1);
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!canRun || deckSlot_ < 0 || deckRecipe_ < 0);
-    if (ImGui::Button("Run Recipe", ImVec2(100.0f, 0.0f))) StartDeckRun(2);
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(100.0f, 0.0f))) programRunner_.Stop();
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(running);
-    if (ImGui::Button(ProgramsDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
-        SavePrograms();
-    ImGui::EndDisabled();
-    {
-        const DutSession::Info di = DutSession::Instance().GetInfo();
-        ImGui::SameLine();
-        ImGui::TextDisabled("DUT: %s", di.open ? di.serial.c_str() : "none");
-    }
-    if (!runStartErr_.empty()) {
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", runStartErr_.c_str());
-    }
     ImGui::EndChild();
 
     // ---- Delete-program confirm ----
@@ -989,6 +1028,18 @@ void App::DrawDutBlock()
 {
     const DutSession::Info di = DutSession::Instance().GetInfo();
     ImGui::TextUnformatted("DUT");
+    if (di.productSet) {
+        // Top-right shortcut: the open DUT's record folder, else data/ root.
+        const float bw = ImGui::CalcTextSize("Data").x +
+                         ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x +
+                        ImGui::GetCursorPosX() - bw);
+        if (ImGui::SmallButton("Data"))
+            OpenFolderInExplorer(DutSession::Instance().BrowseDir());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(di.open ? "Open this DUT's folder in Explorer"
+                                      : "Open the product data folder in Explorer");
+    }
     ImGui::Separator();
     if (!di.productSet) {
         ImGui::TextDisabled("(load a product first)");

@@ -86,6 +86,8 @@ Stop():         // ONE stop, propagated:
 Operator-facing: minimal reading, big controls, DUT-first flow.
 
 ```
++--------------------------------------------------------------------------+
+| [Start/Stop]  scope label  [Save]  DUT serial                            |
 +------------------+--------------------------------------+----------------+
 | [program combo]  |  RUNNING: Align > XCAN fine          | DUT            |
 | Deck             |  step 3.2 move_to_position ...       |  serial 2087   |
@@ -96,8 +98,6 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
 |  > Cure     [>]  |   validation issues)                 |  align_best... |
 |  > Inspect  [>]  |                                      |                |
 +------------------+--------------------------------------+----------------+
-| [Run Program] [Run Slot] [Stop]   State + DUT serial                     |
-+--------------------------------------------------------------------------+
 ```
 
 - **Left — the deck**: program selector, then the slot list; each slot
@@ -116,12 +116,16 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
   Overview block (shared drawing code), because the operator flow is
   scan serial → run → pass/fail. Below it, a small ctx snapshot of the last
   finished recipe (align results etc.).
-- **Bottom strip**: Run Program (from slot 1), Run Slot (selected slot),
-  Run Recipe (selected recipe), and ONE **Stop** that propagates through the
-  whole chain (queue → recipe engine → command waits → Lua sub-runs).
-  Progress (recipe bar + program slot i/N, recipe j/M) displays identically
-  for all three granularities — same runner, same status. Prompts surface via
-  the existing global modal.
+- **Top strip** (originally at the bottom): ONE **Start** button whose scope
+  follows the deck
+  selection — selected recipe runs alone, selected slot runs that slot,
+  no selection runs the whole program (a disabled label beside the button
+  names the scope; originally three separate Run Program/Slot/Recipe
+  buttons, collapsed post-R1). While running it toggles to **Stop**, which
+  propagates through the whole chain (queue → recipe engine → command
+  waits → Lua sub-runs). Progress (recipe bar + program slot i/N, recipe
+  j/M) displays identically for all three granularities — same runner,
+  same status. Prompts surface via the existing global modal.
 - **Light program editing on the page** (Phase R1, gated behind an "Edit"
   toggle so the operator view stays clean): new/rename/delete program, add/
   rename/remove/reorder slot, add (recipe combo)/remove/reorder recipes in a
