@@ -2074,7 +2074,7 @@ std::string App::AutoNickname(const RecipeStep& s) const
     const auto skip = [](const std::string& n) {
         return n == "timeout_ms" || n == "leg_timeout_ms" || n == "tol_mm" ||
                n == "start_tol_mm" || n == "poll_ms" || n == "max_iterations" ||
-               n == "velocity_mm_s" || n == "exposure_us";
+               n == "velocity_mm_s" || n == "exposure_us" || n == "settle_min_ms";
     };
     std::string out = s.type;
     const std::string dev = s.params.value("device", std::string());

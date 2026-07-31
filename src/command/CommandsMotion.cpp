@@ -46,11 +46,15 @@ ExecutionContext::WaitResult WaitArrive(
 // motion-complete state, and the PI hexapod rejects VLS (so the next step's
 // velocity change) with GCS error 1005 until the profile is done. Every move
 // command ends with this settle-wait so the following step starts on a truly
-// idle controller. Drivers that can't tell (or don't care — ACS) report
-// settled immediately.
+// idle controller. Two signals, both required: profile done (IsMoving false)
+// AND on-target (qONT — position inside the controller's settling window for
+// the settling time; profile-done alone can lead mechanical settle while the
+// platform is still ringing, which poisoned scan measurements). Drivers that
+// can't tell (or don't care — ACS) report both immediately.
 CommandResult WaitSettle(ExecutionContext& ctx, IMotionController* m, int idx)
 {
-    const auto r = ctx.WaitUntil([&] { return m->IsSettled(); }, 5000, 50);
+    const auto r = ctx.WaitUntil(
+        [&] { return m->IsSettled() && m->IsOnTarget(); }, 5000, 50);
     if (r == ExecutionContext::WaitResult::Ok) return CommandResult::Success();
     ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
     return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
@@ -482,6 +486,25 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
     (void)wf;
     (void)hw;   // captured through ExecutionContext at run time
     using PT = ParamType;
+
+    reg.Register({"set_velocity", "Motion",
+                  "Set the device move velocity (persists on the device until changed)",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
+                      {"velocity_mm_s", PT::Double, true, {}, 0.001, 100.0, {},
+                       "velocity in mm/s"},
+                  },
+                  CommandSpec::Needs::None,
+                  [](ExecutionContext& ctx, const ParamValues& p) {
+                      int idx = -1;
+                      std::string err;
+                      if (!ResolveMotion(ctx, p.GetString("device"), &idx, &err))
+                          return CommandResult::Fail(err);
+                      if (!ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx),
+                                                   p.GetDouble("velocity_mm_s")))
+                          return CommandResult::Fail("velocity change rejected");
+                      return CommandResult::Success();
+                  }});
 
     reg.Register({"move_to_position", "Motion",
                   "Coordinated absolute move to a saved position, wait for arrival",

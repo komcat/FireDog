@@ -250,6 +250,10 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "coarse -> fine step ladder (um)"},
                       {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},
                        "stop-and-stay when feedback reaches this (uA; 0 = full ladder)"},
+                      {"settle_min_ms", PT::Int, false, 0, 0, 5000, {},
+                       "extra mechanical-settle floor before each sample (ms)"},
+                      {"velocity_mm_s", PT::Double, false, 1.0, 0.0, 100.0, {},
+                       "scan velocity applied before starting (deterministic settle); 0 = keep current"},
                       {"trace", PT::Bool, false, false, 0, 0, {},
                        "one 'xcan,' CSV line per sample"},
                       {"file", PT::ScriptFile, false,
@@ -262,6 +266,9 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("align_steps_um", p.GetString("steps_um"));
                       c.CtxSet("align_exit_threshold",
                                p.GetDouble("exit_target_ua") * 1e-6);
+                      c.CtxSet("align_settle_min_ms",
+                               static_cast<double>(p.GetInt("settle_min_ms")));
+                      c.CtxSet("align_velocity_mm_s", p.GetDouble("velocity_mm_s"));
                       c.CtxSet("align_trace", p.GetBool("trace"));
                       const std::string err =
                           RunLuaFile(p.GetString("file"), *rp, c, {}, false, nullptr);
@@ -285,6 +292,10 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "sample pitch along a row"},
                       {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},
                        "stop-and-stay when feedback reaches this (uA; 0 = full grid)"},
+                      {"settle_min_ms", PT::Int, false, 0, 0, 5000, {},
+                       "extra mechanical-settle floor before each sample (ms)"},
+                      {"velocity_mm_s", PT::Double, false, 1.0, 0.0, 100.0, {},
+                       "scan velocity applied before starting (deterministic settle); 0 = keep current"},
                       {"trace", PT::Bool, false, false, 0, 0, {},
                        "one 'rast,' CSV line per sample"},
                       {"file", PT::ScriptFile, false,
@@ -300,6 +311,9 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("raster_fast_step_um", p.GetDouble("fast_step_um"));
                       c.CtxSet("raster_exit_threshold",
                                p.GetDouble("exit_target_ua") * 1e-6);
+                      c.CtxSet("raster_settle_min_ms",
+                               static_cast<double>(p.GetInt("settle_min_ms")));
+                      c.CtxSet("raster_velocity_mm_s", p.GetDouble("velocity_mm_s"));
                       c.CtxSet("raster_trace", p.GetBool("trace"));
                       const std::string err =
                           RunLuaFile(p.GetString("file"), *rp, c, {}, false, nullptr);

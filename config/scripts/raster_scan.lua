@@ -58,6 +58,8 @@ local P = {
   track_span_um  = fd.param("raster_track_span_um", 16), -- tracked window width
   tol_mm         = fd.param("raster_tol_mm", 0.001),    -- move arrival tolerance
   move_timeout   = fd.param("raster_move_timeout_ms", 10000),
+  velocity_mm_s  = fd.param("raster_velocity_mm_s", 1), -- scan velocity, set once
+                                                        -- up front (0 = keep)
   trace          = fd.param("raster_trace", 0),         -- 1 = per-sample CSV trace
 }
 
@@ -139,6 +141,12 @@ local function trace(v, row, col, note)
 end
 
 -- ---- Main -------------------------------------------------------------------
+-- Deterministic scan velocity: set ONCE up front (persists on the device),
+-- so every grid move has the same profile and settle behaviour.
+if (tonumber(P.velocity_mm_s) or 0) > 0 then
+  fd.set_velocity{ device = P.device, velocity_mm_s = P.velocity_mm_s }
+end
+
 local s0 = pos(P.slow_axis)   -- start pose = grid origin
 local f0 = pos(P.fast_axis)
 

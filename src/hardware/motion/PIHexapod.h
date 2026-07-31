@@ -34,6 +34,7 @@ public:
     bool MoveAbsolute(const std::vector<std::pair<std::string, double>>& targets) override;
     bool SetVelocity(double mmPerSec) override;                             // PI_VLS (system)
     bool IsSettled() const override;                                        // !PI_IsMoving
+    bool IsOnTarget() const override;                                       // PI_qONT (all axes)
     bool StopAll() override;                                                // PI_STP
     void RequestFastPoll() override;
 

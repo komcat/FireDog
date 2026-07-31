@@ -43,6 +43,9 @@ local P = {
   exit_threshold = fd.param("align_exit_threshold", 0), -- stop when a sample >= this (0 = off)
   tol_mm         = fd.param("align_tol_mm", 0.001),     -- move arrival tolerance
   move_timeout   = fd.param("align_move_timeout_ms", 10000),
+  velocity_mm_s  = fd.param("align_velocity_mm_s", 1),  -- scan velocity, set once
+                                                        -- up front so settle is
+                                                        -- deterministic (0 = keep)
   trace          = fd.param("align_trace", 0),          -- 1 = per-sample CSV trace
   -- Cycle-time trims (1 = on, 0 = original bobcat behaviour)
   skip_opposite  = fd.param("align_skip_opposite", 1),  -- skip -dir after +dir improved
@@ -270,6 +273,12 @@ end
 -- ---- Main -------------------------------------------------------------------
 fd.logf("hexapod_align: %s on %s, axes %s, steps %s um", P.device, P.topic,
         P.axes, P.steps_um)
+
+-- Deterministic scan velocity: set ONCE up front (persists on the device),
+-- so every micro-move has the same profile and settle behaviour.
+if (tonumber(P.velocity_mm_s) or 0) > 0 then
+  fd.set_velocity{ device = P.device, velocity_mm_s = P.velocity_mm_s }
+end
 
 if TRACE then
   fd.logf("xcan,header: seq,t_s,phase,axis,dir,step_um,pos(%s),value,dv,dmove_um,note",

@@ -245,6 +245,22 @@ struct PIHexapod::Impl {
         return true;
     }
 
+    // The controller's own settled signal: on-target = position inside the
+    // settling window for the settling time (SPA-tunable). Profile-done
+    // (IsSettled) leads this while the platform is still ringing — waits that
+    // gate a measurement need BOTH.
+    bool IsOnTarget()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) return true;    // nothing can be off target
+        BOOL ont[16] = {};
+        if (!PI_qONT(id, axesStr.c_str(), ont))
+            return true;                       // can't tell — don't wedge the caller
+        for (std::size_t i = 0; i < axes.size() && i < 16; ++i)
+            if (!ont[i]) return false;
+        return true;
+    }
+
     bool StopAll()
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -368,6 +384,7 @@ struct PIHexapod::Impl {
         return connected.load();
     }
     bool IsSettled() { return true; }   // sim snaps to target — never "moving"
+    bool IsOnTarget() { return true; }
     bool StopAll() { return connected.load(); }
 };
 
@@ -392,6 +409,7 @@ bool PIHexapod::MoveAbsolute(const std::string& a, double p) { return p_->MoveAb
 bool PIHexapod::MoveAbsolute(const std::vector<std::pair<std::string, double>>& t) { return p_->MoveAbsolute(t); }
 bool PIHexapod::SetVelocity(double v)   { return p_->SetVelocity(v); }
 bool PIHexapod::IsSettled() const       { return p_->IsSettled(); }
+bool PIHexapod::IsOnTarget() const      { return p_->IsOnTarget(); }
 bool PIHexapod::StopAll()               { return p_->StopAll(); }
 void PIHexapod::RequestFastPoll()       { p_->RequestFastPoll(); }
 std::string PIHexapod::LastError() const { return p_->lastError; }

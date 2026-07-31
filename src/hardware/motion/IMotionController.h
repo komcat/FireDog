@@ -46,6 +46,13 @@ public:
     // for this. Default true: ACS accepts velocity changes mid-move, and the
     // sim is done as soon as positions read on target.
     virtual bool IsSettled() const { return true; }
+    // True when the controller reports every axis ON TARGET — its own
+    // settling-window logic (position within the settle window for the settle
+    // time; PI qONT, tunable via SPA parameters). Profile-done (IsSettled) is
+    // NOT this: the trajectory generator finishes while the platform can still
+    // be ringing. Measurement-grade waits require both. Default true for
+    // drivers without the signal (ACS, sims).
+    virtual bool IsOnTarget() const { return true; }
     virtual bool StopAll() = 0;
 
     // Adaptive-polling demand signal. A consumer that needs realtime position
