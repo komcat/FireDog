@@ -9,6 +9,7 @@
 #include "App.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"   // BringWindowToDisplayFront (always-on-top windows)
 #include "implot.h"
 
 #include "ui/Theme.h"
@@ -360,7 +361,8 @@ void App::DrawMainWindow()
                 else
                     ImGui::MenuItem("Product: (none)", nullptr, false, false);
                 ImGui::Separator();
-                ImGui::MenuItem("Exit", nullptr, false, false);
+                // Routes through the same confirm modal as the window X.
+                if (ImGui::MenuItem("Exit", "Alt+F4")) host_.SetShouldClose(true);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Hardware")) {
@@ -434,10 +436,33 @@ void App::DrawMainWindow()
         if (ImGui::IsKeyPressed(ImGuiKey_F3, false))
             SwitchPage(Page::Motion);
 
+        // Quick-access strip (all pages): one-click jump to the operator pages.
+        // Same guarded routing as the F-keys (activate, not toggle — clicking
+        // the current page's button is a no-op); active page highlighted.
+        {
+            const auto pageBtn = [&](const char* label, Page p, bool takeover) {
+                const bool active = (currentPage_ == p);
+                if (active)
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.85f, 1.0f));
+                if (ImGui::Button(label) && !active) {
+                    if (takeover) ToggleEditorPage(p);
+                    else          SwitchPage(p);
+                }
+                if (active) ImGui::PopStyleColor();
+            };
+            pageBtn("Run (F1)", Page::Run, true);
+            ImGui::SameLine();
+            pageBtn("Recipe Editor (F2)", Page::RecipeEdit, true);
+            ImGui::SameLine();
+            pageBtn("Motion (F3)", Page::Motion, false);
+            ImGui::Separator();
+        }
+
         DrawProductPopups();   // modals opened via the File-menu flags above
+        DrawExitConfirmModal();   // confirm before closing the application
         DrawSafetyAlertModal();   // blocking safety alert (highest priority)
-        DrawRecipePromptModal();  // global recipe prompt (any page, any time)
-        DrawManualAdjustModal();  // global manual_adjust jog modal
+        DrawRecipePromptWindow(); // global recipe prompt (any page, any time)
+        DrawManualAdjustWindow(); // global manual_adjust jog window
 
         // ---- Editor pages (View menu) replace the whole panel layout until
         // closed via the top-right Close button (back to the previous page).
@@ -957,6 +982,10 @@ void App::StartXcanPreset(const std::string& device, const char* stepsUm)
         {"align_topic", std::string(runXcanTopic_)},
         {"align_steps_um", std::string(stepsUm)},
         {"align_settle_ms", 150.0},
+        {"align_trace", xcanTrace_ ? 1.0 : 0.0},
+        // Active exit-target slot, uA -> feedback units (Keithley publishes
+        // amps). 0 = no target, the script's own default (run to completion).
+        {"align_exit_threshold", xcanTgtUa_[xcanTgtSel_] * 1e-6},
     };
     scriptStartErr_.clear();
     if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
@@ -1021,6 +1050,62 @@ void App::DrawRunXcanBlock()
     ImGui::BeginDisabled(!running);
     if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) luaEngine_.RequestStop();
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::Checkbox("Trace", &xcanTrace_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Log every scan sample (step/positions/value + deltas)\n"
+                          "as 'xcan,...' CSV lines - also in the daily log file.");
+
+    // Target row: three exit-target slots for align_exit_threshold. The ACTIVE
+    // slot is injected into every preset launch; the scan stops-and-stays the
+    // moment the feedback reaches it. Left-click activates, right-click edits.
+    ImGui::TextDisabled("Target");
+    bool openTgtEdit = false;
+    for (int i = 0; i < 3; ++i) {
+        ImGui::SameLine();
+        ImGui::PushID(i);
+        char lbl[32];
+        if (xcanTgtUa_[i] <= 0.0) std::snprintf(lbl, sizeof(lbl), "Off");
+        else                      std::snprintf(lbl, sizeof(lbl), "%g uA", xcanTgtUa_[i]);
+        const bool active = (xcanTgtSel_ == i);
+        if (active)
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+        if (ImGui::Button(lbl, ImVec2(70.0f, 0.0f))) xcanTgtSel_ = i;
+        if (active) ImGui::PopStyleColor();
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+            xcanTgtEdit_   = i;
+            xcanTgtEditUa_ = xcanTgtUa_[i];
+            openTgtEdit    = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Exit target: the scan stops the moment the feedback\n"
+                              "reaches this value. Left-click: activate slot.\n"
+                              "Right-click: edit value (uA). Off = run to completion.");
+        ImGui::PopID();
+    }
+    if (openTgtEdit) ImGui::OpenPopup("XCAN Exit Target");
+    if (ImGui::BeginPopupModal("XCAN Exit Target", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Exit target for slot %d, in uA (feedback value):", xcanTgtEdit_ + 1);
+        ImGui::TextDisabled("e.g. 400 = stop when the signal reaches 400 uA. 0 = no target.");
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(200.0f);
+        const bool submit = ImGui::InputDouble("uA", &xcanTgtEditUa_, 0.0, 0.0, "%.3f",
+                                               ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::Separator();
+        if (ImGui::Button("OK", ImVec2(100.0f, 0.0f)) || submit) {
+            if (xcanTgtEditUa_ < 0.0) xcanTgtEditUa_ = 0.0;
+            if (xcanTgtEdit_ >= 0 && xcanTgtEdit_ < 3) {
+                xcanTgtUa_[xcanTgtEdit_] = xcanTgtEditUa_;
+                xcanTgtSel_ = xcanTgtEdit_;   // fresh value = the one you want live
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 
     // Status line: the running/last hexapod_align result (shared engine ctx).
     if (st.scriptName == "hexapod_align") {
@@ -1622,6 +1707,9 @@ void App::DrawRecipeEditPanel()
         ImGui::BeginChild("edTree", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
         DrawRecipeTreeToolbar(r, !running);
         ImGui::Separator();
+        // Rows scroll in their own child so the ^/v/Delete toolbar above
+        // stays pinned (same pattern as the palette's ##palList).
+        ImGui::BeginChild("##edTreeRows");
         edTreeRows_.clear();
         std::vector<std::size_t> path;
         DrawRecipeTreeNodes(r.steps, path, false, st.stepPath, running);
@@ -1651,7 +1739,8 @@ void App::DrawRecipeEditPanel()
                 edScrollToSel_ = true;
             }
         }
-        ImGui::EndChild();
+        ImGui::EndChild();   // ##edTreeRows
+        ImGui::EndChild();   // edTree
     } else {
         ImGui::TextDisabled("Select a recipe on the left.");
     }
@@ -2160,6 +2249,20 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
     const char* label = p.name.c_str();
     const float w = 170.0f;
 
+    // Device-scoped reference params (position uid / map / pin) go stale when
+    // the operator hot-swaps the step's device: the stored value no longer
+    // resolves for the new device, so the combo shows a bare uid (or a name
+    // the device doesn't have). Render that loud — red text on a yellow frame,
+    // plus a hint line — until the operator re-picks. Push before BeginCombo,
+    // pop right after it so the dropdown's own items render normally.
+    constexpr ImVec4 kStaleRed{0.85f, 0.08f, 0.08f, 1.0f};
+    const auto pushStale = [&kStaleRed] {
+        ImGui::PushStyleColor(ImGuiCol_Text,           kStaleRed);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.95f, 0.80f, 0.15f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(1.00f, 0.88f, 0.30f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  ImVec4(1.00f, 0.92f, 0.45f, 1.0f));
+    };
+
     switch (p.type) {
     case ParamType::Bool: {
         bool v = cur.is_boolean() && cur.get<bool>();
@@ -2278,13 +2381,17 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         const std::string dev = params.value("device", std::string());
         const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
         std::string preview   = v.empty() ? "(pick)" : v;
+        bool resolved         = v.empty();   // empty = nothing to warn about yet
         const auto it = savedPos_.find(dev);
         if (it != savedPos_.end()) {
             for (const SavedPos& sp : it->second)
-                if (sp.uid == v) { preview = sp.name; break; }
+                if (sp.uid == v) { preview = sp.name; resolved = true; break; }
         }
+        if (!resolved) pushStale();
         ImGui::SetNextItemWidth(w);
-        if (ImGui::BeginCombo(label, preview.c_str())) {
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        if (!resolved) ImGui::PopStyleColor(4);
+        if (open) {
             if (it == savedPos_.end() || it->second.empty())
                 ImGui::TextDisabled("(no saved positions for '%s')", dev.c_str());
             else
@@ -2296,14 +2403,23 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
                 }
             ImGui::EndCombo();
         }
+        if (!resolved)
+            ImGui::TextColored(kStaleRed, "not a position of '%s' - re-pick", dev.c_str());
         break;
     }
     case ParamType::MapName: {
         const std::string dev = params.value("device", std::string());
         const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
+        const auto it = motionMaps_.find(dev);
+        bool resolved = v.empty();
+        if (!resolved && it != motionMaps_.end())
+            for (const MotionMap& m : it->second)
+                if (m.name == v) { resolved = true; break; }
+        if (!resolved) pushStale();
         ImGui::SetNextItemWidth(w);
-        if (ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str())) {
-            const auto it = motionMaps_.find(dev);
+        const bool open = ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str());
+        if (!resolved) ImGui::PopStyleColor(4);
+        if (open) {
             if (it == motionMaps_.end() || it->second.empty())
                 ImGui::TextDisabled("(no maps for '%s')", dev.c_str());
             else
@@ -2315,6 +2431,8 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
                 }
             ImGui::EndCombo();
         }
+        if (!resolved)
+            ImGui::TextColored(kStaleRed, "not a map of '%s' - re-pick", dev.c_str());
         break;
     }
     case ParamType::PinName: {
@@ -2323,8 +2441,23 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         const IIoDevice* d = nullptr;
         for (std::size_t i = 0; i < hardware_.IoCount(); ++i)
             if (hardware_.IoName(i) == dev) { d = hardware_.IoDevice(i); break; }
+        bool resolved = v.empty();
+        if (!resolved && d) {
+            const auto has = [&](bool inputs) {
+                const int n = inputs ? d->InputCount() : d->OutputCount();
+                for (int pin = 0; pin < n; ++pin)
+                    if ((inputs ? d->InputPinName(pin) : d->OutputPinName(pin)) == v)
+                        return true;
+                return false;
+            };
+            resolved = (p.pinDir != PinDir::Output && has(true)) ||
+                       (p.pinDir != PinDir::Input && has(false));
+        }
+        if (!resolved) pushStale();
         ImGui::SetNextItemWidth(w);
-        if (ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str())) {
+        const bool open = ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str());
+        if (!resolved) ImGui::PopStyleColor(4);
+        if (open) {
             if (!d) {
                 ImGui::TextDisabled("(pick a device first)");
             } else {
@@ -2345,6 +2478,8 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             }
             ImGui::EndCombo();
         }
+        if (!resolved)
+            ImGui::TextColored(kStaleRed, "not a pin of '%s' - re-pick", dev.c_str());
         break;
     }
     case ParamType::TopicName: {
@@ -2603,11 +2738,13 @@ void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues)
     ImGui::EndChild();
 }
 
-// Global orchestration prompt — drawn every frame from DrawMainWindow (like
-// the safety modal), so a blocking recipe `prompt` step or script fd.prompt()
-// surfaces no matter which page or window the operator is on. Only one engine
-// runs at a time, so at most one prompt can be pending.
-void App::DrawRecipePromptModal()
+// Global orchestration prompt — drawn every frame from DrawMainWindow, so a
+// blocking recipe `prompt` step or script fd.prompt() surfaces no matter which
+// page or window the operator is on. Only one engine runs at a time, so at
+// most one prompt can be pending. Deliberately NON-modal: only the engine
+// worker is blocked, the rest of the UI (jog, camera, click-to-move) stays
+// usable — the window is just kept on top so the prompt can't get buried.
+void App::DrawRecipePromptWindow()
 {
     const RecipeEngine::Status rst = recipeEngine_.GetStatus();
     const LuaEngine::Status    lst = luaEngine_.GetStatus();
@@ -2616,50 +2753,75 @@ void App::DrawRecipePromptModal()
     const bool wantsInput =
         fromScript ? lst.pendingPromptInput : rst.pendingPromptInput;
 
-    if (!pending.empty() && !ImGui::IsPopupOpen("Recipe Prompt")) {
-        promptInputBuf_[0] = '\0';
-        ImGui::OpenPopup("Recipe Prompt");
-    }
+    // Edge-detect a NEW prompt (a back-to-back prompt can arrive while the
+    // window is still visible, so IsWindowAppearing alone is not enough).
+    const bool newPrompt = !pending.empty() && !promptWasPending_;
+    promptWasPending_ = !pending.empty();
+    if (pending.empty()) return;   // nothing pending (or stop released it)
+    if (newPrompt) promptInputBuf_[0] = '\0';
+
+    // Operator-facing dialog: it defines its OWN high-contrast palette (opaque
+    // near-black body, pure-white text, amber accent frame, bright buttons) so
+    // it reads identically in every app theme, and runs at 1.5x the app font
+    // so it stands out from whatever page is behind it.
+    const float promptFont = ImGui::GetStyle().FontSizeBase * 1.5f;
+    ImGui::PushFont(nullptr, promptFont);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,      ImVec4(0.06f, 0.08f, 0.12f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(1.00f, 1.00f, 1.00f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,       ImVec4(0.13f, 0.34f, 0.64f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.13f, 0.34f, 0.64f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(1.00f, 0.76f, 0.25f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.42f, 0.76f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.55f, 0.92f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.30f, 0.58f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,       ImVec4(0.14f, 0.17f, 0.24f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Separator,     ImVec4(1.00f, 0.76f, 0.25f, 0.60f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 14.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f, 8.0f));
+
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal("Recipe Prompt", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 420.0f);
-        ImGui::TextUnformatted(pending.c_str());
-        ImGui::PopTextWrapPos();
-        const auto answer = [&](bool ok) {
-            if (fromScript) luaEngine_.AnswerPrompt(ok, promptInputBuf_);
-            else            recipeEngine_.AnswerPrompt(ok, promptInputBuf_);
-        };
-        bool submit = false;
-        if (wantsInput) {
-            // Barcode scanners type + Enter, so Enter submits like OK.
-            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-            ImGui::SetNextItemWidth(300.0f);
-            submit = ImGui::InputText("##promptin", promptInputBuf_,
-                                      sizeof(promptInputBuf_),
-                                      ImGuiInputTextFlags_EnterReturnsTrue);
-        }
-        ImGui::Separator();
-        if (ImGui::Button("OK", ImVec2(100.0f, 0.0f)) || submit) {
-            answer(true);
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) {
-            answer(false);
-            ImGui::CloseCurrentPopup();
-        }
-        if (pending.empty()) ImGui::CloseCurrentPopup();   // stop released it
-        ImGui::EndPopup();
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::Begin("Recipe Prompt", nullptr,
+                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());   // always on top
+    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 560.0f);
+    ImGui::TextUnformatted(pending.c_str());
+    ImGui::PopTextWrapPos();
+    const auto answer = [&](bool ok) {
+        if (fromScript) luaEngine_.AnswerPrompt(ok, promptInputBuf_);
+        else            recipeEngine_.AnswerPrompt(ok, promptInputBuf_);
+    };
+    bool submit = false;
+    if (wantsInput) {
+        // Barcode scanners type + Enter, so Enter submits like OK.
+        if (newPrompt || ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(400.0f);
+        submit = ImGui::InputText("##promptin", promptInputBuf_,
+                                  sizeof(promptInputBuf_),
+                                  ImGuiInputTextFlags_EnterReturnsTrue);
     }
+    ImGui::Separator();
+    const ImVec2 btn(promptFont * 5.0f, 0.0f);   // buttons scale with the font
+    if (ImGui::Button("OK", btn) || submit) answer(true);
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", btn)) answer(false);
+    ImGui::End();
+
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(10);
+    ImGui::PopFont();
 }
 
-// The manual_adjust modal (bobcat's ManualAdjustWidget): the engine worker
+// The manual_adjust window (bobcat's ManualAdjustWidget): the engine worker
 // blocks in AwaitAdjustInternal while the operator jogs the device from here.
 // Jogs go through Workflow::JogGlobal exactly like the Jog window (transform-
 // mapped, safety-inhibited); positions stay fresh via RequestFastPoll.
-void App::DrawManualAdjustModal()
+// NON-modal on purpose: while adjusting, the operator still needs the rest of
+// the app (camera view, Jog window, click-to-move) — the window is only kept
+// on top, it doesn't block input to anything else.
+void App::DrawManualAdjustWindow()
 {
     const RecipeEngine::Status rst = recipeEngine_.GetStatus();
     const LuaEngine::Status    lst = luaEngine_.GetStatus();
@@ -2668,7 +2830,10 @@ void App::DrawManualAdjustModal()
     const ExecutionContext::AdjustRequest& req =
         fromScript ? lst.adjustReq : rst.adjustReq;
 
-    if (pending && !ImGui::IsPopupOpen("Manual Adjust")) {
+    const bool newAdjust = pending && !adjustWasPending_;
+    adjustWasPending_ = pending;
+    if (!pending) return;   // nothing pending (or stop released it)
+    if (newAdjust) {
         // Seed the preset selection from the step's step_um (closest match).
         adjustStepIdx_ = 0;
         const double stepMm = req.stepUm / 1000.0;
@@ -2677,13 +2842,13 @@ void App::DrawManualAdjustModal()
                 std::fabs(kSteps[adjustStepIdx_].mm - stepMm))
                 adjustStepIdx_ = i;
         }
-        ImGui::OpenPopup("Manual Adjust");
     }
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    if (!ImGui::BeginPopupModal("Manual Adjust", nullptr,
-                                ImGuiWindowFlags_AlwaysAutoResize))
-        return;
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::Begin("Manual Adjust", nullptr,
+                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());   // always on top
 
     ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 460.0f);
     ImGui::TextUnformatted(req.message.c_str());
@@ -2765,17 +2930,10 @@ void App::DrawManualAdjustModal()
         if (fromScript) luaEngine_.AnswerAdjust(ok);
         else            recipeEngine_.AnswerAdjust(ok);
     };
-    if (ImGui::Button("OK (Complete)", ImVec2(140.0f, 0.0f))) {
-        answer(true);
-        ImGui::CloseCurrentPopup();
-    }
+    if (ImGui::Button("OK (Complete)", ImVec2(140.0f, 0.0f))) answer(true);
     ImGui::SameLine();
-    if (ImGui::Button("Cancel (Fail Step)", ImVec2(140.0f, 0.0f))) {
-        answer(false);
-        ImGui::CloseCurrentPopup();
-    }
-    if (!pending) ImGui::CloseCurrentPopup();   // stop released it
-    ImGui::EndPopup();
+    if (ImGui::Button("Cancel (Fail Step)", ImVec2(140.0f, 0.0f))) answer(false);
+    ImGui::End();
 }
 
 // ---- Programs page (View menu, full page) — Phase C1: list + run .lua -------
@@ -3184,7 +3342,7 @@ void App::DrawJogPanel()
     ImGui::Separator();
 
     // --- Translational cluster (global X/Y/Z), routed through the workflow ---
-    // Left/Right = X-/X+ (A/D), In/Out = Y-/Y+ (W/S), Up/Down = Z-/Z+ (R/F). The
+    // Left/Right = X-/X+ (A/D), In/Out = Y-/Y+ (W/S), Up/Down = Z+/Z- (R/F). The
     // device transform (in Workflow) maps global direction -> local axis + sign.
     const double step = kSteps[jogStepIndex_].mm;
     const ImVec2 jb(58.0f, 0.0f);   // auto height -> fits the two-line "In\nW" labels
@@ -3194,8 +3352,8 @@ void App::DrawJogPanel()
     if (ImGui::Button("Left\nA", jb))  workflow_.JogGlobal(di, -1.0f, 0.0f, 0.0f, step); ImGui::SameLine();
     if (ImGui::Button("Out\nS", jb))   workflow_.JogGlobal(di, 0.0f,  1.0f, 0.0f, step); ImGui::SameLine();
     if (ImGui::Button("Right\nD", jb)) workflow_.JogGlobal(di, 1.0f,  0.0f, 0.0f, step);
-    if (ImGui::Button("Up\nR", jb))    workflow_.JogGlobal(di, 0.0f,  0.0f, -1.0f, step); ImGui::SameLine();
-    if (ImGui::Button("Down\nF", jb))  workflow_.JogGlobal(di, 0.0f,  0.0f, 1.0f, step);
+    if (ImGui::Button("Up\nR", jb))    workflow_.JogGlobal(di, 0.0f,  0.0f, 1.0f, step); ImGui::SameLine();
+    if (ImGui::Button("Down\nF", jb))  workflow_.JogGlobal(di, 0.0f,  0.0f, -1.0f, step);
 
     // --- Rotational cluster (GLOBAL U/V/W = theta x/y/z), only if the device
     // has rotational axes. Routed through JogGlobalRot so the transform's
@@ -3257,8 +3415,8 @@ void App::DrawJogPanel()
         if (ImGui::IsKeyPressed(ImGuiKey_D, false)) workflow_.JogGlobal(di,  1.0f, 0.0f, 0.0f, step);  // Right X+
         if (ImGui::IsKeyPressed(ImGuiKey_W, false)) workflow_.JogGlobal(di, 0.0f, -1.0f, 0.0f, step);  // In    Y-
         if (ImGui::IsKeyPressed(ImGuiKey_S, false)) workflow_.JogGlobal(di, 0.0f,  1.0f, 0.0f, step);  // Out   Y+
-        if (ImGui::IsKeyPressed(ImGuiKey_R, false)) workflow_.JogGlobal(di, 0.0f, 0.0f, -1.0f, step);  // Up    Z-
-        if (ImGui::IsKeyPressed(ImGuiKey_F, false)) workflow_.JogGlobal(di, 0.0f, 0.0f,  1.0f, step);  // Down  Z+
+        if (ImGui::IsKeyPressed(ImGuiKey_R, false)) workflow_.JogGlobal(di, 0.0f, 0.0f,  1.0f, step);  // Up    Z+
+        if (ImGui::IsKeyPressed(ImGuiKey_F, false)) workflow_.JogGlobal(di, 0.0f, 0.0f, -1.0f, step);  // Down  Z-
     }
 }
 
@@ -4110,6 +4268,12 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
                           "and STAY at that point (good-enough early exit).");
     ImGui::SetNextItemWidth(w);
     ImGui::InputDouble("move tolerance (mm)", &xcanTolMm_, 0.0, 0.0, "%g");
+    ImGui::Checkbox("trace every sample", &xcanTrace_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("One 'xcan,...' CSV line per sample: time, phase, axis,\n"
+                          "direction, step, positions, value, and delta vs the\n"
+                          "previous sample. Persists in the daily log file:\n"
+                          "  findstr \"xcan,\" logs\\firedog_*.log > scan.csv");
     ImGui::EndDisabled();
 
     ImGui::Spacing();
@@ -4139,6 +4303,7 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
             {"align_min_signal", xcanMinSignal_},
             {"align_exit_threshold", xcanExitThr_},
             {"align_tol_mm", xcanTolMm_},
+            {"align_trace", xcanTrace_ ? 1.0 : 0.0},
         };
         scriptStartErr_.clear();
         if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
@@ -5281,6 +5446,46 @@ void App::DrawSafetyAlertModal()
     }
 }
 
+// Confirm-before-close: the OS close request (X button / Alt+F4) and File >
+// Exit both set the GLFW should-close flag; it is swallowed here and turned
+// into a modal so an accidental close can't drop unsaved edits or abandon a
+// live run. Exit re-arms the flag with exitConfirmed_ set, ending the loop.
+void App::DrawExitConfirmModal()
+{
+    if (host_.ShouldClose() && !exitConfirmed_) {
+        host_.SetShouldClose(false);
+        if (!ImGui::IsPopupOpen("Confirm Exit")) ImGui::OpenPopup("Confirm Exit");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Confirm Exit", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Close the application?");
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                           "Unsaved changes may be lost.");
+        // Point out what is actually at risk right now.
+        if (RecipesDirty())
+            ImGui::BulletText("Recipe editor has unsaved edits");
+        if (ProgramsDirty())
+            ImGui::BulletText("Program deck has unsaved edits");
+        if (OrchestrationBusy())
+            ImGui::BulletText("A recipe/script/path move is still running");
+        ImGui::Separator();
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.88f, 0.26f, 0.26f, 1.0f));
+        if (ImGui::Button("Exit", ImVec2(120.0f, 0.0f))) {
+            exitConfirmed_ = true;
+            host_.SetShouldClose(true);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopStyleColor(2);
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
 // IO Watch editor — full-page main-window content (header/Close drawn by
 // DrawMainWindow's editor-page branch).
 void App::DrawWatchEditPanel()
@@ -5424,6 +5629,11 @@ void App::DrawTransformEditPanel()
     if (ImGui::Button("Reload file")) {
         transformCfg_ = LoadMotionTransforms("config/motion_transforms.json");
         changed = true;
+        // Log the ABSOLUTE path: the app reads the exe-side copy, and "I edited
+        // the repo file but Reload did nothing" is otherwise invisible.
+        FD_INFO("app", "transforms reloaded from %s (%zu device(s))",
+                std::filesystem::absolute("config/motion_transforms.json").string().c_str(),
+                transformCfg_.size());
     }
     ImGui::TextDisabled("Edits apply to jog immediately (arm the Jog window to test). Save writes "
                         "config/motion_transforms.json next to the exe; a rebuild overwrites it "

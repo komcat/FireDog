@@ -41,6 +41,22 @@ ExecutionContext::WaitResult WaitArrive(
         timeoutMs, 50);
 }
 
+// After position arrival the controller can still be finishing the tail of
+// its motion profile — WaitArrive's tolerance LEADS the controller's own
+// motion-complete state, and the PI hexapod rejects VLS (so the next step's
+// velocity change) with GCS error 1005 until the profile is done. Every move
+// command ends with this settle-wait so the following step starts on a truly
+// idle controller. Drivers that can't tell (or don't care — ACS) report
+// settled immediately.
+CommandResult WaitSettle(ExecutionContext& ctx, IMotionController* m, int idx)
+{
+    const auto r = ctx.WaitUntil([&] { return m->IsSettled(); }, 5000, 50);
+    if (r == ExecutionContext::WaitResult::Ok) return CommandResult::Success();
+    ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
+    return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
+                                   ? "stopped" : "timeout waiting for motion settle");
+}
+
 // Resolve device + connected controller, or fail with a message.
 IMotionController* ResolveMotion(ExecutionContext& ctx, const std::string& device,
                                  int* idxOut, std::string* err)
@@ -119,7 +135,7 @@ CommandResult ExecMoveToPosition(ExecutionContext& ctx, const ParamValues& p)
 
     const auto r = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
                               p.GetInt("timeout_ms"));
-    if (r == ExecutionContext::WaitResult::Ok) return CommandResult::Success();
+    if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
     ctx.Wf().StopMotion(static_cast<std::size_t>(idx));   // defined state on any abort
     return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
                                    ? "stopped"
@@ -185,7 +201,7 @@ CommandResult ExecMovePath(ExecutionContext& ctx, const ParamValues& p)
         FD_INFO("recipe", "%s: reached '%s' (%zu/%zu)", device.c_str(),
                 leg.label.c_str(), i + 1, legs.size());
     }
-    return CommandResult::Success();
+    return WaitSettle(ctx, m, idx);
 }
 
 CommandResult ExecMoveRelativeGlobal(ExecutionContext& ctx, const ParamValues& p)
@@ -240,7 +256,7 @@ CommandResult ExecMoveRelativeGlobal(ExecutionContext& ctx, const ParamValues& p
             return stable >= 3;
         },
         p.GetInt("timeout_ms"), 100);
-    if (r == ExecutionContext::WaitResult::Ok) return CommandResult::Success();
+    if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
     ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
     return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
                                    ? "stopped" : "timeout waiting for settle");
@@ -273,7 +289,7 @@ CommandResult ExecMoveRelative(ExecutionContext& ctx, const ParamValues& p)
         return CommandResult::Fail("relative move rejected");
     const auto r = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
                               p.GetInt("timeout_ms"));
-    if (r == ExecutionContext::WaitResult::Ok) return CommandResult::Success();
+    if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
     ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
     return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
                                    ? "stopped" : "timeout on relative move");
@@ -321,7 +337,7 @@ CommandResult ExecMoveToPositionOffset(ExecutionContext& ctx, const ParamValues&
         return CommandResult::Fail("move to '" + std::string(pos->name) + "' + offset rejected");
     const auto r = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
                               p.GetInt("timeout_ms"));
-    if (r == ExecutionContext::WaitResult::Ok) return CommandResult::Success();
+    if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
     ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
     return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
                                    ? "stopped"
@@ -387,6 +403,10 @@ CommandResult ExecMoveToPositionApproach(ExecutionContext& ctx, const ParamValue
             return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
                                            ? "stopped" : "timeout on travel leg");
         }
+        // The velocity change below is rejected while the controller is still
+        // finishing the travel leg (PI VLS while moving) — settle first.
+        const CommandResult s = WaitSettle(ctx, m, idx);
+        if (!s.ok) return s;
     }
 
     if (!ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx),
@@ -395,7 +415,7 @@ CommandResult ExecMoveToPositionApproach(ExecutionContext& ctx, const ParamValue
     if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
         return CommandResult::Fail("approach leg rejected");
     const auto r = WaitArrive(ctx, m, targets, tol, timeoutMs);
-    if (r == ExecutionContext::WaitResult::Ok) return CommandResult::Success();
+    if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
     ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
     return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
                                    ? "stopped"

@@ -105,8 +105,8 @@ private:
     bool DrawParamWidget(const ParamSpec& p, nlohmann::json& params);  // schema form row
     bool DrawConditionEditor(nlohmann::json& cond);   // if / loop-while / wait_until
     void DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues);
-    void DrawRecipePromptModal();     // GLOBAL blocking prompt (recipe + script)
-    void DrawManualAdjustModal();     // GLOBAL manual_adjust jog modal
+    void DrawRecipePromptWindow();    // GLOBAL prompt (recipe + script) — non-modal, always on top
+    void DrawManualAdjustWindow();    // GLOBAL manual_adjust jog window — non-modal, always on top
     // Programs page (View menu, full-page) — Phase C1: list/run .lua programs.
     void DrawScriptsPanel();          // page body: scripts | source | run info
     void LoadScriptsList();           // scan the scripts dir (product, else config)
@@ -128,6 +128,7 @@ private:
     std::string RecipesDump() const;  // canonical serialization (dirty compare)
     bool RecipesDirty() const { return RecipesDump() != recipesBaseline_; }
     void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
+    void DrawExitConfirmModal();      // intercepts the OS close request (X / Alt+F4)
     void DrawAuxWindow();
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
@@ -368,9 +369,16 @@ private:
     char dutSerialBuf_[64]   = "";
     char promptInputBuf_[128] = "";
 
-    // manual_adjust modal: selected kSteps preset, re-seeded from the step's
-    // step_um each time the modal appears.
+    // manual_adjust window: selected kSteps preset, re-seeded from the step's
+    // step_um each time the window appears.
     int adjustStepIdx_ = 9;
+    // Edge-detect a NEW pending prompt/adjust (the windows are non-modal, so a
+    // back-to-back request may arrive while the window is still shown).
+    bool promptWasPending_ = false;
+    bool adjustWasPending_ = false;
+    // Set once the operator confirmed Exit; lets the intercepted GLFW
+    // should-close flag through so the run loop actually ends.
+    bool exitConfirmed_ = false;
 
     // Scanning tab (Motion page): XCAN parameter fields, injected into
     // hexapod_align.lua via LuaEngine::Env::initialCtx (same channel as
@@ -388,6 +396,16 @@ private:
     double xcanMinSignal_  = 0.0;
     double xcanExitThr_    = 0.0;   // early-exit threshold (0 = disabled)
     double xcanTolMm_      = 0.001;
+    // Per-sample CSV trace (align_trace=1): shared by the Scanning tab and the
+    // Run page's XCAN band; lines persist in the daily log file for analysis.
+    bool   xcanTrace_      = false;
+    // Run-band exit-target slots (align_exit_threshold presets, in uA): the
+    // active slot's value stops the scan the moment the feedback reaches it.
+    // Left-click activates a slot, right-click edits it in a modal; 0 = off.
+    int    xcanTgtSel_     = 0;                       // active slot (first by default)
+    double xcanTgtUa_[3]   = {0.0, 0.0, 0.0};         // per-slot target, uA (0 = off)
+    int    xcanTgtEdit_    = -1;                      // slot open in the edit modal
+    double xcanTgtEditUa_  = 0.0;                     // modal input value
 
     // Run page state: the program deck + selection (recipe -1 = slot-level),
     // light edit mode, and the runner's last start rejection.

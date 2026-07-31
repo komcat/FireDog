@@ -112,7 +112,9 @@ fd.keithley_read{ channel=1, ctx="pd" }
 Hand-written conveniences (small, fixed):
 
 ```lua
-fd.read("keithley/ch1")        -- latest DataBus sample or nil (no data yet)
+fd.read("keithley/ch1")        -- latest DataBus sample or nil (no data yet);
+                               -- 2nd return = monotonic publish count, for
+                               -- fresh-sample gating: local v, n = fd.read(t)
 fd.ctx.pd                      -- ctx read (metatable); fd.ctx.pd = 1.5 writes
 fd.sleep(500)                  -- interruptible; raises on stop
 fd.log("aligned, pd=%.3g", pd) -- printf-style to the Logger ("script" source)

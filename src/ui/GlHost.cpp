@@ -64,6 +64,11 @@ bool GlHost::ShouldClose() const
     return window_ == nullptr || glfwWindowShouldClose(window_);
 }
 
+void GlHost::SetShouldClose(bool close)
+{
+    if (window_) glfwSetWindowShouldClose(window_, close ? GLFW_TRUE : GLFW_FALSE);
+}
+
 void GlHost::BeginFrame()
 {
     glfwPollEvents();

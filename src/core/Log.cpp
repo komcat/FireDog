@@ -1,12 +1,12 @@
 // Log.cpp : spdlog-backed implementation of the layer-0 Logger.
 //
-// Sinks (configured once, here): colored stdout, a rotating file under logs/,
+// Sinks (configured once, here): colored stdout, a daily file under logs/,
 // and an in-memory ringbuffer the ImGui Log window reads via Snapshot().
 #include "core/Log.h"
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/sinks/rotating_file_sink.h>
+#include <spdlog/sinks/daily_file_sink.h>
 #include <spdlog/sinks/ringbuffer_sink.h>
 
 #include <chrono>
@@ -72,8 +72,11 @@ Logger::Logger() : p_(std::make_unique<Impl>())
     p_->startNs = NowNs();
     try {
         auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-        auto file    = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-                           "logs/firedog.log", 5 * 1024 * 1024, 3);   // 5 MB x 3
+        // One file per calendar day (logs/firedog_YYYY-MM-DD.log), switched at
+        // midnight even mid-run; spdlog prunes files beyond the newest 30 so a
+        // day of heavy xcan tracing can't rotate an older day's data away.
+        auto file    = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
+                           "logs/firedog.log", 0, 0, false, 30);
         p_->ring     = std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(5000);
 
         std::vector<spdlog::sink_ptr> sinks{console, file, p_->ring};

@@ -204,15 +204,44 @@ struct PIHexapod::Impl {
 
     bool SetVelocity(double v)
     {
-        std::lock_guard<std::mutex> lock(mtx);
-        if (!connected.load()) { lastError = "not connected"; return false; }
-        if (!PI_VLS(id, v)) {   // system (vectorial) velocity
-            int err = 0; PI_qERR(id, &err);
-            lastError = "PI_VLS failed (" + std::to_string(err) + ")";
-            FD_ERROR("pi", "%s set velocity failed: %s", cfg.name.c_str(), lastError.c_str());
-            return false;
+        // The C-887 rejects VLS while the platform is still executing a motion
+        // profile (GCS error 1005 CONTROLLER_BUSY), and a position-tolerance
+        // arrival check can lead the controller's own motion-complete state by
+        // a moment. Retry briefly on busy instead of failing the caller.
+        constexpr int kBusyErr = 1005, kStepMs = 100, kMaxWaitMs = 2000;
+        for (int waited = 0;; waited += kStepMs) {
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                if (!connected.load()) { lastError = "not connected"; return false; }
+                if (PI_VLS(id, v)) {   // system (vectorial) velocity
+                    FD_INFO("pi", "%s system velocity = %.3f mm/s", cfg.name.c_str(), v);
+                    return true;
+                }
+                int err = 0; PI_qERR(id, &err);
+                lastError = "PI_VLS failed (" + std::to_string(err) + ")";
+                if (err != kBusyErr || waited >= kMaxWaitMs) {
+                    FD_ERROR("pi", "%s set velocity failed: %s", cfg.name.c_str(),
+                             lastError.c_str());
+                    return false;
+                }
+            }   // drop the SDK mutex while waiting — the poll thread needs it
+            std::this_thread::sleep_for(std::chrono::milliseconds(kStepMs));
         }
-        FD_INFO("pi", "%s system velocity = %.3f mm/s", cfg.name.c_str(), v);
+    }
+
+    // True when no configured axis is still executing a motion profile. The
+    // commands' arrival check is position-tolerance based, so it can complete
+    // while the controller still reports moving — callers wait on this before
+    // issuing anything the controller rejects mid-motion (VLS).
+    bool IsSettled()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) return true;    // nothing can be moving
+        BOOL moving[16] = {};
+        if (!PI_IsMoving(id, axesStr.c_str(), moving))
+            return true;                       // can't tell — don't wedge the caller
+        for (std::size_t i = 0; i < axes.size() && i < 16; ++i)
+            if (moving[i]) return false;
         return true;
     }
 
@@ -338,6 +367,7 @@ struct PIHexapod::Impl {
         FD_INFO("pi", "%s system velocity = %.3f mm/s (simulated)", cfg.name.c_str(), v);
         return connected.load();
     }
+    bool IsSettled() { return true; }   // sim snaps to target — never "moving"
     bool StopAll() { return connected.load(); }
 };
 
@@ -361,6 +391,7 @@ std::map<std::string, double> PIHexapod::Positions() const { return p_->Position
 bool PIHexapod::MoveAbsolute(const std::string& a, double p) { return p_->MoveAbsolute(a, p); }
 bool PIHexapod::MoveAbsolute(const std::vector<std::pair<std::string, double>>& t) { return p_->MoveAbsolute(t); }
 bool PIHexapod::SetVelocity(double v)   { return p_->SetVelocity(v); }
+bool PIHexapod::IsSettled() const       { return p_->IsSettled(); }
 bool PIHexapod::StopAll()               { return p_->StopAll(); }
 void PIHexapod::RequestFastPoll()       { p_->RequestFastPoll(); }
 std::string PIHexapod::LastError() const { return p_->lastError; }

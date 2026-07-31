@@ -16,6 +16,10 @@ public:
     void Shutdown();
 
     bool ShouldClose() const;
+    // Override the GLFW should-close flag: pass false to swallow an OS close
+    // request (X button / Alt+F4) so the app can confirm first, true to
+    // actually end the run loop.
+    void SetShouldClose(bool close);
     void BeginFrame();   // poll events + start an ImGui frame
     void EndFrame();     // render main window + platform windows, then swap
 

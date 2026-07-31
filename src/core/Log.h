@@ -5,7 +5,7 @@
 // lambdas, the workflow, and the UI all call the same process-wide, thread-safe
 // Logger. The backend (spdlog) and its sinks live entirely in Log.cpp:
 //     - console  (stdout, colored)
-//     - file     (rotating logs/firedog.log)
+//     - file     (daily logs/firedog_YYYY-MM-DD.log, newest 30 days kept)
 //     - ringbuffer (in-memory; the ImGui Log window snapshots it each frame)
 //
 // Use the macros for printf-style call sites:

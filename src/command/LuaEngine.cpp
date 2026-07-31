@@ -200,11 +200,18 @@ std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
         }
 
         // ---- Hand-written conveniences ----------------------------------
+        // Returns value, count. The count is the topic's monotonic publish
+        // counter — scripts gate on it to demand samples measured strictly
+        // after a move (fresh-sample settle). Count is read BEFORE the value
+        // so a racing publish can only make the value fresher than the gate,
+        // never staler. Extra return is invisible to `local v = fd.read(t)`.
         fd.set_function("read", [](sol::this_state ts, const std::string& topic)
-                                    -> sol::object {
+                                    -> std::tuple<sol::object, sol::object> {
             DataStream& s = DataBus::Instance().Stream(topic);
-            if (s.Count() == 0) return sol::make_object(ts, sol::lua_nil);
-            return sol::make_object(ts, s.LatestValue());
+            const std::size_t n   = s.Count();
+            sol::object       cnt = sol::make_object(ts, static_cast<double>(n));
+            if (n == 0) return {sol::make_object(ts, sol::lua_nil), cnt};
+            return {sol::make_object(ts, s.LatestValue()), cnt};
         });
         // Takes double: ctx-injected numbers are Lua floats (150.0), and sol's
         // safeties reject float->int even when integral.

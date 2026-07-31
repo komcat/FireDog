@@ -39,6 +39,13 @@ public:
     // Set jog/move velocity in mm/s. PI applies system velocity; ACS applies it
     // to every axis. Returns false if not connected.
     virtual bool SetVelocity(double mmPerSec) = 0;
+    // True when the controller reports its motion profile finished. A position-
+    // tolerance arrival check can LEAD the controller's own motion-complete
+    // state by a moment (the slow tail of the profile); commands the controller
+    // rejects while moving (PI VLS -> GCS error 1005 CONTROLLER_BUSY) must wait
+    // for this. Default true: ACS accepts velocity changes mid-move, and the
+    // sim is done as soon as positions read on target.
+    virtual bool IsSettled() const { return true; }
     virtual bool StopAll() = 0;
 
     // Adaptive-polling demand signal. A consumer that needs realtime position
