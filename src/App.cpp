@@ -2172,14 +2172,22 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
     }
 }
 
-// Tree toolbar: move within siblings + delete. Adding steps lives in the
-// palette column. Mutations address steps through the tree's path encoding,
-// so selection follows the edited step.
+// Tree toolbar: move within siblings, indent/outdent across container
+// boundaries, delete. Adding steps lives in the palette column. Mutations
+// address steps through the tree's path encoding, so selection follows the
+// edited step.
 void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
 {
     std::size_t idx = 0;
     std::vector<RecipeStep>* parent =
         edStepSel_.empty() ? nullptr : FindStepParent(&r.steps, edStepSel_, &idx);
+
+    // Indent target: the previous sibling, when it can hold children (same
+    // rule as the palette's "into" mode).
+    const RecipeStep* prev = (parent && idx > 0) ? &(*parent)[idx - 1] : nullptr;
+    const bool canIndent =
+        prev && IsStructuralStep(prev->type) && prev->type != "stop_recipe";
+    const bool canOutdent = parent && edStepSel_.size() >= 2;
 
     ImGui::BeginDisabled(!canEdit);
     ImGui::BeginDisabled(!parent || idx == 0);
@@ -2195,6 +2203,38 @@ void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
         edStepSel_.back() += 1;
     }
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canIndent);
+    if (ImGui::SmallButton(">")) {
+        // Append to the previous sibling's children. The target reference
+        // stays valid across the erase (it sits before the erased slot).
+        RecipeStep& tgt = (*parent)[idx - 1];
+        tgt.children.push_back(std::move((*parent)[idx]));
+        parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(idx));
+        edStepSel_.back() -= 1;   // now addresses the container
+        edStepSel_.push_back(tgt.children.size() - 1);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Move into the loop/group/if directly above.\n"
+                          "(An if's else branch: palette 'else' mode.)");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canOutdent);
+    if (ImGui::SmallButton("<")) {
+        RecipeStep moved = std::move((*parent)[idx]);
+        parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(idx));
+        edStepSel_.pop_back();    // now addresses the parent container
+        std::size_t pIdx = 0;
+        if (std::vector<RecipeStep>* gp =
+                FindStepParent(&r.steps, edStepSel_, &pIdx)) {
+            gp->insert(gp->begin() + static_cast<std::ptrdiff_t>(pIdx) + 1,
+                       std::move(moved));
+            edStepSel_.back() += 1;   // sibling AFTER the container
+        }
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Move out of the container, to just after it.");
     ImGui::SameLine();
     ImGui::BeginDisabled(!parent);
     if (ImGui::SmallButton("Delete")) edOpenDeleteStep_ = true;
