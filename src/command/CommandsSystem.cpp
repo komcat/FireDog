@@ -247,9 +247,16 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
                        "feedback signal"},
                       {"steps_um", PT::String, false, "10,5,2,1", 0, 0, {},
-                       "coarse -> fine step ladder (um)"},
+                       "coarse -> fine step ladder (um); adaptive mode: the zone steps, far -> near"},
                       {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},
                        "stop-and-stay when feedback reaches this (uA; 0 = full ladder)"},
+                      {"adaptive", PT::Bool, false, false, 0, 0, {},
+                       "signal-zoned ladder: [zone_low, zone_high] split into one log zone "
+                       "per step; passes coarser than the current zone's step are skipped"},
+                      {"zone_low_ua", PT::Double, false, 1.0, 0.0001, 1e9, {},
+                       "adaptive only: lower end of the signal range (uA)"},
+                      {"zone_high_ua", PT::Double, false, 400.0, 0.0001, 1e9, {},
+                       "adaptive only: upper end of the signal range (uA)"},
                       {"settle_min_ms", PT::Int, false, 0, 0, 5000, {},
                        "extra mechanical-settle floor before each sample (ms)"},
                       {"velocity_mm_s", PT::Double, false, 1.0, 0.0, 100.0, {},
@@ -266,6 +273,9 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("align_steps_um", p.GetString("steps_um"));
                       c.CtxSet("align_exit_threshold",
                                p.GetDouble("exit_target_ua") * 1e-6);
+                      c.CtxSet("align_adaptive", p.GetBool("adaptive"));
+                      c.CtxSet("align_zone_low", p.GetDouble("zone_low_ua") * 1e-6);
+                      c.CtxSet("align_zone_high", p.GetDouble("zone_high_ua") * 1e-6);
                       c.CtxSet("align_settle_min_ms",
                                static_cast<double>(p.GetInt("settle_min_ms")));
                       c.CtxSet("align_velocity_mm_s", p.GetDouble("velocity_mm_s"));

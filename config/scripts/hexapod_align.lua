@@ -46,6 +46,15 @@ local P = {
   velocity_mm_s  = fd.param("align_velocity_mm_s", 1),  -- scan velocity, set once
                                                         -- up front so settle is
                                                         -- deterministic (0 = keep)
+  -- Adaptive step (signal-zoned ladder): the [zone_low, zone_high] signal
+  -- range is split into #steps equal LOG sections (Gaussian: distance from
+  -- peak ~ sqrt(log ratio)), and steps_um doubles as the zone steps, coarsest
+  -- for the lowest zone. Passes coarser than the current zone's step are
+  -- skipped, so a strong start (e.g. after a raster handoff) goes straight
+  -- to fine steps. 0 = original fixed ladder (every pass runs).
+  adaptive       = fd.param("align_adaptive", 0),
+  zone_low       = fd.param("align_zone_low", 1e-6),    -- feedback units
+  zone_high      = fd.param("align_zone_high", 400e-6), -- feedback units
   trace          = fd.param("align_trace", 0),          -- 1 = per-sample CSV trace
   -- Cycle-time trims (1 = on, 0 = original bobcat behaviour)
   skip_opposite  = fd.param("align_skip_opposite", 1),  -- skip -dir after +dir improved
@@ -74,6 +83,22 @@ local STEPS = {}
 for _, s in ipairs(split(P.steps_um)) do STEPS[#STEPS + 1] = tonumber(s) / 1000.0 end
 assert(#AXES > 0, "align_axes is empty")
 assert(#STEPS > 0, "align_steps_um is empty")
+
+-- Adaptive zoning: signal -> the zone's step (mm). Zones are equal log slices
+-- of [zone_low, zone_high]; below the range = coarsest, above = finest.
+local ADAPTIVE = (P.adaptive == true) or ((tonumber(P.adaptive) or 0) ~= 0)
+if ADAPTIVE then
+  assert(P.zone_high > P.zone_low and P.zone_low > 0,
+         "align_zone_low/high must satisfy 0 < low < high")
+end
+local function zone_step(v)
+  if v <= P.zone_low  then return STEPS[1] end
+  if v >= P.zone_high then return STEPS[#STEPS] end
+  local frac = math.log(v / P.zone_low) / math.log(P.zone_high / P.zone_low)
+  local idx  = math.floor(frac * #STEPS) + 1
+  if idx > #STEPS then idx = #STEPS end
+  return STEPS[idx]
+end
 
 local function pos(axis)
   local v = fd.read("motion/" .. P.device .. "/" .. axis)
@@ -280,6 +305,16 @@ if (tonumber(P.velocity_mm_s) or 0) > 0 then
   fd.set_velocity{ device = P.device, velocity_mm_s = P.velocity_mm_s }
 end
 
+if ADAPTIVE then
+  local bounds = {}
+  for i = 1, #STEPS - 1 do
+    bounds[#bounds + 1] = string.format("%.3g",
+        P.zone_low * (P.zone_high / P.zone_low) ^ (i / #STEPS))
+  end
+  fd.logf("adaptive ladder: %d log zones over [%.3g, %.3g] (bounds %s), steps %s um",
+          #STEPS, P.zone_low, P.zone_high, table.concat(bounds, "/"), P.steps_um)
+end
+
 if TRACE then
   fd.logf("xcan,header: seq,t_s,phase,axis,dir,step_um,pos(%s),value,dv,dmove_um,note",
           P.axes)
@@ -304,6 +339,20 @@ end
 update_gpeak(baseline)
 
 for _, step in ipairs(STEPS) do
+  -- Adaptive: skip rungs coarser than what the signal zone calls for. The
+  -- reference is the best reachable signal (current point or global peak) —
+  -- a single noisy sample must not bounce the zone back to coarse.
+  local skip = false
+  if ADAPTIVE then
+    local ref = math.max(carryV or 0, gpeak.v)
+    local zs  = zone_step(ref)
+    if step > zs * 1.001 then
+      fd.logf("pass @ %g um skipped (adaptive: signal %.4g -> zone step %g um)",
+              step * 1000, ref, zs * 1000)
+      skip = true
+    end
+  end
+  if not skip then
   fd.logf("pass @ %g um", step * 1000)
   for _, axis in ipairs(AXES) do
     local _, curV = scan_axis(axis, step, carryV)
@@ -328,6 +377,7 @@ for _, step in ipairs(STEPS) do
       carryV = rv
     end
   end
+  end   -- if not skip (adaptive rung gate)
 end
 ::scan_done::
 
