@@ -406,10 +406,8 @@ private:
     // Run-band exit-target slots (align_exit_threshold presets, in uA): the
     // active slot's value stops the scan the moment the feedback reaches it.
     // Left-click activates a slot, right-click edits it in a modal; 0 = off.
-    int    xcanTgtSel_     = 0;                       // active slot (first by default)
-    double xcanTgtUa_[3]   = {0.0, 0.0, 0.0};         // per-slot target, uA (0 = off)
-    int    xcanTgtEdit_    = -1;                      // slot open in the edit modal
-    double xcanTgtEditUa_  = 0.0;                     // modal input value
+    int    rasterTgtSel_   = 0;   // Raster exit-target preset: 0 = 5 uA, 1 = 20 uA
+    int    xcanPresetSel_  = 1;   // XCAN target/zone preset (kXcanTargets; default 400 uA)
     // Run-band raster launcher knobs (raster_scan.lua): slow axis X steps down
     // from start, fast axis Y sweeps centered; axes/gating stay script defaults.
     double rasterSlowSpanUm_ = 40.0;                  // X- total travel

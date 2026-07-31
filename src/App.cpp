@@ -984,15 +984,46 @@ void App::DrawRunPanel()
     }
 }
 
+// Run-band scan target presets. XCAN: target + adaptive zone range per
+// product power class (the zone_low must sit AT the raster handoff level —
+// see the micro-lobe field note in hexapod_align.lua). Raster: first-light
+// exit levels. All in uA (feedback is amps; injected x1e-6).
+struct XcanTargetPreset {
+    const char* label;
+    double targetUa, zoneLowUa, zoneHighUa;
+};
+static constexpr XcanTargetPreset kXcanTargets[] = {
+    {"150 uA", 150.0, 10.0, 200.0},
+    {"400 uA", 400.0, 20.0, 400.0},
+    {"3400 uA", 3400.0, 200.0, 3400.0},
+};
+static constexpr double kRasterTargetsUa[] = {5.0, 20.0};
+
+// Activatable preset button: theme color normally, yellow when active.
+static bool PresetButton(const char* label, bool active, const ImVec2& size)
+{
+    if (active) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.68f, 0.10f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.78f, 0.18f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.00f, 0.85f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
+    }
+    const bool clicked = ImGui::Button(label, size);
+    if (active) ImGui::PopStyleColor(4);
+    return clicked;
+}
+
 // XCAN preset launcher (bobcat Run page scan controls): hexapod_align.lua with
-// the preset step ladder; everything else stays at the script's defaults. Uses
-// the same product-script override and Env wiring as the Scanning tab.
+// the pressed step ladder (Coarse/Fine) + the ACTIVE target preset (exit
+// threshold + adaptive zone range). Uses the same product-script override and
+// Env wiring as the Scanning tab.
 void App::StartXcanPreset(const std::string& device, const char* stepsUm)
 {
     std::string script = "config/scripts/hexapod_align.lua";
     for (const ScriptInfo& si : scripts_) {
         if (si.name == "hexapod_align") { script = si.path; break; }
     }
+    const XcanTargetPreset& tp = kXcanTargets[xcanPresetSel_];
     LuaEngine::Env env;
     env.positions = savedPos_;
     env.maps      = motionMaps_;
@@ -1003,9 +1034,10 @@ void App::StartXcanPreset(const std::string& device, const char* stepsUm)
         {"align_steps_um", std::string(stepsUm)},
         {"align_settle_ms", 150.0},
         {"align_trace", xcanTrace_ ? 1.0 : 0.0},
-        // Active exit-target slot, uA -> feedback units (Keithley publishes
-        // amps). 0 = no target, the script's own default (run to completion).
-        {"align_exit_threshold", xcanTgtUa_[xcanTgtSel_] * 1e-6},
+        {"align_exit_threshold", tp.targetUa * 1e-6},
+        {"align_adaptive", 1.0},
+        {"align_zone_low", tp.zoneLowUa * 1e-6},
+        {"align_zone_high", tp.zoneHighUa * 1e-6},
     };
     scriptStartErr_.clear();
     if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
@@ -1030,9 +1062,8 @@ static std::string FormatSI(double v)
 }
 
 // The Run page's Scan band: ONE shared header — feedback-channel picker +
-// live value, the three exit-target slots and Trace (both scan methods read
-// the same photodiode and honor the same target) — over two tabs: Raster
-// (first-light area scan) and XCAN (align hill climb).
+// live value + Trace — over two tabs: Raster (first-light area scan) and
+// XCAN (align hill climb). Each tab owns its target preset buttons.
 void App::DrawRunScanBlock()
 {
     // Shared header row: channel picker (live DataBus topics) + current value.
@@ -1061,62 +1092,13 @@ void App::DrawRunScanBlock()
         }
     }
 
-    // Exit-target row: the ACTIVE slot is injected into every scan launch —
-    // BOTH methods (raster_exit_threshold / align_exit_threshold) — and the
-    // scan stops-and-stays the moment the feedback reaches it. Left-click
-    // activates, right-click edits in a modal.
-    ImGui::TextDisabled("Target");
-    bool openTgtEdit = false;
-    for (int i = 0; i < 3; ++i) {
-        ImGui::SameLine();
-        ImGui::PushID(i);
-        char lbl[32];
-        if (xcanTgtUa_[i] <= 0.0) std::snprintf(lbl, sizeof(lbl), "Off");
-        else                      std::snprintf(lbl, sizeof(lbl), "%g uA", xcanTgtUa_[i]);
-        const bool active = (xcanTgtSel_ == i);
-        if (active)
-            ImGui::PushStyleColor(ImGuiCol_Button,
-                                  ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
-        if (ImGui::Button(lbl, ImVec2(64.0f, 0.0f))) xcanTgtSel_ = i;
-        if (active) ImGui::PopStyleColor();
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-            xcanTgtEdit_   = i;
-            xcanTgtEditUa_ = xcanTgtUa_[i];
-            openTgtEdit    = true;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Exit target: the scan stops the moment the feedback\n"
-                              "reaches this value. Left-click: activate slot.\n"
-                              "Right-click: edit value (uA). Off = run to completion.");
-        ImGui::PopID();
-    }
+    // Targets live per-tab now (activatable preset buttons); the header keeps
+    // only the shared channel + Trace.
     ImGui::SameLine();
     ImGui::Checkbox("Trace", &xcanTrace_);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Log every scan sample as 'xcan,'/'rast,' CSV lines\n"
                           "(also in the daily log file).");
-    if (openTgtEdit) ImGui::OpenPopup("Scan Exit Target");
-    if (ImGui::BeginPopupModal("Scan Exit Target", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Exit target for slot %d, in uA (feedback value):", xcanTgtEdit_ + 1);
-        ImGui::TextDisabled("e.g. 400 = stop when the signal reaches 400 uA. 0 = no target.");
-        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-        ImGui::SetNextItemWidth(200.0f);
-        const bool submit = ImGui::InputDouble("uA", &xcanTgtEditUa_, 0.0, 0.0, "%.3f",
-                                               ImGuiInputTextFlags_EnterReturnsTrue);
-        ImGui::Separator();
-        if (ImGui::Button("OK", ImVec2(100.0f, 0.0f)) || submit) {
-            if (xcanTgtEditUa_ < 0.0) xcanTgtEditUa_ = 0.0;
-            if (xcanTgtEdit_ >= 0 && xcanTgtEdit_ < 3) {
-                xcanTgtUa_[xcanTgtEdit_] = xcanTgtEditUa_;
-                xcanTgtSel_ = xcanTgtEdit_;   // fresh value = the one you want live
-            }
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
 
     // One tab per scan method (Raster first: the physical workflow is
     // raster to first light, then XCAN to the peak).
@@ -1133,15 +1115,31 @@ void App::DrawRunScanBlock()
     }
 }
 
-// XCAN tab of the Scan band: bobcat presets — Coarse (10,5,2,1 um) /
-// Fine (2,1,0.5 um) per hexapod. Channel/Target/Trace live in the shared
-// Scan-band header (DrawRunScanBlock).
+// XCAN tab of the Scan band: target/zone preset buttons (one active, yellow)
+// + bobcat step presets — Coarse (10,5,2,1 um) / Fine (2,1,0.5 um) per
+// hexapod. Channel/Trace live in the shared Scan-band header.
 void App::DrawRunXcanBlock()
 {
     const LuaEngine::Status st = luaEngine_.GetStatus();
     const bool running = luaEngine_.Running();
 
-    // Preset row: hex-left [Coarse][Fine]   hex-right [Coarse][Fine]   Stop.
+    // Target preset row: exit target + adaptive zone range per product power
+    // class; the active preset is injected into every Coarse/Fine launch.
+    ImGui::TextDisabled("Target");
+    for (int i = 0; i < static_cast<int>(std::size(kXcanTargets)); ++i) {
+        ImGui::SameLine();
+        ImGui::PushID(i);
+        if (PresetButton(kXcanTargets[i].label, xcanPresetSel_ == i,
+                         ImVec2(76.0f, 0.0f)))
+            xcanPresetSel_ = i;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Exit target %g uA, adaptive zones %g-%g uA",
+                              kXcanTargets[i].targetUa, kXcanTargets[i].zoneLowUa,
+                              kXcanTargets[i].zoneHighUa);
+        ImGui::PopID();
+    }
+
+    // Launch row: hex-left [Coarse][Fine]   hex-right [Coarse][Fine]   Stop.
     const bool busy = OrchestrationBusy();
     const auto presets = [&](const char* dev) {
         int idx = -1;
@@ -1191,7 +1189,7 @@ void App::DrawRunXcanBlock()
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "start rejected: %s",
                            scriptStartErr_.c_str());
     } else {
-        ImGui::TextDisabled("Coarse: 10,5,2,1 um   Fine: 2,1,0.5 um   (bobcat presets)");
+        ImGui::TextDisabled("Coarse: 10,5,2,1 um   Fine: 2,1,0.5 um   (adaptive zone steps)");
     }
 }
 
@@ -1210,10 +1208,10 @@ void App::StopMachine()
     FD_WARN("ui", "STOP pressed: all motion stopped, orchestration aborted");
 }
 
-// Raster scan launcher: raster_scan.lua with the band's spans/steps; feedback
-// channel, Trace and the active exit-target slot are shared with the XCAN
-// band (one photodiode, one target). Axes stay at the script's defaults
-// (slow = X stepping down from start, fast = Y sweeping centered).
+// Raster scan launcher: raster_scan.lua with the band's spans/steps + the
+// tab's active first-light target preset; feedback channel and Trace are
+// shared with the XCAN band. Axes stay at the script's defaults (slow = X
+// stepping down from start, fast = Y sweeping centered).
 void App::StartRasterScan(const std::string& device)
 {
     std::string script = "config/scripts/raster_scan.lua";
@@ -1233,7 +1231,7 @@ void App::StartRasterScan(const std::string& device)
         {"raster_fast_step_um", rasterFastStepUm_},
         {"raster_settle_ms", 150.0},
         {"raster_trace", xcanTrace_ ? 1.0 : 0.0},
-        {"raster_exit_threshold", xcanTgtUa_[xcanTgtSel_] * 1e-6},
+        {"raster_exit_threshold", kRasterTargetsUa[rasterTgtSel_] * 1e-6},
     };
     scriptStartErr_.clear();
     if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
@@ -1270,8 +1268,23 @@ void App::DrawRunRasterBlock()
     if (rasterSlowSpanUm_ < 0.0) rasterSlowSpanUm_ = 0.0;
     if (rasterFastSpanUm_ < 0.0) rasterFastSpanUm_ = 0.0;
 
-    // Launch row: one Scan per hexapod + Stop; channel, Trace and the active
-    // Target slot (exit threshold) come from the shared Scan-band header.
+    // Target preset row: first-light exit level, activatable (yellow = live).
+    ImGui::TextDisabled("Target");
+    for (int i = 0; i < static_cast<int>(std::size(kRasterTargetsUa)); ++i) {
+        ImGui::SameLine();
+        ImGui::PushID(i);
+        char lbl[16];
+        std::snprintf(lbl, sizeof(lbl), "%g uA", kRasterTargetsUa[i]);
+        if (PresetButton(lbl, rasterTgtSel_ == i, ImVec2(64.0f, 0.0f)))
+            rasterTgtSel_ = i;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Stop-and-stay the moment a grid node reaches %g uA",
+                              kRasterTargetsUa[i]);
+        ImGui::PopID();
+    }
+
+    // Launch row: one Scan per hexapod + Stop; channel and Trace come from
+    // the shared Scan-band header.
     const bool busy = OrchestrationBusy();
     const auto scanBtn = [&](const char* dev) {
         int idx = -1;
