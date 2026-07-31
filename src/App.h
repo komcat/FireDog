@@ -117,8 +117,12 @@ private:
     // Run page (View menu, full-page) — programs = slots of recipes. R1.
     void DrawRunPanel();              // deck | execution + XCAN + log | DUT
     void StartDeckRun(int mode);      // 0 = program, 1 = slot, 2 = recipe
-    void DrawRunXcanBlock();          // hex-left/right Coarse/Fine presets + channel
+    void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|XCAN tabs
+    void DrawRunXcanBlock();          // XCAN tab: hex-left/right Coarse/Fine presets
     void StartXcanPreset(const std::string& device, const char* stepsUm);
+    void DrawRunRasterBlock();        // Raster tab: area-scan launcher (raster_scan.lua)
+    void StartRasterScan(const std::string& device);
+    void StopMachine();               // software big-red-button: all motion + orchestration
     void LoadProgramsFromDisk();      // product programs role, else config
     void SavePrograms();
     std::string ProgramsDump() const;
@@ -406,6 +410,12 @@ private:
     double xcanTgtUa_[3]   = {0.0, 0.0, 0.0};         // per-slot target, uA (0 = off)
     int    xcanTgtEdit_    = -1;                      // slot open in the edit modal
     double xcanTgtEditUa_  = 0.0;                     // modal input value
+    // Run-band raster launcher knobs (raster_scan.lua): slow axis X steps down
+    // from start, fast axis Y sweeps centered; axes/gating stay script defaults.
+    double rasterSlowSpanUm_ = 40.0;                  // X- total travel
+    double rasterSlowStepUm_ = 4.0;                   // row pitch
+    double rasterFastSpanUm_ = 40.0;                  // Y total width (+/- half)
+    double rasterFastStepUm_ = 4.0;                   // sample pitch per row
 
     // Run page state: the program deck + selection (recipe -1 = slot-level),
     // light edit mode, and the runner's last start rejection.

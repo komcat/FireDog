@@ -1,6 +1,7 @@
 // CommandsSystem.cpp : system/data commands — delay, log, ctx ops, DataBus
-// bridge (read_topic), the generic wait_until, the operator prompt, and the
-// Lua escape hatch (run_script).
+// bridge (read_topic), the generic wait_until, the operator prompt, the
+// Lua escape hatch (run_script), and the typed scan wrappers (xcan,
+// raster_scan) that front the algorithm scripts with real param forms.
 #include "command/Commands.h"
 
 #include "command/CommandRegistry.h"
@@ -228,6 +229,78 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   },
                   CommandSpec::Needs::None,
                   [rp](ExecutionContext& c, const ParamValues& p) {
+                      const std::string err =
+                          RunLuaFile(p.GetString("file"), *rp, c, {}, false, nullptr);
+                      return err.empty() ? CommandResult::Success()
+                                         : CommandResult::Fail(err);
+                  }});
+
+    // Typed scan wrappers: same execution path as run_script, but the step
+    // form carries the parameters — they are injected as the script's ctx
+    // keys (the ctx_set convention), so any OTHER align_*/raster_* key a
+    // recipe ctx_set beforehand still reaches fd.param untouched. Results
+    // come back in ctx (align_* / raster_*) for dut_record / conditionals.
+    reg.Register({"xcan", "Motion",
+                  "Hexapod align scan (hexapod_align.lua): coarse-to-fine hill climb",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "hexapod to scan"},
+                      {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
+                       "feedback signal"},
+                      {"steps_um", PT::String, false, "10,5,2,1", 0, 0, {},
+                       "coarse -> fine step ladder (um)"},
+                      {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},
+                       "stop-and-stay when feedback reaches this (uA; 0 = full ladder)"},
+                      {"trace", PT::Bool, false, false, 0, 0, {},
+                       "one 'xcan,' CSV line per sample"},
+                      {"file", PT::ScriptFile, false,
+                       "config/scripts/hexapod_align.lua", 0, 0, {}, "script override"},
+                  },
+                  CommandSpec::Needs::None,
+                  [rp](ExecutionContext& c, const ParamValues& p) {
+                      c.CtxSet("align_device", p.GetString("device"));
+                      c.CtxSet("align_topic", p.GetString("topic"));
+                      c.CtxSet("align_steps_um", p.GetString("steps_um"));
+                      c.CtxSet("align_exit_threshold",
+                               p.GetDouble("exit_target_ua") * 1e-6);
+                      c.CtxSet("align_trace", p.GetBool("trace"));
+                      const std::string err =
+                          RunLuaFile(p.GetString("file"), *rp, c, {}, false, nullptr);
+                      return err.empty() ? CommandResult::Success()
+                                         : CommandResult::Fail(err);
+                  }});
+
+    reg.Register({"raster_scan", "Motion",
+                  "Serpentine area scan (raster_scan.lua): first-light search",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "hexapod to scan"},
+                      {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
+                       "feedback signal"},
+                      {"slow_span_um", PT::Double, false, 40.0, 1.0, 2000.0, {},
+                       "slow-axis travel, one-sided from start (X- by default)"},
+                      {"slow_step_um", PT::Double, false, 4.0, 0.1, 500.0, {},
+                       "row pitch"},
+                      {"fast_span_um", PT::Double, false, 40.0, 1.0, 2000.0, {},
+                       "fast-axis width, centered on start (Y +/- half)"},
+                      {"fast_step_um", PT::Double, false, 4.0, 0.1, 500.0, {},
+                       "sample pitch along a row"},
+                      {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},
+                       "stop-and-stay when feedback reaches this (uA; 0 = full grid)"},
+                      {"trace", PT::Bool, false, false, 0, 0, {},
+                       "one 'rast,' CSV line per sample"},
+                      {"file", PT::ScriptFile, false,
+                       "config/scripts/raster_scan.lua", 0, 0, {}, "script override"},
+                  },
+                  CommandSpec::Needs::None,
+                  [rp](ExecutionContext& c, const ParamValues& p) {
+                      c.CtxSet("raster_device", p.GetString("device"));
+                      c.CtxSet("raster_topic", p.GetString("topic"));
+                      c.CtxSet("raster_slow_span_um", p.GetDouble("slow_span_um"));
+                      c.CtxSet("raster_slow_step_um", p.GetDouble("slow_step_um"));
+                      c.CtxSet("raster_fast_span_um", p.GetDouble("fast_span_um"));
+                      c.CtxSet("raster_fast_step_um", p.GetDouble("fast_step_um"));
+                      c.CtxSet("raster_exit_threshold",
+                               p.GetDouble("exit_target_ua") * 1e-6);
+                      c.CtxSet("raster_trace", p.GetBool("trace"));
                       const std::string err =
                           RunLuaFile(p.GetString("file"), *rp, c, {}, false, nullptr);
                       return err.empty() ? CommandResult::Success()

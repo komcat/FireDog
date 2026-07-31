@@ -871,10 +871,10 @@ void App::DrawRunPanel()
     // ---- Middle column: execution view / XCAN presets / log ----
     const float midW = avail.x - leftW - rightW - ImGui::GetStyle().ItemSpacing.x * 2.0f;
     ImGui::BeginChild("runMid", ImVec2(midW, paneH));
-    const float xcanH = ImGui::GetFrameHeightWithSpacing() * 3.0f +
+    const float scanH = ImGui::GetFrameHeightWithSpacing() * 6.0f +   // channel/target/tabs/3 content rows
                         ImGui::GetStyle().WindowPadding.y * 2.0f;
     const float logH  = 190.0f;
-    float execH = ImGui::GetContentRegionAvail().y - xcanH - logH -
+    float execH = ImGui::GetContentRegionAvail().y - scanH - logH -
                   ImGui::GetStyle().ItemSpacing.y * 2.0f;
     if (execH < 60.0f) execH = 60.0f;
     ImGui::BeginChild("runExec", ImVec2(0.0f, execH), ImGuiChildFlags_Borders);
@@ -918,9 +918,9 @@ void App::DrawRunPanel()
     }
     ImGui::EndChild();
 
-    // XCAN preset band (bobcat Run page scan controls).
-    ImGui::BeginChild("runXcan", ImVec2(0.0f, xcanH), ImGuiChildFlags_Borders);
-    DrawRunXcanBlock();
+    // Scan band: shared channel/Target/Trace header over Raster | XCAN tabs.
+    ImGui::BeginChild("runScan", ImVec2(0.0f, scanH), ImGuiChildFlags_Borders);
+    DrawRunScanBlock();
     ImGui::EndChild();
 
     // Log band (same viewer as the Overview lower panel).
@@ -992,18 +992,32 @@ void App::StartXcanPreset(const std::string& device, const char* stepsUm)
         FD_WARN("script", "xcan preset rejected: %s", scriptStartErr_.c_str());
 }
 
-// The Run page's XCAN band: feedback-channel picker + live value, and the
-// bobcat scan presets — Coarse (10,5,2,1 um) / Fine (2,1,0.5 um) per hexapod.
-void App::DrawRunXcanBlock()
+// SI-prefixed reading for the scan header (bobcat FormatSI: 2.09e-05 -> 20.888u).
+static std::string FormatSI(double v)
 {
-    const LuaEngine::Status st = luaEngine_.GetStatus();
-    const bool running = luaEngine_.Running();
+    if (v == 0.0) return "0";
+    const double a = std::fabs(v);
+    const char*  suf;
+    double       s;
+    if      (a < 1e-9) { suf = "p"; s = v * 1e12; }
+    else if (a < 1e-6) { suf = "n"; s = v * 1e9;  }
+    else if (a < 1e-3) { suf = "u"; s = v * 1e6;  }
+    else if (a < 1.0)  { suf = "m"; s = v * 1e3;  }
+    else               { suf = "";  s = v;        }
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.3f%s", s, suf);
+    return buf;
+}
 
-    // Header row: channel picker (live DataBus topics) + current value.
-    ImGui::TextUnformatted("XCAN");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(180.0f);
-    if (ImGui::BeginCombo("##xcanch", runXcanTopic_)) {
+// The Run page's Scan band: ONE shared header — feedback-channel picker +
+// live value, the three exit-target slots and Trace (both scan methods read
+// the same photodiode and honor the same target) — over two tabs: Raster
+// (first-light area scan) and XCAN (align hill climb).
+void App::DrawRunScanBlock()
+{
+    // Shared header row: channel picker (live DataBus topics) + current value.
+    ImGui::SetNextItemWidth(150.0f);
+    if (ImGui::BeginCombo("##scanch", runXcanTopic_)) {
         const std::vector<std::string> topics = DataBus::Instance().Topics();
         if (topics.empty()) ImGui::TextDisabled("(no channels published yet)");
         for (const std::string& t : topics) {
@@ -1016,9 +1030,96 @@ void App::DrawRunXcanBlock()
     {
         std::vector<float> t, v;
         DataBus::Instance().Stream(runXcanTopic_).Snapshot(t, v);
-        if (!v.empty()) ImGui::Text("= %.6g", static_cast<double>(v.back()));
-        else            ImGui::TextDisabled("= (no data)");
+        if (!v.empty()) {
+            // Keithley topics publish amps; other topics get the bare SI prefix.
+            const bool amps =
+                std::string(runXcanTopic_).compare(0, 9, "keithley/") == 0;
+            ImGui::Text("= %s%s", FormatSI(static_cast<double>(v.back())).c_str(),
+                        amps ? "A" : "");
+        } else {
+            ImGui::TextDisabled("= (no data)");
+        }
     }
+
+    // Exit-target row: the ACTIVE slot is injected into every scan launch —
+    // BOTH methods (raster_exit_threshold / align_exit_threshold) — and the
+    // scan stops-and-stays the moment the feedback reaches it. Left-click
+    // activates, right-click edits in a modal.
+    ImGui::TextDisabled("Target");
+    bool openTgtEdit = false;
+    for (int i = 0; i < 3; ++i) {
+        ImGui::SameLine();
+        ImGui::PushID(i);
+        char lbl[32];
+        if (xcanTgtUa_[i] <= 0.0) std::snprintf(lbl, sizeof(lbl), "Off");
+        else                      std::snprintf(lbl, sizeof(lbl), "%g uA", xcanTgtUa_[i]);
+        const bool active = (xcanTgtSel_ == i);
+        if (active)
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+        if (ImGui::Button(lbl, ImVec2(64.0f, 0.0f))) xcanTgtSel_ = i;
+        if (active) ImGui::PopStyleColor();
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+            xcanTgtEdit_   = i;
+            xcanTgtEditUa_ = xcanTgtUa_[i];
+            openTgtEdit    = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Exit target: the scan stops the moment the feedback\n"
+                              "reaches this value. Left-click: activate slot.\n"
+                              "Right-click: edit value (uA). Off = run to completion.");
+        ImGui::PopID();
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Trace", &xcanTrace_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Log every scan sample as 'xcan,'/'rast,' CSV lines\n"
+                          "(also in the daily log file).");
+    if (openTgtEdit) ImGui::OpenPopup("Scan Exit Target");
+    if (ImGui::BeginPopupModal("Scan Exit Target", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Exit target for slot %d, in uA (feedback value):", xcanTgtEdit_ + 1);
+        ImGui::TextDisabled("e.g. 400 = stop when the signal reaches 400 uA. 0 = no target.");
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(200.0f);
+        const bool submit = ImGui::InputDouble("uA", &xcanTgtEditUa_, 0.0, 0.0, "%.3f",
+                                               ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::Separator();
+        if (ImGui::Button("OK", ImVec2(100.0f, 0.0f)) || submit) {
+            if (xcanTgtEditUa_ < 0.0) xcanTgtEditUa_ = 0.0;
+            if (xcanTgtEdit_ >= 0 && xcanTgtEdit_ < 3) {
+                xcanTgtUa_[xcanTgtEdit_] = xcanTgtEditUa_;
+                xcanTgtSel_ = xcanTgtEdit_;   // fresh value = the one you want live
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    // One tab per scan method (Raster first: the physical workflow is
+    // raster to first light, then XCAN to the peak).
+    if (ImGui::BeginTabBar("##scantabs")) {
+        if (ImGui::BeginTabItem("Raster")) {
+            DrawRunRasterBlock();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("XCAN")) {
+            DrawRunXcanBlock();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+}
+
+// XCAN tab of the Scan band: bobcat presets — Coarse (10,5,2,1 um) /
+// Fine (2,1,0.5 um) per hexapod. Channel/Target/Trace live in the shared
+// Scan-band header (DrawRunScanBlock).
+void App::DrawRunXcanBlock()
+{
+    const LuaEngine::Status st = luaEngine_.GetStatus();
+    const bool running = luaEngine_.Running();
 
     // Preset row: hex-left [Coarse][Fine]   hex-right [Coarse][Fine]   Stop.
     const bool busy = OrchestrationBusy();
@@ -1050,62 +1151,6 @@ void App::DrawRunXcanBlock()
     ImGui::BeginDisabled(!running);
     if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) luaEngine_.RequestStop();
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::Checkbox("Trace", &xcanTrace_);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Log every scan sample (step/positions/value + deltas)\n"
-                          "as 'xcan,...' CSV lines - also in the daily log file.");
-
-    // Target row: three exit-target slots for align_exit_threshold. The ACTIVE
-    // slot is injected into every preset launch; the scan stops-and-stays the
-    // moment the feedback reaches it. Left-click activates, right-click edits.
-    ImGui::TextDisabled("Target");
-    bool openTgtEdit = false;
-    for (int i = 0; i < 3; ++i) {
-        ImGui::SameLine();
-        ImGui::PushID(i);
-        char lbl[32];
-        if (xcanTgtUa_[i] <= 0.0) std::snprintf(lbl, sizeof(lbl), "Off");
-        else                      std::snprintf(lbl, sizeof(lbl), "%g uA", xcanTgtUa_[i]);
-        const bool active = (xcanTgtSel_ == i);
-        if (active)
-            ImGui::PushStyleColor(ImGuiCol_Button,
-                                  ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
-        if (ImGui::Button(lbl, ImVec2(70.0f, 0.0f))) xcanTgtSel_ = i;
-        if (active) ImGui::PopStyleColor();
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-            xcanTgtEdit_   = i;
-            xcanTgtEditUa_ = xcanTgtUa_[i];
-            openTgtEdit    = true;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Exit target: the scan stops the moment the feedback\n"
-                              "reaches this value. Left-click: activate slot.\n"
-                              "Right-click: edit value (uA). Off = run to completion.");
-        ImGui::PopID();
-    }
-    if (openTgtEdit) ImGui::OpenPopup("XCAN Exit Target");
-    if (ImGui::BeginPopupModal("XCAN Exit Target", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Exit target for slot %d, in uA (feedback value):", xcanTgtEdit_ + 1);
-        ImGui::TextDisabled("e.g. 400 = stop when the signal reaches 400 uA. 0 = no target.");
-        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-        ImGui::SetNextItemWidth(200.0f);
-        const bool submit = ImGui::InputDouble("uA", &xcanTgtEditUa_, 0.0, 0.0, "%.3f",
-                                               ImGuiInputTextFlags_EnterReturnsTrue);
-        ImGui::Separator();
-        if (ImGui::Button("OK", ImVec2(100.0f, 0.0f)) || submit) {
-            if (xcanTgtEditUa_ < 0.0) xcanTgtEditUa_ = 0.0;
-            if (xcanTgtEdit_ >= 0 && xcanTgtEdit_ < 3) {
-                xcanTgtUa_[xcanTgtEdit_] = xcanTgtEditUa_;
-                xcanTgtSel_ = xcanTgtEdit_;   // fresh value = the one you want live
-            }
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
 
     // Status line: the running/last hexapod_align result (shared engine ctx).
     if (st.scriptName == "hexapod_align") {
@@ -1127,6 +1172,130 @@ void App::DrawRunXcanBlock()
                            scriptStartErr_.c_str());
     } else {
         ImGui::TextDisabled("Coarse: 10,5,2,1 um   Fine: 2,1,0.5 um   (bobcat presets)");
+    }
+}
+
+// The software big-red-button (Jog window STOP). Order matters: abort every
+// orchestration owner FIRST so no engine issues the next move after the stop,
+// abandon any path leg, then hard-stop every motion device. NOT an E-stop
+// substitute: laser / PSU / IO outputs are untouched (killing those on the
+// hardware input is the SafetyWatch's job).
+void App::StopMachine()
+{
+    programRunner_.Stop();          // marks the queue dead + stops its engine run
+    recipeEngine_.RequestStop();    // direct recipe-editor runs
+    luaEngine_.RequestStop();       // scripts (XCAN / raster / Scripts page)
+    workflow_.CancelPathMove();     // path executor: stop device + abandon legs
+    workflow_.StopAllMotion();      // hard stop on every motion device
+    FD_WARN("ui", "STOP pressed: all motion stopped, orchestration aborted");
+}
+
+// Raster scan launcher: raster_scan.lua with the band's spans/steps; feedback
+// channel, Trace and the active exit-target slot are shared with the XCAN
+// band (one photodiode, one target). Axes stay at the script's defaults
+// (slow = X stepping down from start, fast = Y sweeping centered).
+void App::StartRasterScan(const std::string& device)
+{
+    std::string script = "config/scripts/raster_scan.lua";
+    for (const ScriptInfo& si : scripts_) {
+        if (si.name == "raster_scan") { script = si.path; break; }
+    }
+    LuaEngine::Env env;
+    env.positions = savedPos_;
+    env.maps      = motionMaps_;
+    env.library   = recipes_;
+    env.initialCtx = {
+        {"raster_device", device},
+        {"raster_topic", std::string(runXcanTopic_)},
+        {"raster_slow_span_um", rasterSlowSpanUm_},
+        {"raster_slow_step_um", rasterSlowStepUm_},
+        {"raster_fast_span_um", rasterFastSpanUm_},
+        {"raster_fast_step_um", rasterFastStepUm_},
+        {"raster_settle_ms", 150.0},
+        {"raster_trace", xcanTrace_ ? 1.0 : 0.0},
+        {"raster_exit_threshold", xcanTgtUa_[xcanTgtSel_] * 1e-6},
+    };
+    scriptStartErr_.clear();
+    if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
+        FD_WARN("script", "raster scan rejected: %s", scriptStartErr_.c_str());
+}
+
+// Raster tab of the Scan band: span/step knobs + per-hexapod Scan buttons.
+// Channel/Target/Trace live in the shared Scan-band header (DrawRunScanBlock).
+void App::DrawRunRasterBlock()
+{
+    const LuaEngine::Status st = luaEngine_.GetStatus();
+    const bool running = luaEngine_.Running();
+
+    // Knob row: X- span/step, Y span/step (um).
+    ImGui::TextDisabled("X- span/step");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(60.0f);
+    ImGui::InputDouble("##rss", &rasterSlowSpanUm_, 0.0, 0.0, "%.0f");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(50.0f);
+    ImGui::InputDouble("##rsp", &rasterSlowStepUm_, 0.0, 0.0, "%.1f");
+    ImGui::SameLine();
+    ImGui::TextDisabled("  Y+/- span/step");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(60.0f);
+    ImGui::InputDouble("##rfs", &rasterFastSpanUm_, 0.0, 0.0, "%.0f");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(50.0f);
+    ImGui::InputDouble("##rfp", &rasterFastStepUm_, 0.0, 0.0, "%.1f");
+    ImGui::SameLine();
+    ImGui::TextDisabled("um");
+    if (rasterSlowStepUm_ < 0.1) rasterSlowStepUm_ = 0.1;
+    if (rasterFastStepUm_ < 0.1) rasterFastStepUm_ = 0.1;
+    if (rasterSlowSpanUm_ < 0.0) rasterSlowSpanUm_ = 0.0;
+    if (rasterFastSpanUm_ < 0.0) rasterFastSpanUm_ = 0.0;
+
+    // Launch row: one Scan per hexapod + Stop; channel, Trace and the active
+    // Target slot (exit threshold) come from the shared Scan-band header.
+    const bool busy = OrchestrationBusy();
+    const auto scanBtn = [&](const char* dev) {
+        int idx = -1;
+        for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+            if (hardware_.MotionName(i) == dev) { idx = static_cast<int>(i); break; }
+        }
+        IMotionController* m =
+            idx >= 0 ? hardware_.MotionDevice(static_cast<std::size_t>(idx)) : nullptr;
+        ImGui::TextDisabled("%s", dev);
+        ImGui::SameLine();
+        ImGui::PushID(dev);
+        ImGui::BeginDisabled(busy || !m || !m->IsConnected());
+        if (ImGui::Button("Scan", ImVec2(70.0f, 0.0f))) StartRasterScan(dev);
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    };
+    scanBtn("hex-left");
+    ImGui::SameLine();
+    ImGui::TextDisabled(" | ");
+    ImGui::SameLine();
+    scanBtn("hex-right");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!running);
+    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) luaEngine_.RequestStop();
+    ImGui::EndDisabled();
+
+    // Status line: the running/last raster_scan result (shared engine ctx).
+    if (st.scriptName == "raster_scan") {
+        ImGui::Text("%s", LuaEngine::StateName(st.state));
+        for (const auto& [key, val] : st.ctx) {
+            if (key == "raster_baseline" || key == "raster_best" ||
+                key == "raster_points" || key == "raster_exit_hit" ||
+                key == "raster_best_slow_um" || key == "raster_best_fast_um") {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s=%s", key.c_str() + 7,   // strip "raster_"
+                                    CtxValueToString(val).c_str());
+            }
+        }
+        if (!st.error.empty() && st.state != LuaEngine::State::Running) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
+        }
+    } else {
+        ImGui::TextDisabled("Serpentine area scan: X steps down from start, Y sweeps +/- half span.");
     }
 }
 
@@ -3312,15 +3481,19 @@ void App::DrawJogPanel()
     const size_t                   di   = static_cast<size_t>(jogDevice_);
     dev->RequestFastPoll();   // keep positions fresh for accurate relative jogs
 
-    // --- Arm toggle + Stop (Stop is always active) ---
+    // --- Arm toggle + STOP (always active; the software big-red-button) ---
     ImGui::Checkbox("Arm", &jogArmed_);
     ImGui::SameLine();
     if (jogArmed_) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.20f, 1.0f), "ARMED");
     else           ImGui::TextDisabled("disarmed");
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.88f, 0.26f, 0.26f, 1.0f));
-    if (ImGui::Button("STOP", ImVec2(-FLT_MIN, 30.0f))) workflow_.StopMotion(di);
+    if (ImGui::Button("STOP", ImVec2(-FLT_MIN, 30.0f))) StopMachine();
     ImGui::PopStyleColor(2);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Stops ALL motion devices and aborts any running\n"
+                          "recipe / script / program / path move.\n"
+                          "(Laser, PSU and IO outputs are not touched.)");
     ImGui::Separator();
 
     DrawVelocityCombo(di);
