@@ -1,7 +1,20 @@
 // CommandSpec.cpp
 #include "command/CommandSpec.h"
 
+#include "command/ExecutionContext.h"
+
 namespace firedog {
+
+CommandResult ExecuteWithDelays(const CommandSpec& spec, ExecutionContext& ctx,
+                                const ParamValues& pv)
+{
+    const int pre = pv.GetInt("pre_delay_ms");
+    if (pre > 0 && !ctx.Sleep(pre)) return CommandResult::Fail("stopped");
+    const CommandResult r = spec.execute(ctx, pv);
+    const int post = pv.GetInt("post_delay_ms");
+    if (r.ok && post > 0 && !ctx.Sleep(post)) return CommandResult::Fail("stopped");
+    return r;
+}
 
 const char* ParamTypeName(ParamType t)
 {

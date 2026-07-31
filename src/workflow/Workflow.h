@@ -3,6 +3,7 @@
 // Device *objects* live in HardwareManager (layer 1); Workflow only drives them.
 #pragma once
 
+#include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
 #include "hardware/HardwareConfig.h"   // AxisTransform, HardwareConfig
 
 #include <atomic>
@@ -11,6 +12,7 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -152,6 +154,13 @@ public:
     void AcknowledgeSafety() { if (safetyWatch_) safetyWatch_->Acknowledge(); }
     void StopAllMotion();   // hard stop on every motion device
 
+    // ---- Taught-position hand-back (save_position command) ------------------
+    // Engines run on worker threads but saved positions are App-owned UI state:
+    // a command queues the taught position here; App::Update drains the queue
+    // on the UI thread, merges by name into savedPos_ and persists.
+    void QueueSavedPosition(const std::string& device, const SavedPos& p);
+    std::vector<std::pair<std::string, SavedPos>> TakeSavedPositions();
+
 private:
     void StartCamera(const HardwareConfig& hw);
     void LaunchCameraConnect();   // async connect from camCfg_ (Start + reconnect)
@@ -183,6 +192,10 @@ private:
         float       legTime = 0.0f;   // seconds spent on the current leg
     };
     void TickPath(float dt);   // called from Update()
+
+    // Taught-position queue (worker producers, UI-thread consumer).
+    std::mutex teachMu_;
+    std::vector<std::pair<std::string, SavedPos>> teachQueue_;
 
     // Motion is inhibited while a CRITICAL safety alert is unacknowledged.
     bool SafetyBlocked() const

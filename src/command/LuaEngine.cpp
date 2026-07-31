@@ -152,7 +152,8 @@ std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
                 const std::string ve = ValidateParams(*spec, params, &merged);
                 if (!ve.empty()) throw std::runtime_error(spec->name + ": " + ve);
                 if (engine) engine->NoteCommand(spec->name);
-                const CommandResult r = spec->execute(ctx, ParamValues(std::move(merged)));
+                const CommandResult r =
+                    ExecuteWithDelays(*spec, ctx, ParamValues(std::move(merged)));
                 if (!r.ok) throw std::runtime_error(spec->name + ": " + r.error);
             });
         }

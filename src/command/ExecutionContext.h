@@ -60,7 +60,7 @@ public:
     };
 
     ExecutionContext(Workflow& wf, HardwareManager& hw,
-                     const SavedPosMap& positions, const MotionMapSet& maps,
+                     SavedPosMap& positions, const MotionMapSet& maps,
                      Hooks hooks);
     ExecutionContext(const ExecutionContext&) = delete;
     ExecutionContext& operator=(const ExecutionContext&) = delete;
@@ -96,6 +96,13 @@ public:
     const SavedPos* FindPosition(const std::string& device, const std::string& uid) const;
     const MotionMap* FindMap(const std::string& device, const std::string& mapName) const;
 
+    // Teach: record `vals` as the device's saved position `name` — update by
+    // name (uid kept stable) or create. Mutates the RUN's copy, so later steps
+    // in this run move to the fresh values, and queues the position on Workflow
+    // for the UI thread to merge into the app set and persist.
+    void RecordPosition(const std::string& device, const std::string& name,
+                        const std::map<std::string, double>& vals);
+
     // ---- Operator prompts (block; false = cancelled or stopped) -------------
     bool AwaitPrompt(const std::string& message);
     bool AwaitInput(const std::string& message, std::string* textOut);
@@ -104,8 +111,9 @@ public:
 private:
     Workflow&           wf_;
     HardwareManager&    hw_;
-    const SavedPosMap&  positions_;   // owned by the engine's run Env
-    const MotionMapSet& maps_;        // (stable for the whole run)
+    SavedPosMap&        positions_;   // owned by the engine's run Env (worker-
+                                      // thread only; RecordPosition may mutate)
+    const MotionMapSet& maps_;        // stable for the whole run
     Hooks               hooks_;
 
     mutable std::mutex              ctxMu_;

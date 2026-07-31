@@ -107,4 +107,27 @@ struct CommandSpec {
 std::string ValidateParams(const CommandSpec& spec, const nlohmann::json& params,
                            nlohmann::json* merged = nullptr);
 
+// Shared mechanical-settle delays, appended to every command that physically
+// moves something (motion, IO outputs, pneumatics). Both default 0 = off:
+// pre_delay_ms runs BEFORE the action, post_delay_ms AFTER it completed
+// successfully. Honored centrally by ExecuteWithDelays — command exec fns
+// never read them.
+inline ParamSpec PreDelayParam()
+{
+    return {"pre_delay_ms", ParamType::Int, false, 0, 0, 60000, {},
+            "delay BEFORE the action (ms; 0 = none)"};
+}
+inline ParamSpec PostDelayParam()
+{
+    return {"post_delay_ms", ParamType::Int, false, 0, 0, 60000, {},
+            "delay AFTER the action completes (ms; 0 = none)"};
+}
+
+// The one choke point both executors (StepRunner + Lua bindings) call instead
+// of spec.execute directly: sleeps pre_delay_ms, runs the command, sleeps
+// post_delay_ms on success. Commands without the params merge them as absent
+// (GetInt = 0) — zero overhead. Sleeps are stop-interruptible.
+CommandResult ExecuteWithDelays(const CommandSpec& spec, ExecutionContext& ctx,
+                                const ParamValues& pv);
+
 } // namespace firedog

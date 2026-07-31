@@ -104,7 +104,7 @@ private:
     void DrawRecipePalette(Recipe& r, bool canEdit);       // searchable add-step column
     bool DrawParamWidget(const ParamSpec& p, nlohmann::json& params);  // schema form row
     bool DrawConditionEditor(nlohmann::json& cond);   // if / loop-while / wait_until
-    void DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues);
+    void DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues, float height);
     void DrawRecipePromptWindow();    // GLOBAL prompt (recipe + script) — non-modal, always on top
     void DrawManualAdjustWindow();    // GLOBAL manual_adjust jog window — non-modal, always on top
     // Programs page (View menu, full-page) — Phase C1: list/run .lua programs.

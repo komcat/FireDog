@@ -304,6 +304,26 @@ void App::Update(float dt)
     workflow_.Update(dt);        // layer 2 (kept for future orchestration)
     programRunner_.Tick();       // sequences program/slot runs between frames
     UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)
+
+    // Teach hand-backs from save_position steps (worker threads queue them on
+    // Workflow): merge by name — the app-side uid wins for existing names so
+    // recipe references stay stable — and persist once per batch.
+    const auto taught = workflow_.TakeSavedPositions();
+    if (!taught.empty()) {
+        for (const auto& [dev, sp] : taught) {
+            std::vector<SavedPos>& list = savedPos_[dev];
+            bool found = false;
+            for (SavedPos& e : list) {
+                if (std::string(e.name) == sp.name) {
+                    e.vals = sp.vals;
+                    found  = true;
+                    break;
+                }
+            }
+            if (!found) list.push_back(sp);
+        }
+        SavePositions();
+    }
 }
 
 namespace {
@@ -1807,6 +1827,9 @@ void App::DrawRecipeEditPanel()
     const float  leftW  = 230.0f;
     const float  rightW = 320.0f;
 
+    // ---- Top: run controls + state + progress (panes fill the rest) ----
+    DrawRecipeRunStrip(issues, stripH);
+
     // ---- Left: recipe list + CRUD ----
     ImGui::BeginChild("edRecipes", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
     ImGui::TextUnformatted("Recipes");
@@ -1943,8 +1966,6 @@ void App::DrawRecipeEditPanel()
     }
     ImGui::EndChild();
 
-    DrawRecipeRunStrip(issues);
-
     // ---- Unsaved-changes guard (Close button / Reload raise the flag) ----
     if (edConfirmAction_ != 0 && !ImGui::IsPopupOpen("Unsaved Changes"))
         ImGui::OpenPopup("Unsaved Changes");
@@ -2074,7 +2095,8 @@ std::string App::AutoNickname(const RecipeStep& s) const
     const auto skip = [](const std::string& n) {
         return n == "timeout_ms" || n == "leg_timeout_ms" || n == "tol_mm" ||
                n == "start_tol_mm" || n == "poll_ms" || n == "max_iterations" ||
-               n == "velocity_mm_s" || n == "exposure_us" || n == "settle_min_ms";
+               n == "velocity_mm_s" || n == "exposure_us" || n == "settle_min_ms" ||
+               n == "pre_delay_ms" || n == "post_delay_ms";
     };
     std::string out = s.type;
     const std::string dev = s.params.value("device", std::string());
@@ -2854,12 +2876,32 @@ void App::SaveRecipes()
 // clickable validation-issues list. Runs the recipe selected in the left
 // panel through the engine (positions/maps copied at Start, so mid-run edits
 // elsewhere in the UI can't disturb the run).
-void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues)
+void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues, float height)
 {
     const RecipeEngine::Status st = recipeEngine_.GetStatus();
     const bool running = recipeEngine_.Running();
-    ImGui::BeginChild("edRunStrip", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("edRunStrip", ImVec2(0.0f, height), ImGuiChildFlags_Borders);
 
+    // One row: state on the left, the run controls right-aligned. Errors get
+    // their own line below so a long message never collides with the buttons.
+    const float btnW  = 90.0f;
+    const float ctrlW = btnW * 4.0f + ImGui::GetStyle().ItemSpacing.x * 3.0f;
+    const float rightEdge =
+        ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("State: %s", RecipeEngine::StateName(st.state));
+    {
+        const DutSession::Info di = DutSession::Instance().GetInfo();
+        ImGui::SameLine();
+        ImGui::TextDisabled("| DUT: %s", di.open ? di.serial.c_str() : "none");
+    }
+    if (!st.currentStep.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("| %s", st.currentStep.c_str());
+    }
+
+    ImGui::SameLine(rightEdge - ctrlW);
     const bool canRun = !OrchestrationBusy() && recipeSel_ >= 0 &&
                         recipeSel_ < static_cast<int>(recipes_.size());
     ImGui::BeginDisabled(!canRun);
@@ -2910,23 +2952,10 @@ void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues)
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered() && RecipesDirty())
         ImGui::SetTooltip("Unsaved changes");
-    ImGui::SameLine();
-    ImGui::Text("State: %s", RecipeEngine::StateName(st.state));
-    {
-        const DutSession::Info di = DutSession::Instance().GetInfo();
-        ImGui::SameLine();
-        ImGui::TextDisabled("| DUT: %s", di.open ? di.serial.c_str() : "none");
-    }
-    if (!st.currentStep.empty()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("| %s", st.currentStep.c_str());
-    }
     if (!recipeStartErr_.empty()) {
-        ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "start rejected: %s",
                            recipeStartErr_.c_str());
     } else if (!st.error.empty() && st.state != RecipeEngine::State::Running) {
-        ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
     }
     if (st.leafTotal > 0) {

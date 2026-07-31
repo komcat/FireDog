@@ -332,6 +332,18 @@ void Workflow::StopAllMotion()
     }
 }
 
+void Workflow::QueueSavedPosition(const std::string& device, const SavedPos& p)
+{
+    const std::lock_guard<std::mutex> lock(teachMu_);
+    teachQueue_.emplace_back(device, p);
+}
+
+std::vector<std::pair<std::string, SavedPos>> Workflow::TakeSavedPositions()
+{
+    const std::lock_guard<std::mutex> lock(teachMu_);
+    return std::exchange(teachQueue_, {});
+}
+
 void Workflow::StartCamera(const HardwareConfig& hw)
 {
     const CameraConfig* cam = hw.FirstEnabledCamera();

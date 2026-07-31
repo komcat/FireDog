@@ -105,6 +105,8 @@ void RegisterIoCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
                       {"pin", PT::PinName, true, {}, 0, 0, {}, "output pin name",
                        PinDir::Output},
                       {"on", PT::Bool, true, {}, 0, 0, {}, "true = ON"},
+                      PreDelayParam(),
+                      PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecSetOutput});
 
@@ -115,6 +117,8 @@ void RegisterIoCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
                       {"pin", PT::PinName, true, {}, 0, 0, {}, "output pin name",
                        PinDir::Output},
                       {"ms", PT::Int, false, 100, 1, 60000, {}, "pulse width"},
+                      PreDelayParam(),
+                      PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecPulseOutput});
 

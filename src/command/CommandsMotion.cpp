@@ -506,6 +506,34 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       return CommandResult::Success();
                   }});
 
+    reg.Register({"save_position", "Motion",
+                  "Save the device's CURRENT position into a named saved position "
+                  "(updates by name keeping its uid; creates it if new)",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
+                      {"name", PT::String, true, {}, 0, 0, {},
+                       "saved-position name to update or create"},
+                  },
+                  CommandSpec::Needs::None,
+                  [](ExecutionContext& ctx, const ParamValues& p) {
+                      int idx = -1;
+                      std::string err;
+                      IMotionController* m =
+                          ResolveMotion(ctx, p.GetString("device"), &idx, &err);
+                      if (!m) return CommandResult::Fail(err);
+                      // The poll cache can be a second stale at the idle rate:
+                      // demand fast polling and wait out one fast cycle so the
+                      // taught values are the live post-move position.
+                      m->RequestFastPoll();
+                      if (!ctx.Sleep(120)) return CommandResult::Fail("stopped");
+                      const std::map<std::string, double> pos = m->Positions();
+                      if (pos.empty())
+                          return CommandResult::Fail("no live positions for '" +
+                                                     p.GetString("device") + "'");
+                      ctx.RecordPosition(p.GetString("device"), p.GetString("name"), pos);
+                      return CommandResult::Success();
+                  }});
+
     reg.Register({"move_to_position", "Motion",
                   "Coordinated absolute move to a saved position, wait for arrival",
                   {
@@ -515,6 +543,8 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
                       VelocityParam(),
                       ExposureParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToPosition});
 
@@ -530,6 +560,8 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
                       VelocityParam(),
                       ExposureParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToPositionOffset});
 
@@ -548,6 +580,8 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "final tolerance"},
                       VelocityParam(),
                       ExposureParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToPositionApproach});
 
@@ -563,6 +597,8 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"leg_timeout_ms", PT::Int, false, 120000, 100, 600000, {}, "per-leg timeout"},
                       VelocityParam(),
                       ExposureParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMovePath});
 
@@ -576,6 +612,8 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
                       VelocityParam(),
                       ExposureParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveRelative});
 
@@ -589,6 +627,8 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"timeout_ms", PT::Int, false, 30000, 100, 600000, {}, "settle timeout"},
                       VelocityParam(),
                       ExposureParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveRelativeGlobal});
 
@@ -603,6 +643,8 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   {
                       {"slide", PT::Slide, true, {}, 0, 0, {}, "slide name"},
                       {"timeout_ms", PT::Int, false, 0, 0, 0, {}, "0 = slide's configured timeout"},
+                      PreDelayParam(),
+                      PostDelayParam(),
                   },
                   CommandSpec::Needs::None,
                   [](ExecutionContext& c, const ParamValues& p) {
@@ -614,6 +656,8 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   {
                       {"slide", PT::Slide, true, {}, 0, 0, {}, "slide name"},
                       {"timeout_ms", PT::Int, false, 0, 0, 0, {}, "0 = slide's configured timeout"},
+                      PreDelayParam(),
+                      PostDelayParam(),
                   },
                   CommandSpec::Needs::None,
                   [](ExecutionContext& c, const ParamValues& p) {

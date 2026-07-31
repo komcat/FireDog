@@ -2,6 +2,8 @@
 #include "command/ExecutionContext.h"
 
 #include "core/DataBus.h"
+#include "core/Log.h"
+#include "core/Product.h"   // GenerateUid — a newly taught position's identity
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
 
@@ -25,10 +27,31 @@ std::string CtxValueToString(const CtxValue& v)
 }
 
 ExecutionContext::ExecutionContext(Workflow& wf, HardwareManager& hw,
-                                   const SavedPosMap& positions,
+                                   SavedPosMap& positions,
                                    const MotionMapSet& maps, Hooks hooks)
     : wf_(wf), hw_(hw), positions_(positions), maps_(maps), hooks_(std::move(hooks))
 {
+}
+
+void ExecutionContext::RecordPosition(const std::string& device,
+                                      const std::string& name,
+                                      const std::map<std::string, double>& vals)
+{
+    std::vector<SavedPos>& list = positions_[device];
+    SavedPos* tgt = nullptr;
+    for (SavedPos& sp : list)
+        if (name == sp.name) { tgt = &sp; break; }
+    if (!tgt) {
+        SavedPos np;
+        std::snprintf(np.name, sizeof(np.name), "%s", name.c_str());
+        np.uid = GenerateUid();
+        list.push_back(std::move(np));
+        tgt = &list.back();
+    }
+    tgt->vals = vals;
+    wf_.QueueSavedPosition(device, *tgt);
+    FD_INFO("recipe", "taught '%s' on %s (%zu axes)", tgt->name, device.c_str(),
+            vals.size());
 }
 
 bool ExecutionContext::ShouldStop() const

@@ -132,7 +132,7 @@ StepRunner::Outcome StepRunner::ExecLeaf(const RecipeStep& s, const std::string&
 
         CommandResult r;
         try {
-            r = spec->execute(ctx_, pv);
+            r = ExecuteWithDelays(*spec, ctx_, pv);
         } catch (const std::exception& e) {
             r = CommandResult::Fail(std::string("exception: ") + e.what());
         } catch (...) {
