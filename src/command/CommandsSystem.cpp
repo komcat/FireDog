@@ -243,7 +243,7 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
     reg.Register({"xcan", "Motion",
                   "Hexapod align scan (hexapod_align.lua): coarse-to-fine hill climb",
                   {
-                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "hexapod to scan"},
+                      {"device", PT::DeviceHexapod, true, {}, 0, 0, {}, "hexapod to scan"},
                       {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
                        "feedback signal"},
                       {"steps_um", PT::String, false, "10,5,2,1", 0, 0, {},
@@ -272,7 +272,7 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
     reg.Register({"raster_scan", "Motion",
                   "Serpentine area scan (raster_scan.lua): first-light search",
                   {
-                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "hexapod to scan"},
+                      {"device", PT::DeviceHexapod, true, {}, 0, 0, {}, "hexapod to scan"},
                       {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
                        "feedback signal"},
                       {"slow_span_um", PT::Double, false, 40.0, 1.0, 2000.0, {},

@@ -304,10 +304,15 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
         const std::string v = merged[p.name].get<std::string>();
         if (v.empty() && !p.required) continue;   // optional and unset (e.g. clear_latch pin)
         switch (p.type) {
-        case ParamType::DeviceMotion: {
+        case ParamType::DeviceMotion:
+        case ParamType::DeviceHexapod: {
             const int idx = MotionIdx(env.hw, v);
             if (idx < 0) {
                 Issue(env, where, path, "unknown motion device '" + v + "'");
+            } else if (p.type == ParamType::DeviceHexapod &&
+                       env.hw.MotionDevice(static_cast<std::size_t>(idx))->Type() != "PI") {
+                Issue(env, where, path,
+                      "'" + v + "' is not a PI hexapod (scan commands are PI-only)");
             } else if (env.requireConnected &&
                        env.hw.MotionState(static_cast<std::size_t>(idx)) != ConnState::Connected) {
                 Issue(env, where, path, "motion device '" + v + "' is not connected");

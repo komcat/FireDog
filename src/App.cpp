@@ -2561,6 +2561,7 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         break;
     }
     case ParamType::DeviceMotion:
+    case ParamType::DeviceHexapod:
     case ParamType::DeviceIo:
     case ParamType::Slide: {
         const std::string v = cur.is_string() ? cur.get<std::string>() : "";
@@ -2572,9 +2573,14 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
                     changed = true;
                 }
             };
-            if (p.type == ParamType::DeviceMotion) {
-                for (std::size_t i = 0; i < hardware_.MotionCount(); ++i)
+            if (p.type == ParamType::DeviceMotion ||
+                p.type == ParamType::DeviceHexapod) {
+                for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+                    if (p.type == ParamType::DeviceHexapod &&
+                        hardware_.MotionDevice(i)->Type() != "PI")
+                        continue;   // scan commands are PI-only
                     item(hardware_.MotionName(i));
+                }
             } else if (p.type == ParamType::DeviceIo) {
                 for (std::size_t i = 0; i < hardware_.IoCount(); ++i)
                     item(hardware_.IoName(i));
@@ -4426,9 +4432,22 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
     ImGui::TextUnformatted("XCAN active alignment (config/scripts/hexapod_align.lua)");
     ImGui::Separator();
 
-    // Device to scan: defaults to the page's selected device, changeable here.
-    if (xcanDevice_ < 0 || xcanDevice_ >= static_cast<int>(hardware_.MotionCount()))
-        xcanDevice_ = static_cast<int>(devIdx);
+    // Device to scan: PI hexapods only (the align algorithm relies on PI's
+    // verified settle — ACS reports settled immediately). Defaults to the
+    // page's selected device when that is a PI, else the first PI.
+    const auto isPi = [&](int i) {
+        return i >= 0 && i < static_cast<int>(hardware_.MotionCount()) &&
+               hardware_.MotionDevice(static_cast<std::size_t>(i))->Type() == "PI";
+    };
+    if (!isPi(xcanDevice_)) {
+        xcanDevice_ = isPi(static_cast<int>(devIdx)) ? static_cast<int>(devIdx) : -1;
+        for (std::size_t i = 0; xcanDevice_ < 0 && i < hardware_.MotionCount(); ++i)
+            if (isPi(static_cast<int>(i))) xcanDevice_ = static_cast<int>(i);
+    }
+    if (xcanDevice_ < 0) {
+        ImGui::TextDisabled("(no PI hexapod in the motion fleet)");
+        return;
+    }
     IMotionController* dev =
         hardware_.MotionDevice(static_cast<std::size_t>(xcanDevice_));
 
@@ -4438,6 +4457,7 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
     if (ImGui::BeginCombo("device", hardware_.MotionName(
                                         static_cast<std::size_t>(xcanDevice_)).c_str())) {
         for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+            if (!isPi(static_cast<int>(i))) continue;
             if (ImGui::Selectable(hardware_.MotionName(i).c_str(),
                                   xcanDevice_ == static_cast<int>(i)))
                 xcanDevice_ = static_cast<int>(i);

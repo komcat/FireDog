@@ -28,6 +28,9 @@ enum class ParamType {
     String,
     Value,          // free-typed: bool, number, or string (ctx values)
     DeviceMotion,   // motion fleet device name
+    DeviceHexapod,  // PI hexapod only (the hex-* devices) — scan algorithms
+                    // rely on PI's verified settle (IsSettled); ACS reports
+                    // settled immediately, so it must not be offered
     DeviceIo,       // IO fleet device name
     Slide,          // pneumatic slide name
     PositionUid,    // SavedPositions uid (resolved against the step's "device")
