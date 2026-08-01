@@ -157,6 +157,92 @@ else()
     message(WARNING "EziMOTIONPlusE SDK not found - Ezi-IO runs in simulated stub mode")
 endif()
 
+# ---- MVTec HALCON (vision) — optional ----
+# No fixed version and no single fixed path: HALCON is licensed per machine, so
+# whichever release the operator installed is the one to build against. The
+# search must therefore survive an upgrade (24.05 -> 25.05 -> ...) and a machine
+# that keeps several releases side by side, without anyone editing this file.
+#
+# Absence is normal and must stay cheap: FireDog links HALCON with /DELAYLOAD
+# (below), so an exe built WITH the SDK still starts on a machine that has no
+# HALCON at all. vision/HalconEngine probes the DLLs before calling anything.
+
+# Arch follows OUR build, never the environment. HALCONARCH describes the
+# machine's default install; an x86 preset must still link the 32-bit HALCON, and
+# silently linking the x64 libs into it is a link error at best.
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(HALCON_ARCH "x64-win64")
+else()
+    set(HALCON_ARCH "x86sse2-win32")
+endif()
+
+# Candidate roots, in priority order; the first one COMPLETE for our arch wins.
+#   1. -DHALCON_ROOT=<dir>          explicit override (CI, or a pinned version)
+#   2. external/halcon              vendored copy, same convention as Pylon/VISA
+#   3. $HALCONROOT                  what the installer sets on this machine
+#   4. newest HALCON-* under the standard install bases
+set(HALCON_ROOT "" CACHE PATH "MVTec HALCON install dir (empty = auto-detect)")
+set(_halcon_candidates "")
+if(HALCON_ROOT)
+    file(TO_CMAKE_PATH "${HALCON_ROOT}" _hc)
+    list(APPEND _halcon_candidates "${_hc}")
+endif()
+list(APPEND _halcon_candidates "${CMAKE_CURRENT_SOURCE_DIR}/external/halcon")
+if(DEFINED ENV{HALCONROOT})
+    file(TO_CMAKE_PATH "$ENV{HALCONROOT}" _hc)
+    list(APPEND _halcon_candidates "${_hc}")
+endif()
+
+# Standard install bases. MVTec's per-user installer lands in LOCALAPPDATA; the
+# machine-wide one in Program Files. Both are globbed for HALCON-<version>-<edition>
+# (e.g. HALCON-24.05-Progress, HALCON-22.11-Steady).
+foreach(_base "$ENV{LOCALAPPDATA}/Programs/MVTec" "$ENV{ProgramW6432}/MVTec"
+              "C:/Program Files/MVTec" "C:/Program Files (x86)/MVTec")
+    if(_base AND IS_DIRECTORY "${_base}")
+        file(GLOB _halcon_installs "${_base}/HALCON-*")
+        # Plain lexicographic sort, then reverse = newest first. HALCON versions
+        # have been two-digit YY.MM since 17.12, so this orders them correctly
+        # without needing COMPARE NATURAL (CMake 3.18+, above our floor of 3.14).
+        list(SORT _halcon_installs)
+        list(REVERSE _halcon_installs)
+        list(APPEND _halcon_candidates ${_halcon_installs})
+    endif()
+endforeach()
+list(REMOVE_DUPLICATES _halcon_candidates)
+
+set(HALCON_FOUND FALSE)
+set(_halcon_wrong_arch "")
+foreach(_cand IN LISTS _halcon_candidates)
+    if(NOT EXISTS "${_cand}/include/halconcpp/HalconCpp.h")
+        continue()
+    endif()
+    if(EXISTS "${_cand}/lib/${HALCON_ARCH}/halconcpp.lib" AND
+       EXISTS "${_cand}/lib/${HALCON_ARCH}/halcon.lib")
+        set(HALCON_ROOT_DIR    "${_cand}")
+        set(HALCON_INCLUDE_DIR "${_cand}/include")
+        set(HALCON_LIB_DIR     "${_cand}/lib/${HALCON_ARCH}")
+        set(HALCON_FOUND TRUE)
+        break()
+    endif()
+    # An install WITH headers but WITHOUT our arch is the interesting failure —
+    # remember it so the message can say so instead of "not found".
+    if(NOT _halcon_wrong_arch)
+        set(_halcon_wrong_arch "${_cand}")
+    endif()
+endforeach()
+
+if(HALCON_FOUND)
+    message(STATUS "HALCON SDK found: ${HALCON_ROOT_DIR} (${HALCON_ARCH})")
+elseif(_halcon_wrong_arch)
+    message(STATUS "HALCON found at ${_halcon_wrong_arch} but it has no ${HALCON_ARCH} "
+                   "libraries - HALCON-backed vision disabled for this preset "
+                   "(auto-focus is unaffected)")
+else()
+    message(STATUS "HALCON SDK not found (no HALCONROOT, no external/halcon, nothing "
+                   "under the MVTec install dirs) - HALCON-backed vision disabled; "
+                   "auto-focus is unaffected")
+endif()
+
 # Dear ImGui core + GLFW/OpenGL3 backends.
 add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -191,6 +277,8 @@ file(GLOB_RECURSE FIREDOG_HW_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/hardware/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/hardware/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vision/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vision/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/workflow/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/workflow/*.h")
 
@@ -242,6 +330,31 @@ if(EZIIO_FOUND)
     target_link_libraries(firedog_hw PUBLIC "${EZIIO_LIBRARY}")
 endif()
 
+# HALCON (vision/HalconEngine.cpp is the only TU that includes a HALCON header;
+# without HAS_HALCON it compiles its "built without the SDK" answer instead).
+#
+# /DELAYLOAD is the whole point of the arrangement: the DLLs are resolved on
+# first use, not at process start, so an exe built here still runs on a machine
+# with no HALCON installed. The link options are INTERFACE so both executables
+# inherit them from this library — per the project rule, SDK gating never gets
+# attached to an executable directly.
+if(HALCON_FOUND)
+    # The root and arch are baked in as the runtime's first DLL-probe candidate:
+    # they name the exact install these import libs came from, which is the one
+    # whose DLLs are certain to match. The environment is only the fallback.
+    target_compile_definitions(firedog_hw PUBLIC HAS_HALCON
+                               "FIREDOG_HALCON_ROOT=\"${HALCON_ROOT_DIR}\""
+                               "FIREDOG_HALCON_ARCH=\"${HALCON_ARCH}\"")
+    target_include_directories(firedog_hw SYSTEM PUBLIC "${HALCON_INCLUDE_DIR}")
+    target_link_libraries(firedog_hw PUBLIC
+        "${HALCON_LIB_DIR}/halconcpp.lib" "${HALCON_LIB_DIR}/halcon.lib")
+    if(MSVC)
+        target_link_libraries(firedog_hw PUBLIC delayimp.lib)
+        target_link_options(firedog_hw INTERFACE
+            "/DELAYLOAD:halconcpp.dll" "/DELAYLOAD:halcon.dll")
+    endif()
+endif()
+
 # ---- Runtime staging, shared by every executable ----
 # config/ next to the exe (every config path in the code is cwd-relative) plus
 # the vendor runtime DLLs. Both exes land in the same output directory, so the
@@ -283,9 +396,9 @@ file(GLOB_RECURSE FIREDOG_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
 
-# core/, hardware/ and workflow/ are compiled into firedog_hw and linked below —
-# compiling them a second time here would duplicate every symbol.
-list(FILTER FIREDOG_SOURCES EXCLUDE REGEX "/src/(core|hardware|workflow)/")
+# core/, hardware/, vision/ and workflow/ are compiled into firedog_hw and linked
+# below — compiling them a second time here would duplicate every symbol.
+list(FILTER FIREDOG_SOURCES EXCLUDE REGEX "/src/(core|hardware|vision|workflow)/")
 
 add_executable(FireDog
     FireDog.cpp

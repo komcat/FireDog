@@ -7,8 +7,10 @@
 #include "hardware/io/WagoIoDevice.h"
 #include "hardware/motion/PIHexapod.h"
 #include "hardware/motion/ACSController.h"
+#include "core/DataBus.h"
 #include "core/Topics.h"
 #include "core/Log.h"
+#include "vision/FocusMetric.h"
 
 #include <algorithm>
 #include <chrono>
@@ -715,6 +717,18 @@ void Workflow::Update(float dt)
         hw_.Slide(i)->Update();
     }
 
+    // Live focus score, only while something is watching it (the Jog window's
+    // Camera tab). Gated on the frame counter so a static feed costs nothing,
+    // and scored over the ROI, which keeps it well under a millisecond — this
+    // is compute, not a blocking call, so it is legal on the UI thread.
+    if (focusStream_.load()) {
+        const unsigned long long seq = hw_.Camera().FrameSeq();
+        if (seq != focusSeqSeen_) {
+            focusSeqSeen_ = seq;
+            MeasureFocus(focusRoiPx_.load());
+        }
+    }
+
     TickPath(dt);   // mapped-path executor (no-op unless a path is running)
 }
 
@@ -841,6 +855,55 @@ void Workflow::TickPath(float dt)
 const char* Workflow::StatusText() const
 {
     return hw_.AllConnected() ? "ready" : "connecting hardware...";
+}
+
+// ---- Vision: focus measure --------------------------------------------------
+
+unsigned long long Workflow::CameraFrameSeq() const
+{
+    return hw_.Camera().FrameSeq();
+}
+
+Workflow::FocusSample Workflow::MeasureFocus(int roiPx)
+{
+    FocusSample s;
+    s.roiPx = roiPx > 0 ? roiPx : 0;
+
+    // One frame copy + one score per call, under the lock: the auto-focus
+    // worker and the UI readout may both land here, and they share the scratch
+    // buffer. The copy is the expensive part (a few MB memcpy), not the score.
+    {
+        std::lock_guard<std::mutex> lock(focusMu_);
+        int w = 0, h = 0;
+        unsigned long long seq = 0;
+        if (!hw_.Camera().GetLatestFrameSeq(focusBuf_, w, h, seq) || w <= 0 || h <= 0)
+            return s;   // ok stays false — no frame yet
+
+        const FocusRoi roi = (roiPx > 0) ? CenteredRoi(w, h, roiPx, roiPx)
+                                         : CenteredRoi(w, h, 0, 0);
+        s.ok       = true;
+        s.width    = w;
+        s.height   = h;
+        s.frameSeq = seq;
+        s.score    = FocusScoreRgb(focusBuf_.data(), w, h, roi);
+        s.meanLuma = MeanLumaRgb(focusBuf_.data(), w, h, roi);
+        lastFocus_ = s;
+    }
+
+    DataBus::Instance().Stream(topics::kCameraFocus).Publish(NowSec(), s.score);
+    return s;
+}
+
+void Workflow::SetFocusStreaming(bool on, int roiPx)
+{
+    if (roiPx > 0) focusRoiPx_.store(roiPx);
+    focusStream_.store(on);
+}
+
+Workflow::FocusSample Workflow::LatestFocus() const
+{
+    std::lock_guard<std::mutex> lock(focusMu_);
+    return lastFocus_;
 }
 
 std::size_t Workflow::GantryIndex() const

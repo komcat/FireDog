@@ -47,6 +47,26 @@ inline constexpr StepSize kSteps[] = {
 };
 inline constexpr int kStepCount = static_cast<int>(sizeof(kSteps) / sizeof(kSteps[0]));
 
+// The ad-hoc recipe the Autofocus buttons start (Jog window Camera tab + Aux
+// window). Shared because BOTH surfaces match the engine's status against the
+// name to report only on their own run — the engine is also driven by the
+// Recipe Editor, the Run page and the programs.
+inline constexpr const char* kQuickAutoFocusName   = "Autofocus (gantry-main Z)";
+inline constexpr const char* kQuickAutoFocusDevice = "gantry-main";
+
+// Sweep directions the buttons offer: button label + the `direction` parameter
+// value the auto_focus command takes. Down-first because that is the usual
+// approach direction; the other two are here because a sweep whose peak lands
+// on an edge is telling you to look the other way.
+struct AfDirection { const char* label; const char* value; };
+inline constexpr AfDirection kAfDirections[] = {
+    {"Z-",   "minus"},
+    {"Z+",   "plus"},
+    {"Z+/-", "both"},
+};
+inline constexpr int kAfDirectionCount =
+    static_cast<int>(sizeof(kAfDirections) / sizeof(kAfDirections[0]));
+
 // Keithley 6482 fixed current ranges (full-scale amps, decades).
 struct KeiRange { const char* label; double amps; };
 inline constexpr KeiRange kKeiRanges[] = {

@@ -9,7 +9,10 @@
 // drawn while it is armed, since they describe the move a click would command.
 //
 // The Z arrows (gantry-main, up = Z-, down = Z+) are ordinary jog: they go
-// through Workflow::JogGantryZ and are gated by the shared jogArmed_ flag.
+// through Workflow::JogGantryZ and are gated by the shared jogArmed_ flag. The
+// Autofocus button beside them is the second launcher of the sweep the Jog
+// window's Camera tab owns — same App state, same StartQuickAutoFocus, so the
+// two can never disagree about what a sweep does.
 #include "App.h"
 
 #include "imgui.h"
@@ -167,6 +170,52 @@ void App::DrawAuxWindow()
         }
         ImGui::EndGroup();
         ImGui::EndDisabled();
+
+        // ---- Autofocus, over the live image -------------------------------
+        // The second launcher of the SAME sweep as the Jog window's Camera tab
+        // (shared App state, one StartQuickAutoFocus): this is where an operator
+        // actually is — watching the picture — when they decide focus is off.
+        // Range/step stay in the Camera tab; only the direction is here, because
+        // that is the knob a sweep ending on an edge tells you to change.
+        if (afDirIndex_ < 0 || afDirIndex_ >= kAfDirectionCount) afDirIndex_ = 0;
+        const bool afBusy  = orch_.Busy();
+        const bool afReady = jogArmed_ && !afBusy &&
+                             hardware_.CameraState() == ConnState::Connected;
+        char afLabel[40];
+        std::snprintf(afLabel, sizeof(afLabel), "Autofocus %s##auxAf",
+                      kAfDirections[afDirIndex_].label);
+        ImGui::BeginDisabled(!afReady);
+        if (ImGui::Button(afLabel)) StartQuickAutoFocus();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Sweep gantry-main Z (%s) %.2f mm from here in %.3f mm steps\n"
+                              "and stop at the sharpest Z. Range and step live in the\n"
+                              "Jog window's Camera tab. Needs Arm jog + a connected camera.",
+                              kAfDirections[afDirIndex_].value,
+                              static_cast<double>(afRangeMM_),
+                              static_cast<double>(afStepMM_));
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(72.0f);
+        if (ImGui::BeginCombo("##auxAfDir", kAfDirections[afDirIndex_].label)) {
+            for (int i = 0; i < kAfDirectionCount; ++i)
+                if (ImGui::Selectable(kAfDirections[i].label, afDirIndex_ == i)) afDirIndex_ = i;
+            ImGui::EndCombo();
+        }
+
+        // Progress for OUR run only — the engine is shared with every other
+        // Run surface, and this plate must not narrate somebody else's recipe.
+        const RecipeEngine::Status afStatus = orch_.recipe.GetStatus();
+        if (afStatus.recipeName == kQuickAutoFocusName) {
+            if (afStatus.state == RecipeEngine::State::Running) {
+                ImGui::TextUnformatted(afStatus.currentStep.c_str());
+                if (ImGui::Button("Stop##auxAf")) orch_.StopAll();
+            } else if (!afStatus.error.empty() &&
+                       (afStatus.state == RecipeEngine::State::Failed ||
+                        afStatus.state == RecipeEngine::State::Stopped)) {
+                ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s",
+                                   afStatus.error.c_str());
+            }
+        }
         ImGui::EndChild();
         ImGui::PopStyleColor();
 

@@ -8,6 +8,7 @@
 
 #include "command/CommandRegistry.h"
 #include "command/ExecutionContext.h"
+#include "command/MotionWaits.h"
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
@@ -17,9 +18,11 @@
 
 namespace firedog {
 
-namespace {
+// Same arrival rule as Workflow::TickPath. Declared in MotionWaits.h as
+// kMoveTolMM; the local alias keeps the schema tables below unchanged.
+constexpr double kDefaultTolMM = kMoveTolMM;
 
-constexpr double kDefaultTolMM = 0.01;   // same arrival rule as Workflow::TickPath
+// ---- Shared move waits (declared in MotionWaits.h; CommandsVision uses them) --
 
 // Wait until every targeted axis is within tolMM of its target. Keeps the
 // driver's fast-poll window open so the check runs on fresh positions.
@@ -78,6 +81,9 @@ IMotionController* ResolveMotion(ExecutionContext& ctx, const std::string& devic
     if (idxOut) *idxOut = idx;
     return m;
 }
+
+// ---- File-local from here on ------------------------------------------------
+namespace {
 
 // Position uid -> targets restricted to the device's axes.
 std::vector<std::pair<std::string, double>> TargetsOf(const SavedPos& p,

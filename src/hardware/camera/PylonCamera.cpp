@@ -39,6 +39,10 @@ struct PylonCamera::Impl {
     int                        width = 0;
     int                        height = 0;
     std::atomic<bool>          newFrame{false};
+    // Monotonic frame counter, bumped under frameMutex with every landed frame.
+    // Unlike newFrame it is never consumed, so several readers can each track
+    // freshness on their own (UI upload vs focus sampler).
+    unsigned long long         frameSeq = 0;
 
     // Identity strings are written by the (async) connect thread and read by
     // the UI's GetInfo() — guarded by metaMutex, like the frame buffer.
@@ -347,6 +351,7 @@ struct PylonCamera::Impl {
                         latestRGB.assign(buf, buf + sz);
                         width  = w;
                         height = h;
+                        ++frameSeq;   // under the lock: seq always matches the buffer
                     }
                     newFrame.store(true);
                 }
@@ -371,6 +376,24 @@ struct PylonCamera::Impl {
         isNew = newFrame.exchange(false);
         return true;
     }
+
+    bool GetLatestFrameSeq(std::vector<unsigned char>& out, int& w, int& h,
+                           unsigned long long& seq)
+    {
+        std::lock_guard<std::mutex> lock(frameMutex);
+        if (latestRGB.empty()) return false;
+        out = latestRGB;
+        w   = width;
+        h   = height;
+        seq = frameSeq;
+        return true;
+    }
+
+    unsigned long long FrameSeq() const
+    {
+        std::lock_guard<std::mutex> lock(frameMutex);
+        return frameSeq;
+    }
 };
 
 } // namespace firedog
@@ -378,6 +401,7 @@ struct PylonCamera::Impl {
 #else // ---------------- No Pylon SDK: animated test-pattern stub ----------------
 
 #include <atomic>
+#include <chrono>
 
 namespace firedog {
 
@@ -385,8 +409,13 @@ struct PylonCamera::Impl {
     std::atomic<bool>   connected{false};
     std::atomic<bool>   grabbing{false};
     std::atomic<double> exposureUs{10000.0};   // simulated setting
-    int         phase = 0;
     std::string lastError;
+
+    // The stub has no grab thread, so its frame sequence is synthetic: a ~30 Hz
+    // clock. It must advance on its own, or a consumer waiting for "N new
+    // frames" (the auto-focus gate) would wait forever in simulation.
+    const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    std::atomic<unsigned long long>             lastSeen{0};
 
     static constexpr double kExpoMin = 20.0, kExpoMax = 1000000.0;
 
@@ -428,13 +457,23 @@ struct PylonCamera::Impl {
     bool StartGrabbing() { if (!connected.load()) return false; grabbing.store(true); return true; }
     void StopGrabbing()  { grabbing.store(false); }
 
-    bool GetLatestFrame(std::vector<unsigned char>& out, int& w, int& h, bool& isNew)
+    unsigned long long FrameSeq() const
+    {
+        if (!grabbing.load()) return 0;
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+        return static_cast<unsigned long long>(ms / 33);   // ~30 fps
+    }
+
+    bool GetLatestFrameSeq(std::vector<unsigned char>& out, int& w, int& h,
+                           unsigned long long& seq)
     {
         if (!grabbing.load()) return false;
         const int W = 640, H = 480;
         w = W; h = H;
         out.resize(static_cast<size_t>(W) * H * 3);
-        const int ph = phase++;
+        seq = FrameSeq();
+        const int ph = static_cast<int>(seq & 0xFF);
         for (int y = 0; y < H; ++y) {
             for (int x = 0; x < W; ++x) {
                 const size_t i = (static_cast<size_t>(y) * W + x) * 3;
@@ -443,7 +482,14 @@ struct PylonCamera::Impl {
                 out[i + 2] = static_cast<unsigned char>((x + y) & 0xFF);
             }
         }
-        isNew = true;
+        return true;
+    }
+
+    bool GetLatestFrame(std::vector<unsigned char>& out, int& w, int& h, bool& isNew)
+    {
+        unsigned long long seq = 0;
+        if (!GetLatestFrameSeq(out, w, h, seq)) return false;
+        isNew = (lastSeen.exchange(seq) != seq);
         return true;
     }
 };
@@ -476,5 +522,13 @@ bool PylonCamera::GetLatestFrame(std::vector<unsigned char>& rgb, int& w, int& h
 {
     return p_->GetLatestFrame(rgb, w, h, isNew);
 }
+
+bool PylonCamera::GetLatestFrameSeq(std::vector<unsigned char>& rgb, int& w, int& h,
+                                    unsigned long long& seq)
+{
+    return p_->GetLatestFrameSeq(rgb, w, h, seq);
+}
+
+unsigned long long PylonCamera::FrameSeq() const { return p_->FrameSeq(); }
 
 } // namespace firedog

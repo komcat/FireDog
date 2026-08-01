@@ -6,6 +6,7 @@
 #include "core/DataBus.h"
 #include "core/Topics.h"
 #include "hardware/HardwareManager.h"
+#include "vision/HalconEngine.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -272,6 +273,38 @@ void PrintStatus(const RigSession& s)
                              : "NOT every configured device is connected") << "\n";
 }
 
+namespace {
+
+// HALCON is machine state rather than a configured device, so it is reported
+// unconditionally: "does this PC have a valid vision licence?" is a bring-up
+// question, and the rig is where bring-up questions get answered. Read-only,
+// like every other probe here — it only asks HalconEngine what it found.
+void ProbeVision()
+{
+    const HalconStatus& h = HalconEngine::Instance().Status();
+    Head("vision  HALCON");
+    Field("available",   Yes(h.Available()));
+    Field("compiled_in", Yes(h.compiledIn));
+    Field("runtime",     Yes(h.runtimeLoaded));
+    Field("licensed",    Yes(h.licensed));
+    Field("version",     h.version.empty() ? "(unknown)" : h.version);
+    Field("root",        h.root.empty() ? "(unset)" : h.root);
+    Field("license_dir", h.licenseDir.empty() ? "(unknown)" : h.licenseDir);
+    if (h.licenseFiles.empty()) {
+        Field("license_files", "(none)");
+    } else {
+        std::string joined;
+        for (const std::string& f : h.licenseFiles) {
+            if (!joined.empty()) joined += ", ";
+            joined += f;
+        }
+        Field("license_files", joined);
+    }
+    if (!h.error.empty()) Field("error", h.error);
+}
+
+} // namespace
+
 void PrintProbe(RigSession& s)
 {
     // Motion drivers poll slowly unless someone is asking; ask, then let every
@@ -289,6 +322,7 @@ void PrintProbe(RigSession& s)
     ProbeKeithley(s);
     ProbeCld(s);
     ProbePsu(s);
+    ProbeVision();
     std::cout << "\n";
 }
 

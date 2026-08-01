@@ -8,9 +8,11 @@
 
 #include "ui/Widgets.h"
 #include "core/Log.h"
+#include "vision/HalconEngine.h"
 
 #include <cfloat>
 #include <cstdio>
+#include <string>
 
 namespace firedog {
 
@@ -174,6 +176,41 @@ void App::DrawCameraInfoPanel()
     ImGui::TextDisabled("Calibration");
     ImGui::Text("X %.5f mm/px", pixelToMmX_);
     ImGui::Text("Y %.5f mm/px", pixelToMmY_);
+
+    // ---- HALCON: build / runtime / licence ---------------------------------
+    // Three independent gates, shown separately because they fail separately —
+    // "compiled in but not licensed" and "not built with the SDK" need
+    // different fixes, and only this panel can tell an operator which it is.
+    // Auto-focus does NOT depend on any of it (plain C++ focus metric).
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextDisabled("Vision (HALCON)");
+    const HalconStatus& hal = HalconEngine::Instance().Status();
+    const ImVec4 okCol(0.35f, 0.85f, 0.45f, 1.0f), badCol(0.95f, 0.45f, 0.35f, 1.0f);
+    ImGui::TextColored(hal.Available() ? okCol : badCol, "%s",
+                       hal.Available() ? "available" : "unavailable");
+    ImGui::TextColored(hal.compiledIn ? okCol : badCol, "%s", hal.compiledIn ? "[+]" : "[-]");
+    ImGui::SameLine(); ImGui::TextUnformatted("SDK compiled in");
+    ImGui::TextColored(hal.runtimeLoaded ? okCol : badCol, "%s", hal.runtimeLoaded ? "[+]" : "[-]");
+    ImGui::SameLine(); ImGui::TextUnformatted("runtime DLLs");
+    ImGui::TextColored(hal.licensed ? okCol : badCol, "%s", hal.licensed ? "[+]" : "[-]");
+    ImGui::SameLine(); ImGui::TextUnformatted("licence");
+    if (!hal.version.empty()) ImGui::TextDisabled("version %s", hal.version.c_str());
+    if (!hal.licenseFiles.empty()) {
+        ImGui::TextDisabled("%zu licence file(s):", hal.licenseFiles.size());
+        for (const std::string& f : hal.licenseFiles) ImGui::TextDisabled("  %s", f.c_str());
+    } else if (!hal.licenseDir.empty()) {
+        ImGui::TextDisabled("no *.dat in");
+        ImGui::TextWrapped("%s", hal.licenseDir.c_str());
+    }
+    if (!hal.error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, badCol);
+        ImGui::TextWrapped("%s", hal.error.c_str());
+        ImGui::PopStyleColor();
+    }
+    // Re-probe without restarting: the usual fix is dropping a .dat into the
+    // licence directory, and that should not cost a restart.
+    if (ImGui::SmallButton("Re-check")) HalconEngine::Instance().Refresh();
 }
 
 } // namespace firedog

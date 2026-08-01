@@ -33,7 +33,21 @@ public:
     // Copy the latest RGB8 frame into `rgb` (size w*h*3). Returns false if no
     // frame is available yet. `isNew` is true if this frame is fresh since the
     // last call.
+    //
+    // `isNew` is a ONE-SHOT flag: the first caller of a frame consumes it. With
+    // two consumers (the UI texture upload and the focus sampler) that races,
+    // so anything that must reason about frame freshness uses the sequence
+    // number below instead.
     bool GetLatestFrame(std::vector<unsigned char>& rgb, int& width, int& height, bool& isNew);
+
+    // Same copy, but reports the frame's monotonic sequence number instead of a
+    // consumable flag. `seq` only advances when a genuinely new frame arrived,
+    // so any number of consumers can gate on "seq > seen" independently — this
+    // is what the auto-focus sweep uses to prove a sample is post-move (the
+    // camera analogue of the DataBus publish counter).
+    bool GetLatestFrameSeq(std::vector<unsigned char>& rgb, int& width, int& height,
+                           unsigned long long& seq);
+    unsigned long long FrameSeq() const;   // cheap poll, no copy
 
     // One consistent snapshot of camera identity + live stats for the UI.
     struct Info {

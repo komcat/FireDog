@@ -134,6 +134,11 @@ a sample, then prints per kind:
 | keithley | IDN, VISA resource, NPLC, range, bias + output state, live ch1/ch2 |
 | cld101x | IDN, TEC/laser on-off, temperature (+validity), setpoints, live streams |
 | psu | IDN, per channel output state, setpoints, measured V/I, live streams |
+| vision | HALCON: available / compiled-in / runtime / licensed, version, root, licence dir + files, error |
+
+The `vision` block is machine state rather than a configured device, so it prints
+unconditionally — "does this PC have a valid HALCON licence?" is a bring-up
+question, and it needs no hardware to answer. See `docs/vision-layer.md`.
 
 Live values come from the DataBus topics in `core/Topics.h`; `(no samples)` means
 the poll thread has not produced one yet, which is itself a useful answer.

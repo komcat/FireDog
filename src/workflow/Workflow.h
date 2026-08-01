@@ -97,6 +97,36 @@ public:
     bool DisconnectCamera();     // stop grabbing + close (quick, synchronous)
     bool SetCameraExposure(double us);   // requires Connected
 
+    // ---- Vision: focus measure (layer 2 owns the sampling) ------------------
+    // The sharpness score the auto_focus command maximises, and the same number
+    // the UI can watch live while jogging Z by hand. Computed by
+    // vision/FocusMetric (plain C++) — it does NOT depend on HALCON, so focus
+    // works on a machine with no vision licence at all.
+    struct FocusSample {
+        bool               ok       = false;   // false = no frame available
+        double             score    = 0.0;     // Laplacian variance (relative)
+        double             meanLuma = 0.0;     // 0-255; catches a black/blown ROI
+        unsigned long long frameSeq = 0;       // camera frame this came from
+        int                width = 0, height = 0;   // frame size
+        int                roiPx = 0;          // ROI edge used (0 = whole frame)
+    };
+
+    // Grab the newest frame and score it; publishes topics::kCameraFocus.
+    // Thread-safe: the auto-focus worker and the UI both call it. roiPx <= 0
+    // scores the whole frame.
+    FocusSample MeasureFocus(int roiPx);
+
+    // Camera frame counter — the gate an auto-focus sample uses to prove it is
+    // looking at a post-move frame rather than one that straddled the travel.
+    unsigned long long CameraFrameSeq() const;
+
+    // Continuous focus sampling from Update() (UI thread). Off by default: it
+    // is only worth the per-frame cost while somebody is watching the number.
+    void SetFocusStreaming(bool on, int roiPx);
+    bool FocusStreaming() const { return focusStream_; }
+    int  FocusRoiPx() const { return focusRoiPx_; }
+    FocusSample LatestFocus() const;
+
     // ---- Keithley commands (Keithley page) ----------------------------------
     // Reconnect rebuilds the driver from the config captured at Start; the
     // runtime setters require Connected and are safe against the poll loop.
@@ -228,6 +258,17 @@ private:
     // Camera config captured at Start so the Camera page can reconnect later.
     CameraConfig camCfg_;
     bool         camCfgValid_ = false;
+
+    // Focus sampling. MeasureFocus runs on whichever thread asks (UI readout or
+    // the auto-focus worker), so the scratch buffer and the last result are
+    // mutex-guarded; the two knobs are atomic because Update() reads them every
+    // frame while the UI writes them.
+    mutable std::mutex         focusMu_;
+    std::vector<unsigned char> focusBuf_;      // frame scratch, reused
+    FocusSample                lastFocus_;
+    std::atomic<bool>          focusStream_{false};
+    std::atomic<int>           focusRoiPx_{256};
+    unsigned long long         focusSeqSeen_ = 0;   // Update(): last frame scored
 
     // Keithley config captured at Start (same pattern as the camera).
     KeithleyConfig keiCfg_;

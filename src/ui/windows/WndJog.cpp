@@ -3,7 +3,12 @@
 //
 // The window has two tabs: "Jog" (the motion fleet) and "Camera" (the camera
 // fleet — device combo + the Camera page's exposure controls, reused rather
-// than copied so the seed/apply rule lives in one place).
+// than copied so the seed/apply rule lives in one place, plus the live focus
+// score and the Autofocus button).
+//
+// The Autofocus button does NOT sweep inline: it starts the `auto_focus`
+// command as a one-step ad-hoc recipe on the engine worker, because the sweep
+// blocks for tens of seconds and the UI thread may never block.
 //
 // Jog KINEMATICS are not here: the UI only picks a device, a step and a
 // direction, and Workflow::JogGlobal maps that through the device's
@@ -19,6 +24,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 
 namespace firedog {
 
@@ -54,10 +60,15 @@ void App::DrawJogWindow()
     ImGui::End();
 }
 
-// Camera tab of the Jog window: pick the camera, then set its exposure. The
-// exposure widgets are the Camera page's (DrawCameraExposureControls), so both
-// surfaces share one seeding rule and one apply path. Connect/disconnect stays
-// on the Camera page — this tab only tunes a camera that is already up.
+// Camera tab of the Jog window: pick the camera, set its exposure, watch the
+// live focus score, run an autofocus sweep. The exposure widgets are the Camera
+// page's (DrawCameraExposureControls), so both surfaces share one seeding rule
+// and one apply path. Connect/disconnect stays on the Camera page — this tab
+// only tunes a camera that is already up.
+//
+// The order is the bring-up order: get a camera, get the exposure right (the
+// luma warning says when it is not), confirm the score responds, then let the
+// sweep use it.
 void App::DrawJogCameraTab()
 {
     // Device combo. HardwareManager owns a single Pylon camera today, so this
@@ -75,6 +86,139 @@ void App::DrawJogCameraTab()
     ImGui::Separator();
     ImGui::TextUnformatted("Exposure");
     DrawCameraExposureControls();
+
+    // ---- Live focus score ---------------------------------------------------
+    // The same measure auto_focus maximises (Laplacian variance over a centred
+    // ROI), sampled per frame while this is ticked. Two uses: sanity-check the
+    // ROI and exposure before trusting a sweep, and watch the number peak while
+    // jogging Z by hand. Off by default — it costs a score per frame.
+    ImGui::Separator();
+    ImGui::TextUnformatted("Focus");
+    bool stream = workflow_.FocusStreaming();
+    if (ImGui::Checkbox("Live score", &stream)) workflow_.SetFocusStreaming(stream, focusRoiPx_);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    constexpr int kRois[] = {0, 128, 256, 512, 1024};
+    char roiLabel[24];
+    if (focusRoiPx_ > 0) std::snprintf(roiLabel, sizeof(roiLabel), "%d px", focusRoiPx_);
+    else                 std::snprintf(roiLabel, sizeof(roiLabel), "full frame");
+    if (ImGui::BeginCombo("##focusroi", roiLabel)) {
+        for (int r : kRois) {
+            char b[24];
+            if (r > 0) std::snprintf(b, sizeof(b), "%d px", r);
+            else       std::snprintf(b, sizeof(b), "full frame");
+            if (ImGui::Selectable(b, focusRoiPx_ == r)) {
+                focusRoiPx_ = r;
+                workflow_.SetFocusStreaming(workflow_.FocusStreaming(), focusRoiPx_);
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    const Workflow::FocusSample f = workflow_.LatestFocus();
+    if (!stream) {
+        ImGui::TextDisabled("not sampling");
+    } else if (!f.ok) {
+        ImGui::TextDisabled("waiting for frames...");
+    } else {
+        ImGui::Text("%.1f", f.score);
+        // Mean luma is the guard rail: a blown-out or black ROI makes the score
+        // meaningless, and exposure is right above to fix it.
+        if (f.meanLuma > 250.0 || f.meanLuma < 5.0)
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
+                               "luma %.0f - check exposure", f.meanLuma);
+        else
+            ImGui::TextDisabled("luma %.0f   frame %llu", f.meanLuma, f.frameSeq);
+    }
+
+    // ---- Autofocus (gantry-main Z, downward sweep) --------------------------
+    // Real motion, so it follows the same arming rule as jog, and it gates on
+    // orch_.Busy() like every other Run/Go surface. The sweep itself runs on the
+    // engine worker as a one-step ad-hoc recipe — it blocks for tens of seconds,
+    // which must never happen on the UI thread.
+    ImGui::Separator();
+    ImGui::TextUnformatted("Autofocus");
+    ImGui::SetNextItemWidth(90.0f);
+    ImGui::DragFloat("range mm", &afRangeMM_, 0.01f, 0.01f, 10.0f, "%.2f");
+    ImGui::SetNextItemWidth(90.0f);
+    ImGui::DragFloat("step mm", &afStepMM_, 0.001f, 0.001f, 1.0f, "%.3f");
+    if (afDirIndex_ < 0 || afDirIndex_ >= kAfDirectionCount) afDirIndex_ = 0;
+    ImGui::SetNextItemWidth(90.0f);
+    if (ImGui::BeginCombo("direction", kAfDirections[afDirIndex_].label)) {
+        for (int i = 0; i < kAfDirectionCount; ++i)
+            if (ImGui::Selectable(kAfDirections[i].label, afDirIndex_ == i)) afDirIndex_ = i;
+        ImGui::EndCombo();
+    }
+
+    const bool afBusy = orch_.Busy();
+    const bool afReady = jogArmed_ && !afBusy && st == ConnState::Connected;
+    char afLabel[32];
+    std::snprintf(afLabel, sizeof(afLabel), "Autofocus  %s", kAfDirections[afDirIndex_].label);
+    ImGui::BeginDisabled(!afReady);
+    if (ImGui::Button(afLabel, ImVec2(-FLT_MIN, 0.0f))) StartQuickAutoFocus();
+    ImGui::EndDisabled();
+    // AllowWhenDisabled: the tooltip is most useful exactly when the button is
+    // greyed out.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Sweep gantry-main Z (%s) %.2f mm from here in %.3f mm\n"
+                          "steps, scoring each step, then stop at the sharpest Z.\n"
+                          "Needs Arm (Jog tab) and a connected camera.",
+                          kAfDirections[afDirIndex_].value,
+                          static_cast<double>(afRangeMM_), static_cast<double>(afStepMM_));
+
+    // Why the button is unavailable, rather than a dead grey rectangle.
+    if (!jogArmed_)                        ImGui::TextDisabled("arm jog first (Jog tab)");
+    else if (st != ConnState::Connected)   ImGui::TextDisabled("camera not connected");
+    else if (afBusy)                       ImGui::TextDisabled("another run is active");
+
+    // Progress + result, but only for OUR run: the engine is shared, and a
+    // recipe someone else started has no business reporting in this tab.
+    const RecipeEngine::Status rs = orch_.recipe.GetStatus();
+    if (rs.recipeName == kQuickAutoFocusName) {
+        if (rs.state == RecipeEngine::State::Running) {
+            ImGui::TextUnformatted(rs.currentStep.c_str());
+            // STOP lives on the Jog tab, but a run started here should be
+            // stoppable from here too.
+            if (ImGui::Button("Stop##af", ImVec2(-FLT_MIN, 0.0f))) orch_.StopAll();
+        } else if (!rs.error.empty() && (rs.state == RecipeEngine::State::Failed ||
+                                         rs.state == RecipeEngine::State::Stopped)) {
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", rs.error.c_str());
+        } else if (rs.state == RecipeEngine::State::Completed) {
+            ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "focused");
+        }
+    }
+    if (!afErr_.empty())
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", afErr_.c_str());
+}
+
+// Build the one-step recipe and hand it to the engine — the same "Run Step"
+// mechanism the Recipe Editor uses, so validation (device known, camera
+// Connected, params in range) is the engine's, not a second copy here.
+void App::StartQuickAutoFocus()
+{
+    afErr_.clear();
+    if (afDirIndex_ < 0 || afDirIndex_ >= kAfDirectionCount) afDirIndex_ = 0;
+
+    RecipeStep step;
+    step.type     = "auto_focus";
+    step.nickname = std::string("Autofocus ") + kAfDirections[afDirIndex_].label;
+    step.params   = {
+        {"device", kQuickAutoFocusDevice},
+        {"axis", "Z"},
+        {"direction", kAfDirections[afDirIndex_].value},
+        {"z_range_mm", static_cast<double>(afRangeMM_)},
+        {"z_step_mm", static_cast<double>(afStepMM_)},
+        {"roi_px", focusRoiPx_},
+        {"trace", true},                  // one CSV line per sample into the log
+    };
+
+    Recipe one;
+    one.uid  = "quick-autofocus";
+    one.name = kQuickAutoFocusName;
+    one.steps.push_back(std::move(step));
+
+    if (!orch_.recipe.Start(one, session_.MakeRecipeEnv(), &afErr_))
+        FD_WARN("vision", "autofocus not started: %s", afErr_.c_str());
 }
 
 // Jog controls (its own window). Buttons + W/D·A/S·R/F keys route through the

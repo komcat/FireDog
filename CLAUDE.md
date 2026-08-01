@@ -23,10 +23,11 @@ out/build/x64-debug/FireDogRig.exe   # console hardware bring-up rig
 ```
 
 Three targets: **`firedog_hw`** (static lib — `src/core` + `src/hardware` +
-`src/workflow`, and where all vendor-SDK gating lives), **`FireDog`** (the GUI
-client), **`FireDogRig`** (the console rig, sources in `tools/rig/`).
+`src/vision` + `src/workflow`, and where all vendor-SDK gating lives),
+**`FireDog`** (the GUI client), **`FireDogRig`** (the console rig, sources in
+`tools/rig/`).
 
-CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first configure needs network). Vendor SDKs are optional, each gated by a compile def (`HAS_PYLON`/`HAS_VISA`/`HAS_PI`/`HAS_ACS`/`HAS_EZIIO`) with a simulated stub fallback, so the build always stays green — details in `docs/build-and-sdks.md`.
+CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first configure needs network). Vendor SDKs are optional, each gated by a compile def (`HAS_PYLON`/`HAS_VISA`/`HAS_PI`/`HAS_ACS`/`HAS_EZIIO`/`HAS_HALCON`) with a simulated stub fallback, so the build always stays green — details in `docs/build-and-sdks.md`.
 
 **The user compiles and tests themselves** (global preference). Do **not** run `cmake --build …` or launch the app — `cmake --preset` is fine; leave building and running to the user.
 
@@ -35,6 +36,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 | Layer | Path | Role | Topic doc |
 |---|---|---|---|
 | 1 — Hardware | `src/hardware/` | drivers + interfaces; `HardwareManager` owns every device | `docs/hardware-layer.md` |
+| 1.5 — Vision | `src/vision/` | focus metric (plain C++) + HALCON availability/licence | `docs/vision-layer.md` |
 | 2 — Workflow | `src/workflow/` | builds devices from config, drives connect/poll, jog kinematics, motion/IO commands, safety | `docs/architecture.md` |
 | 2.5 — Commands | `src/command/` | `CommandRegistry`, `RecipeEngine`, `LuaEngine`, `Orchestration` | `docs/command-layer.md` |
 | — Document | `src/session/` | `ProductSession`: product + positions + maps + recipes + programs + scripts | `docs/state-and-config.md` |
@@ -44,7 +46,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 ### Topic docs (`docs/`)
 
 **Reference — how it works now:**
-`architecture.md` (layering + ownership) · `build-and-sdks.md` (**targets + SDK gating**) · `hardware-layer.md` (per-device drivers) · `state-and-config.md` (config files, persistence, DataBus) · `command-layer.md` (registry, recipes, Lua) · `run-and-dut.md` (programs, Run page, traceability) · `ui-layer.md` · `ui-file-layout.md` (**where UI code goes**) · `rig-console.md` (the FireDogRig console)
+`architecture.md` (layering + ownership) · `build-and-sdks.md` (**targets + SDK gating**) · `hardware-layer.md` (per-device drivers) · `vision-layer.md` (focus metric, auto-focus, HALCON) · `state-and-config.md` (config files, persistence, DataBus) · `command-layer.md` (registry, recipes, Lua) · `run-and-dut.md` (programs, Run page, traceability) · `ui-layer.md` · `ui-file-layout.md` (**where UI code goes**) · `rig-console.md` (the FireDogRig console)
 
 **Design rationale — why it is that way:**
 `recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
@@ -83,6 +85,12 @@ Breaking any of these is a defect, not a style choice.
 - All drivers are PIMPL: **vendor headers never leak into ours**, and each has a same-API simulated stub for when the SDK is absent.
 - **IO pin addressing is normalized: bit i == pin i for BOTH inputs and outputs.** Vendor bit layouts are translated inside the driver; a shifted value must never cross the interface.
 - **Keithley 6482:** read with `:READ?` each iteration. Do **not** set `:INIT:CONT ON` or read with `:FETC?` (every `:READ?` then raises -213 and the stream stalls at 0 Hz), and do not add a fixed inter-read sleep. Sample rate is governed by NPLC, not the poll interval.
+
+### Vision
+- **Auto-focus must never depend on HALCON.** The focus measure is plain C++ (`vision/FocusMetric`); a licence problem degrades inspection, never alignment.
+- **`vision/HalconEngine.cpp` is the only TU that includes a HALCON header**, and nothing else may call HALCON without asking it first. Probe the DLLs with `LoadLibrary` **before** any HALCON call — the SDK is `/DELAYLOAD`ed, and a missing delay-loaded import raises an SEH exception that `catch` does not handle.
+- **Frame freshness uses `PylonCamera::FrameSeq()`, never `isNew`** — `isNew` is one-shot, so the first of two consumers eats it.
+- Move waits live in `command/MotionWaits.h`. Do **not** write a second arrival/settle helper in a new command file; the two-signal settle rule is what makes a scan sample trustworthy.
 
 ### UI
 - **Page state stays an `App` member.** New file-scope *mutable* state in a page TU is a bug — UiSettings persistence and cross-page sharing both read App members.

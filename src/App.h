@@ -91,6 +91,9 @@ private:
     void DrawJogWindow();      // undocked Jog window (toggled from View menu)
     void DrawJogPanel();       // jog controls: device/velocity/step/direction/keys
     void DrawJogCameraTab();   // Jog window "Camera" tab: camera combo + exposure
+    // Camera tab Autofocus button: runs the auto_focus command as a one-step
+    // ad-hoc recipe on the engine worker (the sweep blocks; the UI must not).
+    void StartQuickAutoFocus();
     void DrawVelocityCombo(std::size_t di);   // shared velocity combo (Jog + Motion page)
     // Camera page — the (single) Pylon camera.
     void DrawCameraListPanel();    // left:   status + connect/disconnect
@@ -334,6 +337,20 @@ private:
     bool showChart_       = true;
     bool enableClickMove_ = false;
     int  auxZStepIndex_   = 2;   // index into kAuxZSteps (WndAux.cpp), default 100um
+
+    // Focus ROI for the live score in the Jog window's Camera tab (px, square;
+    // 0 = whole frame). The same value the auto_focus command takes as roi_px —
+    // watch the number here, then put it in the recipe step.
+    int focusRoiPx_ = 256;
+
+    // Autofocus buttons (Jog window Camera tab + Aux window): sweep distance,
+    // step (mm), direction (index into kAfDirections) and the last start
+    // rejection. Shared App state, so both surfaces launch the SAME sweep and
+    // a range widened in one is the range the other uses.
+    float       afRangeMM_  = 0.5f;
+    float       afStepMM_   = 0.025f;
+    int         afDirIndex_ = 0;   // 0 = Z- (down), see kAfDirections
+    std::string afErr_;
 
     // Window visibility (View menu) + jog arming.
     bool showAux_  = true;

@@ -10,6 +10,12 @@ namespace firedog::topics {
 inline constexpr const char* kKeithleyCh1 = "keithley/ch1";
 inline constexpr const char* kKeithleyCh2 = "keithley/ch2";
 
+// Camera sharpness score (Laplacian variance over the focus ROI), published by
+// Workflow — continuously while focus sampling is on, and once per sample
+// during an auto_focus sweep. Relative units: comparable only within one scene
+// at one exposure, which is exactly the Z-sweep case.
+inline constexpr const char* kCameraFocus = "camera/focus";
+
 // CLD101x laser controller streams: temperature in deg C, laser current in mA
 // (display units — unlike the Keithley topics, which publish amps).
 inline constexpr const char* kCldTemp    = "cld/temp";

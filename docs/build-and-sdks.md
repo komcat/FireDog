@@ -10,6 +10,7 @@ CMake + Ninja + MSVC (`cl.exe`), **Windows only**. Dependencies are fetched at c
 - **PI GCS2** (`HAS_PI`) — hexapods. Vendored in `external/PI` (header + import lib; DLL copied next to the exe).
 - **ACS ACSC** (`HAS_ACS`) — gantry. Vendored in `external/ACS`; links `ws2_32`.
 - **FASTECH EziMOTIONPlusE** (`HAS_EZIIO`) — Ezi-IO boards. Vendored in `external/eziio` (DLL copied next to the exe).
+- **MVTec HALCON** (`HAS_HALCON`) — vision. **No vendored copy** (licensed per machine): located via the `HALCONROOT` / `HALCONARCH` environment the installer sets, expecting `<root>/include/halconcpp/HalconCpp.h` and `<root>/lib/<arch>/halconcpp.lib`. Linked with **`/DELAYLOAD`** (INTERFACE on `firedog_hw`) so an exe built with the SDK still starts where HALCON is absent; `vision/HalconEngine` probes the DLLs with `LoadLibrary` before any call and checks the licence with a real operator. Auto-focus does **not** use it — see `docs/vision-layer.md`.
 
 WAGO needs no SDK — it speaks Modbus TCP over raw winsock.
 
@@ -24,12 +25,12 @@ out/build/x64-debug/FireDogRig.exe   # run the console bring-up rig
 Three, from the one root `CMakeLists.txt`:
 
 - **`firedog_hw`** (STATIC) — the UI-free layers: `src/core`, `src/hardware`,
-  `src/workflow`. **All vendor-SDK gating lives here**, as PUBLIC compile
+  `src/vision`, `src/workflow`. **All vendor-SDK gating lives here**, as PUBLIC compile
   definitions / include dirs / link libraries, because `HardwareManager.h` pulls
   `PylonCamera.h` & co into the UI translation units and the `HAS_*` defs must
   reach every consumer. Add a new SDK by extending the detection block *and* the
   matching `if(..._FOUND)` block on this library — not on an executable.
-- **`FireDog`** — the GUI client. Globs `src/**` and filters out the three
+- **`FireDog`** — the GUI client. Globs `src/**` and filters out the four
   directories above (they arrive via `firedog_hw`), adds GLFW/ImGui/ImPlot/Lua.
 - **`FireDogRig`** — the console bring-up rig (`tools/rig/`, see
   `docs/rig-console.md`). Links `firedog_hw` and nothing else.

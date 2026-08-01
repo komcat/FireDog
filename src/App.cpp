@@ -15,6 +15,7 @@
 #include "ui/Widgets.h"
 #include "command/Commands.h"
 #include "core/Log.h"
+#include "vision/HalconEngine.h"
 
 #include <cstddef>
 #include <string>
@@ -109,6 +110,11 @@ int App::Run()
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
     RegisterBuiltinCommands(orch_.registry, workflow_, hardware_);   // layer 2.5
     FD_INFO("command", "%zu command(s) registered", orch_.registry.Count());
+    // Probe HALCON once at startup (build / runtime DLLs / licence) so its
+    // state is in the log band from the first frame rather than only when
+    // somebody opens the Camera page. It never blocks bring-up: auto-focus and
+    // every non-HALCON path work regardless of the answer.
+    HalconEngine::Instance();
 
     double prev = host_.Time();
     while (!host_.ShouldClose()) {
