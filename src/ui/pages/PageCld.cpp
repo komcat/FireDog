@@ -11,6 +11,7 @@
 #include "core/Log.h"
 #include "core/Topics.h"
 
+#include <cfloat>
 #include <cstdio>
 
 namespace firedog {

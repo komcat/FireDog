@@ -12,6 +12,7 @@
 #include "ui/Widgets.h"
 #include "core/Log.h"
 
+#include <cstdint>
 #include <cstdio>
 
 namespace firedog {
@@ -196,6 +197,20 @@ void App::DrawIoInputPanel()
     ImGui::Spacing();
     if (ImGui::SmallButton("Clear latch")) {
         workflow_.ClearIoLatch(static_cast<size_t>(selectedIo_), ~0ull);
+    }
+}
+
+// Position -> display color for the Pneumatics page.
+static ImVec4 SlideColor(SlidePosition p)
+{
+    switch (p) {
+        case SlidePosition::Extended:      return ImVec4(0.40f, 0.90f, 0.50f, 1.0f);
+        case SlidePosition::Retracted:     return ImVec4(0.85f, 0.88f, 0.90f, 1.0f);
+        case SlidePosition::Extending:
+        case SlidePosition::Retracting:    return ImVec4(0.95f, 0.80f, 0.30f, 1.0f);
+        case SlidePosition::HardwareError:
+        case SlidePosition::Timeout:       return ImVec4(0.95f, 0.40f, 0.40f, 1.0f);
+        default:                           return ImVec4(0.60f, 0.60f, 0.60f, 1.0f);
     }
 }
 

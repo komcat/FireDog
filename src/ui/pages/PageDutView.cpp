@@ -12,6 +12,7 @@
 #include "core/DutSession.h"
 #include "core/Log.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>

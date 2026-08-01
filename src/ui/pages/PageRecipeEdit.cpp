@@ -13,6 +13,7 @@
 
 #include "ui/Widgets.h"
 #include "core/Log.h"
+#include "core/DutSession.h"
 
 #include <algorithm>
 #include <cctype>

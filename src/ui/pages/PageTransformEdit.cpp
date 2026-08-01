@@ -12,7 +12,10 @@
 #include "ui/Widgets.h"
 #include "core/Log.h"
 
+#include <cfloat>
+#include <cmath>
 #include <cstdio>
+#include <filesystem>
 
 namespace firedog {
 

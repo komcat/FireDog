@@ -13,9 +13,11 @@
 
 #include "ui/Widgets.h"
 #include "core/Log.h"
+#include "core/DutSession.h"
 
 #include <cstdio>
 #include <fstream>
+#include <set>
 #include <string>
 
 namespace firedog {

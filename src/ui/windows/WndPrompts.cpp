@@ -14,6 +14,7 @@
 #include "ui/Widgets.h"
 #include "core/Log.h"
 
+#include <cmath>
 #include <cstdio>
 
 namespace firedog {

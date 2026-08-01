@@ -177,19 +177,27 @@ ProductSession (this is the concrete reason state goes first).
    `ResetDocumentSelections()` + `SyncScriptSelection()`.
 7. ~~`MakeRecipeEnv/MakeLuaEnv` replace the six Env sites.~~ There were **seven**.
 
-**Phase 3 — UI file split** (pure moves; verify `--color-moved`) — NEXT
-8. Widgets.{h,cpp} extraction (MUST precede page moves — three tables serve two future
-   TUs each: kKeiRanges, kSteps, kFonts; copying instead of hoisting = silent drift).
-9. PageCamera, PageCld, PagePsu (lowest coupling).
-10. PageKeithley + chart cluster.
-11. PageIo (+ pneumatic).
-12. WndJog, WndAux, WndPrompts.
-13. PageWatchEdit, PageTransformEdit, PageScripts, PageDutView.
-14. PageMotion + PageMotionMap.
-15. PageRecipeEdit + RecipeForms, then PageRun.
-16. MainWindow.cpp; prune App.cpp includes. Done: App.cpp ≈ 300 L composition root.
+**Phase 3 — UI file split** (pure moves; verify `--color-moved`) — ✅ DONE
+8. ~~Widgets.{h,cpp} extraction.~~
+9. ~~PageCamera, PageCld, PagePsu.~~
+10. ~~PageKeithley + chart cluster.~~
+11. ~~PageIo (+ pneumatic).~~
+12. ~~WndJog, WndAux, WndPrompts.~~
+13. ~~PageWatchEdit, PageTransformEdit, PageScripts, PageDutView.~~
+14. ~~PageMotion + PageMotionMap.~~
+15. ~~PageRecipeEdit + RecipeForms, then PageRun.~~
+16. ~~MainWindow.cpp; prune App.cpp includes.~~ App.cpp is **237 L**. Result documented
+    in `docs/ui-file-layout.md`; CLAUDE.md Layer 3 points at it.
 
-**Phase 4 — optional layer cleanups (small, independent)**
+⚠ **Correction to the phase-3 method.** The plan assumed each page commit would be
+compile-green on its own. It was not: several pages reference file-scope `static`
+helpers (`SlideColor`, `PresetButton`, `FormatSI`, the XCAN preset JSON helpers…)
+that the per-function carve left behind in App.cpp until commit 16, and the moved
+TUs needed includes App.cpp had provided. **Only the phase-3 end state builds.**
+If phase 3 is ever re-run or bisected, carve each page's file-scope statics in the
+SAME commit as its members, and re-check includes per TU.
+
+**Phase 4 — optional layer cleanups (small, independent)** — NEXT
 17. `NearestMapNodeUid` (Go button geometry) → core/MotionMap (one planner spirit).
 18. `BuildRunQueue` (StartDeckRun resolution) → command/Program.
 19. Seed-"Home" placeholder out of `DrawMotionPositionsTab` draw path → session.

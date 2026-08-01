@@ -15,7 +15,9 @@
 #include "core/DataBus.h"
 #include "core/Log.h"
 #include "core/Topics.h"
+#include "ui/UiSettings.h"
 
+#include <cmath>
 #include <cstdio>
 
 namespace firedog {

@@ -16,6 +16,8 @@
 #include "core/Log.h"
 #include "core/Topics.h"
 
+#include <cfloat>
+#include <cmath>
 #include <cstdio>
 #include <vector>
 

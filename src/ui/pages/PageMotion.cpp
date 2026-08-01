@@ -16,6 +16,7 @@
 #include "core/Topics.h"
 
 #include <cstdio>
+#include <map>
 
 namespace firedog {
 

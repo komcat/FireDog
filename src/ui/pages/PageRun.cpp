@@ -20,6 +20,7 @@
 #include "core/Log.h"
 #include "core/Topics.h"
 
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <string>
@@ -27,6 +28,136 @@
 namespace firedog {
 
 // mode: 0 = whole program, 1 = selected slot, 2 = selected recipe.
+// ---- Run page (View menu, full page) — programs = slots of recipes ----------
+// Operator surface: deck on the left (slots + recipes, selectable), execution
+// in the middle (queue with marks + progress), DUT on the right. Three run
+// granularities fill the SAME runner queue; one Stop kills the whole chain.
+// Design: docs/run-page-design.md.
+
+// Raster first-light exit levels, in uA (feedback amps; injected x1e-6).
+static constexpr double kRasterTargetsUa[] = {5.0, 20.0};
+
+// Built-in XCAN target presets: the three product power classes (the
+// zone_low must sit AT the raster handoff level — see the micro-lobe field
+// note in hexapod_align.lua); slots 4-5 are spares the operator can switch
+// on in the target settings modal (right-click a Target button).
+static XcanTarget DefaultXcanTarget(int i)
+{
+    XcanTarget t;
+    switch (i) {
+    case 0: t.targetUa = 150.0;  t.zoneLowUa = 10.0;  t.zoneHighUa = 200.0;
+            t.enabled = true; break;
+    case 1: t.targetUa = 400.0;  t.zoneLowUa = 20.0;  t.zoneHighUa = 400.0;
+            t.enabled = true; break;
+    case 2: t.targetUa = 3400.0; t.zoneLowUa = 200.0; t.zoneHighUa = 3400.0;
+            t.enabled = true; break;
+    default: break;   // spare slot, struct defaults, hidden
+    }
+    return t;
+}
+
+// Target buttons are labeled by their value ("400 uA").
+static std::string XcanTargetLabel(const XcanTarget& t)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%g uA", t.targetUa);
+    return buf;
+}
+
+// Built-in XCAN launch presets: slots 1/2 are bobcat's Coarse/Fine ladders
+// (enabled), 3-5 are blank spares the operator can switch on in the
+// settings modal (right-click any preset button).
+static XcanPreset DefaultXcanPreset(int i)
+{
+    XcanPreset p;
+    switch (i) {
+    case 0:  p.label = "Coarse"; p.stepsUm = "10,5,2,1"; p.enabled = true; break;
+    case 1:  p.label = "Fine";   p.stepsUm = "2,1,0.5";  p.enabled = true; break;
+    default: p.label = "P" + std::to_string(i + 1);      p.enabled = false; break;
+    }
+    return p;
+}
+
+static nlohmann::json XcanPresetToJson(const XcanPreset& p)
+{
+    return nlohmann::json{
+        {"label", p.label},
+        {"enabled", p.enabled},
+        {"steps_um", p.stepsUm},
+        {"axes", p.axes},
+        {"settle_ms", p.settleMs},
+        {"settle_min_ms", p.settleMinMs},
+        {"fresh_samples", p.freshSamples},
+        {"avg_count", p.avgCount},
+        {"consec_limit", p.consecLimit},
+        {"sig_drop_pct", p.sigDropPct},
+        {"max_travel_um", p.maxTravelUm},
+        {"improve_pct", p.improvePct},
+        {"min_signal", p.minSignal},
+        {"tol_mm", p.tolMm},
+        {"move_timeout_ms", p.moveTimeoutMs},
+        {"velocity_mm_s", p.velocityMmS},
+        {"skip_opposite", p.skipOpposite},
+        {"dir_memory", p.dirMemory},
+        {"reuse_sample", p.reuseSample},
+    };
+}
+
+// Tolerant overlay: missing keys keep the preset's current (default) value.
+static void XcanPresetFromJson(const nlohmann::json& j, XcanPreset& p)
+{
+    p.label         = j.value("label", p.label);
+    p.enabled       = j.value("enabled", p.enabled);
+    p.stepsUm       = j.value("steps_um", p.stepsUm);
+    p.axes          = j.value("axes", p.axes);
+    p.settleMs      = j.value("settle_ms", p.settleMs);
+    p.settleMinMs   = j.value("settle_min_ms", p.settleMinMs);
+    p.freshSamples  = j.value("fresh_samples", p.freshSamples);
+    p.avgCount      = j.value("avg_count", p.avgCount);
+    p.consecLimit   = j.value("consec_limit", p.consecLimit);
+    p.sigDropPct    = j.value("sig_drop_pct", p.sigDropPct);
+    p.maxTravelUm   = j.value("max_travel_um", p.maxTravelUm);
+    p.improvePct    = j.value("improve_pct", p.improvePct);
+    p.minSignal     = j.value("min_signal", p.minSignal);
+    p.tolMm         = j.value("tol_mm", p.tolMm);
+    p.moveTimeoutMs = j.value("move_timeout_ms", p.moveTimeoutMs);
+    p.velocityMmS   = j.value("velocity_mm_s", p.velocityMmS);
+    p.skipOpposite  = j.value("skip_opposite", p.skipOpposite);
+    p.dirMemory     = j.value("dir_memory", p.dirMemory);
+    p.reuseSample   = j.value("reuse_sample", p.reuseSample);
+}
+
+// Activatable preset button: theme color normally, yellow when active.
+static bool PresetButton(const char* label, bool active, const ImVec2& size)
+{
+    if (active) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.68f, 0.10f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.78f, 0.18f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.00f, 0.85f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
+    }
+    const bool clicked = ImGui::Button(label, size);
+    if (active) ImGui::PopStyleColor(4);
+    return clicked;
+}
+
+// SI-prefixed reading for the scan header (bobcat FormatSI: 2.09e-05 -> 20.888u).
+static std::string FormatSI(double v)
+{
+    if (v == 0.0) return "0";
+    const double a = std::fabs(v);
+    const char*  suf;
+    double       s;
+    if      (a < 1e-9) { suf = "p"; s = v * 1e12; }
+    else if (a < 1e-6) { suf = "n"; s = v * 1e9;  }
+    else if (a < 1e-3) { suf = "u"; s = v * 1e6;  }
+    else if (a < 1.0)  { suf = "m"; s = v * 1e3;  }
+    else               { suf = "";  s = v;        }
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.3f%s", s, suf);
+    return buf;
+}
+
 void App::StartDeckRun(int mode)
 {
     runStartErr_.clear();
