@@ -86,4 +86,17 @@ std::vector<MapRouteLeg> BuildMapRoute(const MotionMap& map,
                                        const std::string& toUid,
                                        std::string* err = nullptr);
 
+// The map node closest to a live device pose — the "(nearest node)" start
+// option of the Motion page's Go combo. Distance is Euclidean over the axes
+// the position and the pose share; axes missing from `pose` are ignored, so a
+// partial reading still ranks. Only nodes whose uid resolves in `positions`
+// are considered. Returns an empty string if none do.
+//
+// It lives beside BuildMapRoute on purpose: both answer "where on this map am
+// I, and how do I get across it", and both must agree on how a node maps to a
+// pose. Same spirit as the one-planner-two-executors rule above.
+std::string NearestMapNodeUid(const MotionMap& map,
+                              const std::vector<SavedPos>& positions,
+                              const std::map<std::string, double>& pose);
+
 } // namespace firedog

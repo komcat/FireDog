@@ -455,22 +455,11 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
     ImGui::BeginDisabled(running || orch_.Busy() ||
                          !m->IsConnected() || goNodes.empty() || mapTo_ < 0);
     if (ImGui::Button("Go")) {
-        std::string fromUid;
-        if (mapFrom_ == 0) {   // nearest node to the live position
-            const std::map<std::string, double> pos = m->Positions();
-            double best = 0.0;
-            for (const GoNode& g : goNodes) {
-                const SavedPos* p = posOf(g.uid);
-                double d2 = 0.0;
-                for (const auto& [axis, v] : p->vals) {
-                    const auto it = pos.find(axis);
-                    if (it != pos.end()) d2 += (v - it->second) * (v - it->second);
-                }
-                if (fromUid.empty() || d2 < best) { best = d2; fromUid = g.uid; }
-            }
-        } else {
-            fromUid = goNodes[mapFrom_ - 1].uid;
-        }
+        // Both the start resolution and the route come from core/MotionMap —
+        // the UI contributes the selection, not the geometry.
+        const std::string fromUid =
+            (mapFrom_ == 0) ? NearestMapNodeUid(map, saved, m->Positions())
+                            : goNodes[mapFrom_ - 1].uid;
 
         // Route planning is shared with the recipe engine's move_path command
         // (core/MotionMap::BuildMapRoute) — one planner, two executors.

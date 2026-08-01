@@ -252,4 +252,25 @@ std::vector<MapRouteLeg> BuildMapRoute(const MotionMap& map,
     return legs;
 }
 
+std::string NearestMapNodeUid(const MotionMap& map,
+                              const std::vector<SavedPos>& positions,
+                              const std::map<std::string, double>& pose)
+{
+    std::string best;
+    double bestD2 = 0.0;
+    for (const MotionMapNode& n : map.nodes) {
+        const SavedPos* p = nullptr;
+        for (const SavedPos& sp : positions)
+            if (sp.uid == n.uid) { p = &sp; break; }
+        if (!p) continue;   // dangling node (position deleted) — not a candidate
+        double d2 = 0.0;
+        for (const auto& [axis, v] : p->vals) {
+            const auto it = pose.find(axis);
+            if (it != pose.end()) d2 += (v - it->second) * (v - it->second);
+        }
+        if (best.empty() || d2 < bestD2) { bestD2 = d2; best = n.uid; }
+    }
+    return best;
+}
+
 } // namespace firedog
