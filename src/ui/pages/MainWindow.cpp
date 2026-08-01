@@ -18,16 +18,6 @@
 
 namespace firedog {
 
-namespace {
-// Full-page takeovers (View menu) vs the Hardware pages.
-bool IsTakeoverPage(Page p)
-{
-    return p == Page::WatchEdit || p == Page::TransformEdit ||
-           p == Page::RecipeEdit || p == Page::Scripts ||
-           p == Page::DutView || p == Page::Run;
-}
-} // namespace
-
 void App::DrawMainWindow()
 {
     const ImGuiViewport* mv = ImGui::GetMainViewport();

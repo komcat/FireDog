@@ -24,6 +24,15 @@ namespace firedog {
 namespace {
 constexpr int kWinW = 1280;
 constexpr int kWinH = 800;
+
+// Full-page takeovers (View menu) vs the Hardware pages. Only SwitchPage
+// below cares — it owns the takeover/prevPage_ bookkeeping.
+bool IsTakeoverPage(Page p)
+{
+    return p == Page::WatchEdit || p == Page::TransformEdit ||
+           p == Page::RecipeEdit || p == Page::Scripts ||
+           p == Page::DutView || p == Page::Run;
+}
 } // namespace
 
 int App::Run()
