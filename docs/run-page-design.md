@@ -51,7 +51,7 @@ Start(queue):   // ONE code path for all three granularities:
                 //   Run Program -> every (slot, recipe) in order
                 //   Run Slot    -> that slot's recipes
                 //   Run Recipe  -> the single selected recipe
-    refuse if OrchestrationBusy();  resolve all uids up front (fail fast)
+    refuse if orch_.Busy();  resolve all uids up front (fail fast)
 Tick():
     if recipe engine Idle-after-run:
         Completed  -> advance to the next queue item; start it
@@ -78,7 +78,7 @@ Stop():         // ONE stop, propagated:
   covers it). Combined, a DUT record shows the full production story: which
   program, which recipes, in what order, each result.
 - Safety/mutual exclusion: the runner counts as the orchestration owner
-  (`OrchestrationBusy()` extended); a critical safety alert aborts the current
+  (`orch_.Busy()` extended); a critical safety alert aborts the current
   recipe (existing) and the runner stops sequencing.
 
 ## 4. The Run page (View menu, full-page like the others)

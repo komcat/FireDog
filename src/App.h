@@ -11,12 +11,11 @@
 #include "imgui.h"
 
 #include "ui/GlHost.h"
-#include "command/CommandRegistry.h"
-#include "command/LuaEngine.h"
+#include "command/CommandRegistry.h"   // ParamSpec (schema forms)
+#include "command/LuaEngine.h"         // ScriptInfo (Scripts page)
+#include "command/Orchestration.h"     // registry + engines + runner, one unit
 #include "command/Program.h"
-#include "command/ProgramRunner.h"
 #include "command/Recipe.h"
-#include "command/RecipeEngine.h"
 #include "core/Log.h"
 #include "core/MotionMap.h"
 #include "core/Product.h"
@@ -160,7 +159,6 @@ private:
     void SaveScanPresets() const;
     void DrawRunRasterBlock();        // Raster tab: area-scan launcher (raster_scan.lua)
     void StartRasterScan(const std::string& device);
-    void StopMachine();               // software big-red-button: all motion + orchestration
     void LoadProgramsFromDisk();      // product programs role, else config
     void SavePrograms();
     std::string ProgramsDump() const;
@@ -192,22 +190,13 @@ private:
     HardwareManager hardware_;
     Workflow        workflow_{hardware_};
 
-    // Layer 2.5 — command registry + recipe engine. Declared AFTER workflow_
-    // so they are destroyed FIRST (~RecipeEngine joins its worker thread while
-    // Workflow/HardwareManager are still alive — same discipline as
-    // SafetyWatch). Commands are registered once in Run() after
-    // Workflow::Start; the registry is read-only afterwards.
-    CommandRegistry cmdRegistry_;
-    RecipeEngine    recipeEngine_{workflow_, hardware_, cmdRegistry_};
-    LuaEngine       luaEngine_{workflow_, hardware_, cmdRegistry_};
-    ProgramRunner   programRunner_{recipeEngine_};   // ticked from Update
-    // One orchestration owner at a time: App keeps the engines + runner + path
-    // executor mutually exclusive (each Run surface checks all of them).
-    bool OrchestrationBusy() const
-    {
-        return recipeEngine_.Running() || luaEngine_.Running() ||
-               programRunner_.Active() || workflow_.PathActive();
-    }
+    // Layer 2.5 — command registry + both engines + the program runner, as one
+    // unit (see Orchestration.h). Declared AFTER workflow_ so it is destroyed
+    // FIRST (~RecipeEngine joins its worker thread while Workflow/
+    // HardwareManager are still alive — same discipline as SafetyWatch).
+    // Commands are registered once in Run() after Workflow::Start; the
+    // registry is read-only afterwards. Gate every Run surface on orch_.Busy().
+    Orchestration orch_{workflow_, hardware_};
 
     // UI-side camera texture — frames are pulled from hardware_.Camera() via
     // UpdateCameraTexture() by every view that shows the live image (Aux,

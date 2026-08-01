@@ -274,8 +274,8 @@ int App::Run()
                                           product_.DataDir());
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
-    RegisterBuiltinCommands(cmdRegistry_, workflow_, hardware_);   // layer 2.5
-    FD_INFO("command", "%zu command(s) registered", cmdRegistry_.Count());
+    RegisterBuiltinCommands(orch_.registry, workflow_, hardware_);   // layer 2.5
+    FD_INFO("command", "%zu command(s) registered", orch_.registry.Count());
 
     double prev = host_.Time();
     while (!host_.ShouldClose()) {
@@ -299,7 +299,7 @@ int App::Run()
 void App::Update(float dt)
 {
     workflow_.Update(dt);        // layer 2 (kept for future orchestration)
-    programRunner_.Tick();       // sequences program/slot runs between frames
+    orch_.programs.Tick();       // sequences program/slot runs between frames
     UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)
 
     // Teach hand-backs from save_position steps (worker threads queue them on
@@ -664,16 +664,16 @@ void App::StartDeckRun(int mode)
     env.positions = savedPos_;
     env.maps      = motionMaps_;
     env.library   = recipes_;
-    if (!programRunner_.Start(kind, label, prog.uid, std::move(queue), std::move(env),
+    if (!orch_.programs.Start(kind, label, prog.uid, std::move(queue), std::move(env),
                               &runStartErr_))
         FD_WARN("program", "run rejected: %s", runStartErr_.c_str());
 }
 
 void App::DrawRunPanel()
 {
-    const ProgramRunner::Status& rs = programRunner_.GetStatus();
-    const RecipeEngine::Status   es = recipeEngine_.GetStatus();
-    const bool running = programRunner_.Active();
+    const ProgramRunner::Status& rs = orch_.programs.GetStatus();
+    const RecipeEngine::Status   es = orch_.recipe.GetStatus();
+    const bool running = orch_.programs.Active();
 
     const ImGuiStyle& style  = ImGui::GetStyle();
     const float  stripH = ImGui::GetFrameHeight() + style.WindowPadding.y * 2.0f +
@@ -687,14 +687,14 @@ void App::DrawRunPanel()
 
     // ---- Top strip: run controls ----
     ImGui::BeginChild("runStrip", ImVec2(0.0f, stripH), ImGuiChildFlags_Borders);
-    const bool canRun = !OrchestrationBusy() && haveProg;
+    const bool canRun = !orch_.Busy() && haveProg;
     // One Start button; granularity follows the deck selection
     // (recipe if one is selected, else slot, else the whole program).
     // While a run is active it becomes the Stop button.
     const bool onRecipe = deckSlot_ >= 0 && deckRecipe_ >= 0;
     const bool onSlot   = deckSlot_ >= 0 && deckRecipe_ < 0;
     if (running) {
-        if (ImGui::Button("Stop", ImVec2(110.0f, 0.0f))) programRunner_.Stop();
+        if (ImGui::Button("Stop", ImVec2(110.0f, 0.0f))) orch_.programs.Stop();
     } else {
         ImGui::BeginDisabled(!canRun);
         if (ImGui::Button("Start", ImVec2(110.0f, 0.0f)))
@@ -1250,7 +1250,7 @@ void App::StartXcanPreset(const std::string& device, int presetIdx)
         {"align_zone_high", tp.zoneHighUa * 1e-6},
     };
     scriptStartErr_.clear();
-    if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
+    if (!orch_.lua.Start(script, std::move(env), &scriptStartErr_))
         FD_WARN("script", "xcan preset '%s' rejected: %s", p.label.c_str(),
                 scriptStartErr_.c_str());
 }
@@ -1333,8 +1333,8 @@ void App::DrawRunScanBlock()
 // hexapod. Channel/Trace live in the shared Scan-band header.
 void App::DrawRunXcanBlock()
 {
-    const LuaEngine::Status st = luaEngine_.GetStatus();
-    const bool running = luaEngine_.Running();
+    const LuaEngine::Status st = orch_.lua.GetStatus();
+    const bool running = orch_.lua.Running();
 
     // Target preset row: exit target + adaptive zone range per product power
     // class; the ACTIVE (yellow) preset is injected into every launch.
@@ -1369,7 +1369,7 @@ void App::DrawRunXcanBlock()
     // Launch row: hex-left [presets...]   hex-right [presets...]   Stop.
     // Left-click launches on that hexapod; RIGHT-click opens the preset's
     // settings modal (works even while the button is disabled).
-    const bool busy = OrchestrationBusy();
+    const bool busy = orch_.Busy();
     bool anyPreset = false;
     for (const XcanPreset& p : xcanPresets_) anyPreset |= p.enabled;
     const auto presets = [&](const char* dev) {
@@ -1409,7 +1409,7 @@ void App::DrawRunXcanBlock()
     presets("hex-right");
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) luaEngine_.RequestStop();
+    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
     ImGui::EndDisabled();
     if (!anyPreset) {   // escape hatch — no button left to right-click
         ImGui::SameLine();
@@ -1604,21 +1604,6 @@ void App::DrawXcanPresetModal()
     ImGui::EndPopup();
 }
 
-// The software big-red-button (Jog window STOP). Order matters: abort every
-// orchestration owner FIRST so no engine issues the next move after the stop,
-// abandon any path leg, then hard-stop every motion device. NOT an E-stop
-// substitute: laser / PSU / IO outputs are untouched (killing those on the
-// hardware input is the SafetyWatch's job).
-void App::StopMachine()
-{
-    programRunner_.Stop();          // marks the queue dead + stops its engine run
-    recipeEngine_.RequestStop();    // direct recipe-editor runs
-    luaEngine_.RequestStop();       // scripts (XCAN / raster / Scripts page)
-    workflow_.CancelPathMove();     // path executor: stop device + abandon legs
-    workflow_.StopAllMotion();      // hard stop on every motion device
-    FD_WARN("ui", "STOP pressed: all motion stopped, orchestration aborted");
-}
-
 // Raster scan launcher: raster_scan.lua with the band's spans/steps + the
 // tab's active first-light target preset; feedback channel and Trace are
 // shared with the XCAN band. Axes stay at the script's defaults (slow = X
@@ -1645,7 +1630,7 @@ void App::StartRasterScan(const std::string& device)
         {"raster_exit_threshold", kRasterTargetsUa[rasterTgtSel_] * 1e-6},
     };
     scriptStartErr_.clear();
-    if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
+    if (!orch_.lua.Start(script, std::move(env), &scriptStartErr_))
         FD_WARN("script", "raster scan rejected: %s", scriptStartErr_.c_str());
 }
 
@@ -1653,8 +1638,8 @@ void App::StartRasterScan(const std::string& device)
 // Channel/Target/Trace live in the shared Scan-band header (DrawRunScanBlock).
 void App::DrawRunRasterBlock()
 {
-    const LuaEngine::Status st = luaEngine_.GetStatus();
-    const bool running = luaEngine_.Running();
+    const LuaEngine::Status st = orch_.lua.GetStatus();
+    const bool running = orch_.lua.Running();
 
     // Knob row: X- span/step, Y span/step (um).
     ImGui::TextDisabled("X- span/step");
@@ -1696,7 +1681,7 @@ void App::DrawRunRasterBlock()
 
     // Launch row: one Scan per hexapod + Stop; channel and Trace come from
     // the shared Scan-band header.
-    const bool busy = OrchestrationBusy();
+    const bool busy = orch_.Busy();
     const auto scanBtn = [&](const char* dev) {
         int idx = -1;
         for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
@@ -1719,7 +1704,7 @@ void App::DrawRunRasterBlock()
     scanBtn("hex-right");
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) luaEngine_.RequestStop();
+    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
     ImGui::EndDisabled();
 
     // Status line: the running/last raster_scan result (shared engine ctx).
@@ -2228,8 +2213,8 @@ bool PaletteMatch(const std::string& hay, const char* needle)
 
 void App::DrawRecipeEditPanel()
 {
-    const RecipeEngine::Status st = recipeEngine_.GetStatus();
-    const bool running = recipeEngine_.Running();
+    const RecipeEngine::Status st = orch_.recipe.GetStatus();
+    const bool running = orch_.recipe.Running();
     const bool haveSel = recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size());
 
     // Live author-time validation of the selected recipe (WITHOUT the
@@ -2237,7 +2222,7 @@ void App::DrawRecipeEditPanel()
     // authoring offline doesn't drown in noise).
     std::vector<RecipeIssue> issues;
     if (haveSel)
-        issues = ValidateRecipe(recipes_[recipeSel_], cmdRegistry_, hardware_,
+        issues = ValidateRecipe(recipes_[recipeSel_], orch_.registry, hardware_,
                                 savedPos_, motionMaps_, recipes_, false);
     // The issues list lives in its own band at the BOTTOM of the page (the
     // run strip on top keeps only state/progress/errors).
@@ -2579,7 +2564,7 @@ std::string App::AutoNickname(const RecipeStep& s) const
     if (s.type == "stop_recipe")
         return s.params.value("ok", true) ? "stop (ok)" : "stop (fail)";
 
-    const CommandSpec* spec = cmdRegistry_.Find(s.type);
+    const CommandSpec* spec = orch_.registry.Find(s.type);
     if (!spec) return s.type;
 
     const auto skip = [](const std::string& n) {
@@ -2782,7 +2767,7 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
     ImGui::Separator();
 
     const auto insert = [this, &r](const char* type) {
-        RecipeStep ns = MakeStep(type, cmdRegistry_);
+        RecipeStep ns = MakeStep(type, orch_.registry);
         if (edAddMode_ == 1) {          // child of the selected structural step
             if (RecipeStep* p = FindStepByPathMut(&r.steps, edStepSel_)) {
                 p->children.push_back(std::move(ns));
@@ -2844,7 +2829,7 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
     }
 
     // Registry commands, grouped by category (List() is category-ordered).
-    const std::vector<const CommandSpec*> cmds = cmdRegistry_.List();
+    const std::vector<const CommandSpec*> cmds = orch_.registry.List();
     for (std::size_t i = 0; i < cmds.size();) {
         const std::string& cat = cmds[i]->category;
         std::size_t end = i;
@@ -2945,7 +2930,7 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
             s.params["message"] = std::string(mbuf);
     } else if (s.type == "group") {
         ImGui::TextDisabled("Group: organizational only.");
-    } else if (const CommandSpec* spec = cmdRegistry_.Find(s.type)) {
+    } else if (const CommandSpec* spec = orch_.registry.Find(s.type)) {
         ImGui::TextWrapped("%s", spec->description.c_str());
         ImGui::Spacing();
         for (const ParamSpec& p : spec->params) DrawParamWidget(p, s.params);
@@ -3369,8 +3354,8 @@ void App::SaveRecipes()
 // can't disturb the run).
 void App::DrawRecipeRunStrip(float height)
 {
-    const RecipeEngine::Status st = recipeEngine_.GetStatus();
-    const bool running = recipeEngine_.Running();
+    const RecipeEngine::Status st = orch_.recipe.GetStatus();
+    const bool running = orch_.recipe.Running();
     ImGui::BeginChild("edRunStrip", ImVec2(0.0f, height), ImGuiChildFlags_Borders);
 
     // One row: state on the left, the run controls right-aligned. Errors get
@@ -3404,13 +3389,13 @@ void App::DrawRecipeRunStrip(float height)
     // Step mode: Run starts paused at the selected step; Next executes one
     // leaf at a time. Toggling while a run is active pauses/resumes it live.
     if (ImGui::Checkbox("Step", &edStepMode_) && running)
-        recipeEngine_.SetStepMode(edStepMode_);
+        orch_.recipe.SetStepMode(edStepMode_);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Step mode: Run pauses at the selected step (or the\n"
                           "first step); Next executes one step at a time.\n"
                           "Uncheck to free-run from here; Stop exits.");
     ImGui::SameLine();
-    const bool canRun = !OrchestrationBusy() && recipeSel_ >= 0 &&
+    const bool canRun = !orch_.Busy() && recipeSel_ >= 0 &&
                         recipeSel_ < static_cast<int>(recipes_.size());
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
@@ -3422,7 +3407,7 @@ void App::DrawRecipeRunStrip(float height)
         opts.stepMode = edStepMode_;
         if (edStepMode_) opts.startPath = edStepSel_;   // from the selection
         recipeStartErr_.clear();
-        if (!recipeEngine_.Start(recipes_[recipeSel_], std::move(env),
+        if (!orch_.recipe.Start(recipes_[recipeSel_], std::move(env),
                                  &recipeStartErr_, std::move(opts)))
             FD_WARN("recipe", "start rejected: %s", recipeStartErr_.c_str());
     }
@@ -3447,7 +3432,7 @@ void App::DrawRecipeRunStrip(float height)
         env.maps      = motionMaps_;
         env.library   = recipes_;   // sub_recipe references still resolve
         recipeStartErr_.clear();
-        if (!recipeEngine_.Start(one, std::move(env), &recipeStartErr_))
+        if (!orch_.recipe.Start(one, std::move(env), &recipeStartErr_))
             FD_WARN("recipe", "step run rejected: %s", recipeStartErr_.c_str());
     }
     ImGui::EndDisabled();
@@ -3455,13 +3440,13 @@ void App::DrawRecipeRunStrip(float height)
         ImGui::SetTooltip("Run only the selected step (its children included)");
     ImGui::SameLine();
     ImGui::BeginDisabled(!st.stepPaused);
-    if (ImGui::Button("Next", ImVec2(90.0f, 0.0f))) recipeEngine_.StepAdvance();
+    if (ImGui::Button("Next", ImVec2(90.0f, 0.0f))) orch_.recipe.StepAdvance();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Execute the paused step, then pause again");
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) recipeEngine_.RequestStop();
+    if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) orch_.recipe.RequestStop();
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(running);
@@ -3494,8 +3479,8 @@ void App::DrawRecipeRunStrip(float height)
 // usable — the window is just kept on top so the prompt can't get buried.
 void App::DrawRecipePromptWindow()
 {
-    const RecipeEngine::Status rst = recipeEngine_.GetStatus();
-    const LuaEngine::Status    lst = luaEngine_.GetStatus();
+    const RecipeEngine::Status rst = orch_.recipe.GetStatus();
+    const LuaEngine::Status    lst = orch_.lua.GetStatus();
     const bool fromScript = rst.pendingPrompt.empty() && !lst.pendingPrompt.empty();
     const std::string& pending = fromScript ? lst.pendingPrompt : rst.pendingPrompt;
     const bool wantsInput =
@@ -3538,8 +3523,8 @@ void App::DrawRecipePromptWindow()
     ImGui::TextUnformatted(pending.c_str());
     ImGui::PopTextWrapPos();
     const auto answer = [&](bool ok) {
-        if (fromScript) luaEngine_.AnswerPrompt(ok, promptInputBuf_);
-        else            recipeEngine_.AnswerPrompt(ok, promptInputBuf_);
+        if (fromScript) orch_.lua.AnswerPrompt(ok, promptInputBuf_);
+        else            orch_.recipe.AnswerPrompt(ok, promptInputBuf_);
     };
     bool submit = false;
     if (wantsInput) {
@@ -3571,8 +3556,8 @@ void App::DrawRecipePromptWindow()
 // on top, it doesn't block input to anything else.
 void App::DrawManualAdjustWindow()
 {
-    const RecipeEngine::Status rst = recipeEngine_.GetStatus();
-    const LuaEngine::Status    lst = luaEngine_.GetStatus();
+    const RecipeEngine::Status rst = orch_.recipe.GetStatus();
+    const LuaEngine::Status    lst = orch_.lua.GetStatus();
     const bool fromScript = !rst.pendingAdjust && lst.pendingAdjust;
     const bool pending    = rst.pendingAdjust || lst.pendingAdjust;
     const ExecutionContext::AdjustRequest& req =
@@ -3675,8 +3660,8 @@ void App::DrawManualAdjustWindow()
     ImGui::Separator();
 
     const auto answer = [&](bool ok) {
-        if (fromScript) luaEngine_.AnswerAdjust(ok);
-        else            recipeEngine_.AnswerAdjust(ok);
+        if (fromScript) orch_.lua.AnswerAdjust(ok);
+        else            orch_.recipe.AnswerAdjust(ok);
     };
     if (ImGui::Button("OK (Complete)", ImVec2(140.0f, 0.0f))) answer(true);
     ImGui::SameLine();
@@ -3713,8 +3698,8 @@ void App::LoadScriptsList()
 
 void App::DrawScriptsPanel()
 {
-    const LuaEngine::Status st = luaEngine_.GetStatus();
-    const bool running = luaEngine_.Running();
+    const LuaEngine::Status st = orch_.lua.GetStatus();
+    const bool running = orch_.lua.Running();
 
     const float  stripH = ImGui::GetFrameHeightWithSpacing() * 3.2f;
     const ImVec2 avail  = ImGui::GetContentRegionAvail();
@@ -3797,7 +3782,7 @@ void App::DrawScriptsPanel()
                     else    bps.insert(lineNo);
                     scriptBpAnchor_ = lineNo;
                 }
-                if (thisRunning) luaEngine_.SetBreakpoints(bps);   // hot-swap live
+                if (thisRunning) orch_.lua.SetBreakpoints(bps);   // hot-swap live
             }
             ImGui::PopID();
             if (cur || bp) ImGui::PopStyleColor();
@@ -3857,7 +3842,7 @@ void App::DrawScriptsPanel()
 
     // ---- Bottom strip: Run / Stop ----
     ImGui::BeginChild("scStrip", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
-    const bool canRun = !OrchestrationBusy() && scriptSel_ >= 0 &&
+    const bool canRun = !orch_.Busy() && scriptSel_ >= 0 &&
                         scriptSel_ < static_cast<int>(scripts_.size());
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
@@ -3866,24 +3851,24 @@ void App::DrawScriptsPanel()
         env.maps      = motionMaps_;
         env.library   = recipes_;
         scriptStartErr_.clear();
-        luaEngine_.SetBreakpoints(scriptBps_[scripts_[scriptSel_].path]);
-        if (!luaEngine_.Start(scripts_[scriptSel_].path, std::move(env), &scriptStartErr_))
+        orch_.lua.SetBreakpoints(scriptBps_[scripts_[scriptSel_].path]);
+        if (!orch_.lua.Start(scripts_[scriptSel_].path, std::move(env), &scriptStartErr_))
             FD_WARN("script", "start rejected: %s", scriptStartErr_.c_str());
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (!st.paused) {
         ImGui::BeginDisabled(!running);
-        if (ImGui::Button("Pause", ImVec2(90.0f, 0.0f))) luaEngine_.Pause();
+        if (ImGui::Button("Pause", ImVec2(90.0f, 0.0f))) orch_.lua.Pause();
         ImGui::EndDisabled();
     } else {
-        if (ImGui::Button("Continue", ImVec2(90.0f, 0.0f))) luaEngine_.Resume();
+        if (ImGui::Button("Continue", ImVec2(90.0f, 0.0f))) orch_.lua.Resume();
         ImGui::SameLine();
-        if (ImGui::Button("Step", ImVec2(90.0f, 0.0f))) luaEngine_.StepLine();
+        if (ImGui::Button("Step", ImVec2(90.0f, 0.0f))) orch_.lua.StepLine();
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) luaEngine_.RequestStop();
+    if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) orch_.lua.RequestStop();
     ImGui::EndDisabled();
     {
         const DutSession::Info di = DutSession::Instance().GetInfo();
@@ -4067,7 +4052,7 @@ void App::DrawJogPanel()
     else           ImGui::TextDisabled("disarmed");
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.88f, 0.26f, 0.26f, 1.0f));
-    if (ImGui::Button("STOP", ImVec2(-FLT_MIN, 30.0f))) StopMachine();
+    if (ImGui::Button("STOP", ImVec2(-FLT_MIN, 30.0f))) orch_.StopAll();
     ImGui::PopStyleColor(2);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Stops ALL motion devices and aborts any running\n"
@@ -4959,8 +4944,8 @@ void App::DrawMotionDetailPanel()
 void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
 {
     (void)m;
-    const LuaEngine::Status st = luaEngine_.GetStatus();
-    const bool running = luaEngine_.Running();
+    const LuaEngine::Status st = orch_.lua.GetStatus();
+    const bool running = orch_.lua.Running();
 
     ImGui::TextUnformatted("XCAN active alignment (config/scripts/hexapod_align.lua)");
     ImGui::Separator();
@@ -5043,7 +5028,7 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
     ImGui::EndDisabled();
 
     ImGui::Spacing();
-    const bool canRun = !OrchestrationBusy() && dev && dev->IsConnected();
+    const bool canRun = !orch_.Busy() && dev && dev->IsConnected();
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("XCAN", ImVec2(110.0f, 0.0f))) {
         // The product's script overrides the config one when present.
@@ -5072,13 +5057,13 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
             {"align_trace", xcanTrace_ ? 1.0 : 0.0},
         };
         scriptStartErr_.clear();
-        if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
+        if (!orch_.lua.Start(script, std::move(env), &scriptStartErr_))
             FD_WARN("script", "xcan start rejected: %s", scriptStartErr_.c_str());
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(110.0f, 0.0f))) luaEngine_.RequestStop();
+    if (ImGui::Button("Stop", ImVec2(110.0f, 0.0f))) orch_.lua.RequestStop();
     ImGui::EndDisabled();
     if (!canRun && !running) {
         ImGui::SameLine();
@@ -5724,7 +5709,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         ImGui::EndCombo();
     }
     ImGui::SameLine();
-    ImGui::BeginDisabled(running || recipeEngine_.Running() || luaEngine_.Running() ||
+    ImGui::BeginDisabled(running || orch_.Busy() ||
                          !m->IsConnected() || goNodes.empty() || mapTo_ < 0);
     if (ImGui::Button("Go")) {
         std::string fromUid;
@@ -6234,7 +6219,7 @@ void App::DrawExitConfirmModal()
             ImGui::BulletText("Recipe editor has unsaved edits");
         if (ProgramsDirty())
             ImGui::BulletText("Program deck has unsaved edits");
-        if (OrchestrationBusy())
+        if (orch_.Busy())
             ImGui::BulletText("A recipe/script/path move is still running");
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
