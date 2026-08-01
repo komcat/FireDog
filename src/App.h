@@ -104,7 +104,7 @@ private:
     void DrawRecipePalette(Recipe& r, bool canEdit);       // searchable add-step column
     bool DrawParamWidget(const ParamSpec& p, nlohmann::json& params);  // schema form row
     bool DrawConditionEditor(nlohmann::json& cond);   // if / loop-while / wait_until
-    void DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues, float height);
+    void DrawRecipeRunStrip(float height);
     void DrawRecipePromptWindow();    // GLOBAL prompt (recipe + script) — non-modal, always on top
     void DrawManualAdjustWindow();    // GLOBAL manual_adjust jog window — non-modal, always on top
     // Programs page (View menu, full-page) — Phase C1: list/run .lua programs.
@@ -349,6 +349,9 @@ private:
     // navigation walks this list; collapsed children never appear in it.
     std::vector<std::vector<std::size_t>> edTreeRows_;
     bool edScrollToSel_ = false;   // keyboard move: bring selection into view
+    // Step mode: Run starts paused at the selected step (or the first leaf);
+    // Next executes one leaf at a time. Toggling mid-run pauses/resumes.
+    bool edStepMode_ = false;
     // Editor dialogs/palette state (menu -> popup handoff, like the products).
     int  edAddMode_           = 0;       // palette insert: 0 after, 1 into, 2 else
     int  edConfirmAction_     = 0;       // unsaved-changes guard: 1 leave page, 2 reload

@@ -5,18 +5,55 @@
 #include "command/CommandRegistry.h"
 #include "core/Log.h"
 
+#include <algorithm>
 #include <exception>
 
 namespace firedog {
+
+namespace {
+// Pre-order relation of a step path to the start-at path:
+//  -1 = entirely before the start (skip the whole subtree)
+//   0 = ancestor of the start (descend, keep skipping inside)
+//  +1 = the start itself or anything after it (resume normal execution)
+int RelToStart(const std::vector<std::size_t>& p, const std::vector<std::size_t>& s)
+{
+    for (std::size_t k = 0; k < p.size() && k < s.size(); ++k) {
+        if (p[k] != s[k]) return p[k] < s[k] ? -1 : +1;
+    }
+    return p.size() < s.size() ? 0 : +1;
+}
+
+// Leaf count of ONE step (same rules as CountLeafSteps) — how many leaves a
+// skipped subtree would have contributed, so progress starts at the right spot.
+std::size_t LeafCountOf(const RecipeStep& s)
+{
+    if (s.type == "loop") {
+        std::size_t body = CountLeafSteps(s.children);
+        if (s.params.contains("count") && s.params["count"].is_number()) {
+            const double c = s.params["count"].get<double>();
+            if (c > 0) body *= static_cast<std::size_t>(c);
+        }
+        return body;
+    }
+    if (s.type == "if")
+        return std::max(CountLeafSteps(s.children), CountLeafSteps(s.elseChildren));
+    if (s.type == "group" || s.type == "sub_recipe") return CountLeafSteps(s.children);
+    if (s.type == "stop_recipe") return 0;
+    return 1;
+}
+} // namespace
 
 StepRunner::StepRunner(const CommandRegistry& reg, ExecutionContext& ctx, Callbacks cb)
     : reg_(reg), ctx_(ctx), cb_(std::move(cb))
 {
 }
 
-StepRunner::Outcome StepRunner::Run(const std::vector<RecipeStep>& steps)
+StepRunner::Outcome StepRunner::Run(const std::vector<RecipeStep>& steps,
+                                    std::vector<std::size_t> startAt)
 {
     error_.clear();
+    startAt_  = std::move(startAt);
+    skipping_ = !startAt_.empty();
     return ExecSteps(steps, "", {}, 1);
 }
 
@@ -40,6 +77,20 @@ StepRunner::Outcome StepRunner::ExecSteps(const std::vector<RecipeStep>& steps,
             " (" + (s.nickname.empty() ? s.type : s.nickname) + ")";
         std::vector<std::size_t> path = basePath;
         path.push_back(i);
+
+        if (skipping_) {
+            const int rel = RelToStart(path, startAt_);
+            if (rel < 0) {   // before the start step — skip, but count leaves
+                if (cb_.onLeafDone) {
+                    const std::size_t n = LeafCountOf(s);
+                    for (std::size_t k = 0; k < n; ++k) cb_.onLeafDone();
+                }
+                continue;
+            }
+            if (rel > 0) skipping_ = false;   // reached — run normally from here
+            // rel == 0: ancestor of the start — descend with skipping still on
+            // (a loop consumes the skip in its first iteration only).
+        }
 
         if (s.type == "group" || s.type == "sub_recipe") {
             const Outcome o = ExecSteps(s.children, where, path, depth + 1);
@@ -103,6 +154,11 @@ StepRunner::Outcome StepRunner::ExecSteps(const std::vector<RecipeStep>& steps,
 StepRunner::Outcome StepRunner::ExecLeaf(const RecipeStep& s, const std::string& where,
                                          const std::vector<std::size_t>& path)
 {
+    // Step-mode gate: in step mode the engine blocks here until the operator
+    // grants the leaf (Next) or leaves step mode; false = stop/safety abort.
+    if (cb_.onBeforeLeaf && !cb_.onBeforeLeaf(where, path))
+        return Outcome::Aborted;
+
     const CommandSpec* spec = reg_.Find(s.type);
     if (!spec) {   // validated at Start; belt and braces
         error_ = where + ": unknown command";

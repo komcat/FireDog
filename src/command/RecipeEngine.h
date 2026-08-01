@@ -49,11 +49,28 @@ public:
         std::vector<Recipe> library;
     };
 
+    // Step-mode start options: with stepMode the worker pauses BEFORE every
+    // leaf until StepAdvance() grants it (or SetStepMode(false) resumes free
+    // running); startPath skips every leaf before that numeric step path
+    // (else-branch markers are stripped — a start inside an else branch lands
+    // on the then-branch row, the same documented quirk as run highlighting).
+    struct StartOpts {
+        bool stepMode = false;
+        std::vector<std::size_t> startPath;   // {} = from the beginning
+    };
+
     // Validates (structure + params + references + devices Connected), inlines
     // sub-recipes, then launches the worker. False + err if a run is already
     // active, the UI path executor is busy, or validation fails.
-    bool Start(const Recipe& recipe, Env env, std::string* err = nullptr);
+    bool Start(const Recipe& recipe, Env env, std::string* err = nullptr,
+               StartOpts opts = {});
     void RequestStop();            // cooperative; honored within one poll interval
+    // Step mode: grant exactly one paused leaf (no-op unless paused).
+    void StepAdvance();
+    // Toggle step mode mid-run: off releases a pending pause (free-run from
+    // here); on pauses before the NEXT leaf. Also arms/disarms nothing at
+    // Idle — Start's opts decide the next run's mode.
+    void SetStepMode(bool on);
     // Resolves a blocking `prompt` / `prompt_input` step (text used by input).
     void AnswerPrompt(bool ok, std::string text = std::string());
     // Resolves a blocking `manual_adjust` step (jogging happened UI-side).
@@ -78,6 +95,12 @@ public:
         // Manual-adjust handshake: valid while pendingAdjust is true.
         bool        pendingAdjust = false;
         ExecutionContext::AdjustRequest adjustReq;
+        // Step mode: while stepPaused, nextStep/nextPath describe the leaf
+        // that will run when StepAdvance() grants it.
+        bool        stepMode   = false;
+        bool        stepPaused = false;
+        std::string nextStep;
+        std::vector<std::size_t> nextPath;
         std::vector<std::pair<std::string, CtxValue>> ctx;   // display snapshot
     };
     Status GetStatus() const;        // mutex-guarded copy — cheap, UI-safe
@@ -93,6 +116,10 @@ private:
     bool AwaitPromptInternal(const std::string& message, bool wantsInput,
                              std::string* textOut);
     bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
+    // Step-mode gate: blocks before a leaf until granted/released; false =
+    // stop or safety abort (the run ends Stopped).
+    bool AwaitStepInternal(const std::string& label,
+                           const std::vector<std::size_t>& path);
 
     Workflow&              wf_;
     HardwareManager&       hw_;
@@ -100,6 +127,7 @@ private:
 
     std::atomic<bool> stopReq_{false};
     std::atomic<bool> running_{false};
+    std::atomic<bool> stepMode_{false};   // pause before every leaf while true
 
     mutable std::mutex      mu_;       // guards everything below
     std::condition_variable cv_;       // prompt handshake
@@ -118,6 +146,12 @@ private:
     ExecutionContext::AdjustRequest adjustReq_;
     bool        adjustAnswered_ = false;
     bool        adjustAnswer_   = false;
+    // Step-mode handshake (worker pauses; UI grants). Guarded by mu_.
+    bool        stepGranted_ = false;
+    bool        stepPaused_  = false;
+    std::string nextStep_;                    // label of the paused leaf
+    std::vector<std::size_t> nextPath_;       // its numeric path
+    std::vector<std::size_t> startPath_;      // skip-until path for this run
     std::size_t leafDone_ = 0, leafTotal_ = 0;
     ExecutionContext* runCtx_ = nullptr;   // valid only while the worker runs;
                                            // set/cleared under mu_

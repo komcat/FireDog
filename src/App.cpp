@@ -745,6 +745,43 @@ void App::DrawRunPanel()
     }
     ImGui::SameLine();
     ImGui::Checkbox("Edit", &runEdit_);
+    // Active slot: mirrors the tree selection (deckSlot_, also the Start
+    // granularity); in Edit mode the deck shows ONLY the active slot, so a
+    // big program edits one slot at a time. "(all slots)" = whole program.
+    {
+        Program* prog = haveProg ? &programs_[progSel_] : nullptr;
+        if (prog && deckSlot_ >= static_cast<int>(prog->slots.size()))
+            deckSlot_ = -1;   // stale index (slot deleted) — back to all
+        char prev[64];
+        if (prog && deckSlot_ >= 0)
+            std::snprintf(prev, sizeof(prev), "%d  %s", deckSlot_ + 1,
+                          prog->slots[deckSlot_].name.c_str());
+        else
+            std::snprintf(prev, sizeof(prev), "(all slots)");
+        ImGui::BeginDisabled(!haveProg);
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::BeginCombo("##actslot", prev)) {
+            if (ImGui::Selectable("(all slots)", deckSlot_ < 0)) {
+                deckSlot_   = -1;
+                deckRecipe_ = -1;
+            }
+            for (int i = 0; prog && i < static_cast<int>(prog->slots.size()); ++i) {
+                ImGui::PushID(i);
+                char lbl[64];
+                std::snprintf(lbl, sizeof(lbl), "%d  %s", i + 1,
+                              prog->slots[i].name.c_str());
+                if (ImGui::Selectable(lbl, deckSlot_ == i)) {
+                    deckSlot_   = i;
+                    deckRecipe_ = -1;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("slot");
+        ImGui::EndDisabled();
+    }
     if (runEdit_) {
         if (ImGui::SmallButton("New")) {
             Program p;
@@ -758,7 +795,12 @@ void App::DrawRunPanel()
         ImGui::BeginDisabled(!haveProg);
         if (ImGui::SmallButton("Del")) runOpenDelete_ = true;
         ImGui::SameLine();
-        if (ImGui::SmallButton("+ Slot")) programs_[progSel_].slots.push_back({});
+        if (ImGui::SmallButton("+ Slot")) {
+            programs_[progSel_].slots.push_back({});
+            // The new slot becomes active so Edit's filtered view shows it.
+            deckSlot_   = static_cast<int>(programs_[progSel_].slots.size()) - 1;
+            deckRecipe_ = -1;
+        }
         ImGui::EndDisabled();
         if (haveProg) {
             Program& prog = programs_[progSel_];
@@ -779,6 +821,9 @@ void App::DrawRunPanel()
     } else {
         Program& prog = programs_[progSel_];
         for (int si = 0; si < static_cast<int>(prog.slots.size()); ++si) {
+            // An active slot filters the tree to just that slot (Edit or
+            // not); "(all slots)" in the combo shows the whole program.
+            if (deckSlot_ >= 0 && si != deckSlot_) continue;
             ProgramSlot& slot = prog.slots[si];
             ImGui::PushID(si);
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
@@ -799,11 +844,21 @@ void App::DrawRunPanel()
                     if (ImGui::InputText("##sname", sbuf, sizeof(sbuf))) slot.name = sbuf;
                     ImGui::SameLine();
                     ImGui::BeginDisabled(si == 0);
-                    if (ImGui::SmallButton("^")) std::swap(prog.slots[si - 1], prog.slots[si]);
+                    if (ImGui::SmallButton("^")) {
+                        std::swap(prog.slots[si - 1], prog.slots[si]);
+                        // The active slot follows the moved item (the Edit
+                        // view filters on it — don't let the view jump).
+                        if (deckSlot_ == si) deckSlot_ = si - 1;
+                        else if (deckSlot_ == si - 1) deckSlot_ = si;
+                    }
                     ImGui::EndDisabled();
                     ImGui::SameLine();
                     ImGui::BeginDisabled(si + 1 >= static_cast<int>(prog.slots.size()));
-                    if (ImGui::SmallButton("v")) std::swap(prog.slots[si], prog.slots[si + 1]);
+                    if (ImGui::SmallButton("v")) {
+                        std::swap(prog.slots[si], prog.slots[si + 1]);
+                        if (deckSlot_ == si) deckSlot_ = si + 1;
+                        else if (deckSlot_ == si + 1) deckSlot_ = si;
+                    }
                     ImGui::EndDisabled();
                     ImGui::SameLine();
                     if (ImGui::SmallButton("x slot")) {
@@ -832,7 +887,10 @@ void App::DrawRunPanel()
                     std::snprintf(row, sizeof(row), "   %s", missing
                                       ? (slot.recipes[ri] + " (missing!)").c_str()
                                       : r->name.c_str());
-                    if (ImGui::Selectable(row, sel)) {
+                    // AllowOverlap: the selectable's hit rect spans the full
+                    // row, UNDER the trailing ^/v/x buttons — without this
+                    // flag it claims hover first and the buttons never click.
+                    if (ImGui::Selectable(row, sel, ImGuiSelectableFlags_AllowOverlap)) {
                         deckSlot_   = si;
                         deckRecipe_ = ri;
                     }
@@ -863,7 +921,10 @@ void App::DrawRunPanel()
                         ImGui::SameLine();
                         if (ImGui::SmallButton("x")) {
                             slot.recipes.erase(slot.recipes.begin() + ri);
-                            if (deckRecipe_ == ri) deckRecipe_ = -1;
+                            if (deckSlot_ == si) {
+                                if (deckRecipe_ == ri) deckRecipe_ = -1;
+                                else if (deckRecipe_ > ri) --deckRecipe_;
+                            }
                             ImGui::PopID();
                             break;
                         }
@@ -1828,20 +1889,24 @@ void App::DrawRecipeEditPanel()
     if (haveSel)
         issues = ValidateRecipe(recipes_[recipeSel_], cmdRegistry_, hardware_,
                                 savedPos_, motionMaps_, recipes_, false);
+    // The issues list lives in its own band at the BOTTOM of the page (the
+    // run strip on top keeps only state/progress/errors).
     const std::size_t shownIssues = issues.size() < 3 ? issues.size() : 3;
     const float issuesH =
         issues.empty() ? 0.0f
                        : ImGui::GetTextLineHeightWithSpacing() *
                                  static_cast<float>(shownIssues + 1) + 10.0f;
 
-    const float  stripH = ImGui::GetFrameHeightWithSpacing() * 3.2f + issuesH;
-    const ImVec2 avail  = ImGui::GetContentRegionAvail();
-    const float  paneH  = avail.y - stripH;
+    const float  stripH  = ImGui::GetFrameHeightWithSpacing() * 3.2f;
+    const float  spacing = ImGui::GetStyle().ItemSpacing.y;
+    const ImVec2 avail   = ImGui::GetContentRegionAvail();
+    const float  paneH   = avail.y - stripH - issuesH -
+                           spacing * (issues.empty() ? 1.0f : 2.0f);
     const float  leftW  = 230.0f;
     const float  rightW = 320.0f;
 
     // ---- Top: run controls + state + progress (panes fill the rest) ----
-    DrawRecipeRunStrip(issues, stripH);
+    DrawRecipeRunStrip(stripH);
 
     // ---- Left: recipe list + CRUD ----
     ImGui::BeginChild("edRecipes", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
@@ -1884,6 +1949,48 @@ void App::DrawRecipeEditPanel()
     ImGui::SameLine();
     if (ImGui::SmallButton("Del")) edOpenDeleteRecipe_ = true;
     ImGui::EndDisabled();
+    // Clipboard round-trip: Copy puts the selected recipe's JSON on the OS
+    // clipboard; Paste accepts a recipe object, a whole recipes file, or a
+    // bare array, and mints a FRESH uid per pasted recipe so an in-place
+    // copy never collides with the original's identity.
+    ImGui::BeginDisabled(!haveSel);
+    if (ImGui::SmallButton("Copy"))
+        ImGui::SetClipboardText(RecipeToJson(recipes_[recipeSel_]).dump(2).c_str());
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Copy the selected recipe as JSON to the clipboard");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Paste")) {
+        const char* clip = ImGui::GetClipboardText();
+        nlohmann::json j = clip ? nlohmann::json::parse(clip, nullptr, false)
+                                : nlohmann::json();
+        nlohmann::json arr = nlohmann::json::array();
+        if (j.is_array()) arr = j;
+        else if (j.is_object() && j.contains("recipes") && j["recipes"].is_array())
+            arr = j["recipes"];
+        else if (j.is_object()) arr.push_back(j);
+        int added = 0;
+        for (const auto& rj : arr) {
+            if (!rj.is_object() || !(rj.contains("steps") || rj.contains("name")))
+                continue;   // not recipe-shaped — don't import junk
+            Recipe r = RecipeFromJson(rj);
+            r.uid = GenerateUid();   // pasted copy gets its OWN identity
+            for (const Recipe& ex : recipes_) {
+                if (ex.name == r.name) { r.name += " copy"; break; }
+            }
+            recipes_.push_back(std::move(r));
+            ++added;
+        }
+        if (added > 0) {
+            recipeSel_ = static_cast<int>(recipes_.size()) - 1;
+            edStepSel_.clear();
+            FD_INFO("recipe", "pasted %d recipe(s) from clipboard", added);
+        } else {
+            FD_WARN("recipe", "paste: clipboard has no recipe JSON");
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Paste recipe JSON from the clipboard (new uid)");
     ImGui::EndDisabled();
     ImGui::Separator();
     if (recipes_.empty())
@@ -1917,7 +2024,9 @@ void App::DrawRecipeEditPanel()
         ImGui::BeginChild("##edTreeRows");
         edTreeRows_.clear();
         std::vector<std::size_t> path;
-        DrawRecipeTreeNodes(r.steps, path, false, st.stepPath, running);
+        // While step-paused the gold row is the step ABOUT to run (Next).
+        DrawRecipeTreeNodes(r.steps, path, false,
+                            st.stepPaused ? st.nextPath : st.stepPath, running);
         // Arrow keys walk the visible rows (Up/Down; Left jumps to the
         // parent). Skipped while a text field or popup owns the keyboard.
         if (!ImGui::GetIO().WantTextInput &&
@@ -1978,6 +2087,24 @@ void App::DrawRecipeEditPanel()
         ImGui::TextDisabled("Select a recipe first.");
     }
     ImGui::EndChild();
+
+    // ---- Bottom: clickable validation-issues band (full width) ----
+    if (!issues.empty()) {
+        ImGui::BeginChild("edIssues", ImVec2(0.0f, issuesH), ImGuiChildFlags_Borders);
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                           "%zu issue(s) - click to select:", issues.size());
+        ImGui::BeginChild("##valList");   // scrolls when more than the band shows
+        for (std::size_t k = 0; k < issues.size(); ++k) {
+            const RecipeIssue& is = issues[k];
+            ImGui::PushID(static_cast<int>(k));
+            if (ImGui::Selectable((is.where + ": " + is.message).c_str()) &&
+                !is.path.empty())
+                edStepSel_ = is.path;
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        ImGui::EndChild();
+    }
 
     // ---- Unsaved-changes guard (Close button / Reload raise the flag) ----
     if (edConfirmAction_ != 0 && !ImGui::IsPopupOpen("Unsaved Changes"))
@@ -2885,11 +3012,12 @@ void App::SaveRecipes()
     }
 }
 
-// Bottom strip: Run/Stop/Save + state + executing step + progress + the
-// clickable validation-issues list. Runs the recipe selected in the left
-// panel through the engine (positions/maps copied at Start, so mid-run edits
-// elsewhere in the UI can't disturb the run).
-void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues, float height)
+// Top strip: Run/Stop/Save + state + executing step + progress (the
+// validation-issues list is a separate band at the bottom of the page).
+// Runs the recipe selected in the left panel through the engine
+// (positions/maps copied at Start, so mid-run edits elsewhere in the UI
+// can't disturb the run).
+void App::DrawRecipeRunStrip(float height)
 {
     const RecipeEngine::Status st = recipeEngine_.GetStatus();
     const bool running = recipeEngine_.Running();
@@ -2897,8 +3025,11 @@ void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues, float heigh
 
     // One row: state on the left, the run controls right-aligned. Errors get
     // their own line below so a long message never collides with the buttons.
+    const ImGuiStyle& style = ImGui::GetStyle();
     const float btnW  = 90.0f;
-    const float ctrlW = btnW * 4.0f + ImGui::GetStyle().ItemSpacing.x * 3.0f;
+    const float chkW  = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x +
+                        ImGui::CalcTextSize("Step").x;
+    const float ctrlW = btnW * 5.0f + chkW + style.ItemSpacing.x * 5.0f;
     const float rightEdge =
         ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
 
@@ -2913,8 +3044,22 @@ void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues, float heigh
         ImGui::SameLine();
         ImGui::TextDisabled("| %s", st.currentStep.c_str());
     }
+    if (st.stepPaused) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.16f, 1.0f),
+                           "| paused - next: %s", st.nextStep.c_str());
+    }
 
     ImGui::SameLine(rightEdge - ctrlW);
+    // Step mode: Run starts paused at the selected step; Next executes one
+    // leaf at a time. Toggling while a run is active pauses/resumes it live.
+    if (ImGui::Checkbox("Step", &edStepMode_) && running)
+        recipeEngine_.SetStepMode(edStepMode_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Step mode: Run pauses at the selected step (or the\n"
+                          "first step); Next executes one step at a time.\n"
+                          "Uncheck to free-run from here; Stop exits.");
+    ImGui::SameLine();
     const bool canRun = !OrchestrationBusy() && recipeSel_ >= 0 &&
                         recipeSel_ < static_cast<int>(recipes_.size());
     ImGui::BeginDisabled(!canRun);
@@ -2923,8 +3068,12 @@ void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues, float heigh
         env.positions = savedPos_;
         env.maps      = motionMaps_;
         env.library   = recipes_;
+        RecipeEngine::StartOpts opts;
+        opts.stepMode = edStepMode_;
+        if (edStepMode_) opts.startPath = edStepSel_;   // from the selection
         recipeStartErr_.clear();
-        if (!recipeEngine_.Start(recipes_[recipeSel_], std::move(env), &recipeStartErr_))
+        if (!recipeEngine_.Start(recipes_[recipeSel_], std::move(env),
+                                 &recipeStartErr_, std::move(opts)))
             FD_WARN("recipe", "start rejected: %s", recipeStartErr_.c_str());
     }
     ImGui::EndDisabled();
@@ -2955,6 +3104,12 @@ void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues, float heigh
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Run only the selected step (its children included)");
     ImGui::SameLine();
+    ImGui::BeginDisabled(!st.stepPaused);
+    if (ImGui::Button("Next", ImVec2(90.0f, 0.0f))) recipeEngine_.StepAdvance();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Execute the paused step, then pause again");
+    ImGui::SameLine();
     ImGui::BeginDisabled(!running);
     if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) recipeEngine_.RequestStop();
     ImGui::EndDisabled();
@@ -2977,20 +3132,6 @@ void App::DrawRecipeRunStrip(const std::vector<RecipeIssue>& issues, float heigh
         char overlay[48];
         std::snprintf(overlay, sizeof(overlay), "%zu / %zu", st.leafDone, st.leafTotal);
         ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay);
-    }
-    if (!issues.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%zu issue(s) - click to select:",
-                           issues.size());
-        ImGui::BeginChild("##valList");   // scrolls when more than the strip shows
-        for (std::size_t k = 0; k < issues.size(); ++k) {
-            const RecipeIssue& is = issues[k];
-            ImGui::PushID(static_cast<int>(k));
-            if (ImGui::Selectable((is.where + ": " + is.message).c_str()) &&
-                !is.path.empty())
-                edStepSel_ = is.path;
-            ImGui::PopID();
-        }
-        ImGui::EndChild();
     }
     ImGui::EndChild();
 }

@@ -38,7 +38,8 @@ RecipeEngine::~RecipeEngine()
     if (worker_.joinable()) worker_.join();
 }
 
-bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err)
+bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
+                         StartOpts opts)
 {
     if (running_.load()) {
         if (err) *err = "a recipe is already running";
@@ -82,7 +83,17 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err)
         leafDone_    = 0;
         leafTotal_   = CountLeafSteps(run.steps);
         curPath_.clear();
+        stepGranted_ = false;
+        stepPaused_  = false;
+        nextStep_.clear();
+        nextPath_.clear();
+        // Skip-until path: strip the editor's else-branch markers — the
+        // runner walks plain indices (same quirk as run highlighting).
+        startPath_.clear();
+        for (const std::size_t c : opts.startPath)
+            startPath_.push_back(c >= kElseBranchBase ? c - kElseBranchBase : c);
     }
+    stepMode_.store(opts.stepMode);
     stopReq_.store(false);
     running_.store(true);
     FD_INFO("recipe", "run started: '%s'", run.name.c_str());
@@ -93,7 +104,23 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err)
 void RecipeEngine::RequestStop()
 {
     stopReq_.store(true);
-    cv_.notify_all();   // release a blocked prompt
+    cv_.notify_all();   // release a blocked prompt / step pause
+}
+
+void RecipeEngine::StepAdvance()
+{
+    {
+        const std::scoped_lock lock(mu_);
+        if (!stepPaused_) return;   // nothing waiting
+        stepGranted_ = true;
+    }
+    cv_.notify_all();
+}
+
+void RecipeEngine::SetStepMode(bool on)
+{
+    stepMode_.store(on);
+    cv_.notify_all();   // off releases a pending pause (free-run resumes)
 }
 
 void RecipeEngine::AnswerPrompt(bool ok, std::string text)
@@ -136,6 +163,10 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.pendingPromptInput = promptWantsInput_;
     s.pendingAdjust      = adjustPending_;
     s.adjustReq          = adjustReq_;
+    s.stepMode           = stepMode_.load();
+    s.stepPaused         = stepPaused_;
+    s.nextStep           = nextStep_;
+    s.nextPath           = nextPath_;
     if (runCtx_) s.ctx = runCtx_->CtxSnapshot();   // its own mutex; no deadlock
     return s;
 }
@@ -180,6 +211,26 @@ bool RecipeEngine::AwaitAdjustInternal(const ExecutionContext::AdjustRequest& re
     return adjustAnswered_ && adjustAnswer_ && !stopReq_.load();
 }
 
+bool RecipeEngine::AwaitStepInternal(const std::string& label,
+                                     const std::vector<std::size_t>& path)
+{
+    if (!stepMode_.load()) return true;   // free-running — no gate
+    std::unique_lock lock(mu_);
+    stepPaused_ = true;
+    nextStep_   = label;
+    nextPath_   = path;
+    // Wait in slices so stop / safety / SetStepMode(false) always get through.
+    while (!stepGranted_ && stepMode_.load() && !stopReq_.load() &&
+           !SafetyAborted()) {
+        cv_.wait_for(lock, std::chrono::milliseconds(100));
+    }
+    stepGranted_ = false;
+    stepPaused_  = false;
+    nextStep_.clear();
+    nextPath_.clear();
+    return !stopReq_.load() && !SafetyAborted();
+}
+
 void RecipeEngine::ThreadMain(Recipe recipe, Env env)
 {
     ExecutionContext ctx(
@@ -214,8 +265,11 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
                     const std::scoped_lock lock(mu_);
                     ++leafDone_;
                 },
+                [this](const std::string& label, const std::vector<std::size_t>& path) {
+                    return AwaitStepInternal(label, path);
+                },
             });
-        out    = runner.Run(recipe.steps);
+        out    = runner.Run(recipe.steps, startPath_);
         runErr = runner.Error();
     } catch (const std::exception& e) {
         // Should have been contained at the step boundary — last line of defense.
