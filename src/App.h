@@ -27,13 +27,6 @@
 
 namespace firedog {
 
-// A draggable item on the layout canvas (drag-and-drop demo).
-struct CanvasObject {
-    ImVec2      pos;    // position relative to the canvas origin
-    const char* label;
-    ImU32       color;
-};
-
 // Which content the Main window shows. Hardware pages are selected via the
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
@@ -93,7 +86,7 @@ private:
     void DrawLeftPanel();      // 20% column: hardware status + DUT + display
     void DrawDutBlock();       // active-DUT status + open/close (Overview left)
     void DrawMiddlePanel();    // main content: vision image + overlay
-    void DrawLowerPanel();     // 15%-height strip: drag-object canvas
+    void DrawLowerPanel();     // 15%-height strip: log viewer
     void DrawRightPanel();     // 15% column: Overview placeholder
     void DrawJogWindow();      // undocked Jog window (toggled from View menu)
     void DrawJogPanel();       // jog controls: device/velocity/step/direction/keys
@@ -182,7 +175,6 @@ private:
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
     void DrawImageOverlay();   // image + vision overlay
-    void DrawObjectCanvas();   // click-drag objects (unused; kept for reuse)
     void SaveUiSettings();     // persist font choice + size to disk
     void SavePositions();      // persist savedPos_ (autosaved on every change)
     void SaveMaps();           // persist motionMaps_ (autosaved on every change)
@@ -268,8 +260,6 @@ private:
     static constexpr double   kChartWindowSec = 10.0;
 
     unsigned int              viewportTex_ = 0;   // GL texture: main-window placeholder
-    std::vector<CanvasObject> objects_;
-    int                       dragging_ = -1;
 
     // Display controls (theme + font picker + size). Theme applies via
     // Theme::Apply; fonts bind to the GlHost font API.

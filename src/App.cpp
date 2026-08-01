@@ -236,10 +236,6 @@ int App::Run()
     }
     viewportTex_ = host_.MakeTextureRGBA(IW, IH, px.data());
 
-    objects_.push_back({ImVec2(120.0f,  90.0f), "Lens",  IM_COL32( 90, 200, 250, 255)});
-    objects_.push_back({ImVec2(260.0f, 150.0f), "Fiber", IM_COL32(250, 190,  90, 255)});
-    objects_.push_back({ImVec2(400.0f, 100.0f), "DUT",   IM_COL32(160, 250, 130, 255)});
-
     const HardwareConfig hw = HardwareConfig::Load("config/hardware.json");
     watchCfg_ = hw.ioWatch;   // working copy for the IO Watch editor
     if (const CameraConfig* cam = hw.FirstEnabledCamera()) {
@@ -6495,44 +6491,6 @@ void App::DrawImageOverlay()
     dl->AddRect(ImVec2(origin.x + 120, origin.y + 90), ImVec2(origin.x + 300, origin.y + 240),
                 IM_COL32(90, 250, 120, 255), 0.0f, 0, 2.0f);
     dl->AddText(ImVec2(origin.x + 122, origin.y + 72), IM_COL32(90, 250, 120, 255), "match 0.98");
-}
-
-void App::DrawObjectCanvas()
-{
-    ImGui::TextUnformatted("Layout (drag objects)");
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    ImVec2 size = ImGui::GetContentRegionAvail();   // fill the lower panel
-    if (size.y < 60.0f) size.y = 60.0f;
-
-    ImGui::InvisibleButton("canvas", size);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(30, 30, 34, 255));
-
-    const float radius = 22.0f;
-    const ImVec2 mouse = ImGui::GetIO().MousePos;
-
-    if (ImGui::IsItemActive() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        for (int i = static_cast<int>(objects_.size()) - 1; i >= 0; --i) {
-            const ImVec2 p(origin.x + objects_[i].pos.x, origin.y + objects_[i].pos.y);
-            const float dx = mouse.x - p.x, dy = mouse.y - p.y;
-            if (dx * dx + dy * dy <= radius * radius) { dragging_ = i; break; }
-        }
-    }
-    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) dragging_ = -1;
-    if (dragging_ >= 0) {
-        CanvasObject& o = objects_[dragging_];
-        o.pos.x += ImGui::GetIO().MouseDelta.x;
-        o.pos.y += ImGui::GetIO().MouseDelta.y;
-        o.pos.x = fmaxf(radius, fminf(size.x - radius, o.pos.x));
-        o.pos.y = fmaxf(radius, fminf(size.y - radius, o.pos.y));
-    }
-
-    for (const auto& o : objects_) {
-        const ImVec2 p(origin.x + o.pos.x, origin.y + o.pos.y);
-        dl->AddCircleFilled(p, radius, o.color);
-        const ImVec2 ts = ImGui::CalcTextSize(o.label);
-        dl->AddText(ImVec2(p.x - ts.x * 0.5f, p.y - ts.y * 0.5f), IM_COL32_BLACK, o.label);
-    }
 }
 
 void App::DrawAuxWindow()
