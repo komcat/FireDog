@@ -14,6 +14,7 @@
 // Design: docs/run-page-design.md.
 #pragma once
 
+#include "command/Program.h"
 #include "command/Recipe.h"
 #include "command/RecipeEngine.h"
 
@@ -72,5 +73,29 @@ private:
     RecipeEngine::Env  env_;
     Status status_;
 };
+
+// ---- Run-request resolution ------------------------------------------------
+// The three granularities the Run deck offers. They differ ONLY in how much of
+// the program ends up in the queue — one code path from here on.
+enum class RunScope { Program, Slot, Recipe };
+
+// A resolved request, ready for ProgramRunner::Start.
+struct RunQueue {
+    std::string kind;    // "program" | "slot" | "recipe" — drives the $run event
+    std::string label;   // human-readable, e.g. "prog / slot / recipe"
+    std::vector<ProgramRunner::Item> items;
+};
+
+// Resolve a deck selection into a queue. `slotIdx`/`recipeIdx` are only read
+// for the scopes that need them (-1 is fine otherwise).
+//
+// Fails (empty `items`, reason in *err) on an out-of-range selection or a
+// recipe uid the library does not contain. A missing uid is a HARD stop, not a
+// skipped item: a program that silently runs 4 of its 5 recipes is worse than
+// one that refuses to start. Recipes are snapshotted into the queue, so the run
+// executes against one consistent world even if the library is edited meanwhile.
+RunQueue BuildRunQueue(const Program& prog, RunScope scope,
+                       int slotIdx, int recipeIdx,
+                       const std::vector<Recipe>& library, std::string* err);
 
 } // namespace firedog

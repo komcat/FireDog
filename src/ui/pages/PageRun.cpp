@@ -158,7 +158,10 @@ static std::string FormatSI(double v)
     return buf;
 }
 
-void App::StartDeckRun(int mode)
+// The deck's Start button. The UI contributes the SELECTION; resolving it into
+// a queue is BuildRunQueue's job (command/ProgramRunner), and executing that
+// queue is the runner's.
+void App::StartDeckRun(RunScope scope)
 {
     runStartErr_.clear();
     if (progSel_ < 0 || progSel_ >= static_cast<int>(session_.Programs().size())) {
@@ -167,48 +170,13 @@ void App::StartDeckRun(int mode)
     }
     const Program& prog = session_.Programs()[progSel_];
 
-    std::vector<ProgramRunner::Item> queue;
-    const auto addRecipe = [&](const std::string& slotName, const std::string& uid) {
-        const Recipe* r = RecipeByUid(session_.Recipes(), uid);
-        if (!r) {
-            runStartErr_ = "recipe uid '" + uid + "' not found (slot '" + slotName + "')";
-            return false;
-        }
-        queue.push_back({slotName, *r});
-        return true;
-    };
-
-    std::string label = prog.name;
-    std::string kind  = "program";
-    if (mode == 0) {
-        for (const ProgramSlot& s : prog.slots)
-            for (const std::string& uid : s.recipes)
-                if (!addRecipe(s.name, uid)) return;
-    } else {
-        if (deckSlot_ < 0 || deckSlot_ >= static_cast<int>(prog.slots.size())) {
-            runStartErr_ = "no slot selected";
-            return;
-        }
-        const ProgramSlot& s = prog.slots[deckSlot_];
-        if (mode == 1) {
-            kind  = "slot";
-            label = prog.name + " / " + s.name;
-            for (const std::string& uid : s.recipes)
-                if (!addRecipe(s.name, uid)) return;
-        } else {
-            if (deckRecipe_ < 0 || deckRecipe_ >= static_cast<int>(s.recipes.size())) {
-                runStartErr_ = "no recipe selected";
-                return;
-            }
-            kind = "recipe";
-            if (!addRecipe(s.name, s.recipes[deckRecipe_])) return;
-            label = prog.name + " / " + s.name + " / " + queue.front().recipe.name;
-        }
-    }
+    RunQueue q = BuildRunQueue(prog, scope, deckSlot_, deckRecipe_,
+                               session_.Recipes(), &runStartErr_);
+    if (q.items.empty()) return;   // reason already in runStartErr_
 
     RecipeEngine::Env env = session_.MakeRecipeEnv();
-    if (!orch_.programs.Start(kind, label, prog.uid, std::move(queue), std::move(env),
-                              &runStartErr_))
+    if (!orch_.programs.Start(q.kind, q.label, prog.uid, std::move(q.items),
+                              std::move(env), &runStartErr_))
         FD_WARN("program", "run rejected: %s", runStartErr_.c_str());
 }
 
@@ -241,7 +209,9 @@ void App::DrawRunPanel()
     } else {
         ImGui::BeginDisabled(!canRun);
         if (ImGui::Button("Start", ImVec2(110.0f, 0.0f)))
-            StartDeckRun(onRecipe ? 2 : onSlot ? 1 : 0);
+            StartDeckRun(onRecipe ? RunScope::Recipe
+                         : onSlot ? RunScope::Slot
+                                  : RunScope::Program);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(onRecipe ? "Run the selected recipe"
                               : onSlot ? "Run the selected slot"

@@ -150,7 +150,7 @@ private:
     void LoadDutList();               // scan the product's data/ for records
     // Run page (View menu, full-page) — programs = slots of recipes. R1.
     void DrawRunPanel();              // deck | execution + XCAN + log | DUT
-    void StartDeckRun(int mode);      // 0 = program, 1 = slot, 2 = recipe
+    void StartDeckRun(RunScope scope);   // granularity follows the deck selection
     void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|XCAN tabs
     void DrawRunXcanBlock();          // XCAN tab: hex-left/right launch presets
     void StartXcanPreset(const std::string& device, int presetIdx);
