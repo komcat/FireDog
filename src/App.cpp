@@ -261,17 +261,17 @@ int App::Run()
     }
     transformCfg_ = LoadMotionTransforms("config/motion_transforms.json");
     workflow_.SetTransforms(transformCfg_);   // transformCfg_ stays the editor's working copy
-    savedPos_ = LoadSavedPositions();   // config fallback (no product)
-    motionMaps_ = LoadMotionMaps();     // node-edge maps (Mapped Path tab)
+    session_.LoadPositions();      // config fallback (no product yet)
+    session_.LoadMaps();           // node-edge maps (Mapped Path tab)
     if (!lastProduct.empty() && !LoadProduct(lastProduct))
         FD_WARN("product", "could not reload last product '%s'", lastProduct.c_str());
-    if (!product_.Loaded()) LoadRecipesFromDisk();   // else LoadProduct did it
-    if (!product_.Loaded()) LoadProgramsFromDisk();
+    if (!session_.ProductLoaded()) LoadRecipesFromDisk();   // else LoadProduct did it
+    if (!session_.ProductLoaded()) LoadProgramsFromDisk();
     LoadScriptsList();             // .lua programs (product dir, else config/scripts)
     LoadScanPresets();             // XCAN launch presets (machine-global local.json)
-    if (product_.Loaded())         // DUT records live under the product's data/
-        DutSession::Instance().SetProduct(product_.name, product_.uid,
-                                          product_.DataDir());
+    if (session_.ProductLoaded())         // DUT records live under the product's data/
+        DutSession::Instance().SetProduct(session_.Product().name, session_.Product().uid,
+                                          session_.Product().DataDir());
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
     RegisterBuiltinCommands(orch_.registry, workflow_, hardware_);   // layer 2.5
@@ -302,25 +302,10 @@ void App::Update(float dt)
     orch_.programs.Tick();       // sequences program/slot runs between frames
     UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)
 
-    // Teach hand-backs from save_position steps (worker threads queue them on
-    // Workflow): merge by name — the app-side uid wins for existing names so
-    // recipe references stay stable — and persist once per batch.
-    const auto taught = workflow_.TakeSavedPositions();
-    if (!taught.empty()) {
-        for (const auto& [dev, sp] : taught) {
-            std::vector<SavedPos>& list = savedPos_[dev];
-            bool found = false;
-            for (SavedPos& e : list) {
-                if (std::string(e.name) == sp.name) {
-                    e.vals = sp.vals;
-                    found  = true;
-                    break;
-                }
-            }
-            if (!found) list.push_back(sp);
-        }
-        SavePositions();
-    }
+    // Teach hand-backs from save_position steps: engine worker threads queue
+    // them on Workflow, and THIS is the worker->UI hand-off point — the
+    // session is UI-thread-only, so the drain must stay here in Update().
+    session_.MergeTaughtPositions(workflow_.TakeSavedPositions());
 }
 
 namespace {
@@ -370,11 +355,11 @@ void App::DrawMainWindow()
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("New Product..."))  openNewProduct_  = true;
                 if (ImGui::MenuItem("Load Product...")) openLoadProduct_ = true;
-                if (ImGui::MenuItem("Save Product", nullptr, false, product_.Loaded()))
+                if (ImGui::MenuItem("Save Product", nullptr, false, session_.ProductLoaded()))
                     SaveProduct();
                 ImGui::Separator();
-                if (product_.Loaded())
-                    ImGui::MenuItem(("Product: " + product_.name).c_str(), nullptr, false, false);
+                if (session_.ProductLoaded())
+                    ImGui::MenuItem(("Product: " + session_.Product().name).c_str(), nullptr, false, false);
                 else
                     ImGui::MenuItem("Product: (none)", nullptr, false, false);
                 ImGui::Separator();
@@ -661,8 +646,8 @@ void App::StartDeckRun(int mode)
     }
 
     RecipeEngine::Env env;
-    env.positions = savedPos_;
-    env.maps      = motionMaps_;
+    env.positions = session_.Positions();
+    env.maps      = session_.Maps();
     env.library   = recipes_;
     if (!orch_.programs.Start(kind, label, prog.uid, std::move(queue), std::move(env),
                               &runStartErr_))
@@ -1220,8 +1205,8 @@ void App::StartXcanPreset(const std::string& device, int presetIdx)
     const XcanPreset& p  = xcanPresets_[presetIdx];
     const XcanTarget& tp = xcanTargets_[xcanPresetSel_];
     LuaEngine::Env env;
-    env.positions = savedPos_;
-    env.maps      = motionMaps_;
+    env.positions = session_.Positions();
+    env.maps      = session_.Maps();
     env.library   = recipes_;
     env.initialCtx = {
         {"align_device", device},
@@ -1615,8 +1600,8 @@ void App::StartRasterScan(const std::string& device)
         if (si.name == "raster_scan") { script = si.path; break; }
     }
     LuaEngine::Env env;
-    env.positions = savedPos_;
-    env.maps      = motionMaps_;
+    env.positions = session_.Positions();
+    env.maps      = session_.Maps();
     env.library   = recipes_;
     env.initialCtx = {
         {"raster_device", device},
@@ -1740,10 +1725,10 @@ void App::LoadDutList()
     dutSel_ = -1;
     dutRecSerial_.clear();
     dutRec_ = nlohmann::json();
-    if (!product_.Loaded()) return;
+    if (!session_.ProductLoaded()) return;
     std::error_code ec;
     for (const fs::directory_entry& e :
-         fs::directory_iterator(product_.DataDir(), ec)) {
+         fs::directory_iterator(session_.Product().DataDir(), ec)) {
         if (e.is_directory(ec) && fs::exists(e.path() / "dut.json", ec))
             dutList_.push_back(e.path().filename().string());
     }
@@ -1762,10 +1747,10 @@ void App::DrawDutViewPanel()
     ImGui::SameLine();
     if (ImGui::SmallButton("Reload")) LoadDutList();
     ImGui::Separator();
-    if (!product_.Loaded())
+    if (!session_.ProductLoaded())
         ImGui::TextWrapped("Load a product first.");
     else if (dutList_.empty())
-        ImGui::TextWrapped("No DUT records under %s.", product_.DataDir().c_str());
+        ImGui::TextWrapped("No DUT records under %s.", session_.Product().DataDir().c_str());
     for (int i = 0; i < static_cast<int>(dutList_.size()); ++i) {
         ImGui::PushID(i);
         if (ImGui::Selectable(dutList_[i].c_str(), dutSel_ == i)) dutSel_ = i;
@@ -1780,7 +1765,7 @@ void App::DrawDutViewPanel()
         dutRecSerial_ = dutList_[dutSel_];
         dutRec_       = nlohmann::json();
         try {
-            std::ifstream f(product_.DataDir() + "/" + dutRecSerial_ + "/dut.json");
+            std::ifstream f(session_.Product().DataDir() + "/" + dutRecSerial_ + "/dut.json");
             if (f.is_open()) f >> dutRec_;
         } catch (const std::exception& e) {
             FD_WARN("dut", "record '%s' unreadable: %s", dutRecSerial_.c_str(), e.what());
@@ -1967,28 +1952,8 @@ void App::SaveUiSettings()
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.chartScope  = chartScope_;
-    s.lastProduct = product_.name;
+    s.lastProduct = session_.Product().name;
     s.Save(kUiSettingsPath);
-}
-
-void App::SavePositions()
-{
-    // Product loaded -> autosave into the product's positions file (with its
-    // uid); otherwise the machine-global config fallback. Warns if unwritable.
-    if (const ManifestFile* e = product_.Entry("positions"))
-        SaveSavedPositionsFile(product_.FilePath("positions"), savedPos_, e->uid);
-    else
-        SaveSavedPositions(savedPos_);
-}
-
-void App::SaveMaps()
-{
-    // Machine-global for now (config/maps.local.json) — maps reference
-    // position uids, which stay stable across products.
-    if (SaveMotionMaps(motionMaps_))
-        FD_INFO("map", "maps saved to config/maps.local.json");
-    else
-        FD_WARN("map", "could not save motion maps");
 }
 
 bool App::LoadProduct(const std::string& name)
@@ -1999,21 +1964,21 @@ bool App::LoadProduct(const std::string& name)
     const ManifestFile* e = m.Entry("positions");
     if (e) {
         std::string fileUid;
-        savedPos_ = LoadSavedPositionsFile(m.FilePath("positions"), &fileUid);
+        session_.Positions() = LoadSavedPositionsFile(m.FilePath("positions"), &fileUid);
         if (fileUid != e->uid)
             FD_WARN("product", "positions uid mismatch: manifest %s vs file '%s'",
                     e->uid.c_str(), fileUid.c_str());
     } else {
         FD_WARN("product", "'%s' has no positions entry; keeping current positions", name.c_str());
     }
-    product_ = std::move(m);
+    session_.SetProduct(std::move(m));
     LoadRecipesFromDisk();   // product recipes replace the config-fallback set
     LoadProgramsFromDisk();  // product programs likewise
     LoadScriptsList();       // product scripts likewise (config fallback)
-    DutSession::Instance().SetProduct(product_.name, product_.uid,
-                                      product_.DataDir());   // auto-closes any DUT
+    DutSession::Instance().SetProduct(session_.Product().name, session_.Product().uid,
+                                      session_.Product().DataDir());   // auto-closes any DUT
     SaveUiSettings();   // remember as last product for the next startup
-    FD_INFO("product", "loaded '%s'", product_.name.c_str());
+    FD_INFO("product", "loaded '%s'", session_.Product().name.c_str());
     return true;
 }
 
@@ -2021,10 +1986,10 @@ void App::LoadRecipesFromDisk()
 {
     recipeSel_ = -1;
     recipeStartErr_.clear();
-    if (product_.Loaded()) {
-        const ManifestFile* e = product_.Entry("recipes");
+    if (session_.ProductLoaded()) {
+        const ManifestFile* e = session_.Product().Entry("recipes");
         if (e) {
-            recipes_ = LoadRecipesFile(product_.FilePath("recipes"), &recipesUid_);
+            recipes_ = LoadRecipesFile(session_.Product().FilePath("recipes"), &recipesUid_);
             if (!recipes_.empty()) {
                 if (!recipesUid_.empty() && recipesUid_ != e->uid)
                     FD_WARN("product", "recipes uid mismatch: manifest %s vs file '%s'",
@@ -2035,10 +2000,10 @@ void App::LoadRecipesFromDisk()
             // New products carry an empty seed file (no editor yet in Phase A) —
             // fall through to the config recipes so the runner has something.
             FD_INFO("recipe", "product '%s' has no recipes yet - using config recipes",
-                    product_.name.c_str());
+                    session_.Product().name.c_str());
         } else {
             FD_WARN("product", "'%s' has no recipes entry; using config recipes",
-                    product_.name.c_str());
+                    session_.Product().name.c_str());
         }
     }
     recipesUid_.clear();
@@ -2070,10 +2035,10 @@ void App::LoadProgramsFromDisk()
     deckSlot_   = -1;
     deckRecipe_ = -1;
     runStartErr_.clear();
-    if (product_.Loaded()) {
-        const ManifestFile* e = product_.Entry("programs");
+    if (session_.ProductLoaded()) {
+        const ManifestFile* e = session_.Product().Entry("programs");
         if (e) {
-            programs_ = LoadProgramsFile(product_.FilePath("programs"), &programsUid_);
+            programs_ = LoadProgramsFile(session_.Product().FilePath("programs"), &programsUid_);
             if (!programs_.empty()) {
                 if (!programsUid_.empty() && programsUid_ != e->uid)
                     FD_WARN("product", "programs uid mismatch: manifest %s vs file '%s'",
@@ -2083,7 +2048,7 @@ void App::LoadProgramsFromDisk()
                 return;
             }
             FD_INFO("program", "product '%s' has no programs yet - using config programs",
-                    product_.name.c_str());
+                    session_.Product().name.c_str());
         }
     }
     programsUid_.clear();
@@ -2096,9 +2061,9 @@ void App::SavePrograms()
 {
     std::string path = "config/programs.local.json";
     std::string uid  = programsUid_;
-    if (product_.Loaded()) {
-        if (const ManifestFile* e = product_.Entry("programs")) {
-            path = product_.FilePath("programs");
+    if (session_.ProductLoaded()) {
+        if (const ManifestFile* e = session_.Product().Entry("programs")) {
+            path = session_.Product().FilePath("programs");
             uid  = e->uid;
         }
     }
@@ -2223,7 +2188,7 @@ void App::DrawRecipeEditPanel()
     std::vector<RecipeIssue> issues;
     if (haveSel)
         issues = ValidateRecipe(recipes_[recipeSel_], orch_.registry, hardware_,
-                                savedPos_, motionMaps_, recipes_, false);
+                                session_.Positions(), session_.Maps(), recipes_, false);
     // The issues list lives in its own band at the BOTTOM of the page (the
     // run strip on top keeps only state/progress/errors).
     const std::size_t shownIssues = issues.size() < 3 ? issues.size() : 3;
@@ -2583,8 +2548,8 @@ std::string App::AutoNickname(const RecipeStep& s) const
         std::string piece;
         if (p.type == ParamType::PositionUid && v.is_string()) {
             piece = v.get<std::string>();
-            const auto it = savedPos_.find(dev);
-            if (it != savedPos_.end()) {
+            const auto it = session_.Positions().find(dev);
+            if (it != session_.Positions().end()) {
                 for (const SavedPos& sp : it->second)
                     if (sp.uid == piece) { piece = sp.name; break; }
             }
@@ -3094,8 +3059,8 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
         std::string preview   = v.empty() ? "(pick)" : v;
         bool resolved         = v.empty();   // empty = nothing to warn about yet
-        const auto it = savedPos_.find(dev);
-        if (it != savedPos_.end()) {
+        const auto it = session_.Positions().find(dev);
+        if (it != session_.Positions().end()) {
             for (const SavedPos& sp : it->second)
                 if (sp.uid == v) { preview = sp.name; resolved = true; break; }
         }
@@ -3104,7 +3069,7 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
         if (open) {
-            if (it == savedPos_.end() || it->second.empty())
+            if (it == session_.Positions().end() || it->second.empty())
                 ImGui::TextDisabled("(no saved positions for '%s')", dev.c_str());
             else
                 for (const SavedPos& sp : it->second) {
@@ -3122,9 +3087,9 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
     case ParamType::MapName: {
         const std::string dev = params.value("device", std::string());
         const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
-        const auto it = motionMaps_.find(dev);
+        const auto it = session_.Maps().find(dev);
         bool resolved = v.empty();
-        if (!resolved && it != motionMaps_.end())
+        if (!resolved && it != session_.Maps().end())
             for (const MotionMap& m : it->second)
                 if (m.name == v) { resolved = true; break; }
         if (!resolved) pushStale();
@@ -3132,7 +3097,7 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         const bool open = ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
         if (open) {
-            if (it == motionMaps_.end() || it->second.empty())
+            if (it == session_.Maps().end() || it->second.empty())
                 ImGui::TextDisabled("(no maps for '%s')", dev.c_str());
             else
                 for (const MotionMap& m : it->second) {
@@ -3331,9 +3296,9 @@ void App::SaveRecipes()
 {
     std::string path = "config/recipes.local.json";
     std::string uid  = recipesUid_;
-    if (product_.Loaded()) {
-        if (const ManifestFile* e = product_.Entry("recipes")) {
-            path = product_.FilePath("recipes");
+    if (session_.ProductLoaded()) {
+        if (const ManifestFile* e = session_.Product().Entry("recipes")) {
+            path = session_.Product().FilePath("recipes");
             uid  = e->uid;
         }
     }
@@ -3400,8 +3365,8 @@ void App::DrawRecipeRunStrip(float height)
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
         RecipeEngine::Env env;
-        env.positions = savedPos_;
-        env.maps      = motionMaps_;
+        env.positions = session_.Positions();
+        env.maps      = session_.Maps();
         env.library   = recipes_;
         RecipeEngine::StartOpts opts;
         opts.stepMode = edStepMode_;
@@ -3428,8 +3393,8 @@ void App::DrawRecipeRunStrip(float height)
         one.steps.push_back(*selStep);
         one.steps.front().enabled = true;   // a disabled row can still be tested
         RecipeEngine::Env env;
-        env.positions = savedPos_;
-        env.maps      = motionMaps_;
+        env.positions = session_.Positions();
+        env.maps      = session_.Maps();
         env.library   = recipes_;   // sub_recipe references still resolve
         recipeStartErr_.clear();
         if (!orch_.recipe.Start(one, std::move(env), &recipeStartErr_))
@@ -3675,14 +3640,14 @@ void App::DrawManualAdjustWindow()
 
 std::string App::ScriptsDir() const
 {
-    return product_.Loaded() ? product_.Dir() + "/scripts" : "config/scripts";
+    return session_.ProductLoaded() ? session_.Product().Dir() + "/scripts" : "config/scripts";
 }
 
 void App::LoadScriptsList()
 {
     scriptsDirUsed_ = ScriptsDir();
     scripts_ = ListScripts(scriptsDirUsed_);
-    if (scripts_.empty() && product_.Loaded()) {
+    if (scripts_.empty() && session_.ProductLoaded()) {
         // Product without a scripts folder — fall back like recipes do, and
         // show the directory ACTUALLY used, not the one we wished for.
         scriptsDirUsed_ = "config/scripts";
@@ -3847,8 +3812,8 @@ void App::DrawScriptsPanel()
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
         LuaEngine::Env env;
-        env.positions = savedPos_;
-        env.maps      = motionMaps_;
+        env.positions = session_.Positions();
+        env.maps      = session_.Maps();
         env.library   = recipes_;
         scriptStartErr_.clear();
         orch_.lua.SetBreakpoints(scriptBps_[scripts_[scriptSel_].path]);
@@ -3887,22 +3852,22 @@ void App::NewProduct(const char* name)
 {
     ProductManifest m = CreateProduct(name);
     if (!m.Loaded()) return;
-    product_ = std::move(m);
-    DutSession::Instance().SetProduct(product_.name, product_.uid,
-                                      product_.DataDir());
-    SavePositions();     // carry the current in-memory positions into the product
+    session_.SetProduct(std::move(m));
+    DutSession::Instance().SetProduct(session_.Product().name, session_.Product().uid,
+                                      session_.Product().DataDir());
+    session_.SavePositions();     // carry the current in-memory positions into the product
     SaveUiSettings();
 }
 
 void App::SaveProduct()
 {
-    if (!product_.Loaded()) return;
+    if (!session_.ProductLoaded()) return;
     // "Save runs through the manifest": each entry is dispatched by role.
     // Future roles (recipes/programs) are skipped until they have real data.
-    for (const ManifestFile& e : product_.files) {
-        const std::string path = product_.Dir() + "/" + e.file;
+    for (const ManifestFile& e : session_.Product().files) {
+        const std::string path = session_.Product().Dir() + "/" + e.file;
         if (e.role == "positions") {
-            SaveSavedPositionsFile(path, savedPos_, e.uid);
+            SaveSavedPositionsFile(path, session_.Positions(), e.uid);
         } else if (e.role == "recipes") {
             SaveRecipesFile(path, recipes_, e.uid);
             recipesUid_      = e.uid;
@@ -3915,9 +3880,9 @@ void App::SaveProduct()
             FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
         }
     }
-    SaveProductManifest(product_);
+    SaveProductManifest(session_.Product());
     FD_INFO("product", "saved '%s' (%zu manifest file(s))",
-            product_.name.c_str(), product_.files.size());
+            session_.Product().name.c_str(), session_.Product().files.size());
 }
 
 void App::DrawProductPopups()
@@ -3937,7 +3902,7 @@ void App::DrawProductPopups()
             ImGui::TextUnformatted("Double-click a product to load it:");
             if (ImGui::BeginListBox("##products", ImVec2(320.0f, 200.0f))) {
                 for (const std::string& p : products) {
-                    const bool current = (p == product_.name);
+                    const bool current = (p == session_.Product().name);
                     if (ImGui::Selectable((p + (current ? "  [loaded]" : "")).c_str(), current,
                                           ImGuiSelectableFlags_AllowDoubleClick)) {
                         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -5037,8 +5002,8 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
             if (si.name == "hexapod_align") { script = si.path; break; }
         }
         LuaEngine::Env env;
-        env.positions = savedPos_;
-        env.maps      = motionMaps_;
+        env.positions = session_.Positions();
+        env.maps      = session_.Maps();
         env.library   = recipes_;
         env.initialCtx = {
             {"align_device", hardware_.MotionName(static_cast<std::size_t>(xcanDevice_))},
@@ -5105,7 +5070,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
     ImGui::SameLine();
 
     const std::string      devName = hardware_.MotionName(idx);
-    std::vector<SavedPos>& saved   = savedPos_[devName];
+    std::vector<SavedPos>& saved   = session_.Positions()[devName];
     if (saved.empty()) {                       // seed one placeholder row
         SavedPos home;
         std::snprintf(home.name, sizeof(home.name), "Home");
@@ -5121,7 +5086,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
         const std::map<std::string, double> pos = m->Positions();
         for (const auto& a : axes) { const auto it = pos.find(a); p.vals[a] = (it != pos.end()) ? it->second : 0.0; }
         saved.push_back(std::move(p));
-        SavePositions();
+        session_.SavePositions();
     }
 
     // Per-position visibility widget: system positions stay hidden from the
@@ -5143,7 +5108,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             bool visible = !saved[r].hidden;
             if (ImGui::Checkbox(saved[r].name, &visible)) {
                 saved[r].hidden = !visible;
-                SavePositions();
+                session_.SavePositions();
             }
             ImGui::PopID();
         }
@@ -5187,7 +5152,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                 const std::map<std::string, double> pos = m->Positions();
                 for (const auto& a : axes) { const auto it = pos.find(a); if (it != pos.end()) sp.vals[a] = it->second; }
                 FD_INFO("saved", "updated '%s' from current position", sp.name);
-                SavePositions();
+                session_.SavePositions();
             }
             ImGui::TableSetColumnIndex(2);
             ImGui::TextUnformatted(sp.name);   // read-only — rename via the Edit dialog
@@ -5235,7 +5200,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             if (ImGui::Button("Delete")) {
                 FD_INFO("saved", "deleted '%s' (uid %s, %s)", sp.name, sp.uid.c_str(), devName.c_str());
                 saved.erase(saved.begin() + deleteRow_);
-                SavePositions();
+                session_.SavePositions();
                 if (renameRow_ == deleteRow_) renameRow_ = -1;   // row gone — drop pending rename
                 deleteRow_ = -1;
                 ImGui::CloseCurrentPopup();
@@ -5267,7 +5232,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             if (ImGui::Button("OK") || (submit && valid)) {
                 FD_INFO("saved", "renamed '%s' -> '%s' (uid %s)", sp.name, renameBuf_, sp.uid.c_str());
                 std::snprintf(sp.name, sizeof(sp.name), "%s", renameBuf_);
-                SavePositions();
+                session_.SavePositions();
                 renameRow_ = -1;
                 ImGui::CloseCurrentPopup();
             }
@@ -5290,7 +5255,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
     constexpr double kAtNodeTolMM = 0.05;    // "device is at this node" tolerance
 
     const std::string devName = hardware_.MotionName(devIdx);
-    std::vector<MotionMap>& maps = motionMaps_[devName];
+    std::vector<MotionMap>& maps = session_.Maps()[devName];
 
     if (mapSelDev_ != static_cast<int>(devIdx)) {   // device switched — reset state
         mapSelDev_ = static_cast<int>(devIdx);
@@ -5305,7 +5270,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
     }
     if (mapSel_ >= static_cast<int>(maps.size())) mapSel_ = maps.empty() ? -1 : 0;
 
-    const std::vector<SavedPos>& saved = savedPos_[devName];
+    const std::vector<SavedPos>& saved = session_.Positions()[devName];
     auto posOf = [&saved](const std::string& uid) -> const SavedPos* {
         for (const SavedPos& p : saved) {
             if (p.uid == uid) return &p;
@@ -5341,7 +5306,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         ImGui::SameLine();
         if (ImGui::SmallButton("Delete")) openDeleteMap_ = true;
         ImGui::SameLine();
-        if (ImGui::SmallButton("Save")) SaveMaps();   // edits also autosave
+        if (ImGui::SmallButton("Save")) session_.SaveMaps();   // edits also autosave
     }
 
     // ---- New / Rename / Delete map dialogs ----
@@ -5362,7 +5327,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             maps.push_back(std::move(mm));
             mapSel_ = static_cast<int>(maps.size()) - 1;
             mapLastPath_.clear();
-            SaveMaps();
+            session_.SaveMaps();
             FD_INFO("map", "created map '%s' for %s", mapNameBuf_, devName.c_str());
             ImGui::CloseCurrentPopup();
         }
@@ -5387,7 +5352,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             ImGui::BeginDisabled(!valid);
             if (ImGui::Button("OK") || (submit && valid)) {
                 maps[mapSel_].name = mapNameBuf_;
-                SaveMaps();
+                session_.SaveMaps();
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndDisabled();
@@ -5414,7 +5379,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
                 maps.erase(maps.begin() + mapSel_);
                 mapSel_ = maps.empty() ? -1 : 0;
                 mapLastPath_.clear();
-                SaveMaps();
+                session_.SaveMaps();
                 ImGui::CloseCurrentPopup();
             }
             ImGui::PopStyleColor(2);
@@ -5443,7 +5408,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             map.RemoveEdge(mapSelEdgeA_, mapSelEdgeB_);
             mapSelEdgeA_.clear(); mapSelEdgeB_.clear();
             mapLastPath_.clear();
-            SaveMaps();
+            session_.SaveMaps();
         }
         ImGui::PopStyleColor();
     }
@@ -5465,7 +5430,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
                 n.x   = 50.0f + static_cast<float>(map.nodes.size() % 5) * 120.0f;
                 n.y   = 50.0f + static_cast<float>(map.nodes.size() / 5) * 90.0f;
                 map.nodes.push_back(std::move(n));
-                SaveMaps();
+                session_.SaveMaps();
             }
             ImGui::PopID();
         }
@@ -5581,7 +5546,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             } else if (hovered != mapEdgeFrom_) {
                 if (!map.HasEdge(mapEdgeFrom_, hovered)) {
                     map.edges.push_back({mapEdgeFrom_, hovered});
-                    SaveMaps();
+                    session_.SaveMaps();
                 }
                 mapEdgeFrom_ = hovered;   // chain: keep linking from here
             }
@@ -5603,7 +5568,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         map.RemoveEdge(mapSelEdgeA_, mapSelEdgeB_);
         mapSelEdgeA_.clear(); mapSelEdgeB_.clear();
         mapLastPath_.clear();
-        SaveMaps();
+        session_.SaveMaps();
     }
     if (!mapDragNode_.empty()) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -5617,7 +5582,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             }
         } else {
             mapDragNode_.clear();
-            SaveMaps();   // persist the final spot once the drag ends
+            session_.SaveMaps();   // persist the final spot once the drag ends
         }
     }
     if (canvasHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
@@ -5638,7 +5603,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             if (ImGui::MenuItem("Delete node (and its edges)")) {
                 map.RemoveNode(mapCtxNode_);
                 mapLastPath_.clear();
-                SaveMaps();
+                session_.SaveMaps();
             }
         } else if (mapCtxEdge_ >= 0 && mapCtxEdge_ < static_cast<int>(map.edges.size())) {
             ImGui::TextDisabled("edge");
@@ -5646,7 +5611,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             if (ImGui::MenuItem("Delete edge")) {
                 map.edges.erase(map.edges.begin() + mapCtxEdge_);
                 mapLastPath_.clear();
-                SaveMaps();
+                session_.SaveMaps();
             }
         } else {
             ImGui::TextDisabled("Add node here:");
@@ -5662,7 +5627,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
                     n.x   = mapAddAt_.x;
                     n.y   = mapAddAt_.y;
                     map.nodes.push_back(std::move(n));
-                    SaveMaps();
+                    session_.SaveMaps();
                 }
                 ImGui::PopID();
             }

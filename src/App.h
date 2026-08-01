@@ -22,6 +22,7 @@
 #include "core/SavedPositions.h"
 #include "hardware/HardwareManager.h"
 #include "hardware/HardwareConfig.h"
+#include "session/ProductSession.h"
 #include "workflow/Workflow.h"
 
 namespace firedog {
@@ -174,11 +175,10 @@ private:
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
     void DrawImageOverlay();   // image + vision overlay
     void SaveUiSettings();     // persist font choice + size to disk
-    void SavePositions();      // persist savedPos_ (autosaved on every change)
-    void SaveMaps();           // persist motionMaps_ (autosaved on every change)
 
-    // Product manifest (File menu). Load/New replace savedPos_ from the
-    // product's positions file; Save runs through the manifest entries.
+    // Product manifest (File menu). Load/New replace the session's positions
+    // from the product's positions file; Save runs through the manifest
+    // entries. Thin wrappers: they also reset the UI selections.
     void DrawProductPopups();  // Load/New modal dialogs (opened from File menu)
     bool LoadProduct(const std::string& name);
     void NewProduct(const char* name);
@@ -197,6 +197,11 @@ private:
     // Commands are registered once in Run() after Workflow::Start; the
     // registry is read-only afterwards. Gate every Run surface on orch_.Busy().
     Orchestration orch_{workflow_, hardware_};
+
+    // The application document: product manifest + saved positions + maps
+    // (+ recipes/programs/scripts as they migrate). UI-THREAD ONLY — the
+    // engines only ever see a copy, handed over through Env at Start.
+    ProductSession session_;
 
     // UI-side camera texture — frames are pulled from hardware_.Camera() via
     // UpdateCameraTexture() by every view that shows the live image (Aux,
@@ -277,10 +282,10 @@ private:
     int  selectedMotion_ = -1;   // absolute index into the HardwareManager motion fleet
     bool showHiddenPos_  = false;   // reveal hidden (system) positions in the table
 
-    // Mapped Path tab (Motion page): node-edge maps per device, persisted to
-    // config/maps.local.json. Nodes reference saved positions by uid; edges
-    // are bidirectional; path moves run through Workflow's path executor.
-    MotionMapSet motionMaps_;
+    // Mapped Path tab (Motion page) UI state. The maps themselves live in
+    // session_ (persisted to config/maps.local.json): nodes reference saved
+    // positions by uid, edges are bidirectional, and path moves run through
+    // Workflow's path executor.
     int  mapSel_    = 0;         // selected map for the current device
     int  mapSelDev_ = -1;        // device the selection belongs to (reset on switch)
     bool mapEdgeMode_ = false;   // canvas clicks pick edge endpoints
@@ -351,11 +356,6 @@ private:
                                           // nothing is pushed at connect or exit)
     std::map<int, double> velCustomEdit_; // device index -> custom input-box value
     std::map<int, double> velCustomSet_;  // device index -> applied custom (0 = preset)
-
-    // Saved/taught positions per device (keyed by device name). Loaded at
-    // startup, autosaved on every change — into the current product's positions
-    // file when one is loaded, else config/positions.local.json.
-    SavedPosMap savedPos_;
 
     // Recipes — browsed/run via the Recipe Editor page (View menu). Loaded
     // from the product's recipes file when a product is loaded, else
@@ -475,8 +475,6 @@ private:
     std::vector<std::string> scriptSrc_;        // source lines (view only)
     std::string              scriptStartErr_;   // last Start() rejection
 
-    // Current product (File menu). Not loaded => config-fallback persistence.
-    ProductManifest product_;
     bool openLoadProduct_ = false;   // menu -> popup handoff (OpenPopup must
     bool openNewProduct_  = false;   // be called outside the menu scope)
     char newProductName_[64] = "";
