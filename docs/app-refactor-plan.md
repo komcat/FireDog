@@ -197,10 +197,32 @@ TUs needed includes App.cpp had provided. **Only the phase-3 end state builds.**
 If phase 3 is ever re-run or bisected, carve each page's file-scope statics in the
 SAME commit as its members, and re-check includes per TU.
 
-**Phase 4 — optional layer cleanups (small, independent)** — NEXT
-17. `NearestMapNodeUid` (Go button geometry) → core/MotionMap (one planner spirit).
-18. `BuildRunQueue` (StartDeckRun resolution) → command/Program.
-19. Seed-"Home" placeholder out of `DrawMotionPositionsTab` draw path → session.
+**Phase 4 — optional layer cleanups (small, independent)** — ✅ DONE
+17. ~~`NearestMapNodeUid` (Go button geometry) → core/MotionMap (one planner spirit).~~
+18. ~~`BuildRunQueue` (StartDeckRun resolution) → command/Program.~~ Landed in
+    **command/ProgramRunner**, not Program: the result *is* `ProgramRunner::Item`, so
+    Program.h would have had to depend on its own executor. `int mode` → `RunScope`.
+19. ~~Seed-"Home" placeholder out of `DrawMotionPositionsTab` draw path → session.~~
+    Driven from `App::Update`, not startup — the row is shaped from the device axis
+    list, which does not exist until the async connect finishes (the reason it was in
+    the draw path at all). Fixed a latent bug on the way: the seeded row was never
+    persisted, so its uid changed every launch and anything referencing it broke.
+
+---
+
+## Outcome
+
+`App.cpp` **6,330 → ~250 lines** (it had grown to 6,825 by the time execution
+started). Three owners now exist where `App` had everything:
+
+| | |
+|---|---|
+| `command/Orchestration.{h,cpp}` | registry + both engines + runner, one member slot, one `Busy()` gate |
+| `session/ProductSession.{h,cpp}` | the product document + all its persistence rules + the Env factories |
+| `src/ui/pages/`, `src/ui/windows/` | ~20 per-surface TUs — see `docs/ui-file-layout.md` |
+
+Behavior changes were deliberate and are called out in their commits: the
+Motion-page Go gate (phase 1) and the Home-seed persistence (phase 4).
 
 ## Risk register
 
