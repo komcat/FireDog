@@ -178,7 +178,104 @@ add_library(implot_lib STATIC
 target_include_directories(implot_lib PUBLIC ${implot_SOURCE_DIR})
 target_link_libraries(implot_lib PUBLIC imgui_lib)
 
-# ---- FireDog executable ----
+# ---- firedog_hw : the UI-free layers (core + hardware + workflow) ----
+# Both executables (the FireDog client and the FireDogRig console) share these,
+# so they are compiled once here instead of twice. Nothing under these three
+# directories includes ImGui/GLFW/OpenGL/Lua — keep it that way.
+#
+# The vendor-SDK gating lives on this library and propagates PUBLIC:
+# HardwareManager.h pulls PylonCamera.h & co into the UI translation units, so
+# the HAS_* definitions must reach every consumer, not just the drivers.
+file(GLOB_RECURSE FIREDOG_HW_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hardware/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hardware/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/workflow/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/workflow/*.h")
+
+add_library(firedog_hw STATIC ${FIREDOG_HW_SOURCES})
+
+target_include_directories(firedog_hw PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# ws2_32 for the WAGO Modbus TCP client (always compiled — no vendor SDK).
+target_link_libraries(firedog_hw PUBLIC
+    nlohmann_json::nlohmann_json spdlog::spdlog ws2_32)
+
+# Pylon camera (real SDK if found; otherwise PylonCamera.cpp compiles its stub).
+if(PYLON_FOUND)
+    target_compile_definitions(firedog_hw PUBLIC HAS_PYLON)
+    target_include_directories(firedog_hw PUBLIC "${PYLON_INCLUDE_DIR}")
+    target_link_libraries(firedog_hw PUBLIC ${PYLON_LIBRARIES})
+endif()
+
+# Keithley VISA (real driver if found; otherwise Keithley6482.cpp compiles its stub).
+if(VISA_FOUND)
+    target_compile_definitions(firedog_hw PUBLIC HAS_VISA)
+    target_include_directories(firedog_hw PUBLIC "${VISA_INCLUDE_DIR}")
+    target_link_libraries(firedog_hw PUBLIC "${VISA_LIBRARY}")
+endif()
+
+# PI hexapod (real GCS2 driver if found; otherwise PIHexapod.cpp compiles its stub).
+if(PI_FOUND)
+    target_compile_definitions(firedog_hw PUBLIC HAS_PI)
+    target_include_directories(firedog_hw PUBLIC "${PI_SDK_DIR}")
+    target_link_libraries(firedog_hw PUBLIC "${PI_LIBRARY}")
+endif()
+
+# ACS gantry (real ACSC driver if found; otherwise ACSController.cpp compiles its stub).
+if(ACS_FOUND)
+    target_compile_definitions(firedog_hw PUBLIC HAS_ACS)
+    target_include_directories(firedog_hw PUBLIC "${ACS_SDK_DIR}")
+    target_link_libraries(firedog_hw PUBLIC "${ACS_LIBRARY}" ws2_32)
+endif()
+
+# Ezi-IO (real FASTECH driver if found; otherwise EziIoDevice.cpp compiles its stub).
+# The SDK header auto-links via #pragma comment(lib, "EziMOTIONPlusE.lib"), so the
+# link directory must be known in addition to the explicit library path.
+if(EZIIO_FOUND)
+    target_compile_definitions(firedog_hw PUBLIC HAS_EZIIO)
+    target_include_directories(firedog_hw PUBLIC "${EZIIO_SDK_DIR}")
+    target_link_directories(firedog_hw PUBLIC "${EZIIO_SDK_DIR}")
+    target_link_libraries(firedog_hw PUBLIC "${EZIIO_LIBRARY}")
+endif()
+
+# ---- Runtime staging, shared by every executable ----
+# config/ next to the exe (every config path in the code is cwd-relative) plus
+# the vendor runtime DLLs. Both exes land in the same output directory, so the
+# second call is a copy_if_different no-op — but building only one target must
+# still stage everything that target needs to run.
+function(firedog_stage_runtime tgt)
+    add_custom_command(TARGET ${tgt} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/config" "$<TARGET_FILE_DIR:${tgt}>/config"
+        COMMENT "Copying config to output directory")
+
+    if(PYLON_FOUND AND PYLON_RUNTIME_DIR AND EXISTS "${PYLON_RUNTIME_DIR}")
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${PYLON_RUNTIME_DIR}" "$<TARGET_FILE_DIR:${tgt}>"
+            COMMENT "Copying Pylon runtime DLLs")
+    endif()
+
+    if(PI_FOUND AND EXISTS "${PI_SDK_DIR}/PI_GCS2_DLL_x64.dll")
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${PI_SDK_DIR}/PI_GCS2_DLL_x64.dll" "$<TARGET_FILE_DIR:${tgt}>"
+            COMMENT "Copying PI GCS2 runtime DLL")
+    endif()
+
+    if(EZIIO_FOUND AND EXISTS "${EZIIO_SDK_DIR}/EziMOTIONPlusE.dll")
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${EZIIO_SDK_DIR}/EziMOTIONPlusE.dll" "$<TARGET_FILE_DIR:${tgt}>"
+            COMMENT "Copying EziMOTIONPlusE runtime DLL")
+    endif()
+endfunction()
+
+# ---- FireDog executable (the GUI client) ----
 # Sources are globbed from src/ so new files are picked up automatically.
 # CONFIGURE_DEPENDS re-globs at build time (Ninja/MSBuild), so adding or removing
 # a file under src/ reconfigures on the next build — no need to edit this list.
@@ -186,85 +283,39 @@ file(GLOB_RECURSE FIREDOG_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
 
+# core/, hardware/ and workflow/ are compiled into firedog_hw and linked below —
+# compiling them a second time here would duplicate every symbol.
+list(FILTER FIREDOG_SOURCES EXCLUDE REGEX "/src/(core|hardware|workflow)/")
+
 add_executable(FireDog
     FireDog.cpp
     FireDog.h
     ${FIREDOG_SOURCES})
 
-target_include_directories(FireDog PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${stb_SOURCE_DIR})
+# The project include dirs arrive PUBLIC from firedog_hw; stb is UI/command-only.
+target_include_directories(FireDog PRIVATE ${stb_SOURCE_DIR})
 
 # opengl32 for the base GL calls in GlHost (texture upload, clear).
-# ws2_32 for the WAGO Modbus TCP client (always compiled — no vendor SDK).
-target_link_libraries(FireDog PRIVATE glfw imgui_lib implot_lib opengl32 ws2_32
-    nlohmann_json::nlohmann_json spdlog::spdlog lua_static sol2::sol2)
+target_link_libraries(FireDog PRIVATE firedog_hw
+    glfw imgui_lib implot_lib opengl32 lua_static sol2::sol2)
 # sol2 safety checks (argument/type validation on every boundary crossing) —
 # cheap insurance for a layer that commands real hardware.
 target_compile_definitions(FireDog PRIVATE SOL_ALL_SAFETIES_ON=1)
 
-# Pylon camera (real SDK if found; otherwise PylonCamera.cpp compiles its stub).
-if(PYLON_FOUND)
-    target_compile_definitions(FireDog PRIVATE HAS_PYLON)
-    target_include_directories(FireDog PRIVATE "${PYLON_INCLUDE_DIR}")
-    target_link_libraries(FireDog PRIVATE ${PYLON_LIBRARIES})
-    if(PYLON_RUNTIME_DIR AND EXISTS "${PYLON_RUNTIME_DIR}")
-        add_custom_command(TARGET FireDog POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${PYLON_RUNTIME_DIR}" "$<TARGET_FILE_DIR:FireDog>"
-            COMMENT "Copying Pylon runtime DLLs")
-    endif()
-endif()
+firedog_stage_runtime(FireDog)
 
-# Keithley VISA (real driver if found; otherwise Keithley6482.cpp compiles its stub).
-if(VISA_FOUND)
-    target_compile_definitions(FireDog PRIVATE HAS_VISA)
-    target_include_directories(FireDog PRIVATE "${VISA_INCLUDE_DIR}")
-    target_link_libraries(FireDog PRIVATE "${VISA_LIBRARY}")
-endif()
+# ---- FireDogRig executable (console hardware bring-up rig) ----
+# Same drivers, same Workflow::Start() bring-up as the client, no UI. Lives in
+# tools/ rather than src/ so the FireDog glob above never sees its main().
+# See docs/rig-console.md.
+file(GLOB_RECURSE FIREDOG_RIG_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/rig/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/rig/*.h")
 
-# PI hexapod (real GCS2 driver if found; otherwise PIHexapod.cpp compiles its stub).
-if(PI_FOUND)
-    target_compile_definitions(FireDog PRIVATE HAS_PI)
-    target_include_directories(FireDog PRIVATE "${PI_SDK_DIR}")
-    target_link_libraries(FireDog PRIVATE "${PI_LIBRARY}")
-    if(EXISTS "${PI_SDK_DIR}/PI_GCS2_DLL_x64.dll")
-        add_custom_command(TARGET FireDog POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${PI_SDK_DIR}/PI_GCS2_DLL_x64.dll" "$<TARGET_FILE_DIR:FireDog>"
-            COMMENT "Copying PI GCS2 runtime DLL")
-    endif()
-endif()
+add_executable(FireDogRig ${FIREDOG_RIG_SOURCES})
+target_link_libraries(FireDogRig PRIVATE firedog_hw)
 
-# ACS gantry (real ACSC driver if found; otherwise ACSController.cpp compiles its stub).
-if(ACS_FOUND)
-    target_compile_definitions(FireDog PRIVATE HAS_ACS)
-    target_include_directories(FireDog PRIVATE "${ACS_SDK_DIR}")
-    target_link_libraries(FireDog PRIVATE "${ACS_LIBRARY}" ws2_32)
-endif()
-
-# Ezi-IO (real FASTECH driver if found; otherwise EziIoDevice.cpp compiles its stub).
-# The SDK header auto-links via #pragma comment(lib, "EziMOTIONPlusE.lib"), so the
-# link directory must be known in addition to the explicit library path.
-if(EZIIO_FOUND)
-    target_compile_definitions(FireDog PRIVATE HAS_EZIIO)
-    target_include_directories(FireDog PRIVATE "${EZIIO_SDK_DIR}")
-    target_link_directories(FireDog PRIVATE "${EZIIO_SDK_DIR}")
-    target_link_libraries(FireDog PRIVATE "${EZIIO_LIBRARY}")
-    if(EXISTS "${EZIIO_SDK_DIR}/EziMOTIONPlusE.dll")
-        add_custom_command(TARGET FireDog POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${EZIIO_SDK_DIR}/EziMOTIONPlusE.dll" "$<TARGET_FILE_DIR:FireDog>"
-            COMMENT "Copying EziMOTIONPlusE runtime DLL")
-    endif()
-endif()
-
-# Copy the config/ folder next to the executable so config/hardware.json resolves.
-add_custom_command(TARGET FireDog POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/config" "$<TARGET_FILE_DIR:FireDog>/config"
-    COMMENT "Copying config to output directory")
+firedog_stage_runtime(FireDogRig)
 
 # TODO (layer 1 hardware SDKs still to port) — mirror the detection blocks above:
 #   PI GCS2  -> external/PI/PI_GCS2_DLL_x64.lib   (DONE: HAS_PI, copies DLL)

@@ -431,6 +431,193 @@ bool HardwareConfig::SaveIoWatch(const std::string& path, const IoWatchConfig& c
     return true;
 }
 
+// ---- Whole-entry writers (FireDogRig console) -------------------------------
+// The read-modify-write halves of the savers above, factored out because six
+// more entry writers follow the identical shape.
+namespace {
+
+// Load the document for rewriting. False means "do not write" — either the file
+// exists but doesn't parse (clobbering it would lose the whole machine's config)
+// or it isn't there at all (an entry can only be updated, never invented).
+bool ReadConfigDoc(const std::string& path, nlohmann::json& j)
+{
+    std::ifstream f(path);
+    if (!f) {
+        std::cerr << "[config] hardware config not found: " << path << std::endl;
+        return false;
+    }
+    try { f >> j; }
+    catch (const std::exception& e) {
+        std::cerr << "[config] cannot rewrite " << path << ": " << e.what() << std::endl;
+        return false;   // don't clobber a file we couldn't parse
+    }
+    return true;
+}
+
+bool WriteConfigDoc(const std::string& path, const nlohmann::json& j)
+{
+    std::ofstream out(path);
+    if (!out) {
+        std::cerr << "[config] cannot write " << path << std::endl;
+        return false;
+    }
+    out << j.dump(2) << "\n";
+    return true;
+}
+
+// Find the entry of `section` whose `key` equals `value`. Null if absent.
+nlohmann::json* FindEntry(nlohmann::json& j, const char* section,
+                          const char* key, const std::string& value)
+{
+    if (!j.contains(section) || !j[section].is_array()) return nullptr;
+    for (auto& e : j[section]) {
+        if (e.value(key, std::string()) == value) return &e;
+    }
+    return nullptr;
+}
+
+void ReportMissing(const char* section, const std::string& value, const std::string& path)
+{
+    std::cerr << "[config] " << section << " entry '" << value << "' not found in "
+              << path << std::endl;
+}
+
+} // namespace
+
+bool HardwareConfig::SaveMotionDevice(const std::string& path, const MotionConfig& cfg)
+{
+    nlohmann::json j;
+    if (!ReadConfigDoc(path, j)) return false;
+
+    nlohmann::json* m = FindEntry(j, "motion_devices", "id", cfg.id);
+    if (!m) {
+        ReportMissing("motion_devices", cfg.id, path);
+        return false;
+    }
+
+    (*m)["name"]            = cfg.name;
+    (*m)["controller_type"] = cfg.controllerType;
+    (*m)["axes"]            = cfg.axes;
+    (*m)["ip_address"]      = cfg.ipAddress;
+    (*m)["port"]            = cfg.port;
+    (*m)["device_id"]       = cfg.deviceId;
+    (*m)["enabled"]         = cfg.enabled;
+    return WriteConfigDoc(path, j);
+}
+
+bool HardwareConfig::SaveIoDevice(const std::string& path, const IoDeviceConfig& cfg)
+{
+    nlohmann::json j;
+    if (!ReadConfigDoc(path, j)) return false;
+
+    nlohmann::json* d = FindEntry(j, "io_devices", "id", cfg.id);
+    if (!d) {
+        ReportMissing("io_devices", cfg.id, path);
+        return false;
+    }
+
+    // "pins" is deliberately untouched — pin name maps are edited in the file or
+    // the GUI, never by the rig, and rewriting them here would reorder the map.
+    (*d)["name"]             = cfg.name;
+    (*d)["type"]             = cfg.type;
+    (*d)["ip_address"]       = cfg.ipAddress;
+    (*d)["port"]             = cfg.port;
+    (*d)["device_id"]        = cfg.deviceId;
+    (*d)["input_count"]      = cfg.inputCount;
+    (*d)["output_count"]     = cfg.outputCount;
+    (*d)["poll_interval_ms"] = cfg.pollIntervalMs;
+    (*d)["enabled"]          = cfg.enabled;
+    (*d)["simulated"]        = cfg.simulated;
+    return WriteConfigDoc(path, j);
+}
+
+bool HardwareConfig::SaveCameraDevice(const std::string& path, const CameraConfig& cfg)
+{
+    nlohmann::json j;
+    if (!ReadConfigDoc(path, j)) return false;
+
+    nlohmann::json* c = FindEntry(j, "cameras", "id", cfg.id);
+    if (!c) {
+        ReportMissing("cameras", cfg.id, path);
+        return false;
+    }
+
+    // Unlike SaveCameraSettings (calibration only, from the Camera page), this
+    // writes the whole entry: the rig edits identity and calibration together.
+    (*c)["camera_type"]     = cfg.cameraType;
+    (*c)["connection_type"] = cfg.connectionType;
+    (*c)["ip_address"]      = cfg.ipAddress;
+    (*c)["serial_number"]   = cfg.serialNumber;
+    (*c)["display_name"]    = cfg.displayName;
+    (*c)["device_index"]    = cfg.deviceIndex;
+    (*c)["enabled"]         = cfg.enabled;
+    (*c)["auto_connect"]    = cfg.autoConnect;
+    (*c)["pixel_to_mm_x"]   = cfg.pixelToMmX;
+    (*c)["pixel_to_mm_y"]   = cfg.pixelToMmY;
+    (*c)["exposure_us"]     = cfg.exposureUs;
+    return WriteConfigDoc(path, j);
+}
+
+bool HardwareConfig::SaveInstrument(const std::string& path, const KeithleyConfig& cfg)
+{
+    nlohmann::json j;
+    if (!ReadConfigDoc(path, j)) return false;
+
+    nlohmann::json* inst = FindEntry(j, "instruments", "name", cfg.name);
+    if (!inst) {
+        ReportMissing("instruments", cfg.name, path);
+        return false;
+    }
+
+    (*inst)["visa_resource"]    = cfg.visaResource;
+    (*inst)["enabled"]          = cfg.enabled;
+    (*inst)["channel_count"]    = cfg.channelCount;
+    (*inst)["enabled_channels"] = cfg.enabledChannels;
+    (*inst)["measurement_nplc"] = cfg.nplc;
+    (*inst)["auto_range"]       = cfg.autoRange;
+    (*inst)["fixed_range"]      = cfg.fixedRange;
+    (*inst)["poll_interval_ms"] = cfg.pollIntervalMs;
+    (*inst)["bias_voltage"]     = cfg.biasVoltage;
+    return WriteConfigDoc(path, j);
+}
+
+bool HardwareConfig::SaveInstrument(const std::string& path, const Cld101xConfig& cfg)
+{
+    nlohmann::json j;
+    if (!ReadConfigDoc(path, j)) return false;
+
+    nlohmann::json* inst = FindEntry(j, "instruments", "name", cfg.name);
+    if (!inst) {
+        ReportMissing("instruments", cfg.name, path);
+        return false;
+    }
+
+    (*inst)["visa_resource"]         = cfg.visaResource;
+    (*inst)["enabled"]               = cfg.enabled;
+    (*inst)["default_temperature"]   = cfg.defaultTemperature;
+    (*inst)["default_laser_current"] = cfg.defaultLaserCurrentMA;
+    (*inst)["poll_interval_ms"]      = cfg.pollIntervalMs;
+    return WriteConfigDoc(path, j);
+}
+
+bool HardwareConfig::SaveInstrument(const std::string& path, const PsuConfig& cfg)
+{
+    nlohmann::json j;
+    if (!ReadConfigDoc(path, j)) return false;
+
+    nlohmann::json* inst = FindEntry(j, "instruments", "name", cfg.name);
+    if (!inst) {
+        ReportMissing("instruments", cfg.name, path);
+        return false;
+    }
+
+    (*inst)["visa_resource"]    = cfg.visaResource;
+    (*inst)["enabled"]          = cfg.enabled;
+    (*inst)["channels"]         = cfg.channels;
+    (*inst)["poll_interval_ms"] = cfg.pollIntervalMs;
+    return WriteConfigDoc(path, j);
+}
+
 std::map<std::string, AxisTransform> LoadMotionTransforms(const std::string& path)
 {
     std::map<std::string, AxisTransform> out;

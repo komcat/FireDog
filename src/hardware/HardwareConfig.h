@@ -205,6 +205,18 @@ struct HardwareConfig {
     // (read-modify-write; same rebuild caveat). Matches instruments[] by name.
     static bool SaveCldSettings(const std::string& path, const std::string& name,
                                 double defaultTemperature, double defaultLaserCurrentMA);
+
+    // ---- Whole-entry writers (used by the FireDogRig console) ---------------
+    // Same read-modify-write contract as the setting-specific savers above: an
+    // unparsable file is never clobbered, entries are matched by id (devices) or
+    // name (instruments), and every key these do NOT own is preserved — notably
+    // io_devices[].pins, which no rig command edits. Same rebuild caveat.
+    static bool SaveMotionDevice(const std::string& path, const MotionConfig& cfg);
+    static bool SaveIoDevice(const std::string& path, const IoDeviceConfig& cfg);
+    static bool SaveCameraDevice(const std::string& path, const CameraConfig& cfg);
+    static bool SaveInstrument(const std::string& path, const KeithleyConfig& cfg);
+    static bool SaveInstrument(const std::string& path, const Cld101xConfig& cfg);
+    static bool SaveInstrument(const std::string& path, const PsuConfig& cfg);
 };
 
 } // namespace firedog

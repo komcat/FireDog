@@ -17,9 +17,14 @@ Entry point is `FireDog.cpp` → `firedog::App::Run()`, whose main loop is `whil
 ## Build
 
 ```bash
-cmake --preset x64-debug          # configure (presets: x64/x86 × debug/release)
-out/build/x64-debug/FireDog.exe   # run
+cmake --preset x64-debug             # configure (presets: x64/x86 × debug/release)
+out/build/x64-debug/FireDog.exe      # run the client
+out/build/x64-debug/FireDogRig.exe   # console hardware bring-up rig
 ```
+
+Three targets: **`firedog_hw`** (static lib — `src/core` + `src/hardware` +
+`src/workflow`, and where all vendor-SDK gating lives), **`FireDog`** (the GUI
+client), **`FireDogRig`** (the console rig, sources in `tools/rig/`).
 
 CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first configure needs network). Vendor SDKs are optional, each gated by a compile def (`HAS_PYLON`/`HAS_VISA`/`HAS_PI`/`HAS_ACS`/`HAS_EZIIO`) with a simulated stub fallback, so the build always stays green — details in `docs/build-and-sdks.md`.
 
@@ -34,11 +39,12 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 | 2.5 — Commands | `src/command/` | `CommandRegistry`, `RecipeEngine`, `LuaEngine`, `Orchestration` | `docs/command-layer.md` |
 | — Document | `src/session/` | `ProductSession`: product + positions + maps + recipes + programs + scripts | `docs/state-and-config.md` |
 | 3 — UI | `src/App.*`, `src/ui/` | GLFW+OpenGL3 host, ImGui pages, ImPlot charts | `docs/ui-layer.md`, `docs/ui-file-layout.md` |
+| — Tools | `tools/rig/` | `FireDogRig`, the console bring-up rig (layers 1–2, no UI) | `docs/rig-console.md` |
 
 ### Topic docs (`docs/`)
 
 **Reference — how it works now:**
-`architecture.md` (layering + ownership) · `build-and-sdks.md` · `hardware-layer.md` (per-device drivers) · `state-and-config.md` (config files, persistence, DataBus) · `command-layer.md` (registry, recipes, Lua) · `run-and-dut.md` (programs, Run page, traceability) · `ui-layer.md` · `ui-file-layout.md` (**where UI code goes**)
+`architecture.md` (layering + ownership) · `build-and-sdks.md` (**targets + SDK gating**) · `hardware-layer.md` (per-device drivers) · `state-and-config.md` (config files, persistence, DataBus) · `command-layer.md` (registry, recipes, Lua) · `run-and-dut.md` (programs, Run page, traceability) · `ui-layer.md` · `ui-file-layout.md` (**where UI code goes**) · `rig-console.md` (the FireDogRig console)
 
 **Design rationale — why it is that way:**
 `recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
@@ -90,4 +96,6 @@ Breaking any of these is a defect, not a style choice.
 
 ### Project
 - Windows-only, MSVC, C++20. Aim for `/W4`-clean.
+- **Vendor-SDK gating belongs on the `firedog_hw` library, PUBLIC** — never on an executable, or the second exe silently loses a `HAS_*` def. New executables call `firedog_stage_runtime(<target>)` for the config/DLL staging.
+- **`FireDogRig` is read-only.** It connects and reports; it must never gain a command that moves an axis, writes an IO output, or switches an output. Actuation stays in the client behind its armed checkboxes.
 - **There is no automated test suite.** Verify by building clean, then running (simulated hardware today). Never claim "tests pass" or invent a test command.
