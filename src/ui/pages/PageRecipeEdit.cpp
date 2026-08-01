@@ -129,7 +129,8 @@ void App::DrawRecipeEditPanel()
     std::vector<RecipeIssue> issues;
     if (haveSel)
         issues = ValidateRecipe(session_.Recipes()[recipeSel_], orch_.registry, hardware_,
-                                session_.Positions(), session_.Maps(), session_.Recipes(), false);
+                                session_.Positions(), session_.Maps(), session_.Aligns(),
+                                session_.Recipes(), false);
     // The issues list lives in its own band at the BOTTOM of the page (the
     // run strip on top keeps only state/progress/errors).
     const std::size_t shownIssues = issues.size() < 3 ? issues.size() : 3;

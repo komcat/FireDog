@@ -12,6 +12,7 @@
 // ctx store is mutex-guarded for exactly that reason.
 #pragma once
 
+#include "core/AlignFrame.h"
 #include "core/MotionMap.h"
 #include "core/SavedPositions.h"
 
@@ -48,6 +49,22 @@ public:
         bool        enableX = true, enableY = true, enableZ = true;
     };
 
+    // Crosshair pick (the Alignment Procedure's manual mode): the run pauses
+    // while the UI shows the live camera image and the operator marks a feature.
+    // Nothing moves — the answer is a point in the CURRENT field of view.
+    struct PickRequest {
+        std::string message;
+        std::string alignName;         // procedure being taught (window title)
+        int         station = 1;       // 1 => E1, 2 => E2
+    };
+    // The UI answers in camera pixels AND in millimetres: only the UI knows the
+    // live pixel_to_mm calibration, so the conversion stays there and the worker
+    // needs no camera-config accessor.
+    struct PickResult {
+        double px = 0.0, py = 0.0;     // absolute camera pixel
+        double dxMM = 0.0, dyMM = 0.0; // offset from the image centre, mm
+    };
+
     // Hooks installed by the engines (they own the stop flag and the prompt
     // handshakes with the UI).
     struct Hooks {
@@ -57,11 +74,13 @@ public:
         std::function<bool(const std::string&, std::string*)> awaitInput;
         // Manual jog-adjust prompt; false = cancel (or stop released it).
         std::function<bool(const AdjustRequest&)> awaitAdjust;
+        // Crosshair pick prompt; false = cancel (or stop released it).
+        std::function<bool(const PickRequest&, PickResult*)> awaitPick;
     };
 
     ExecutionContext(Workflow& wf, HardwareManager& hw,
                      SavedPosMap& positions, const MotionMapSet& maps,
-                     Hooks hooks);
+                     const std::vector<AlignProc>& aligns, Hooks hooks);
     ExecutionContext(const ExecutionContext&) = delete;
     ExecutionContext& operator=(const ExecutionContext&) = delete;
 
@@ -88,6 +107,7 @@ public:
     HardwareManager& Hw() { return hw_; }   // read-side only by convention
     const SavedPosMap&  Positions() const { return positions_; }
     const MotionMapSet& Maps() const { return maps_; }
+    const std::vector<AlignProc>& Aligns() const { return aligns_; }
 
     // ---- Name resolution helpers (fleet index lookups; -1 if unknown) -------
     int MotionIndexByName(const std::string& name) const;
@@ -95,6 +115,8 @@ public:
     int SlideIndexByName(const std::string& name) const;
     const SavedPos* FindPosition(const std::string& device, const std::string& uid) const;
     const MotionMap* FindMap(const std::string& device, const std::string& mapName) const;
+    // Alignment procedure by uid, else by name (see FindAlignProc).
+    const AlignProc* FindAlign(const std::string& uidOrName) const;
 
     // Teach: record `vals` as the device's saved position `name` — update by
     // name (uid kept stable) or create. Mutates the RUN's copy, so later steps
@@ -107,6 +129,7 @@ public:
     bool AwaitPrompt(const std::string& message);
     bool AwaitInput(const std::string& message, std::string* textOut);
     bool AwaitAdjust(const AdjustRequest& req);
+    bool AwaitPick(const PickRequest& req, PickResult* out);
 
 private:
     Workflow&           wf_;
@@ -114,6 +137,7 @@ private:
     SavedPosMap&        positions_;   // owned by the engine's run Env (worker-
                                       // thread only; RecordPosition may mutate)
     const MotionMapSet& maps_;        // stable for the whole run
+    const std::vector<AlignProc>& aligns_;   // ditto
     Hooks               hooks_;
 
     mutable std::mutex              ctxMu_;

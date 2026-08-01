@@ -31,7 +31,8 @@ namespace firedog {
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
-                  WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run };
+                  WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
+                  Align };
 
 // One XCAN launch preset (a button on the Run page's Scan band): the step
 // ladder + the hexapod_align.lua tunables injected at launch. Five slots;
@@ -146,6 +147,23 @@ private:
     void DrawRecipeRunStrip(float height);
     void DrawRecipePromptWindow();    // GLOBAL prompt (recipe + script) — non-modal, always on top
     void DrawManualAdjustWindow();    // GLOBAL manual_adjust jog window — non-modal, always on top
+    void DrawAlignPickWindow();       // GLOBAL align_station crosshair pick — non-modal, always on top
+    // Alignment page (View menu, full-page): teach a local frame (O1) from two
+    // operator-marked features. The capture itself runs through the engines, so
+    // teaching and a scripted re-run take the identical code path.
+    void DrawAlignPanel();            // page body: procedures | stations | frame
+    void DrawAlignListPanel();        // left:   procedures + New/Duplicate/Delete/Save
+    void DrawAlignDetailPanel();      // middle: the two stations + Run
+    void DrawAlignFramePanel();       // right:  the derived frame + local->machine check
+    void DrawAlignStationCard(AlignProc& a, int station);
+    void StartAlignmentRun(const AlignProc& a);   // launches alignment_procedure.lua
+    // Station positions taught from the Alignment page are PRIVATE to their
+    // procedure: named "algn_<procUid>_<n>" and `hidden`, so they stay out of
+    // the Motion page table and the recipe position picker. Teaching updates in
+    // place (uid stable); deleting the procedure drops them, or they would
+    // linger somewhere nobody looks.
+    void TeachAlignStation(AlignProc& a, int station);
+    void DropAlignStationPositions(const AlignProc& a);
     // Programs page (View menu, full-page) — Phase C1: list/run .lua programs.
     void DrawScriptsPanel();          // page body: scripts | source | run info
     void LoadScriptsList();           // session rescan + Scripts page selection sync
@@ -395,6 +413,13 @@ private:
     char edNameBuf_[64]       = "";
     char edSearchBuf_[64]     = "";      // palette search filter
 
+    // Alignment page UI state — the procedures themselves live in session_.
+    int  alignSel_      = -1;    // selected procedure
+    char alignNameBuf_[48] = "";  // rename field for the selected procedure
+    double alignProbeX_ = 0.0;   // right panel's local->machine check inputs
+    double alignProbeY_ = 0.0;
+    std::string alignStartErr_;  // why the last Run refused to start
+
     // Scripts page UI state — the scanned list itself lives in session_.
     int                      scriptSel_ = -1;
     // Per-script breakpoints (keyed by path; click a source row to toggle,
@@ -414,6 +439,15 @@ private:
     // back-to-back request may arrive while the window is still shown).
     bool promptWasPending_ = false;
     bool adjustWasPending_ = false;
+    bool pickWasPending_   = false;
+    // The crosshair the align pick window places, in ABSOLUTE camera pixels
+    // (the Aux window only ever works in centre-relative offsets). Re-seeded to
+    // the image centre on every new request, so OK without a click = no offset.
+    float pickPx_ = 0.0f, pickPy_ = 0.0f;
+    // Magnification over the cover fit (1.0 = fit). Default 1.5 = zoomed in 50%
+    // so a small feature is legible; kept across picks so a chosen zoom serves
+    // both stations of a procedure. Wheel over the image, or the footer slider.
+    float pickZoom_ = 1.5f;
     // Set once the operator confirmed Exit; lets the intercepted GLFW
     // should-close flag through so the run loop actually ends.
     bool exitConfirmed_ = false;

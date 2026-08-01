@@ -256,6 +256,7 @@ struct ValidateEnv {
     const HardwareManager& hw;
     const SavedPosMap&     positions;
     const MotionMapSet&    maps;
+    const std::vector<AlignProc>& aligns;
     const std::vector<Recipe>& library;
     bool requireConnected = false;
     std::vector<RecipeIssue>* issues = nullptr;
@@ -343,6 +344,13 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             if (!found)
                 Issue(env, where, path, "position uid '" + v + "' not found for device '" +
                                       device + "'");
+            break;
+        }
+        case ParamType::AlignUid: {
+            // Resolved by uid OR name (FindAlignProc), and NOT device-scoped:
+            // the procedure carries its own device.
+            if (!FindAlignProc(env.aligns, v))
+                Issue(env, where, path, "alignment procedure '" + v + "' not found");
             break;
         }
         case ParamType::MapName: {
@@ -486,11 +494,12 @@ std::vector<RecipeIssue> ValidateRecipe(const Recipe& r, const CommandRegistry& 
                                         const HardwareManager& hw,
                                         const SavedPosMap& positions,
                                         const MotionMapSet& maps,
+                                        const std::vector<AlignProc>& aligns,
                                         const std::vector<Recipe>& library,
                                         bool requireConnected)
 {
     std::vector<RecipeIssue> issues;
-    ValidateEnv env{reg, hw, positions, maps, library, requireConnected, &issues};
+    ValidateEnv env{reg, hw, positions, maps, aligns, library, requireConnected, &issues};
     if (r.steps.empty()) issues.push_back({"(root)", "recipe has no steps", {}});
     ValidateSteps(env, r.steps, "", {}, false, 1);
     return issues;

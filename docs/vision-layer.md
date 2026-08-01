@@ -232,5 +232,15 @@ or issued for another host id.
   instead of failing halfway through a vision block. `require = true` turns it
   into a hard gate.
 
+## Manual feature marking needs no vision at all
+
+The Alignment Procedure's manual mode marks a feature by **placing a crosshair
+on the live image** — ImGui over a Pylon frame, plus the camera's
+`pixel_to_mm_x/y` scale. No HALCON, no focus metric, no detector, so a licence
+problem cannot stop an operator teaching a local frame. Its "auto" mode is
+structure only and fails loudly at run time, precisely because there is no
+feature detection in this build. See `docs/alignment-procedure-design.md` §5.
+
 Related: `docs/build-and-sdks.md` (SDK gating rules), `docs/command-layer.md`
-(the registry), `docs/xcan-scan-design.md` §4.3 (the freshness idea this borrows).
+(the registry), `docs/xcan-scan-design.md` §4.3 (the freshness idea this borrows),
+`docs/alignment-procedure-design.md` (the crosshair pick).

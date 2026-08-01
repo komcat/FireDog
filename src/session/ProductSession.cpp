@@ -21,6 +21,7 @@ bool ProductSession::LoadInitial(const std::string& lastProduct)
     }
     if (!product_.Loaded()) LoadRecipesFromDisk();    // else LoadProduct did it
     if (!product_.Loaded()) LoadProgramsFromDisk();
+    if (!product_.Loaded()) LoadAlignsFromDisk();
     LoadScriptsList();   // .lua programs (product dir, else config/scripts)
     if (product_.Loaded())   // DUT records live under the product's data/
         DutSession::Instance().SetProduct(product_.name, product_.uid,
@@ -44,8 +45,13 @@ bool ProductSession::LoadProduct(const std::string& name)
         FD_WARN("product", "'%s' has no positions entry; keeping current positions", name.c_str());
     }
     product_ = std::move(m);
+    // Products created before a role existed have no manifest entry for it, so
+    // their saves would fall back to config/ forever. Backfill on load — this
+    // is load time, never draw time.
+    EnsureManifestRole(product_, "alignments");
     LoadRecipesFromDisk();   // product recipes replace the config-fallback set
     LoadProgramsFromDisk();  // product programs likewise
+    LoadAlignsFromDisk();    // product alignment procedures likewise
     LoadScriptsList();       // product scripts likewise (config fallback)
     DutSession::Instance().SetProduct(product_.name, product_.uid,
                                       product_.DataDir());   // auto-closes any DUT
@@ -61,6 +67,11 @@ void ProductSession::NewProduct(const char* name)
     DutSession::Instance().SetProduct(product_.name, product_.uid,
                                       product_.DataDir());
     SavePositions();   // carry the current in-memory positions into the product
+    // Procedure DEFINITIONS carry over like recipes (their positions did too),
+    // but a taught frame belongs to the part that was on the machine — keeping
+    // it would silently give the new product the old part's origin.
+    for (AlignProc& a : aligns_) a.result = AlignResult{};
+    if (!aligns_.empty()) SaveAligns();
 }
 
 void ProductSession::SaveProduct()
@@ -75,6 +86,8 @@ void ProductSession::SaveProduct()
             SaveRecipesTo(path, e.uid);
         } else if (e.role == "programs") {
             SaveProgramsTo(path, e.uid);
+        } else if (e.role == "alignments") {
+            SaveAlignsTo(path, e.uid);
         } else {
             FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
         }
@@ -257,6 +270,84 @@ std::string ProductSession::ProgramsDump() const
     return arr.dump();
 }
 
+// ---- Alignment procedures — same persistence conventions as recipes --------
+
+void ProductSession::LoadAlignsFromDisk()
+{
+    if (product_.Loaded()) {
+        const ManifestFile* e = product_.Entry("alignments");
+        if (e) {
+            aligns_ = LoadAlignProcsFile(product_.FilePath("alignments"), &alignsUid_);
+            if (!aligns_.empty()) {
+                if (!alignsUid_.empty() && alignsUid_ != e->uid)
+                    FD_WARN("product", "alignments uid mismatch: manifest %s vs file '%s'",
+                            e->uid.c_str(), alignsUid_.c_str());
+                alignsBaseline_ = AlignsDump();
+                return;
+            }
+            // A product with an empty seed file adopts the manifest uid anyway,
+            // so the first Save lands in the product and not in config/.
+            alignsUid_      = e->uid;
+            aligns_.clear();
+            alignsBaseline_ = AlignsDump();
+            return;
+        }
+        FD_WARN("product", "'%s' has no alignments entry; using config alignments",
+                product_.name.c_str());
+    }
+    alignsUid_.clear();
+    aligns_ = LoadAlignProcs();   // config/alignments.local.json -> alignments.json
+    alignsBaseline_ = AlignsDump();
+}
+
+void ProductSession::SaveAligns()
+{
+    std::string path = "config/alignments.local.json";
+    std::string uid  = alignsUid_;
+    if (product_.Loaded()) {
+        if (const ManifestFile* e = product_.Entry("alignments")) {
+            path = product_.FilePath("alignments");
+            uid  = e->uid;
+        }
+    }
+    if (uid.empty()) uid = GenerateUid();
+    alignsUid_ = uid;
+    if (SaveAlignProcsFile(path, aligns_, uid)) {
+        alignsBaseline_ = AlignsDump();
+        FD_INFO("align", "saved %zu alignment procedure(s) to %s", aligns_.size(), path.c_str());
+    } else {
+        FD_WARN("align", "could not save alignments to %s", path.c_str());
+    }
+}
+
+void ProductSession::SaveAlignsTo(const std::string& path, const std::string& uid)
+{
+    SaveAlignProcsFile(path, aligns_, uid);
+    alignsUid_      = uid;
+    alignsBaseline_ = AlignsDump();
+}
+
+std::string ProductSession::AlignsDump() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const AlignProc& p : aligns_) arr.push_back(AlignProcToJson(p));
+    return arr.dump();
+}
+
+bool ProductSession::ApplyAlignResult(const std::string& uid, const AlignResult& result)
+{
+    AlignProc* p = FindAlignProc(aligns_, uid);
+    if (!p) {
+        FD_WARN("align", "taught frame for unknown procedure '%s' (dropped)", uid.c_str());
+        return false;
+    }
+    p->result = result;
+    SaveAligns();   // a taught frame is worthless if a crash loses it
+    FD_INFO("align", "'%s': origin (%.4f, %.4f) mm, theta %.4f deg, span %.4f mm",
+            p->name.c_str(), result.originX, result.originY, result.thetaDeg, result.spanMm);
+    return true;
+}
+
 // ---- Engine hand-off -------------------------------------------------------
 
 RecipeEngine::Env ProductSession::MakeRecipeEnv() const
@@ -265,6 +356,7 @@ RecipeEngine::Env ProductSession::MakeRecipeEnv() const
     env.positions = positions_;
     env.maps      = maps_;
     env.library   = recipes_;
+    env.aligns    = aligns_;
     return env;
 }
 
@@ -274,6 +366,7 @@ LuaEngine::Env ProductSession::MakeLuaEnv() const
     env.positions = positions_;
     env.maps      = maps_;
     env.library   = recipes_;   // fd.run_recipe / sub_recipe resolve against this
+    env.aligns    = aligns_;
     return env;
 }
 

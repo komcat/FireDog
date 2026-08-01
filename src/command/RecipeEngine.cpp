@@ -54,7 +54,7 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
     // Run-start validation: structure + params + references + everything
     // referenced actually Connected. Recipes never connect hardware.
     const std::vector<RecipeIssue> issues = ValidateRecipe(
-        recipe, reg_, hw_, env.positions, env.maps, env.library, true);
+        recipe, reg_, hw_, env.positions, env.maps, env.aligns, env.library, true);
     if (!issues.empty()) {
         std::string msg = issues.front().where + ": " + issues.front().message;
         if (issues.size() > 1)
@@ -148,6 +148,19 @@ void RecipeEngine::AnswerAdjust(bool ok)
     cv_.notify_all();
 }
 
+void RecipeEngine::AnswerPick(bool ok, ExecutionContext::PickResult result)
+{
+    {
+        const std::scoped_lock lock(mu_);
+        if (!pickPending_) return;   // nothing pending
+        pickPending_  = false;
+        pickResult_   = result;
+        pickAnswer_   = ok;
+        pickAnswered_ = true;
+    }
+    cv_.notify_all();
+}
+
 RecipeEngine::Status RecipeEngine::GetStatus() const
 {
     const std::scoped_lock lock(mu_);
@@ -163,6 +176,8 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.pendingPromptInput = promptWantsInput_;
     s.pendingAdjust      = adjustPending_;
     s.adjustReq          = adjustReq_;
+    s.pendingPick        = pickPending_;
+    s.pickReq            = pickReq_;
     s.stepMode           = stepMode_.load();
     s.stepPaused         = stepPaused_;
     s.nextStep           = nextStep_;
@@ -211,6 +226,24 @@ bool RecipeEngine::AwaitAdjustInternal(const ExecutionContext::AdjustRequest& re
     return adjustAnswered_ && adjustAnswer_ && !stopReq_.load();
 }
 
+bool RecipeEngine::AwaitPickInternal(const ExecutionContext::PickRequest& req,
+                                     ExecutionContext::PickResult* out)
+{
+    std::unique_lock lock(mu_);
+    pickReq_      = req;
+    pickPending_  = true;
+    pickAnswered_ = false;
+    pickAnswer_   = false;
+    // Wait in slices so a stop request always gets through.
+    while (!pickAnswered_ && !stopReq_.load()) {
+        cv_.wait_for(lock, std::chrono::milliseconds(100));
+    }
+    pickPending_ = false;
+    const bool ok = pickAnswered_ && pickAnswer_ && !stopReq_.load();
+    if (ok && out) *out = pickResult_;
+    return ok;
+}
+
 bool RecipeEngine::AwaitStepInternal(const std::string& label,
                                      const std::vector<std::size_t>& path)
 {
@@ -234,7 +267,7 @@ bool RecipeEngine::AwaitStepInternal(const std::string& label,
 void RecipeEngine::ThreadMain(Recipe recipe, Env env)
 {
     ExecutionContext ctx(
-        wf_, hw_, env.positions, env.maps,
+        wf_, hw_, env.positions, env.maps, env.aligns,
         ExecutionContext::Hooks{
             [this] { return stopReq_.load() || SafetyAborted(); },
             [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },
@@ -243,6 +276,10 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
             },
             [this](const ExecutionContext::AdjustRequest& r) {
                 return AwaitAdjustInternal(r);
+            },
+            [this](const ExecutionContext::PickRequest& r,
+                   ExecutionContext::PickResult* out) {
+                return AwaitPickInternal(r, out);
             },
         });
     {

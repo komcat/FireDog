@@ -88,6 +88,8 @@ void App::DrawMainWindow()
                     ToggleEditorPage(Page::WatchEdit);
                 if (ImGui::MenuItem("Transforms Editor", nullptr, currentPage_ == Page::TransformEdit))
                     ToggleEditorPage(Page::TransformEdit);
+                if (ImGui::MenuItem("Alignment", nullptr, currentPage_ == Page::Align))
+                    ToggleEditorPage(Page::Align);
                 if (ImGui::MenuItem("Scripts", nullptr, currentPage_ == Page::Scripts))
                     ToggleEditorPage(Page::Scripts);
                 if (ImGui::MenuItem("DUT Records", nullptr, currentPage_ == Page::DutView)) {
@@ -142,17 +144,20 @@ void App::DrawMainWindow()
         DrawSafetyAlertModal();   // blocking safety alert (highest priority)
         DrawRecipePromptWindow(); // global recipe prompt (any page, any time)
         DrawManualAdjustWindow(); // global manual_adjust jog window
+        DrawAlignPickWindow();    // global align_station crosshair pick
 
         // ---- Editor pages (View menu) replace the whole panel layout until
         // closed via the top-right Close button (back to the previous page).
         if (currentPage_ == Page::WatchEdit || currentPage_ == Page::TransformEdit ||
             currentPage_ == Page::RecipeEdit || currentPage_ == Page::Scripts ||
-            currentPage_ == Page::DutView || currentPage_ == Page::Run) {
+            currentPage_ == Page::DutView || currentPage_ == Page::Run ||
+            currentPage_ == Page::Align) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
                                 : currentPage_ == Page::Scripts       ? "Scripts"
                                 : currentPage_ == Page::DutView       ? "DUT Records"
+                                : currentPage_ == Page::Align         ? "Alignment"
                                                                       : "Run";
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
@@ -169,6 +174,7 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::RecipeEdit)    DrawRecipeEditPanel();
             else if (currentPage_ == Page::Scripts)       DrawScriptsPanel();
             else if (currentPage_ == Page::DutView)       DrawDutViewPanel();
+            else if (currentPage_ == Page::Align)         DrawAlignPanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();

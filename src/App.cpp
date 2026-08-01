@@ -33,7 +33,7 @@ bool IsTakeoverPage(Page p)
 {
     return p == Page::WatchEdit || p == Page::TransformEdit ||
            p == Page::RecipeEdit || p == Page::Scripts ||
-           p == Page::DutView || p == Page::Run;
+           p == Page::DutView || p == Page::Run || p == Page::Align;
 }
 } // namespace
 
@@ -146,6 +146,12 @@ void App::Update(float dt)
     // session is UI-thread-only, so the drain must stay here in Update().
     session_.MergeTaughtPositions(workflow_.TakeSavedPositions());
 
+    // Same hand-off for a frame taught by align_solve: the procedure document
+    // is UI-thread state, so the worker queues the result and it is stored (and
+    // persisted) here.
+    for (const auto& [uid, frame] : workflow_.TakeAlignResults())
+        session_.ApplyAlignResult(uid, frame);
+
     // A motion device with no saved positions gets a zeroed "Home" to start
     // from. It needs the device's axis list, which only exists once the async
     // connect finished — so it is checked here rather than at startup, and not
@@ -212,6 +218,9 @@ void App::ResetDocumentSelections()
     deckSlot_   = -1;
     deckRecipe_ = -1;
     runStartErr_.clear();
+    alignSel_ = session_.Aligns().empty() ? -1 : 0;
+    alignNameBuf_[0] = '\0';
+    alignStartErr_.clear();
     SyncScriptSelection();
 }
 

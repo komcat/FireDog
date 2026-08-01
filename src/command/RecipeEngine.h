@@ -44,9 +44,10 @@ public:
     // whole run (the UI may edit positions/maps while a recipe executes).
     // `library` resolves sub_recipe references.
     struct Env {
-        SavedPosMap         positions;
-        MotionMapSet        maps;
-        std::vector<Recipe> library;
+        SavedPosMap            positions;
+        MotionMapSet           maps;
+        std::vector<Recipe>    library;
+        std::vector<AlignProc> aligns;   // taught local frames (align_* commands)
     };
 
     // Step-mode start options: with stepMode the worker pauses BEFORE every
@@ -75,6 +76,8 @@ public:
     void AnswerPrompt(bool ok, std::string text = std::string());
     // Resolves a blocking `manual_adjust` step (jogging happened UI-side).
     void AnswerAdjust(bool ok);
+    // Resolves a blocking `align_station` crosshair pick (marked UI-side).
+    void AnswerPick(bool ok, ExecutionContext::PickResult result = {});
 
     enum class State { Idle, Running, Completed, Failed, Stopped };
     static const char* StateName(State s);
@@ -95,6 +98,9 @@ public:
         // Manual-adjust handshake: valid while pendingAdjust is true.
         bool        pendingAdjust = false;
         ExecutionContext::AdjustRequest adjustReq;
+        // Crosshair-pick handshake: valid while pendingPick is true.
+        bool        pendingPick = false;
+        ExecutionContext::PickRequest pickReq;
         // Step mode: while stepPaused, nextStep/nextPath describe the leaf
         // that will run when StepAdvance() grants it.
         bool        stepMode   = false;
@@ -116,6 +122,8 @@ private:
     bool AwaitPromptInternal(const std::string& message, bool wantsInput,
                              std::string* textOut);
     bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
+    bool AwaitPickInternal(const ExecutionContext::PickRequest& req,
+                           ExecutionContext::PickResult* out);
     // Step-mode gate: blocks before a leaf until granted/released; false =
     // stop or safety abort (the run ends Stopped).
     bool AwaitStepInternal(const std::string& label,
@@ -146,6 +154,12 @@ private:
     ExecutionContext::AdjustRequest adjustReq_;
     bool        adjustAnswered_ = false;
     bool        adjustAnswer_   = false;
+    // Crosshair-pick handshake (same shape again).
+    bool        pickPending_  = false;
+    ExecutionContext::PickRequest pickReq_;
+    ExecutionContext::PickResult  pickResult_;
+    bool        pickAnswered_ = false;
+    bool        pickAnswer_   = false;
     // Step-mode handshake (worker pauses; UI grants). Guarded by mu_.
     bool        stepGranted_ = false;
     bool        stepPaused_  = false;

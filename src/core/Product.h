@@ -16,7 +16,7 @@ namespace firedog {
 
 // One core-file entry in the manifest.
 struct ManifestFile {
-    std::string role;   // "positions" | "recipes" | "programs"
+    std::string role;   // "positions" | "recipes" | "programs" | "alignments"
     std::string uid;    // 8-hex uid, also the filename prefix
     std::string file;   // "{uid}.{role}.json", relative to the product folder
 };
@@ -38,6 +38,7 @@ struct ProductManifest {
 };
 
 std::string GenerateUid();   // 8 random hex chars
+std::string NowStamp();      // "YYYY-MM-DDTHH:MM:SS", local time
 
 // Scan products/ for folders containing a manifest.json (sorted by name).
 std::vector<std::string> ListProducts();
@@ -46,8 +47,15 @@ std::vector<std::string> ListProducts();
 ProductManifest LoadProductManifest(const std::string& name);
 
 // Create products/<name>/ (+ data/, images/), fresh uids, manifest.json and
-// the three {uid}.<role>.json seed files. Not-loaded manifest on failure.
+// one {uid}.<role>.json seed file per role. Not-loaded manifest on failure.
 ProductManifest CreateProduct(const std::string& name);
+
+// Give an older product a role it predates: append {role, fresh uid,
+// "{uid}.{role}.json"} and rewrite the manifest. False (no write) when the role
+// is already there, so it is cheap to call on every load. Without this a
+// product created before the role existed would keep falling back to config/
+// and its saves would never reach the product folder.
+bool EnsureManifestRole(ProductManifest& m, const std::string& role);
 
 // Rewrite products/<name>/manifest.json. Best-effort; false if unwritable.
 bool SaveProductManifest(const ProductManifest& m);

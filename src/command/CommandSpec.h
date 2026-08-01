@@ -34,6 +34,7 @@ enum class ParamType {
     DeviceIo,       // IO fleet device name
     Slide,          // pneumatic slide name
     PositionUid,    // SavedPositions uid (resolved against the step's "device")
+    AlignUid,       // Alignment-procedure uid (or name) in the product document
     MapName,        // MotionMap name (resolved against the step's "device")
     PinName,        // IO pin name (resolved against the step's "device")
     TopicName,      // DataBus topic (no validation — topics create on demand)

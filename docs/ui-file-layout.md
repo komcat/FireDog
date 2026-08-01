@@ -125,12 +125,13 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/pages/PageRecipeEdit.cpp` | editor page, step tree, palette, toolbar, run strip, step-path helpers | 879 |
 | `src/ui/pages/RecipeForms.cpp` | `DrawRecipeInspector` / `DrawParamWidget` / `DrawConditionEditor` | 495 |
 | `src/ui/pages/PageRun.cpp` | deck, execution view, Scan band (Raster \| XCAN), both launchers, preset modals | 1144 |
+| `src/ui/pages/PageAlign.cpp` | Alignment page: procedures \| stations + Run \| the taught frame | 320 |
 | `src/ui/pages/PageScripts.cpp` | Scripts page + Lua debugger controls | 215 |
 | `src/ui/pages/PageDutView.cpp` | DUT Records viewer (read-only) | 150 |
 | `src/ui/pages/PageWatchEdit.cpp` / `PageTransformEdit.cpp` | the two full-page config editors | 135 / 131 |
 | `src/ui/windows/WndJog.cpp` | Jog window + the shared velocity combo | 240 |
 | `src/ui/windows/WndAux.cpp` | Aux window (camera + chart, own OS window) | 170 |
-| `src/ui/windows/WndPrompts.cpp` | global `prompt` + `manual_adjust` windows; sole `imgui_internal.h` user | 220 |
+| `src/ui/windows/WndPrompts.cpp` | global `prompt` + `manual_adjust` + alignment crosshair-pick windows; sole `imgui_internal.h` user | 360 |
 
 CMake needs no edits: `GLOB_RECURSE … CONFIGURE_DEPENDS` picks up new files.
 

@@ -1,7 +1,7 @@
 // ProductSession.h : the application document — everything the operator's
 // *product* consists of (saved positions, motion maps, recipes, programs,
-// scripts) plus the manifest they belong to, and the ONE place that knows the
-// product-file / config-fallback persistence convention.
+// scripts, alignment procedures) plus the manifest they belong to, and the ONE
+// place that knows the product-file / config-fallback persistence convention.
 //
 // UI-THREAD ONLY. No locks, no ImGui, no Workflow/HardwareManager. The engines
 // never read this live: they receive a COPY through Env at Start — copy-at-
@@ -22,6 +22,7 @@
 #include "command/Program.h"
 #include "command/Recipe.h"
 #include "command/RecipeEngine.h"
+#include "core/AlignFrame.h"
 #include "core/MotionMap.h"
 #include "core/Product.h"
 #include "core/SavedPositions.h"
@@ -41,6 +42,9 @@ public:
 
     std::vector<Program>&       Programs()       { return programs_; }
     const std::vector<Program>& Programs() const { return programs_; }
+
+    std::vector<AlignProc>&       Aligns()       { return aligns_; }
+    const std::vector<AlignProc>& Aligns() const { return aligns_; }
 
     // Scripts are scanned from disk, never edited here (authoring is external).
     const std::vector<ScriptInfo>& Scripts()        const { return scripts_; }
@@ -87,6 +91,20 @@ public:
     std::string ProgramsDump() const;
     bool ProgramsDirty() const { return ProgramsDump() != programsBaseline_; }
 
+    // Alignment procedures (the taught O1 local frames) — same persistence
+    // conventions as recipes: a document, so explicit Save + dirty baseline,
+    // not the autosave-on-edit model positions and maps use.
+    void LoadAlignsFromDisk();
+    void SaveAligns();
+    void SaveAlignsTo(const std::string& path, const std::string& uid);
+    std::string AlignsDump() const;
+    bool AlignsDirty() const { return AlignsDump() != alignsBaseline_; }
+
+    // Hand-back from an align_solve step (queued on Workflow by the engine
+    // worker, drained on the UI thread): store the freshly taught frame against
+    // the procedure `uid` and persist. False when the uid is unknown.
+    bool ApplyAlignResult(const std::string& uid, const AlignResult& result);
+
     // Scripts: the product's scripts/ dir when it has one with content, else
     // config/scripts. ScriptsDirUsed() reports the dir ACTUALLY scanned.
     std::string ScriptsDir() const;
@@ -129,6 +147,10 @@ private:
     std::vector<Program> programs_;
     std::string          programsUid_;
     std::string          programsBaseline_;
+
+    std::vector<AlignProc> aligns_;
+    std::string            alignsUid_;
+    std::string            alignsBaseline_;
 
     std::vector<ScriptInfo> scripts_;
     std::string             scriptsDirUsed_;   // the dir the list came from

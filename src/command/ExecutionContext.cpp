@@ -28,8 +28,10 @@ std::string CtxValueToString(const CtxValue& v)
 
 ExecutionContext::ExecutionContext(Workflow& wf, HardwareManager& hw,
                                    SavedPosMap& positions,
-                                   const MotionMapSet& maps, Hooks hooks)
-    : wf_(wf), hw_(hw), positions_(positions), maps_(maps), hooks_(std::move(hooks))
+                                   const MotionMapSet& maps,
+                                   const std::vector<AlignProc>& aligns, Hooks hooks)
+    : wf_(wf), hw_(hw), positions_(positions), maps_(maps), aligns_(aligns),
+      hooks_(std::move(hooks))
 {
 }
 
@@ -183,6 +185,11 @@ const MotionMap* ExecutionContext::FindMap(const std::string& device,
     return nullptr;
 }
 
+const AlignProc* ExecutionContext::FindAlign(const std::string& uidOrName) const
+{
+    return FindAlignProc(aligns_, uidOrName);
+}
+
 bool ExecutionContext::AwaitPrompt(const std::string& message)
 {
     if (!hooks_.awaitPrompt) return false;
@@ -199,6 +206,12 @@ bool ExecutionContext::AwaitAdjust(const AdjustRequest& req)
 {
     if (!hooks_.awaitAdjust) return false;
     return hooks_.awaitAdjust(req);
+}
+
+bool ExecutionContext::AwaitPick(const PickRequest& req, PickResult* out)
+{
+    if (!hooks_.awaitPick) return false;
+    return hooks_.awaitPick(req, out);
 }
 
 // ---- Condition evaluation ---------------------------------------------------

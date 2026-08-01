@@ -169,7 +169,8 @@ std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
                 if (!found)
                     throw std::runtime_error("run_recipe: '" + ref + "' not found");
                 const std::vector<RecipeIssue> issues = ValidateRecipe(
-                    *found, reg, ctx.Hw(), ctx.Positions(), ctx.Maps(), library, true);
+                    *found, reg, ctx.Hw(), ctx.Positions(), ctx.Maps(), ctx.Aligns(),
+                    library, true);
                 if (!issues.empty())
                     throw std::runtime_error("run_recipe '" + found->name + "': " +
                                              issues.front().where + ": " +
@@ -516,6 +517,19 @@ void LuaEngine::AnswerAdjust(bool ok)
     cv_.notify_all();
 }
 
+void LuaEngine::AnswerPick(bool ok, ExecutionContext::PickResult result)
+{
+    {
+        const std::scoped_lock lock(mu_);
+        if (!pickPending_) return;
+        pickPending_  = false;
+        pickResult_   = result;
+        pickAnswer_   = ok;
+        pickAnswered_ = true;
+    }
+    cv_.notify_all();
+}
+
 LuaEngine::Status LuaEngine::GetStatus() const
 {
     const std::scoped_lock lock(mu_);
@@ -530,6 +544,8 @@ LuaEngine::Status LuaEngine::GetStatus() const
     s.pendingPromptInput = promptWantsInput_;
     s.pendingAdjust      = adjustPending_;
     s.adjustReq          = adjustReq_;
+    s.pendingPick        = pickPending_;
+    s.pickReq            = pickReq_;
     s.locals             = locals_;
     if (runCtx_) s.ctx = runCtx_->CtxSnapshot();
     return s;
@@ -568,12 +584,29 @@ bool LuaEngine::AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req)
     return adjustAnswered_ && adjustAnswer_ && !stopReq_.load();
 }
 
+bool LuaEngine::AwaitPickInternal(const ExecutionContext::PickRequest& req,
+                                  ExecutionContext::PickResult* out)
+{
+    std::unique_lock lock(mu_);
+    pickReq_      = req;
+    pickPending_  = true;
+    pickAnswered_ = false;
+    pickAnswer_   = false;
+    while (!pickAnswered_ && !stopReq_.load()) {
+        cv_.wait_for(lock, std::chrono::milliseconds(100));
+    }
+    pickPending_ = false;
+    const bool ok = pickAnswered_ && pickAnswer_ && !stopReq_.load();
+    if (ok && out) *out = pickResult_;
+    return ok;
+}
+
 void LuaEngine::ThreadMain(std::string path, Env env)
 {
     // ctx BEFORE the Lua run: everything the bindings capture must outlive
     // the lua_State (created and destroyed inside RunLuaFile).
     ExecutionContext ctx(
-        wf_, hw_, env.positions, env.maps,
+        wf_, hw_, env.positions, env.maps, env.aligns,
         ExecutionContext::Hooks{
             [this] { return HookShouldStop(); },
             [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },
@@ -582,6 +615,10 @@ void LuaEngine::ThreadMain(std::string path, Env env)
             },
             [this](const ExecutionContext::AdjustRequest& r) {
                 return AwaitAdjustInternal(r);
+            },
+            [this](const ExecutionContext::PickRequest& r,
+                   ExecutionContext::PickResult* out) {
+                return AwaitPickInternal(r, out);
             },
         });
     for (const auto& [key, val] : env.initialCtx) ctx.CtxSet(key, val);

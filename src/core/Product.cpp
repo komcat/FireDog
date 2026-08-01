@@ -22,6 +22,8 @@ namespace {
 
 constexpr const char* kProductsRoot = "products";
 
+} // namespace
+
 std::string NowStamp()
 {
     const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -33,8 +35,6 @@ std::string NowStamp()
                   tm.tm_hour, tm.tm_min, tm.tm_sec);
     return buf;
 }
-
-} // namespace
 
 std::string ProductManifest::Dir() const
 {
@@ -153,7 +153,7 @@ ProductManifest CreateProduct(const std::string& name)
     m.name    = name;
     m.uid     = GenerateUid();
     m.created = NowStamp();
-    for (const char* role : {"positions", "recipes", "programs"}) {
+    for (const char* role : {"positions", "recipes", "programs", "alignments"}) {
         ManifestFile mf;
         mf.role = role;
         mf.uid  = GenerateUid();
@@ -182,6 +182,26 @@ ProductManifest CreateProduct(const std::string& name)
 
     FD_INFO("product", "created '%s' (uid %s) at %s", name.c_str(), m.uid.c_str(), m.Dir().c_str());
     return m;
+}
+
+bool EnsureManifestRole(ProductManifest& m, const std::string& role)
+{
+    if (!m.Loaded() || role.empty() || m.Entry(role)) return false;
+
+    ManifestFile mf;
+    mf.role = role;
+    mf.uid  = GenerateUid();
+    mf.file = mf.uid + "." + mf.role + ".json";
+    m.files.push_back(mf);
+    if (!SaveProductManifest(m)) {
+        m.files.pop_back();   // keep memory and disk in step
+        FD_WARN("product", "cannot add role '%s' to '%s': manifest not writable",
+                role.c_str(), m.name.c_str());
+        return false;
+    }
+    FD_INFO("product", "product '%s' gained role '%s' (uid %s)",
+            m.name.c_str(), role.c_str(), mf.uid.c_str());
+    return true;
 }
 
 } // namespace firedog

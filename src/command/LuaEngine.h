@@ -73,9 +73,10 @@ public:
 
     // Resolve environment, copied at Start (stable for the whole run).
     struct Env {
-        SavedPosMap         positions;
-        MotionMapSet        maps;
-        std::vector<Recipe> library;   // fd.run_recipe resolves against this
+        SavedPosMap            positions;
+        MotionMapSet           maps;
+        std::vector<Recipe>    library;   // fd.run_recipe resolves against this
+        std::vector<AlignProc> aligns;    // taught local frames (fd.align_*)
         // Seeded into the run's ctx before the script starts — the UI-side
         // parameter injection (fd.param reads these exactly like values a
         // recipe injected with ctx_set steps).
@@ -88,6 +89,8 @@ public:
     void AnswerPrompt(bool ok, std::string text = std::string());
     // Resolves a blocking fd.manual_adjust{} (jogging happened UI-side).
     void AnswerAdjust(bool ok);
+    // Resolves a blocking fd.align_station{} crosshair pick (marked UI-side).
+    void AnswerPick(bool ok, ExecutionContext::PickResult result = {});
 
     // ---- Debugger (C3) — all built on the existing line hook ---------------
     // Breakpoints are hot-swappable while running (the UI passes the selected
@@ -114,6 +117,9 @@ public:
         // Manual-adjust handshake: valid while pendingAdjust is true.
         bool        pendingAdjust = false;
         ExecutionContext::AdjustRequest adjustReq;
+        // Crosshair-pick handshake: valid while pendingPick is true.
+        bool        pendingPick = false;
+        ExecutionContext::PickRequest pickReq;
         std::vector<std::pair<std::string, CtxValue>> ctx;
         // Current function's locals, captured at the pause point.
         std::vector<std::pair<std::string, std::string>> locals;
@@ -132,6 +138,8 @@ private:
     bool AwaitPromptInternal(const std::string& message, bool wantsInput,
                              std::string* textOut);
     bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
+    bool AwaitPickInternal(const ExecutionContext::PickRequest& req,
+                           ExecutionContext::PickResult* out);
     bool SafetyAborted() const;
 
     Workflow&              wf_;
@@ -164,6 +172,12 @@ private:
     ExecutionContext::AdjustRequest adjustReq_;
     bool        adjustAnswered_ = false;
     bool        adjustAnswer_   = false;
+    // Crosshair-pick handshake (same shape again).
+    bool        pickPending_  = false;
+    ExecutionContext::PickRequest pickReq_;
+    ExecutionContext::PickResult  pickResult_;
+    bool        pickAnswered_ = false;
+    bool        pickAnswer_   = false;
     ExecutionContext* runCtx_ = nullptr;   // valid only while the worker runs
 
     std::thread worker_;   // declared last so everything it uses outlives it

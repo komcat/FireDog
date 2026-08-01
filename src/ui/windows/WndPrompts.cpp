@@ -1,10 +1,11 @@
-// WndPrompts.cpp : the two GLOBAL run windows — the recipe/script `prompt` and
-// the `manual_adjust` jog window. Definitions of App members — see App.h.
+// WndPrompts.cpp : the GLOBAL run windows — the recipe/script `prompt`, the
+// `manual_adjust` jog window, and the `align_station` crosshair pick.
+// Definitions of App members — see App.h.
 //
-// Both are NON-modal and kept always-on-top via BringWindowToDisplayFront (the
+// All are NON-modal and kept always-on-top via BringWindowToDisplayFront (the
 // only imgui_internal.h use in the project): only the engine worker blocks on
 // the answer, so the rest of the UI stays usable for camera and jog while a run
-// waits. Both edge-detect a NEW pending request, because a back-to-back one can
+// waits. All edge-detect a NEW pending request, because a back-to-back one can
 // arrive while the window is still shown.
 #include "App.h"
 
@@ -214,6 +215,206 @@ void App::DrawManualAdjustWindow()
     if (ImGui::Button("OK (Complete)", ImVec2(140.0f, 0.0f))) answer(true);
     ImGui::SameLine();
     if (ImGui::Button("Cancel (Fail Step)", ImVec2(140.0f, 0.0f))) answer(false);
+    ImGui::End();
+}
+
+// The align_station crosshair pick: the engine worker blocks in
+// AwaitPickInternal while the operator marks a feature on the live image.
+// NOTHING MOVES here — the answer is a point in the current field of view, so
+// the whole window is safe with jog disarmed and needs no arming checkbox.
+//
+// The pixel->mm conversion happens HERE, not in the command: only the UI knows
+// the live pixelToMm calibration. The crosshair starts at the image centre, so
+// OK without a click means "the feature is dead centre" (offset 0,0).
+void App::DrawAlignPickWindow()
+{
+    const RecipeEngine::Status rst = orch_.recipe.GetStatus();
+    const LuaEngine::Status    lst = orch_.lua.GetStatus();
+    const bool fromScript = !rst.pendingPick && lst.pendingPick;
+    const bool pending    = rst.pendingPick || lst.pendingPick;
+    const ExecutionContext::PickRequest& req = fromScript ? lst.pickReq : rst.pickReq;
+
+    const bool newPick = pending && !pickWasPending_;
+    pickWasPending_ = pending;
+    if (!pending) return;   // nothing pending (or stop released it)
+
+    UpdateCameraTexture();   // pull the newest camera frame into the GL texture
+    const bool haveImg = cameraTex_ && cameraW_ > 0 && cameraH_ > 0;
+    if (newPick) {   // start dead centre: OK with no click means "no offset"
+        pickPx_ = haveImg ? static_cast<float>(cameraW_) * 0.5f : 0.0f;
+        pickPy_ = haveImg ? static_cast<float>(cameraH_) * 0.5f : 0.0f;
+    }
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(900.0f, 720.0f), ImGuiCond_FirstUseEver);
+    // BringWindowToDisplayFront only changes DRAW ORDER, not focus — without
+    // this the window comes up on top but the keyboard still belongs to
+    // whatever had it, so the arrow-key nudge would do nothing until the
+    // operator happened to click the window.
+    if (newPick) ImGui::SetNextWindowFocus();
+    char title[128];
+    std::snprintf(title, sizeof(title), "Alignment - mark E%d###AlignPick", req.station);
+    ImGui::Begin(title, nullptr,
+                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
+                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNavInputs |
+                 ImGuiWindowFlags_NoScrollWithMouse);   // the wheel zooms, not scrolls
+    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());   // always on top
+
+    ImGui::TextUnformatted(req.message.c_str());
+    ImGui::TextDisabled("%s  -  E%d  -  click to place (recentres), arrow keys nudge "
+                        "1 px (Shift = 10 px), wheel zooms",
+                        req.alignName.c_str(), req.station);
+    ImGui::Separator();
+
+    // Footer height reserved so the image never pushes the buttons off-window.
+    const float footerH = ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    avail.y = avail.y > footerH + 40.0f ? avail.y - footerH : 40.0f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // ---- View transform: screen px per CAMERA px, and which camera-px window
+    // is on screen. `fit` is the old cover fit (fill the box, crop the
+    // overflow); zoom multiplies it, so zoom 1.0 reproduces the previous view
+    // exactly and the default 1.5 magnifies the feature by 50%.
+    //
+    // The window follows the MARK (clamped to the image), so a zoomed view can
+    // never hide the crosshair and the arrow-key nudge always stays visible.
+    // Because zoom >= 1 and `fit` is a cover fit, the visible window is always
+    // inside the image — no letterboxing to handle.
+    const float fit = haveImg ? fmaxf(avail.x / static_cast<float>(cameraW_),
+                                      avail.y / static_cast<float>(cameraH_))
+                              : 1.0f;
+    const float s  = fit * pickZoom_;                  // screen px per camera px
+    const float vw = avail.x / s, vh = avail.y / s;    // visible camera-px extent
+    const auto viewClamp = [](float v, float half, float extent) {
+        return (half * 2.0f >= extent) ? extent * 0.5f
+                                       : fminf(fmaxf(v, half), extent - half);
+    };
+    const float viewLeft =
+        viewClamp(pickPx_, vw * 0.5f, static_cast<float>(cameraW_)) - vw * 0.5f;
+    const float viewTop =
+        viewClamp(pickPy_, vh * 0.5f, static_cast<float>(cameraH_)) - vh * 0.5f;
+    // camera px -> screen, and back.
+    const auto toScreen = [&](float px, float py) {
+        return ImVec2(origin.x + (px - viewLeft) * s, origin.y + (py - viewTop) * s);
+    };
+
+    if (haveImg) {
+        const ImVec2 uv0(viewLeft / static_cast<float>(cameraW_),
+                         viewTop / static_cast<float>(cameraH_));
+        const ImVec2 uv1((viewLeft + vw) / static_cast<float>(cameraW_),
+                         (viewTop + vh) / static_cast<float>(cameraH_));
+        ImGui::Image((ImTextureID)(intptr_t)cameraTex_, avail, uv0, uv1);
+    } else {
+        dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y),
+                          IM_COL32(18, 18, 22, 255));
+        const char* msg = "no camera feed - cannot mark a point";
+        const ImVec2 ts = ImGui::CalcTextSize(msg);
+        dl->AddText(ImVec2(origin.x + (avail.x - ts.x) * 0.5f,
+                           origin.y + (avail.y - ts.y) * 0.5f),
+                    IM_COL32(220, 140, 140, 255), msg);
+        ImGui::Dummy(avail);
+    }
+
+    ImGui::SetCursorScreenPos(origin);
+    const bool imgClicked = ImGui::InvisibleButton("##pickInput", avail);
+    const bool imgHovered = ImGui::IsItemHovered();
+
+    if (haveImg && imgClicked) {
+        const ImVec2 m = ImGui::GetIO().MousePos;
+        pickPx_ = viewLeft + (m.x - origin.x) / s;
+        pickPy_ = viewTop  + (m.y - origin.y) / s;
+    }
+    // Wheel zoom over the image. Applies from the NEXT frame (the view was
+    // already computed above) — a frame of latency nobody can see.
+    if (haveImg && imgHovered && ImGui::GetIO().MouseWheel != 0.0f) {
+        pickZoom_ *= (ImGui::GetIO().MouseWheel > 0.0f) ? 1.25f : 0.8f;
+        pickZoom_ = fminf(fmaxf(pickZoom_, 1.0f), 12.0f);
+    }
+    // Refinement without a zoom: one press = one CAMERA pixel (hold to repeat,
+    // Shift for 10). Gated on focus-or-hover rather than taken globally — the
+    // window is non-modal, so an arrow press aimed elsewhere must stay there;
+    // hover counts because the mouse is naturally over the image while marking.
+    const bool keysHere =
+        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows |
+                               ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    if (haveImg && keysHere) {
+        const float nudge = ImGui::GetIO().KeyShift ? 10.0f : 1.0f;
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  pickPx_ -= nudge;
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) pickPx_ += nudge;
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    pickPy_ -= nudge;
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  pickPy_ += nudge;
+        pickPx_ = fminf(fmaxf(pickPx_, 0.0f), static_cast<float>(cameraW_));
+        pickPy_ = fminf(fmaxf(pickPy_, 0.0f), static_cast<float>(cameraH_));
+    }
+
+    const float dxPix = pickPx_ - static_cast<float>(cameraW_) * 0.5f;
+    const float dyPix = pickPy_ - static_cast<float>(cameraH_) * 0.5f;
+    const double dxMM = static_cast<double>(dxPix) * pixelToMmX_;
+    const double dyMM = static_cast<double>(dyPix) * pixelToMmY_;
+
+    if (haveImg) {
+        // Clip the overlay to the image box: zoomed in, the image-centre
+        // reference can sit outside the visible window entirely.
+        dl->PushClipRect(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), true);
+
+        // The optical/stage reference: image centre, wherever it now maps to.
+        const ImVec2 ctr = toScreen(static_cast<float>(cameraW_) * 0.5f,
+                                    static_cast<float>(cameraH_) * 0.5f);
+        dl->AddLine(ImVec2(origin.x, ctr.y), ImVec2(origin.x + avail.x, ctr.y),
+                    IM_COL32(80, 230, 120, 140), 1.0f);
+        dl->AddLine(ImVec2(ctr.x, origin.y), ImVec2(ctr.x, origin.y + avail.y),
+                    IM_COL32(80, 230, 120, 140), 1.0f);
+
+        const ImVec2 mk = toScreen(pickPx_, pickPy_);
+        const ImU32 markCol = IM_COL32(255, 200, 60, 255);
+        const float mh = 22.0f;
+        dl->AddLine(ImVec2(mk.x - mh, mk.y), ImVec2(mk.x + mh, mk.y), markCol, 2.0f);
+        dl->AddLine(ImVec2(mk.x, mk.y - mh), ImVec2(mk.x, mk.y + mh), markCol, 2.0f);
+        dl->AddCircle(mk, 5.0f, markCol, 0, 2.0f);
+
+        char lbl[128];
+        std::snprintf(lbl, sizeof(lbl), "px %.1f, %.1f   dX %+.4f mm   dY %+.4f mm",
+                      pickPx_, pickPy_, dxMM, dyMM);
+        const ImVec2 lts = ImGui::CalcTextSize(lbl);
+        ImVec2 lp(mk.x + 16.0f, mk.y + 10.0f);
+        lp.x = fminf(lp.x, origin.x + avail.x - lts.x - 8.0f);
+        lp.y = fminf(lp.y, origin.y + avail.y - lts.y - 6.0f);
+        dl->AddRectFilled(ImVec2(lp.x - 4.0f, lp.y - 2.0f),
+                          ImVec2(lp.x + lts.x + 4.0f, lp.y + lts.y + 2.0f),
+                          IM_COL32(0, 0, 0, 170), 3.0f);
+        dl->AddText(lp, IM_COL32(255, 235, 150, 255), lbl);
+        dl->PopClipRect();
+    }
+
+    ImGui::Separator();
+    const auto answer = [&](bool ok) {
+        ExecutionContext::PickResult r;
+        r.px   = pickPx_;
+        r.py   = pickPy_;
+        r.dxMM = dxMM;
+        r.dyMM = dyMM;
+        if (fromScript) orch_.lua.AnswerPick(ok, r);
+        else            orch_.recipe.AnswerPick(ok, r);
+    };
+    ImGui::BeginDisabled(!haveImg);
+    if (ImGui::Button("OK (Mark here)", ImVec2(160.0f, 0.0f))) answer(true);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel (Fail Step)", ImVec2(160.0f, 0.0f))) answer(false);
+    ImGui::SameLine();
+    ImGui::TextUnformatted("zoom");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::SliderFloat("##pickzoom", &pickZoom_, 1.0f, 12.0f, "x%.2f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Fit")) pickZoom_ = 1.0f;
+    ImGui::SameLine();
+    ImGui::TextDisabled("%.5f / %.5f mm per px", pixelToMmX_, pixelToMmY_);
     ImGui::End();
 }
 

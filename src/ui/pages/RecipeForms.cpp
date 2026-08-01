@@ -276,6 +276,11 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
                 ImGui::TextDisabled("(no saved positions for '%s')", dev.c_str());
             else
                 for (const SavedPos& sp : it->second) {
+                    // System/private rows (e.g. an alignment procedure's own
+                    // station positions) are not part of the recipe vocabulary.
+                    // An existing reference still RESOLVES above — only the
+                    // offer is withheld.
+                    if (sp.hidden) continue;
                     if (ImGui::Selectable(sp.name, sp.uid == v)) {
                         params[p.name] = sp.uid;   // stores the uid, shows the name
                         changed = true;
@@ -285,6 +290,36 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         }
         if (!resolved)
             ImGui::TextColored(kStaleRed, "not a position of '%s' - re-pick", dev.c_str());
+        break;
+    }
+    case ParamType::AlignUid: {
+        // NOT device-scoped (unlike PositionUid): a procedure carries its own
+        // device. Stores the uid, shows the name.
+        const std::string v = cur.is_string() ? cur.get<std::string>() : "";
+        std::string preview = v.empty() ? "(pick)" : v;
+        bool resolved       = v.empty();
+        if (const AlignProc* ap = FindAlignProc(session_.Aligns(), v)) {
+            preview  = ap->name;
+            resolved = true;
+        }
+        if (!resolved) pushStale();
+        ImGui::SetNextItemWidth(w);
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        if (!resolved) ImGui::PopStyleColor(4);
+        if (open) {
+            if (session_.Aligns().empty())
+                ImGui::TextDisabled("(no alignment procedures - see the Alignment page)");
+            else
+                for (const AlignProc& ap : session_.Aligns()) {
+                    if (ImGui::Selectable(ap.name.c_str(), ap.uid == v)) {
+                        params[p.name] = ap.uid;
+                        changed = true;
+                    }
+                }
+            ImGui::EndCombo();
+        }
+        if (!resolved)
+            ImGui::TextColored(kStaleRed, "unknown alignment procedure - re-pick");
         break;
     }
     case ParamType::MapName: {

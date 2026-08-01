@@ -3,6 +3,7 @@
 // Device *objects* live in HardwareManager (layer 1); Workflow only drives them.
 #pragma once
 
+#include "core/AlignFrame.h"           // AlignResult (taught-frame hand-back queue)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
 #include "hardware/HardwareConfig.h"   // AxisTransform, HardwareConfig
 
@@ -196,6 +197,13 @@ public:
     void QueueSavedPosition(const std::string& device, const SavedPos& p);
     std::vector<std::pair<std::string, SavedPos>> TakeSavedPositions();
 
+    // ---- Taught-frame hand-back (align_solve command) -----------------------
+    // Same worker->UI route as taught positions: the procedure document is
+    // App-owned, so a solved frame is queued here and App::Update stores it
+    // against the procedure uid and persists.
+    void QueueAlignResult(const std::string& uid, const AlignResult& r);
+    std::vector<std::pair<std::string, AlignResult>> TakeAlignResults();
+
 private:
     // Fleet index of the gantry: "gantry-main" by name, else the first ACS
     // controller. Returns hw_.MotionCount() when there is none.
@@ -235,6 +243,10 @@ private:
     // Taught-position queue (worker producers, UI-thread consumer).
     std::mutex teachMu_;
     std::vector<std::pair<std::string, SavedPos>> teachQueue_;
+
+    // Taught-frame queue (same producer/consumer split).
+    std::mutex alignMu_;
+    std::vector<std::pair<std::string, AlignResult>> alignQueue_;
 
     // Motion is inhibited while a CRITICAL safety alert is unacknowledged.
     bool SafetyBlocked() const

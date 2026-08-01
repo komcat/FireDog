@@ -346,6 +346,18 @@ std::vector<std::pair<std::string, SavedPos>> Workflow::TakeSavedPositions()
     return std::exchange(teachQueue_, {});
 }
 
+void Workflow::QueueAlignResult(const std::string& uid, const AlignResult& r)
+{
+    const std::lock_guard<std::mutex> lock(alignMu_);
+    alignQueue_.emplace_back(uid, r);
+}
+
+std::vector<std::pair<std::string, AlignResult>> Workflow::TakeAlignResults()
+{
+    const std::lock_guard<std::mutex> lock(alignMu_);
+    return std::exchange(alignQueue_, {});
+}
+
 void Workflow::StartCamera(const HardwareConfig& hw)
 {
     const CameraConfig* cam = hw.FirstEnabledCamera();

@@ -11,6 +11,7 @@
 // missing or malformed file yields an empty list, never throws.
 #pragma once
 
+#include "core/AlignFrame.h"
 #include "core/MotionMap.h"
 #include "core/SavedPositions.h"
 
@@ -98,6 +99,7 @@ std::vector<RecipeIssue> ValidateRecipe(const Recipe& r, const CommandRegistry& 
                                         const HardwareManager& hw,
                                         const SavedPosMap& positions,
                                         const MotionMapSet& maps,
+                                        const std::vector<AlignProc>& aligns,
                                         const std::vector<Recipe>& library,
                                         bool requireConnected);
 
