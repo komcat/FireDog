@@ -272,6 +272,7 @@ int App::Run()
     if (!product_.Loaded()) LoadRecipesFromDisk();   // else LoadProduct did it
     if (!product_.Loaded()) LoadProgramsFromDisk();
     LoadScriptsList();             // .lua programs (product dir, else config/scripts)
+    LoadScanPresets();             // XCAN launch presets (machine-global local.json)
     if (product_.Loaded())         // DUT records live under the product's data/
         DutSession::Instance().SetProduct(product_.name, product_.uid,
                                           product_.DataDir());
@@ -1045,20 +1046,156 @@ void App::DrawRunPanel()
     }
 }
 
-// Run-band scan target presets. XCAN: target + adaptive zone range per
-// product power class (the zone_low must sit AT the raster handoff level —
-// see the micro-lobe field note in hexapod_align.lua). Raster: first-light
-// exit levels. All in uA (feedback is amps; injected x1e-6).
-struct XcanTargetPreset {
-    const char* label;
-    double targetUa, zoneLowUa, zoneHighUa;
-};
-static constexpr XcanTargetPreset kXcanTargets[] = {
-    {"150 uA", 150.0, 10.0, 200.0},
-    {"400 uA", 400.0, 20.0, 400.0},
-    {"3400 uA", 3400.0, 200.0, 3400.0},
-};
+// Raster first-light exit levels, in uA (feedback amps; injected x1e-6).
 static constexpr double kRasterTargetsUa[] = {5.0, 20.0};
+
+// Built-in XCAN target presets: the three product power classes (the
+// zone_low must sit AT the raster handoff level — see the micro-lobe field
+// note in hexapod_align.lua); slots 4-5 are spares the operator can switch
+// on in the target settings modal (right-click a Target button).
+static XcanTarget DefaultXcanTarget(int i)
+{
+    XcanTarget t;
+    switch (i) {
+    case 0: t.targetUa = 150.0;  t.zoneLowUa = 10.0;  t.zoneHighUa = 200.0;
+            t.enabled = true; break;
+    case 1: t.targetUa = 400.0;  t.zoneLowUa = 20.0;  t.zoneHighUa = 400.0;
+            t.enabled = true; break;
+    case 2: t.targetUa = 3400.0; t.zoneLowUa = 200.0; t.zoneHighUa = 3400.0;
+            t.enabled = true; break;
+    default: break;   // spare slot, struct defaults, hidden
+    }
+    return t;
+}
+
+// Target buttons are labeled by their value ("400 uA").
+static std::string XcanTargetLabel(const XcanTarget& t)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%g uA", t.targetUa);
+    return buf;
+}
+
+// Built-in XCAN launch presets: slots 1/2 are bobcat's Coarse/Fine ladders
+// (enabled), 3-5 are blank spares the operator can switch on in the
+// settings modal (right-click any preset button).
+static XcanPreset DefaultXcanPreset(int i)
+{
+    XcanPreset p;
+    switch (i) {
+    case 0:  p.label = "Coarse"; p.stepsUm = "10,5,2,1"; p.enabled = true; break;
+    case 1:  p.label = "Fine";   p.stepsUm = "2,1,0.5";  p.enabled = true; break;
+    default: p.label = "P" + std::to_string(i + 1);      p.enabled = false; break;
+    }
+    return p;
+}
+
+static nlohmann::json XcanPresetToJson(const XcanPreset& p)
+{
+    return nlohmann::json{
+        {"label", p.label},
+        {"enabled", p.enabled},
+        {"steps_um", p.stepsUm},
+        {"axes", p.axes},
+        {"settle_ms", p.settleMs},
+        {"settle_min_ms", p.settleMinMs},
+        {"fresh_samples", p.freshSamples},
+        {"avg_count", p.avgCount},
+        {"consec_limit", p.consecLimit},
+        {"sig_drop_pct", p.sigDropPct},
+        {"max_travel_um", p.maxTravelUm},
+        {"improve_pct", p.improvePct},
+        {"min_signal", p.minSignal},
+        {"tol_mm", p.tolMm},
+        {"move_timeout_ms", p.moveTimeoutMs},
+        {"velocity_mm_s", p.velocityMmS},
+        {"skip_opposite", p.skipOpposite},
+        {"dir_memory", p.dirMemory},
+        {"reuse_sample", p.reuseSample},
+    };
+}
+
+// Tolerant overlay: missing keys keep the preset's current (default) value.
+static void XcanPresetFromJson(const nlohmann::json& j, XcanPreset& p)
+{
+    p.label         = j.value("label", p.label);
+    p.enabled       = j.value("enabled", p.enabled);
+    p.stepsUm       = j.value("steps_um", p.stepsUm);
+    p.axes          = j.value("axes", p.axes);
+    p.settleMs      = j.value("settle_ms", p.settleMs);
+    p.settleMinMs   = j.value("settle_min_ms", p.settleMinMs);
+    p.freshSamples  = j.value("fresh_samples", p.freshSamples);
+    p.avgCount      = j.value("avg_count", p.avgCount);
+    p.consecLimit   = j.value("consec_limit", p.consecLimit);
+    p.sigDropPct    = j.value("sig_drop_pct", p.sigDropPct);
+    p.maxTravelUm   = j.value("max_travel_um", p.maxTravelUm);
+    p.improvePct    = j.value("improve_pct", p.improvePct);
+    p.minSignal     = j.value("min_signal", p.minSignal);
+    p.tolMm         = j.value("tol_mm", p.tolMm);
+    p.moveTimeoutMs = j.value("move_timeout_ms", p.moveTimeoutMs);
+    p.velocityMmS   = j.value("velocity_mm_s", p.velocityMmS);
+    p.skipOpposite  = j.value("skip_opposite", p.skipOpposite);
+    p.dirMemory     = j.value("dir_memory", p.dirMemory);
+    p.reuseSample   = j.value("reuse_sample", p.reuseSample);
+}
+
+void App::LoadScanPresets()
+{
+    for (int i = 0; i < kXcanPresetCount; ++i) {
+        xcanPresets_[i] = DefaultXcanPreset(i);
+        xcanTargets_[i] = DefaultXcanTarget(i);
+    }
+    std::ifstream f("config/scan_presets.local.json");
+    if (!f.is_open()) f.open("config/scan_presets.json");
+    if (!f.is_open()) return;   // first run — defaults stand
+    const nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
+    if (!j.is_object()) return;
+    if (j.contains("xcan_presets") && j["xcan_presets"].is_array()) {
+        const nlohmann::json& arr = j["xcan_presets"];
+        for (std::size_t i = 0;
+             i < arr.size() && i < static_cast<std::size_t>(kXcanPresetCount); ++i) {
+            if (arr[i].is_object())
+                XcanPresetFromJson(arr[i], xcanPresets_[static_cast<int>(i)]);
+        }
+    }
+    if (j.contains("xcan_targets") && j["xcan_targets"].is_array()) {
+        const nlohmann::json& arr = j["xcan_targets"];
+        for (std::size_t i = 0;
+             i < arr.size() && i < static_cast<std::size_t>(kXcanPresetCount); ++i) {
+            if (!arr[i].is_object()) continue;
+            XcanTarget& t = xcanTargets_[static_cast<int>(i)];
+            t.enabled    = arr[i].value("enabled", t.enabled);
+            t.targetUa   = arr[i].value("target_ua", t.targetUa);
+            t.zoneLowUa  = arr[i].value("zone_low_ua", t.zoneLowUa);
+            t.zoneHighUa = arr[i].value("zone_high_ua", t.zoneHighUa);
+        }
+    }
+}
+
+void App::SaveScanPresets() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const XcanPreset& p : xcanPresets_) arr.push_back(XcanPresetToJson(p));
+    nlohmann::json tarr = nlohmann::json::array();
+    for (const XcanTarget& t : xcanTargets_) {
+        tarr.push_back(nlohmann::json{
+            {"enabled", t.enabled},
+            {"target_ua", t.targetUa},
+            {"zone_low_ua", t.zoneLowUa},
+            {"zone_high_ua", t.zoneHighUa},
+        });
+    }
+    nlohmann::json j;
+    j["xcan_presets"] = std::move(arr);
+    j["xcan_targets"] = std::move(tarr);
+    std::ofstream f("config/scan_presets.local.json");
+    if (f.is_open()) {
+        f << j.dump(2) << "\n";
+        FD_INFO("ui", "scan presets saved to config/scan_presets.local.json");
+    } else {
+        FD_WARN("ui", "could not save config/scan_presets.local.json");
+    }
+}
 
 // Activatable preset button: theme color normally, yellow when active.
 static bool PresetButton(const char* label, bool active, const ImVec2& size)
@@ -1075,16 +1212,17 @@ static bool PresetButton(const char* label, bool active, const ImVec2& size)
 }
 
 // XCAN preset launcher (bobcat Run page scan controls): hexapod_align.lua with
-// the pressed step ladder (Coarse/Fine) + the ACTIVE target preset (exit
-// threshold + adaptive zone range). Uses the same product-script override and
-// Env wiring as the Scanning tab.
-void App::StartXcanPreset(const std::string& device, const char* stepsUm)
+// the pressed launch preset (step ladder + tunables, right-click to edit) +
+// the ACTIVE target preset (exit threshold + adaptive zone range). Uses the
+// same product-script override and Env wiring as the Scanning tab.
+void App::StartXcanPreset(const std::string& device, int presetIdx)
 {
     std::string script = "config/scripts/hexapod_align.lua";
     for (const ScriptInfo& si : scripts_) {
         if (si.name == "hexapod_align") { script = si.path; break; }
     }
-    const XcanTargetPreset& tp = kXcanTargets[xcanPresetSel_];
+    const XcanPreset& p  = xcanPresets_[presetIdx];
+    const XcanTarget& tp = xcanTargets_[xcanPresetSel_];
     LuaEngine::Env env;
     env.positions = savedPos_;
     env.maps      = motionMaps_;
@@ -1092,8 +1230,23 @@ void App::StartXcanPreset(const std::string& device, const char* stepsUm)
     env.initialCtx = {
         {"align_device", device},
         {"align_topic", std::string(runXcanTopic_)},
-        {"align_steps_um", std::string(stepsUm)},
-        {"align_settle_ms", 150.0},
+        {"align_steps_um", p.stepsUm},
+        {"align_axes", p.axes},
+        {"align_settle_ms", p.settleMs},
+        {"align_settle_min_ms", p.settleMinMs},
+        {"align_fresh_samples", static_cast<double>(p.freshSamples)},
+        {"align_avg_count", static_cast<double>(p.avgCount)},
+        {"align_consec_limit", static_cast<double>(p.consecLimit)},
+        {"align_sig_drop_pct", p.sigDropPct},
+        {"align_max_travel_um", p.maxTravelUm},
+        {"align_improve_pct", p.improvePct},
+        {"align_min_signal", p.minSignal},
+        {"align_tol_mm", p.tolMm},
+        {"align_move_timeout_ms", p.moveTimeoutMs},
+        {"align_velocity_mm_s", p.velocityMmS},
+        {"align_skip_opposite", p.skipOpposite ? 1.0 : 0.0},
+        {"align_dir_memory", p.dirMemory ? 1.0 : 0.0},
+        {"align_reuse_sample", p.reuseSample ? 1.0 : 0.0},
         {"align_trace", xcanTrace_ ? 1.0 : 0.0},
         {"align_exit_threshold", tp.targetUa * 1e-6},
         {"align_adaptive", 1.0},
@@ -1102,7 +1255,8 @@ void App::StartXcanPreset(const std::string& device, const char* stepsUm)
     };
     scriptStartErr_.clear();
     if (!luaEngine_.Start(script, std::move(env), &scriptStartErr_))
-        FD_WARN("script", "xcan preset rejected: %s", scriptStartErr_.c_str());
+        FD_WARN("script", "xcan preset '%s' rejected: %s", p.label.c_str(),
+                scriptStartErr_.c_str());
 }
 
 // SI-prefixed reading for the scan header (bobcat FormatSI: 2.09e-05 -> 20.888u).
@@ -1154,8 +1308,10 @@ void App::DrawRunScanBlock()
     }
 
     // Targets live per-tab now (activatable preset buttons); the header keeps
-    // only the shared channel + Trace.
-    ImGui::SameLine();
+    // only the shared channel + Trace. Trace sits at a FIXED column so the
+    // varying width of the live reading doesn't shove it around.
+    ImGui::SameLine(150.0f + ImGui::GetStyle().ItemSpacing.x +
+                    ImGui::CalcTextSize("= -888.888mA  ").x);
     ImGui::Checkbox("Trace", &xcanTrace_);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Log every scan sample as 'xcan,'/'rast,' CSV lines\n"
@@ -1185,23 +1341,41 @@ void App::DrawRunXcanBlock()
     const bool running = luaEngine_.Running();
 
     // Target preset row: exit target + adaptive zone range per product power
-    // class; the active preset is injected into every Coarse/Fine launch.
+    // class; the ACTIVE (yellow) preset is injected into every launch.
+    // Left-click activates, RIGHT-click edits in the target settings modal.
     ImGui::TextDisabled("Target");
-    for (int i = 0; i < static_cast<int>(std::size(kXcanTargets)); ++i) {
+    bool anyTarget = false;
+    for (int i = 0; i < kXcanPresetCount; ++i) {
+        const XcanTarget& t = xcanTargets_[i];
+        if (!t.enabled) continue;
+        anyTarget = true;
         ImGui::SameLine();
         ImGui::PushID(i);
-        if (PresetButton(kXcanTargets[i].label, xcanPresetSel_ == i,
+        if (PresetButton(XcanTargetLabel(t).c_str(), xcanPresetSel_ == i,
                          ImVec2(76.0f, 0.0f)))
             xcanPresetSel_ = i;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Exit target %g uA, adaptive zones %g-%g uA",
-                              kXcanTargets[i].targetUa, kXcanTargets[i].zoneLowUa,
-                              kXcanTargets[i].zoneHighUa);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Exit target %g uA, adaptive zones %g-%g uA\n"
+                              "right-click: settings",
+                              t.targetUa, t.zoneLowUa, t.zoneHighUa);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                xcanTgtCfgSel_  = i;
+                xcanTgtCfgOpen_ = true;
+            }
+        }
         ImGui::PopID();
     }
+    if (!anyTarget) {   // escape hatch — no button left to right-click
+        ImGui::SameLine();
+        if (ImGui::SmallButton("targets...")) xcanTgtCfgOpen_ = true;
+    }
 
-    // Launch row: hex-left [Coarse][Fine]   hex-right [Coarse][Fine]   Stop.
+    // Launch row: hex-left [presets...]   hex-right [presets...]   Stop.
+    // Left-click launches on that hexapod; RIGHT-click opens the preset's
+    // settings modal (works even while the button is disabled).
     const bool busy = OrchestrationBusy();
+    bool anyPreset = false;
+    for (const XcanPreset& p : xcanPresets_) anyPreset |= p.enabled;
     const auto presets = [&](const char* dev) {
         int idx = -1;
         for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
@@ -1210,14 +1384,25 @@ void App::DrawRunXcanBlock()
         IMotionController* m =
             idx >= 0 ? hardware_.MotionDevice(static_cast<std::size_t>(idx)) : nullptr;
         ImGui::TextDisabled("%s", dev);
-        ImGui::SameLine();
         ImGui::PushID(dev);
         ImGui::BeginDisabled(busy || !m || !m->IsConnected());
-        if (ImGui::Button("Coarse", ImVec2(70.0f, 0.0f)))
-            StartXcanPreset(dev, "10,5,2,1");
-        ImGui::SameLine();
-        if (ImGui::Button("Fine", ImVec2(70.0f, 0.0f)))
-            StartXcanPreset(dev, "2,1,0.5");
+        for (int i = 0; i < kXcanPresetCount; ++i) {
+            const XcanPreset& p = xcanPresets_[i];
+            if (!p.enabled) continue;
+            ImGui::SameLine();
+            ImGui::PushID(i);
+            if (ImGui::Button(p.label.c_str(), ImVec2(70.0f, 0.0f)))
+                StartXcanPreset(dev, i);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("steps: %s um\nright-click: settings",
+                                  p.stepsUm.c_str());
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                    xcanCfgSel_  = i;
+                    xcanCfgOpen_ = true;
+                }
+            }
+            ImGui::PopID();
+        }
         ImGui::EndDisabled();
         ImGui::PopID();
     };
@@ -1230,6 +1415,10 @@ void App::DrawRunXcanBlock()
     ImGui::BeginDisabled(!running);
     if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) luaEngine_.RequestStop();
     ImGui::EndDisabled();
+    if (!anyPreset) {   // escape hatch — no button left to right-click
+        ImGui::SameLine();
+        if (ImGui::SmallButton("presets...")) xcanCfgOpen_ = true;
+    }
 
     // Status line: the running/last hexapod_align result (shared engine ctx).
     if (st.scriptName == "hexapod_align") {
@@ -1250,8 +1439,173 @@ void App::DrawRunXcanBlock()
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "start rejected: %s",
                            scriptStartErr_.c_str());
     } else {
-        ImGui::TextDisabled("Coarse: 10,5,2,1 um   Fine: 2,1,0.5 um   (adaptive zone steps)");
+        std::string s;
+        for (const XcanPreset& p : xcanPresets_) {
+            if (!p.enabled) continue;
+            s += (s.empty() ? "" : "   ") + p.label + ": " + p.stepsUm + " um";
+        }
+        if (s.empty()) s = "no presets enabled";
+        ImGui::TextDisabled("%s   (right-click to edit)", s.c_str());
     }
+
+    DrawXcanPresetModal();
+    DrawXcanTargetModal();
+}
+
+// Right-click settings for an XCAN target preset: exit target + the adaptive
+// step-zone range (lower/upper limits, in uA). Save persists all five target
+// slots (and the launch presets) to config/scan_presets.local.json.
+void App::DrawXcanTargetModal()
+{
+    if (xcanTgtCfgOpen_) {
+        ImGui::OpenPopup("XCAN Target");
+        xcanTgtCfgOpen_ = false;
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("XCAN Target", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    // Slot selector: all five targets, the edited one yellow.
+    for (int i = 0; i < kXcanPresetCount; ++i) {
+        if (i > 0) ImGui::SameLine();
+        ImGui::PushID(i);
+        if (PresetButton(XcanTargetLabel(xcanTargets_[i]).c_str(),
+                         xcanTgtCfgSel_ == i, ImVec2(76.0f, 0.0f)))
+            xcanTgtCfgSel_ = i;
+        ImGui::PopID();
+    }
+    XcanTarget& t = xcanTargets_[xcanTgtCfgSel_];
+    ImGui::Separator();
+
+    ImGui::Checkbox("show button", &t.enabled);
+    const float w = 150.0f;
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("target uA (exit threshold)", &t.targetUa, 0.0, 0.0, "%g");
+    ImGui::SeparatorText("adaptive step zones");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("zone low uA (lower limit)", &t.zoneLowUa, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("zone high uA (upper limit)", &t.zoneHighUa, 0.0, 0.0, "%g");
+    if (t.zoneHighUa < t.zoneLowUa)
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+                           "zone high is below zone low");
+    ImGui::TextDisabled("zone low should sit at the raster handoff level");
+
+    ImGui::Separator();
+    if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) {
+        SaveScanPresets();
+        ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Persist ALL presets to config/scan_presets.local.json");
+    ImGui::SameLine();
+    if (ImGui::Button("Close", ImVec2(90.0f, 0.0f))) ImGui::CloseCurrentPopup();
+    ImGui::SameLine();
+    if (ImGui::Button("Defaults", ImVec2(90.0f, 0.0f)))
+        t = DefaultXcanTarget(xcanTgtCfgSel_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Reset THIS target to its built-in values");
+    ImGui::EndPopup();
+}
+
+// Right-click settings for an XCAN launch preset — the same schema-form idea
+// as the recipe parameter inspector, over the hexapod_align.lua tunables.
+// Save persists all five presets to config/scan_presets.local.json; Close
+// keeps the edits for this session only.
+void App::DrawXcanPresetModal()
+{
+    if (xcanCfgOpen_) {
+        ImGui::OpenPopup("XCAN Preset");
+        xcanCfgOpen_ = false;
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("XCAN Preset", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    // Slot selector: all five presets, the edited one yellow.
+    for (int i = 0; i < kXcanPresetCount; ++i) {
+        if (i > 0) ImGui::SameLine();
+        ImGui::PushID(i);
+        if (PresetButton(xcanPresets_[i].label.c_str(), xcanCfgSel_ == i,
+                         ImVec2(76.0f, 0.0f)))
+            xcanCfgSel_ = i;
+        ImGui::PopID();
+    }
+    XcanPreset& p = xcanPresets_[xcanCfgSel_];
+    ImGui::Separator();
+
+    ImGui::Checkbox("show button", &p.enabled);
+    const float w = 150.0f;
+    char lb[32];
+    std::snprintf(lb, sizeof(lb), "%s", p.label.c_str());
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::InputText("label", lb, sizeof(lb))) p.label = lb;
+    char sb[64];
+    std::snprintf(sb, sizeof(sb), "%s", p.stepsUm.c_str());
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::InputText("steps_um (coarse -> fine)", sb, sizeof(sb)))
+        p.stepsUm = sb;
+    char ab[32];
+    std::snprintf(ab, sizeof(ab), "%s", p.axes.c_str());
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::InputText("axes (descent order)", ab, sizeof(ab))) p.axes = ab;
+
+    ImGui::SeparatorText("measure");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("settle_ms", &p.settleMs, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("settle_min_ms", &p.settleMinMs, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("fresh_samples", &p.freshSamples);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("avg_count", &p.avgCount);
+
+    ImGui::SeparatorText("convergence");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("consec_limit", &p.consecLimit);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("sig_drop_pct", &p.sigDropPct, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("improve_pct", &p.improvePct, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("min_signal", &p.minSignal, 0.0, 0.0, "%g");
+
+    ImGui::SeparatorText("motion");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("max_travel_um", &p.maxTravelUm, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("velocity_mm_s", &p.velocityMmS, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("tol_mm", &p.tolMm, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("move_timeout_ms", &p.moveTimeoutMs, 0.0, 0.0, "%g");
+
+    ImGui::SeparatorText("heuristics");
+    ImGui::Checkbox("skip_opposite", &p.skipOpposite);
+    ImGui::SameLine();
+    ImGui::Checkbox("dir_memory", &p.dirMemory);
+    ImGui::SameLine();
+    ImGui::Checkbox("reuse_sample", &p.reuseSample);
+
+    ImGui::Separator();
+    if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) {
+        SaveScanPresets();
+        ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Persist ALL five presets to config/scan_presets.local.json");
+    ImGui::SameLine();
+    if (ImGui::Button("Close", ImVec2(90.0f, 0.0f))) ImGui::CloseCurrentPopup();
+    ImGui::SameLine();
+    if (ImGui::Button("Defaults", ImVec2(90.0f, 0.0f)))
+        p = DefaultXcanPreset(xcanCfgSel_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Reset THIS preset to its built-in values");
+    ImGui::EndPopup();
 }
 
 // The software big-red-button (Jog window STOP). Order matters: abort every

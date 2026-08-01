@@ -40,6 +40,47 @@ struct CanvasObject {
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run };
 
+// One XCAN launch preset (a button on the Run page's Scan band): the step
+// ladder + the hexapod_align.lua tunables injected at launch. Five slots;
+// right-click a button to edit in the settings modal. Persisted machine-
+// global in config/scan_presets.local.json (scan_presets.json fallback).
+// Device / feedback topic / trace / exit target + zones are NOT here — they
+// come from the button column, the band header, and the Target presets.
+struct XcanPreset {
+    std::string label   = "Preset";
+    bool        enabled = false;        // show as a launch button
+    std::string stepsUm = "10,5,2,1";   // coarse -> fine ladder, um
+    std::string axes    = "Z,Y,X";      // coordinate-descent order
+    double settleMs      = 150.0;       // fresh-sample ceiling
+    double settleMinMs   = 0.0;         // floor for slow receivers
+    int    freshSamples  = 2;           // new publishes per measure
+    int    avgCount      = 3;           // baseline averaging samples
+    int    consecLimit   = 3;           // stop dir after N non-improvements
+    double sigDropPct    = 15.0;        // hard break on a big relative drop
+    double maxTravelUm   = 200.0;       // per-direction travel cap
+    double improvePct    = 1.0;         // global-peak recovery threshold
+    double minSignal     = 0.0;         // abort if |baseline| below this
+    double tolMm         = 0.001;       // move arrival tolerance
+    double moveTimeoutMs = 10000.0;
+    double velocityMmS   = 1.0;         // scan velocity, set once
+    bool   skipOpposite  = true;        // skip -dir after +dir improved
+    bool   dirMemory     = true;        // last winning direction first
+    bool   reuseSample   = true;        // no re-measure of unmoved points
+};
+inline constexpr int kXcanPresetCount = 5;
+
+// One XCAN target preset (Target row of the Scan band): exit target + the
+// adaptive step-zone range, per product power class. Five slots; left-click
+// activates (yellow), RIGHT-click edits in the settings modal. Persisted in
+// config/scan_presets.local.json alongside the launch presets. All in uA
+// (feedback is amps; injected x1e-6 at launch).
+struct XcanTarget {
+    bool   enabled    = false;   // show as a Target button
+    double targetUa   = 400.0;   // align_exit_threshold
+    double zoneLowUa  = 20.0;    // align_zone_low  (adaptive ladder lower limit)
+    double zoneHighUa = 400.0;   // align_zone_high (adaptive ladder upper limit)
+};
+
 class App {
 public:
     int Run();
@@ -118,8 +159,12 @@ private:
     void DrawRunPanel();              // deck | execution + XCAN + log | DUT
     void StartDeckRun(int mode);      // 0 = program, 1 = slot, 2 = recipe
     void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|XCAN tabs
-    void DrawRunXcanBlock();          // XCAN tab: hex-left/right Coarse/Fine presets
-    void StartXcanPreset(const std::string& device, const char* stepsUm);
+    void DrawRunXcanBlock();          // XCAN tab: hex-left/right launch presets
+    void StartXcanPreset(const std::string& device, int presetIdx);
+    void DrawXcanPresetModal();       // right-click settings for a launch preset
+    void DrawXcanTargetModal();       // right-click settings for a target preset
+    void LoadScanPresets();           // config/scan_presets.local.json -> .json
+    void SaveScanPresets() const;
     void DrawRunRasterBlock();        // Raster tab: area-scan launcher (raster_scan.lua)
     void StartRasterScan(const std::string& device);
     void StopMachine();               // software big-red-button: all motion + orchestration
@@ -410,7 +455,7 @@ private:
     // active slot's value stops the scan the moment the feedback reaches it.
     // Left-click activates a slot, right-click edits it in a modal; 0 = off.
     int    rasterTgtSel_   = 0;   // Raster exit-target preset: 0 = 5 uA, 1 = 20 uA
-    int    xcanPresetSel_  = 1;   // XCAN target/zone preset (kXcanTargets; default 400 uA)
+    int    xcanPresetSel_  = 1;   // ACTIVE target slot (xcanTargets_; default 400 uA)
     // Run-band raster launcher knobs (raster_scan.lua): slow axis X steps down
     // from start, fast axis Y sweeps centered; axes/gating stay script defaults.
     double rasterSlowSpanUm_ = 40.0;                  // X- total travel
@@ -431,6 +476,16 @@ private:
     std::string runStartErr_;
     // Run page XCAN block: feedback channel for the preset scans + live value.
     char runXcanTopic_[64] = "keithley/ch1";
+    // XCAN launch presets (up to 5 buttons per hexapod row): defaults seeded
+    // in LoadScanPresets, edited via the right-click settings modal.
+    XcanPreset xcanPresets_[kXcanPresetCount];
+    int  xcanCfgSel_  = 0;       // preset shown in the settings modal
+    bool xcanCfgOpen_ = false;   // request to open the modal this frame
+    // XCAN target presets (Target row, up to 5 buttons): defaults seeded in
+    // LoadScanPresets, edited via their own right-click settings modal.
+    XcanTarget xcanTargets_[kXcanPresetCount];
+    int  xcanTgtCfgSel_  = 0;
+    bool xcanTgtCfgOpen_ = false;
 
     // DUT Records viewer state: scanned serials + the loaded record.
     std::vector<std::string> dutList_;
