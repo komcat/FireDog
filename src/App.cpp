@@ -1,10 +1,4 @@
 // App.cpp : layer 3 (UI) implementation.
-// windows.h first (lean, no min/max macros) so anything that defines APIENTRY
-// later sees it already set; used only for ShellExecuteA (open-in-Explorer).
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#include <shellapi.h>
 
 #include "App.h"
 
@@ -14,6 +8,7 @@
 
 #include "ui/Theme.h"
 #include "ui/UiSettings.h"
+#include "ui/Widgets.h"
 #include "command/Commands.h"
 #include "core/DataBus.h"
 #include "core/DutSession.h"
@@ -38,75 +33,9 @@ namespace {
 constexpr int kWinW = 1280;
 constexpr int kWinH = 800;
 
-// User-adjustable UI prefs persist here (gitignored .local.json per convention),
-// written next to the exe alongside the copied config/ folder.
-constexpr const char* kUiSettingsPath = "config/ui.local.json";
-
-// Selectable UI fonts. Paths are Windows system fonts (this is a Windows-only
-// project); "" = ImGui's built-in font. Keep index 0 as the startup default.
-struct FontOption { const char* label; const char* path; };
-constexpr FontOption kFonts[] = {
-    {"Segoe UI", "C:/Windows/Fonts/segoeui.ttf"},
-    {"Tahoma",   "C:/Windows/Fonts/tahoma.ttf"},
-    {"Verdana",  "C:/Windows/Fonts/verdana.ttf"},
-    {"Consolas", "C:/Windows/Fonts/consola.ttf"},
-    {"Built-in", ""},
-};
-constexpr int kFontCount = static_cast<int>(sizeof(kFonts) / sizeof(kFonts[0]));
-
-// Jog step sizes (label + value in mm).
-struct StepSize { const char* label; double mm; };
-constexpr StepSize kSteps[] = {
-    {"0.1um", 0.0001}, {"0.2um", 0.0002}, {"0.5um", 0.0005},
-    {"1um",   0.001},  {"2um",   0.002},  {"5um",   0.005},
-    {"10um",  0.01},   {"25um",  0.025},  {"50um",  0.05},
-    {"100um", 0.1},    {"250um", 0.25},   {"500um", 0.5},
-    {"1mm",   1.0},    {"2mm",   2.0},    {"5mm",   5.0},
-};
-constexpr int kStepCount = static_cast<int>(sizeof(kSteps) / sizeof(kSteps[0]));
-
-// Open a folder in Windows Explorer (best-effort). Paths from the session are
-// cwd-relative (products/ lives next to the exe), so resolve to absolute; the
-// folder may not exist yet (product data/ before the first DUT) — create it.
-void OpenFolderInExplorer(const std::string& dir)
-{
-    if (dir.empty()) return;
-    std::error_code ec;
-    const std::filesystem::path abs = std::filesystem::absolute(dir, ec);
-    if (ec) return;
-    std::filesystem::create_directories(abs, ec);
-    ShellExecuteA(nullptr, "open", abs.string().c_str(), nullptr, nullptr,
-                  SW_SHOWNORMAL);
-}
-
 // Jog velocities (mm/s) per controller type.
 constexpr double kVelPI[]  = {1.0, 2.0, 5.0, 10.0};
 constexpr double kVelACS[] = {1.0, 5.0, 10.0, 20.0, 40.0};
-
-ImVec4 StateColor(ConnState s) {
-    switch (s) {
-        case ConnState::Connected:  return ImVec4(0.40f, 0.90f, 0.50f, 1.0f);
-        case ConnState::Connecting: return ImVec4(0.95f, 0.80f, 0.30f, 1.0f);
-        case ConnState::Failed:     return ImVec4(0.95f, 0.40f, 0.40f, 1.0f);
-        default:                    return ImVec4(0.60f, 0.60f, 0.60f, 1.0f);
-    }
-}
-const char* StateGlyph(ConnState s) {
-    switch (s) {
-        case ConnState::Connected:  return "[+]";
-        case ConnState::Connecting: return "[~]";
-        case ConnState::Failed:     return "[x]";
-        default:                    return "[ ]";
-    }
-}
-const char* StateText(ConnState s) {
-    switch (s) {
-        case ConnState::Connected:  return "connected";
-        case ConnState::Connecting: return "connecting...";
-        case ConnState::Failed:     return "failed";
-        default:                    return "disconnected";
-    }
-}
 
 ImVec4 LevelColor(LogLevel l) {
     switch (l) {
@@ -117,74 +46,6 @@ ImVec4 LevelColor(LogLevel l) {
         case LogLevel::Error: return ImVec4(0.97f, 0.45f, 0.45f, 1.0f);
     }
     return ImVec4(1, 1, 1, 1);
-}
-
-// A draggable splitter bar (a thin, invisible-until-hovered button). Returns
-// true while being dragged; the caller applies io.MouseDelta to the adjacent
-// panel size. `vertical` = a tall bar that resizes left/right; otherwise a wide
-// bar that resizes up/down.
-bool Splitter(const char* id, bool vertical, float thickness, float length) {
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.30f, 0.30f, 0.34f, 0.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.45f, 0.45f, 0.55f, 0.6f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.55f, 0.55f, 0.70f, 0.9f));
-    ImGui::Button(id, vertical ? ImVec2(thickness, length) : ImVec2(length, thickness));
-    const bool active = ImGui::IsItemActive();
-    if (active || ImGui::IsItemHovered())
-        ImGui::SetMouseCursor(vertical ? ImGuiMouseCursor_ResizeEW : ImGuiMouseCursor_ResizeNS);
-    ImGui::PopStyleColor(3);
-    return active;
-}
-
-void DeviceStatusLine(ConnState s, const char* name) {
-    ImGui::TextColored(StateColor(s), "%s", StateGlyph(s));
-    ImGui::SameLine();
-    ImGui::Text("%-12s %s", name, StateText(s));
-}
-
-// Keithley 6482 fixed current ranges (full-scale amps, decades).
-struct KeiRange { const char* label; double amps; };
-constexpr KeiRange kKeiRanges[] = {
-    {"2 nA", 2e-9}, {"20 nA", 2e-8}, {"200 nA", 2e-7}, {"2 uA", 2e-6},
-    {"20 uA", 2e-5}, {"200 uA", 2e-4}, {"2 mA", 2e-3}, {"20 mA", 2e-2},
-};
-constexpr int kKeiRangeCount = static_cast<int>(sizeof(kKeiRanges) / sizeof(kKeiRanges[0]));
-
-// Closest table row for a configured fixed range (default: 2 mA).
-int KeiRangeIndexFor(double amps) {
-    int best = 6;
-    if (amps <= 0.0) return best;
-    double bestErr = 1e300;
-    for (int i = 0; i < kKeiRangeCount; ++i) {
-        const double err = std::fabs(std::log10(amps / kKeiRanges[i].amps));
-        if (err < bestErr) { bestErr = err; best = i; }
-    }
-    return best;
-}
-
-// Format an amp value with an auto-scaled unit (mA / uA / nA / pA).
-std::string FormatCurrent(double a) {
-    const double m = std::fabs(a);
-    const char* unit; double scale;
-    if      (m >= 1e-3) { unit = "mA"; scale = 1e3;  }
-    else if (m >= 1e-6) { unit = "uA"; scale = 1e6;  }
-    else if (m >= 1e-9) { unit = "nA"; scale = 1e9;  }
-    else                { unit = "pA"; scale = 1e12; }
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.3f %s", a * scale, unit);
-    return buf;
-}
-
-// Achieved sample rate from the samples in the last 1 s of a stream snapshot.
-float MeasuredHz(const std::vector<float>& t) {
-    if (t.size() < 2) return 0.0f;
-    const float last = t.back();
-    const float cut  = last - 1.0f;
-    size_t i = t.size();
-    while (i > 0 && t[i - 1] >= cut) --i;   // i = first index inside the window
-    const size_t count = t.size() - i;
-    const float  span  = last - t[i];
-    if (span <= 0.0f || count < 2) return 0.0f;
-    return static_cast<float>(count - 1) / span;
 }
 
 // Rebase absolute timestamps to relative time (t - now) so the newest sample
