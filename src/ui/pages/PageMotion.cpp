@@ -275,15 +275,11 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
     ImGui::TextUnformatted("Saved positions");
     ImGui::SameLine();
 
+    // The starting "Home" row for a device with no positions is seeded by
+    // App::Update via ProductSession::SeedHomePosition — drawing must not
+    // mutate the document.
     const std::string      devName = hardware_.MotionName(idx);
     std::vector<SavedPos>& saved   = session_.Positions()[devName];
-    if (saved.empty()) {                       // seed one placeholder row
-        SavedPos home;
-        std::snprintf(home.name, sizeof(home.name), "Home");
-        home.uid = GenerateUid();
-        for (const auto& a : axes) home.vals[a] = 0.0;
-        saved.push_back(std::move(home));
-    }
 
     if (ImGui::SmallButton("+ Add current")) {
         SavedPos p;

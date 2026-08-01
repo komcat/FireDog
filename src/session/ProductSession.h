@@ -107,6 +107,16 @@ public:
     // persist once per batch. No-op for an empty batch.
     void MergeTaughtPositions(const std::vector<std::pair<std::string, SavedPos>>& taught);
 
+    // Give a device its first row — a zeroed "Home" over `axes` — if it has
+    // none yet, and persist it. No-op (returns false) once the device has any
+    // position, so it is cheap to call every frame.
+    //
+    // The row carries a freshly minted uid, which is exactly why it must be
+    // SAVED at birth: an unsaved uid would differ on the next launch, and
+    // anything that referenced it (a map node, a recipe's move_to) would break.
+    bool SeedHomePosition(const std::string& device,
+                          const std::vector<std::string>& axes);
+
 private:
     ProductManifest product_;
     SavedPosMap     positions_;

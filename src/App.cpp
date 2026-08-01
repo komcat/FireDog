@@ -16,6 +16,7 @@
 #include "command/Commands.h"
 #include "core/Log.h"
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -138,6 +139,17 @@ void App::Update(float dt)
     // them on Workflow, and THIS is the worker->UI hand-off point — the
     // session is UI-thread-only, so the drain must stay here in Update().
     session_.MergeTaughtPositions(workflow_.TakeSavedPositions());
+
+    // A motion device with no saved positions gets a zeroed "Home" to start
+    // from. It needs the device's axis list, which only exists once the async
+    // connect finished — so it is checked here rather than at startup, and not
+    // in a Draw function (which must never mutate the document). Cheap: a map
+    // lookup per device, and a no-op the moment the device has any position.
+    for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+        IMotionController* m = hardware_.MotionDevice(i);
+        if (m && m->IsConnected())
+            session_.SeedHomePosition(hardware_.MotionName(i), m->Axes());
+    }
 }
 
 // ALL page switches route here. Leaving the Recipe Editor with unsaved edits

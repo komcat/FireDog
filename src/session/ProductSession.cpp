@@ -3,6 +3,8 @@
 #include "core/DutSession.h"
 #include "core/Log.h"
 
+#include <cstdio>
+
 namespace firedog {
 
 // ---- Startup + product lifecycle -------------------------------------------
@@ -273,6 +275,24 @@ LuaEngine::Env ProductSession::MakeLuaEnv() const
     env.maps      = maps_;
     env.library   = recipes_;   // fd.run_recipe / sub_recipe resolve against this
     return env;
+}
+
+bool ProductSession::SeedHomePosition(const std::string& device,
+                                      const std::vector<std::string>& axes)
+{
+    if (axes.empty()) return false;   // device not up yet — nothing to shape it from
+    const auto it = positions_.find(device);
+    if (it != positions_.end() && !it->second.empty()) return false;
+
+    SavedPos home;
+    std::snprintf(home.name, sizeof(home.name), "Home");
+    home.uid = GenerateUid();
+    for (const std::string& a : axes) home.vals[a] = 0.0;
+    positions_[device].push_back(std::move(home));
+    SavePositions();
+    FD_INFO("position", "%s: seeded a Home position (no saved positions yet)",
+            device.c_str());
+    return true;
 }
 
 void ProductSession::MergeTaughtPositions(
