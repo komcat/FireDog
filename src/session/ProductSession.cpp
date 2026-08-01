@@ -34,6 +34,72 @@ void ProductSession::SaveMaps()
         FD_WARN("map", "could not save motion maps");
 }
 
+void ProductSession::LoadRecipesFromDisk()
+{
+    if (product_.Loaded()) {
+        const ManifestFile* e = product_.Entry("recipes");
+        if (e) {
+            recipes_ = LoadRecipesFile(product_.FilePath("recipes"), &recipesUid_);
+            if (!recipes_.empty()) {
+                if (!recipesUid_.empty() && recipesUid_ != e->uid)
+                    FD_WARN("product", "recipes uid mismatch: manifest %s vs file '%s'",
+                            e->uid.c_str(), recipesUid_.c_str());
+                recipesBaseline_ = RecipesDump();
+                return;
+            }
+            // New products carry an empty seed file (no editor yet in Phase A) —
+            // fall through to the config recipes so the runner has something.
+            FD_INFO("recipe", "product '%s' has no recipes yet - using config recipes",
+                    product_.name.c_str());
+        } else {
+            FD_WARN("product", "'%s' has no recipes entry; using config recipes",
+                    product_.name.c_str());
+        }
+    }
+    recipesUid_.clear();
+    recipes_ = LoadRecipes();   // config/recipes.local.json -> recipes.json
+    recipesBaseline_ = RecipesDump();
+}
+
+// Write the in-memory recipes to the product's recipes file when a product is
+// loaded (manifest uid stamped), else config/recipes.local.json — the same
+// precedence LoadRecipesFromDisk reads with.
+void ProductSession::SaveRecipes()
+{
+    std::string path = "config/recipes.local.json";
+    std::string uid  = recipesUid_;
+    if (product_.Loaded()) {
+        if (const ManifestFile* e = product_.Entry("recipes")) {
+            path = product_.FilePath("recipes");
+            uid  = e->uid;
+        }
+    }
+    if (uid.empty()) uid = GenerateUid();
+    recipesUid_ = uid;
+    if (SaveRecipesFile(path, recipes_, uid)) {
+        recipesBaseline_ = RecipesDump();
+        FD_INFO("recipe", "saved %zu recipe(s) to %s", recipes_.size(), path.c_str());
+    } else {
+        FD_WARN("recipe", "could not save recipes to %s", path.c_str());
+    }
+}
+
+void ProductSession::SaveRecipesTo(const std::string& path, const std::string& uid)
+{
+    SaveRecipesFile(path, recipes_, uid);
+    recipesUid_      = uid;
+    recipesBaseline_ = RecipesDump();
+}
+
+// Canonical serialization of the in-memory recipes, compared against the
+// baseline captured at load/save to answer "are there unsaved edits?".
+std::string ProductSession::RecipesDump() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const Recipe& r : recipes_) arr.push_back(RecipeToJson(r));
+    return arr.dump();
+}
+
 void ProductSession::MergeTaughtPositions(
     const std::vector<std::pair<std::string, SavedPos>>& taught)
 {

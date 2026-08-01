@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "command/Recipe.h"
 #include "core/MotionMap.h"
 #include "core/Product.h"
 #include "core/SavedPositions.h"
@@ -32,6 +33,9 @@ public:
     MotionMapSet&       Maps()            { return maps_; }
     const MotionMapSet& Maps()      const { return maps_; }
 
+    std::vector<Recipe>&       Recipes()       { return recipes_; }
+    const std::vector<Recipe>& Recipes() const { return recipes_; }
+
     // ---- product manifest ----
     const ProductManifest& Product() const { return product_; }
     bool ProductLoaded() const { return product_.Loaded(); }
@@ -43,6 +47,18 @@ public:
     void SavePositions();   // product positions file when loaded, else config
     void SaveMaps();        // machine-global: maps reference stable position uids
 
+    // Recipes: the product's recipes file when it has one with content, else
+    // config/recipes.local.json -> recipes.json. Load/Save keep the dirty
+    // baseline in step; RecipesDirty is a snapshot compare (no observers, so
+    // the mutable Recipes() ref above stays safe).
+    void LoadRecipesFromDisk();
+    void SaveRecipes();
+    // Product "Save through the manifest" pass: write to the manifest's own
+    // path/uid, then adopt that uid and re-baseline.
+    void SaveRecipesTo(const std::string& path, const std::string& uid);
+    std::string RecipesDump() const;    // canonical serialization
+    bool RecipesDirty() const { return RecipesDump() != recipesBaseline_; }
+
     // Teach hand-backs from save_position steps (queued on Workflow by engine
     // worker threads, drained on the UI thread): merge by name — the app-side
     // uid wins for existing names so recipe references stay stable — then
@@ -53,6 +69,10 @@ private:
     ProductManifest product_;
     SavedPosMap     positions_;
     MotionMapSet    maps_;
+
+    std::vector<Recipe> recipes_;
+    std::string         recipesUid_;        // file uid (product integrity check)
+    std::string         recipesBaseline_;   // serialized state at load/save
 };
 
 } // namespace firedog

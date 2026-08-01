@@ -325,7 +325,7 @@ bool IsTakeoverPage(Page p)
 void App::SwitchPage(Page p)
 {
     if (currentPage_ == p) return;
-    if (currentPage_ == Page::RecipeEdit && RecipesDirty()) {
+    if (currentPage_ == Page::RecipeEdit && session_.RecipesDirty()) {
         edConfirmAction_ = 1;
         edLeaveTarget_   = p;
         return;
@@ -608,7 +608,7 @@ void App::StartDeckRun(int mode)
 
     std::vector<ProgramRunner::Item> queue;
     const auto addRecipe = [&](const std::string& slotName, const std::string& uid) {
-        const Recipe* r = RecipeByUid(recipes_, uid);
+        const Recipe* r = RecipeByUid(session_.Recipes(), uid);
         if (!r) {
             runStartErr_ = "recipe uid '" + uid + "' not found (slot '" + slotName + "')";
             return false;
@@ -648,7 +648,7 @@ void App::StartDeckRun(int mode)
     RecipeEngine::Env env;
     env.positions = session_.Positions();
     env.maps      = session_.Maps();
-    env.library   = recipes_;
+    env.library   = session_.Recipes();
     if (!orch_.programs.Start(kind, label, prog.uid, std::move(queue), std::move(env),
                               &runStartErr_))
         FD_WARN("program", "run rejected: %s", runStartErr_.c_str());
@@ -854,7 +854,7 @@ void App::DrawRunPanel()
                 }
                 for (int ri = 0; ri < static_cast<int>(slot.recipes.size()); ++ri) {
                     ImGui::PushID(ri);
-                    const Recipe* r = RecipeByUid(recipes_, slot.recipes[ri]);
+                    const Recipe* r = RecipeByUid(session_.Recipes(), slot.recipes[ri]);
                     const bool missing = (r == nullptr);
                     const bool sel = deckSlot_ == si && deckRecipe_ == ri;
                     // Gold while this exact item runs.
@@ -880,8 +880,8 @@ void App::DrawRunPanel()
                     if (!missing && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
                         deckSlot_   = si;
                         deckRecipe_ = ri;
-                        for (int k = 0; k < static_cast<int>(recipes_.size()); ++k)
-                            if (recipes_[k].uid == slot.recipes[ri]) { recipeSel_ = k; break; }
+                        for (int k = 0; k < static_cast<int>(session_.Recipes().size()); ++k)
+                            if (session_.Recipes()[k].uid == slot.recipes[ri]) { recipeSel_ = k; break; }
                         edStepSel_.clear();
                         prevPage_    = Page::Run;   // editor Close comes back here
                         currentPage_ = Page::RecipeEdit;
@@ -916,7 +916,7 @@ void App::DrawRunPanel()
                 if (runEdit_ && !running) {
                     ImGui::SetNextItemWidth(140.0f);
                     if (ImGui::BeginCombo("##addrcp", "+ recipe")) {
-                        for (const Recipe& r : recipes_) {
+                        for (const Recipe& r : session_.Recipes()) {
                             if (ImGui::Selectable(r.name.c_str()))
                                 slot.recipes.push_back(r.uid);
                         }
@@ -1207,7 +1207,7 @@ void App::StartXcanPreset(const std::string& device, int presetIdx)
     LuaEngine::Env env;
     env.positions = session_.Positions();
     env.maps      = session_.Maps();
-    env.library   = recipes_;
+    env.library   = session_.Recipes();
     env.initialCtx = {
         {"align_device", device},
         {"align_topic", std::string(runXcanTopic_)},
@@ -1602,7 +1602,7 @@ void App::StartRasterScan(const std::string& device)
     LuaEngine::Env env;
     env.positions = session_.Positions();
     env.maps      = session_.Maps();
-    env.library   = recipes_;
+    env.library   = session_.Recipes();
     env.initialCtx = {
         {"raster_device", device},
         {"raster_topic", std::string(runXcanTopic_)},
@@ -1982,42 +1982,13 @@ bool App::LoadProduct(const std::string& name)
     return true;
 }
 
+// Thin wrapper: the session owns the data + the file-precedence rules, the UI
+// selection reset stays here (no session -> UI callbacks).
 void App::LoadRecipesFromDisk()
 {
+    session_.LoadRecipesFromDisk();
     recipeSel_ = -1;
     recipeStartErr_.clear();
-    if (session_.ProductLoaded()) {
-        const ManifestFile* e = session_.Product().Entry("recipes");
-        if (e) {
-            recipes_ = LoadRecipesFile(session_.Product().FilePath("recipes"), &recipesUid_);
-            if (!recipes_.empty()) {
-                if (!recipesUid_.empty() && recipesUid_ != e->uid)
-                    FD_WARN("product", "recipes uid mismatch: manifest %s vs file '%s'",
-                            e->uid.c_str(), recipesUid_.c_str());
-                recipesBaseline_ = RecipesDump();
-                return;
-            }
-            // New products carry an empty seed file (no editor yet in Phase A) —
-            // fall through to the config recipes so the runner has something.
-            FD_INFO("recipe", "product '%s' has no recipes yet - using config recipes",
-                    session_.Product().name.c_str());
-        } else {
-            FD_WARN("product", "'%s' has no recipes entry; using config recipes",
-                    session_.Product().name.c_str());
-        }
-    }
-    recipesUid_.clear();
-    recipes_ = LoadRecipes();   // config/recipes.local.json -> recipes.json
-    recipesBaseline_ = RecipesDump();
-}
-
-// Canonical serialization of the in-memory recipes, compared against the
-// baseline captured at load/save to answer "are there unsaved edits?".
-std::string App::RecipesDump() const
-{
-    nlohmann::json arr = nlohmann::json::array();
-    for (const Recipe& r : recipes_) arr.push_back(RecipeToJson(r));
-    return arr.dump();
 }
 
 // ---- Programs (Run page) — same persistence conventions as recipes ---------
@@ -2180,15 +2151,15 @@ void App::DrawRecipeEditPanel()
 {
     const RecipeEngine::Status st = orch_.recipe.GetStatus();
     const bool running = orch_.recipe.Running();
-    const bool haveSel = recipeSel_ >= 0 && recipeSel_ < static_cast<int>(recipes_.size());
+    const bool haveSel = recipeSel_ >= 0 && recipeSel_ < static_cast<int>(session_.Recipes().size());
 
     // Live author-time validation of the selected recipe (WITHOUT the
     // devices-Connected requirement — that stays a run-start check, so
     // authoring offline doesn't drown in noise).
     std::vector<RecipeIssue> issues;
     if (haveSel)
-        issues = ValidateRecipe(recipes_[recipeSel_], orch_.registry, hardware_,
-                                session_.Positions(), session_.Maps(), recipes_, false);
+        issues = ValidateRecipe(session_.Recipes()[recipeSel_], orch_.registry, hardware_,
+                                session_.Positions(), session_.Maps(), session_.Recipes(), false);
     // The issues list lives in its own band at the BOTTOM of the page (the
     // run strip on top keeps only state/progress/errors).
     const std::size_t shownIssues = issues.size() < 3 ? issues.size() : 3;
@@ -2214,11 +2185,11 @@ void App::DrawRecipeEditPanel()
     ImGui::SameLine();
     ImGui::BeginDisabled(running);
     if (ImGui::SmallButton("Reload")) {
-        if (RecipesDirty()) {
+        if (session_.RecipesDirty()) {
             edConfirmAction_ = 2;   // guard: reload discards unsaved edits
         } else {
             LoadRecipesFromDisk();
-            FD_INFO("recipe", "%zu recipe(s) loaded", recipes_.size());
+            FD_INFO("recipe", "%zu recipe(s) loaded", session_.Recipes().size());
         }
     }
     ImGui::EndDisabled();
@@ -2227,23 +2198,23 @@ void App::DrawRecipeEditPanel()
         Recipe r;
         r.uid  = GenerateUid();
         r.name = "new recipe";
-        recipes_.push_back(std::move(r));
-        recipeSel_ = static_cast<int>(recipes_.size()) - 1;
+        session_.Recipes().push_back(std::move(r));
+        recipeSel_ = static_cast<int>(session_.Recipes().size()) - 1;
         edStepSel_.clear();
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!haveSel);
     if (ImGui::SmallButton("Dup")) {
-        Recipe r = recipes_[recipeSel_];
+        Recipe r = session_.Recipes()[recipeSel_];
         r.uid  = GenerateUid();
         r.name += " copy";
-        recipes_.push_back(std::move(r));
-        recipeSel_ = static_cast<int>(recipes_.size()) - 1;
+        session_.Recipes().push_back(std::move(r));
+        recipeSel_ = static_cast<int>(session_.Recipes().size()) - 1;
         edStepSel_.clear();
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("Ren")) {
-        std::snprintf(edNameBuf_, sizeof(edNameBuf_), "%s", recipes_[recipeSel_].name.c_str());
+        std::snprintf(edNameBuf_, sizeof(edNameBuf_), "%s", session_.Recipes()[recipeSel_].name.c_str());
         edOpenRenameRecipe_ = true;
     }
     ImGui::SameLine();
@@ -2255,7 +2226,7 @@ void App::DrawRecipeEditPanel()
     // copy never collides with the original's identity.
     ImGui::BeginDisabled(!haveSel);
     if (ImGui::SmallButton("Copy"))
-        ImGui::SetClipboardText(RecipeToJson(recipes_[recipeSel_]).dump(2).c_str());
+        ImGui::SetClipboardText(RecipeToJson(session_.Recipes()[recipeSel_]).dump(2).c_str());
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Copy the selected recipe as JSON to the clipboard");
@@ -2275,14 +2246,14 @@ void App::DrawRecipeEditPanel()
                 continue;   // not recipe-shaped — don't import junk
             Recipe r = RecipeFromJson(rj);
             r.uid = GenerateUid();   // pasted copy gets its OWN identity
-            for (const Recipe& ex : recipes_) {
+            for (const Recipe& ex : session_.Recipes()) {
                 if (ex.name == r.name) { r.name += " copy"; break; }
             }
-            recipes_.push_back(std::move(r));
+            session_.Recipes().push_back(std::move(r));
             ++added;
         }
         if (added > 0) {
-            recipeSel_ = static_cast<int>(recipes_.size()) - 1;
+            recipeSel_ = static_cast<int>(session_.Recipes().size()) - 1;
             edStepSel_.clear();
             FD_INFO("recipe", "pasted %d recipe(s) from clipboard", added);
         } else {
@@ -2293,11 +2264,11 @@ void App::DrawRecipeEditPanel()
         ImGui::SetTooltip("Paste recipe JSON from the clipboard (new uid)");
     ImGui::EndDisabled();
     ImGui::Separator();
-    if (recipes_.empty())
+    if (session_.Recipes().empty())
         ImGui::TextWrapped("No recipes yet - New creates one, or Reload from disk.");
-    for (int i = 0; i < static_cast<int>(recipes_.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
         ImGui::PushID(i);
-        if (ImGui::Selectable(recipes_[i].name.c_str(), recipeSel_ == i)) {
+        if (ImGui::Selectable(session_.Recipes()[i].name.c_str(), recipeSel_ == i)) {
             recipeSel_ = i;
             edStepSel_.clear();
         }
@@ -2311,7 +2282,7 @@ void App::DrawRecipeEditPanel()
     const float palW = 200.0f;
     ImGui::BeginChild("edMiddle", ImVec2(midW, paneH));
     if (haveSel) {
-        Recipe& r = recipes_[recipeSel_];
+        Recipe& r = session_.Recipes()[recipeSel_];
         ImGui::BeginChild("edPalette", ImVec2(palW, 0.0f), ImGuiChildFlags_Borders);
         DrawRecipePalette(r, !running);
         ImGui::EndChild();
@@ -2365,11 +2336,11 @@ void App::DrawRecipeEditPanel()
     ImGui::BeginChild("edInspect", ImVec2(rightW, paneH), ImGuiChildFlags_Borders);
     RecipeStep* sel = nullptr;
     if (haveSel && !edStepSel_.empty())
-        sel = FindStepByPathMut(&recipes_[recipeSel_].steps, edStepSel_);
+        sel = FindStepByPathMut(&session_.Recipes()[recipeSel_].steps, edStepSel_);
     if (sel) {
         DrawRecipeInspector(*sel, !running);
     } else if (haveSel) {
-        Recipe& r = recipes_[recipeSel_];
+        Recipe& r = session_.Recipes()[recipeSel_];
         ImGui::BeginDisabled(running);
         char nbuf[64];
         std::snprintf(nbuf, sizeof(nbuf), "%s", r.name.c_str());
@@ -2416,7 +2387,7 @@ void App::DrawRecipeEditPanel()
         ImGui::TextUnformatted("There are unsaved recipe changes.");
         ImGui::Separator();
         if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) {
-            SaveRecipes();
+            session_.SaveRecipes();
             const int action = edConfirmAction_;
             edConfirmAction_ = 0;
             if (action == 1) SwitchPage(edLeaveTarget_);   // no longer dirty
@@ -2448,7 +2419,7 @@ void App::DrawRecipeEditPanel()
     if (ImGui::BeginPopupModal("Rename Recipe", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::InputText("##recname", edNameBuf_, sizeof(edNameBuf_));
         if (ImGui::Button("OK", ImVec2(100.0f, 0.0f)) && haveSel) {
-            recipes_[recipeSel_].name = edNameBuf_;   // label only; uid unchanged
+            session_.Recipes()[recipeSel_].name = edNameBuf_;   // label only; uid unchanged
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -2458,9 +2429,9 @@ void App::DrawRecipeEditPanel()
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("Delete Recipe", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         if (haveSel)
-            ImGui::Text("Delete recipe '%s'?", recipes_[recipeSel_].name.c_str());
+            ImGui::Text("Delete recipe '%s'?", session_.Recipes()[recipeSel_].name.c_str());
         if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveSel) {
-            recipes_.erase(recipes_.begin() + recipeSel_);
+            session_.Recipes().erase(session_.Recipes().begin() + recipeSel_);
             recipeSel_ = -1;
             edStepSel_.clear();
             ImGui::CloseCurrentPopup();
@@ -2472,14 +2443,14 @@ void App::DrawRecipeEditPanel()
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("Delete Step", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         const RecipeStep* ds = (haveSel && !edStepSel_.empty())
-                                   ? FindStepByPath(&recipes_[recipeSel_].steps, edStepSel_)
+                                   ? FindStepByPath(&session_.Recipes()[recipeSel_].steps, edStepSel_)
                                    : nullptr;
         ImGui::Text("Delete step '%s'%s?", ds ? ds->type.c_str() : "?",
                     ds && !ds->children.empty() ? " and its children" : "");
         if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveSel && ds) {
             std::size_t idx = 0;
             if (std::vector<RecipeStep>* parent =
-                    FindStepParent(&recipes_[recipeSel_].steps, edStepSel_, &idx)) {
+                    FindStepParent(&session_.Recipes()[recipeSel_].steps, edStepSel_, &idx)) {
                 parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(idx));
                 edStepSel_.clear();
             }
@@ -2522,7 +2493,7 @@ std::string App::AutoNickname(const RecipeStep& s) const
     if (s.type == "group") return "group";
     if (s.type == "sub_recipe") {
         const std::string uid = s.params.value("uid", std::string());
-        for (const Recipe& r : recipes_)
+        for (const Recipe& r : session_.Recipes())
             if (r.uid == uid) return "run " + r.name;
         return "sub_recipe";
     }
@@ -2873,14 +2844,14 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
     } else if (s.type == "sub_recipe") {
         const std::string uid = s.params.value("uid", std::string());
         const Recipe* target = nullptr;
-        for (const Recipe& rr : recipes_) {
+        for (const Recipe& rr : session_.Recipes()) {
             if (rr.uid == uid) { target = &rr; break; }
         }
         if (ImGui::BeginCombo("recipe", target ? target->name.c_str() : "(pick)")) {
-            for (const Recipe& rr : recipes_) {
+            for (const Recipe& rr : session_.Recipes()) {
                 // Obvious self-reference filtered; deeper cycles are caught by
                 // InlineSubRecipes at run start.
-                if (recipeSel_ >= 0 && rr.uid == recipes_[recipeSel_].uid) continue;
+                if (recipeSel_ >= 0 && rr.uid == session_.Recipes()[recipeSel_].uid) continue;
                 if (ImGui::Selectable(rr.name.c_str(), target == &rr))
                     s.params["uid"] = rr.uid;
             }
@@ -3289,29 +3260,6 @@ bool App::DrawConditionEditor(nlohmann::json& cond)
     return changed;
 }
 
-// Write the in-memory recipes to the product's recipes file when a product is
-// loaded (manifest uid stamped), else config/recipes.local.json — the same
-// precedence LoadRecipesFromDisk reads with.
-void App::SaveRecipes()
-{
-    std::string path = "config/recipes.local.json";
-    std::string uid  = recipesUid_;
-    if (session_.ProductLoaded()) {
-        if (const ManifestFile* e = session_.Product().Entry("recipes")) {
-            path = session_.Product().FilePath("recipes");
-            uid  = e->uid;
-        }
-    }
-    if (uid.empty()) uid = GenerateUid();
-    recipesUid_ = uid;
-    if (SaveRecipesFile(path, recipes_, uid)) {
-        recipesBaseline_ = RecipesDump();
-        FD_INFO("recipe", "saved %zu recipe(s) to %s", recipes_.size(), path.c_str());
-    } else {
-        FD_WARN("recipe", "could not save recipes to %s", path.c_str());
-    }
-}
-
 // Top strip: Run/Stop/Save + state + executing step + progress (the
 // validation-issues list is a separate band at the bottom of the page).
 // Runs the recipe selected in the left panel through the engine
@@ -3361,18 +3309,18 @@ void App::DrawRecipeRunStrip(float height)
                           "Uncheck to free-run from here; Stop exits.");
     ImGui::SameLine();
     const bool canRun = !orch_.Busy() && recipeSel_ >= 0 &&
-                        recipeSel_ < static_cast<int>(recipes_.size());
+                        recipeSel_ < static_cast<int>(session_.Recipes().size());
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
         RecipeEngine::Env env;
         env.positions = session_.Positions();
         env.maps      = session_.Maps();
-        env.library   = recipes_;
+        env.library   = session_.Recipes();
         RecipeEngine::StartOpts opts;
         opts.stepMode = edStepMode_;
         if (edStepMode_) opts.startPath = edStepSel_;   // from the selection
         recipeStartErr_.clear();
-        if (!orch_.recipe.Start(recipes_[recipeSel_], std::move(env),
+        if (!orch_.recipe.Start(session_.Recipes()[recipeSel_], std::move(env),
                                  &recipeStartErr_, std::move(opts)))
             FD_WARN("recipe", "start rejected: %s", recipeStartErr_.c_str());
     }
@@ -3382,7 +3330,7 @@ void App::DrawRecipeRunStrip(float height)
     // recipe through the same engine — same validation, stop, and progress.
     const RecipeStep* selStep =
         (canRun && !edStepSel_.empty())
-            ? FindStepByPath(&recipes_[recipeSel_].steps, edStepSel_)
+            ? FindStepByPath(&session_.Recipes()[recipeSel_].steps, edStepSel_)
             : nullptr;
     ImGui::BeginDisabled(!selStep);
     if (ImGui::Button("Run Step", ImVec2(90.0f, 0.0f)) && selStep) {
@@ -3395,7 +3343,7 @@ void App::DrawRecipeRunStrip(float height)
         RecipeEngine::Env env;
         env.positions = session_.Positions();
         env.maps      = session_.Maps();
-        env.library   = recipes_;   // sub_recipe references still resolve
+        env.library   = session_.Recipes();   // sub_recipe references still resolve
         recipeStartErr_.clear();
         if (!orch_.recipe.Start(one, std::move(env), &recipeStartErr_))
             FD_WARN("recipe", "step run rejected: %s", recipeStartErr_.c_str());
@@ -3415,10 +3363,10 @@ void App::DrawRecipeRunStrip(float height)
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(running);
-    if (ImGui::Button(RecipesDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
-        SaveRecipes();
+    if (ImGui::Button(session_.RecipesDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
+        session_.SaveRecipes();
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered() && RecipesDirty())
+    if (ImGui::IsItemHovered() && session_.RecipesDirty())
         ImGui::SetTooltip("Unsaved changes");
     if (!recipeStartErr_.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "start rejected: %s",
@@ -3814,7 +3762,7 @@ void App::DrawScriptsPanel()
         LuaEngine::Env env;
         env.positions = session_.Positions();
         env.maps      = session_.Maps();
-        env.library   = recipes_;
+        env.library   = session_.Recipes();
         scriptStartErr_.clear();
         orch_.lua.SetBreakpoints(scriptBps_[scripts_[scriptSel_].path]);
         if (!orch_.lua.Start(scripts_[scriptSel_].path, std::move(env), &scriptStartErr_))
@@ -3869,9 +3817,7 @@ void App::SaveProduct()
         if (e.role == "positions") {
             SaveSavedPositionsFile(path, session_.Positions(), e.uid);
         } else if (e.role == "recipes") {
-            SaveRecipesFile(path, recipes_, e.uid);
-            recipesUid_      = e.uid;
-            recipesBaseline_ = RecipesDump();
+            session_.SaveRecipesTo(path, e.uid);
         } else if (e.role == "programs") {
             SaveProgramsFile(path, programs_, e.uid);
             programsUid_      = e.uid;
@@ -5004,7 +4950,7 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
         LuaEngine::Env env;
         env.positions = session_.Positions();
         env.maps      = session_.Maps();
-        env.library   = recipes_;
+        env.library   = session_.Recipes();
         env.initialCtx = {
             {"align_device", hardware_.MotionName(static_cast<std::size_t>(xcanDevice_))},
             {"align_topic", std::string(xcanTopic_)},
@@ -6180,7 +6126,7 @@ void App::DrawExitConfirmModal()
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
                            "Unsaved changes may be lost.");
         // Point out what is actually at risk right now.
-        if (RecipesDirty())
+        if (session_.RecipesDirty())
             ImGui::BulletText("Recipe editor has unsaved edits");
         if (ProgramsDirty())
             ImGui::BulletText("Program deck has unsaved edits");

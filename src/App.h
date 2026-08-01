@@ -164,10 +164,7 @@ private:
     void SavePrograms();
     std::string ProgramsDump() const;
     bool ProgramsDirty() const { return ProgramsDump() != programsBaseline_; }
-    void LoadRecipesFromDisk();       // product recipes file, else config fallback
-    void SaveRecipes();               // product recipes file, else config local
-    std::string RecipesDump() const;  // canonical serialization (dirty compare)
-    bool RecipesDirty() const { return RecipesDump() != recipesBaseline_; }
+    void LoadRecipesFromDisk();       // session load + UI selection reset
     void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
     void DrawExitConfirmModal();      // intercepts the OS close request (X / Alt+F4)
     void DrawAuxWindow();
@@ -357,13 +354,8 @@ private:
     std::map<int, double> velCustomEdit_; // device index -> custom input-box value
     std::map<int, double> velCustomSet_;  // device index -> applied custom (0 = preset)
 
-    // Recipes — browsed/run via the Recipe Editor page (View menu). Loaded
-    // from the product's recipes file when a product is loaded, else
-    // config/recipes.local.json -> recipes.json. Hand-written JSON until the
-    // editor gains editing (Phase B2).
-    std::vector<Recipe> recipes_;
-    std::string         recipesUid_;       // file uid (product integrity check)
-    std::string         recipesBaseline_;  // serialized state at load/save (dirty compare)
+    // Recipe Editor page (View menu) UI state — the recipes themselves live in
+    // session_ (product recipes file, else config/recipes.local.json).
     int                 recipeSel_ = -1;   // selected recipe (editor left panel)
     std::string         recipeStartErr_;   // last Start() rejection message
     // Selected step as a numeric path into the nested step tree; components
