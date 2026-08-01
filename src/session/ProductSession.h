@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "command/LuaEngine.h"   // ScriptInfo / ListScripts (no Lua headers leak)
 #include "command/Program.h"
 #include "command/Recipe.h"
 #include "core/MotionMap.h"
@@ -40,10 +41,25 @@ public:
     std::vector<Program>&       Programs()       { return programs_; }
     const std::vector<Program>& Programs() const { return programs_; }
 
+    // Scripts are scanned from disk, never edited here (authoring is external).
+    const std::vector<ScriptInfo>& Scripts()        const { return scripts_; }
+    const std::string&             ScriptsDirUsed() const { return scriptsDirUsed_; }
+
     // ---- product manifest ----
     const ProductManifest& Product() const { return product_; }
     bool ProductLoaded() const { return product_.Loaded(); }
-    void SetProduct(ProductManifest m) { product_ = std::move(m); }
+
+    // Startup: config-fallback collections first, then the last product if one
+    // was remembered. Returns false only when `lastProduct` was named and
+    // could not be reloaded (already logged) — the session is usable either way.
+    bool LoadInitial(const std::string& lastProduct);
+
+    // File menu. Load/New re-point every collection at the product; Save runs
+    // through the manifest entries, dispatching by role. All three also wire
+    // DutSession to the product (which auto-closes any open DUT).
+    bool LoadProduct(const std::string& name);
+    void NewProduct(const char* name);
+    void SaveProduct();
 
     // ---- load / save ----
     void LoadPositions();   // config fallback (startup, before any product)
@@ -70,6 +86,11 @@ public:
     std::string ProgramsDump() const;
     bool ProgramsDirty() const { return ProgramsDump() != programsBaseline_; }
 
+    // Scripts: the product's scripts/ dir when it has one with content, else
+    // config/scripts. ScriptsDirUsed() reports the dir ACTUALLY scanned.
+    std::string ScriptsDir() const;
+    void LoadScriptsList();
+
     // Teach hand-backs from save_position steps (queued on Workflow by engine
     // worker threads, drained on the UI thread): merge by name — the app-side
     // uid wins for existing names so recipe references stay stable — then
@@ -88,6 +109,9 @@ private:
     std::vector<Program> programs_;
     std::string          programsUid_;
     std::string          programsBaseline_;
+
+    std::vector<ScriptInfo> scripts_;
+    std::string             scriptsDirUsed_;   // the dir the list came from
 };
 
 } // namespace firedog

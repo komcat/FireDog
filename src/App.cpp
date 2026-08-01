@@ -261,17 +261,9 @@ int App::Run()
     }
     transformCfg_ = LoadMotionTransforms("config/motion_transforms.json");
     workflow_.SetTransforms(transformCfg_);   // transformCfg_ stays the editor's working copy
-    session_.LoadPositions();      // config fallback (no product yet)
-    session_.LoadMaps();           // node-edge maps (Mapped Path tab)
-    if (!lastProduct.empty() && !LoadProduct(lastProduct))
-        FD_WARN("product", "could not reload last product '%s'", lastProduct.c_str());
-    if (!session_.ProductLoaded()) LoadRecipesFromDisk();   // else LoadProduct did it
-    if (!session_.ProductLoaded()) LoadProgramsFromDisk();
-    LoadScriptsList();             // .lua programs (product dir, else config/scripts)
+    session_.LoadInitial(lastProduct);   // positions/maps/recipes/programs/scripts + DUT wiring
+    ResetDocumentSelections();           // the UI side of that load
     LoadScanPresets();             // XCAN launch presets (machine-global local.json)
-    if (session_.ProductLoaded())         // DUT records live under the product's data/
-        DutSession::Instance().SetProduct(session_.Product().name, session_.Product().uid,
-                                          session_.Product().DataDir());
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
     RegisterBuiltinCommands(orch_.registry, workflow_, hardware_);   // layer 2.5
@@ -356,7 +348,7 @@ void App::DrawMainWindow()
                 if (ImGui::MenuItem("New Product..."))  openNewProduct_  = true;
                 if (ImGui::MenuItem("Load Product...")) openLoadProduct_ = true;
                 if (ImGui::MenuItem("Save Product", nullptr, false, session_.ProductLoaded()))
-                    SaveProduct();
+                    session_.SaveProduct();
                 ImGui::Separator();
                 if (session_.ProductLoaded())
                     ImGui::MenuItem(("Product: " + session_.Product().name).c_str(), nullptr, false, false);
@@ -1199,7 +1191,7 @@ static bool PresetButton(const char* label, bool active, const ImVec2& size)
 void App::StartXcanPreset(const std::string& device, int presetIdx)
 {
     std::string script = "config/scripts/hexapod_align.lua";
-    for (const ScriptInfo& si : scripts_) {
+    for (const ScriptInfo& si : session_.Scripts()) {
         if (si.name == "hexapod_align") { script = si.path; break; }
     }
     const XcanPreset& p  = xcanPresets_[presetIdx];
@@ -1596,7 +1588,7 @@ void App::DrawXcanPresetModal()
 void App::StartRasterScan(const std::string& device)
 {
     std::string script = "config/scripts/raster_scan.lua";
-    for (const ScriptInfo& si : scripts_) {
+    for (const ScriptInfo& si : session_.Scripts()) {
         if (si.name == "raster_scan") { script = si.path; break; }
     }
     LuaEngine::Env env;
@@ -1956,29 +1948,36 @@ void App::SaveUiSettings()
     s.Save(kUiSettingsPath);
 }
 
+// Re-point every UI selection at a freshly (re)loaded session document. The
+// session never calls back into the UI, so each load wrapper does this here.
+void App::ResetDocumentSelections()
+{
+    recipeSel_ = -1;
+    recipeStartErr_.clear();
+    progSel_    = session_.Programs().empty() ? -1 : 0;
+    deckSlot_   = -1;
+    deckRecipe_ = -1;
+    runStartErr_.clear();
+    SyncScriptSelection();
+}
+
+// Scripts page selection, after the session rescanned the scripts dir: keep a
+// still-valid index, otherwise fall back to the first script (or none).
+void App::SyncScriptSelection()
+{
+    if (scriptSel_ >= static_cast<int>(session_.Scripts().size()))
+        scriptSel_ = session_.Scripts().empty() ? -1 : 0;
+    scriptSrcPath_.clear();   // force a source re-read on next draw
+    scriptSrc_.clear();
+    scriptStartErr_.clear();
+    scriptBpAnchor_ = -1;
+}
+
 bool App::LoadProduct(const std::string& name)
 {
-    ProductManifest m = LoadProductManifest(name);
-    if (!m.Loaded()) return false;
-
-    const ManifestFile* e = m.Entry("positions");
-    if (e) {
-        std::string fileUid;
-        session_.Positions() = LoadSavedPositionsFile(m.FilePath("positions"), &fileUid);
-        if (fileUid != e->uid)
-            FD_WARN("product", "positions uid mismatch: manifest %s vs file '%s'",
-                    e->uid.c_str(), fileUid.c_str());
-    } else {
-        FD_WARN("product", "'%s' has no positions entry; keeping current positions", name.c_str());
-    }
-    session_.SetProduct(std::move(m));
-    LoadRecipesFromDisk();   // product recipes replace the config-fallback set
-    LoadProgramsFromDisk();  // product programs likewise
-    LoadScriptsList();       // product scripts likewise (config fallback)
-    DutSession::Instance().SetProduct(session_.Product().name, session_.Product().uid,
-                                      session_.Product().DataDir());   // auto-closes any DUT
+    if (!session_.LoadProduct(name)) return false;
+    ResetDocumentSelections();
     SaveUiSettings();   // remember as last product for the next startup
-    FD_INFO("product", "loaded '%s'", session_.Product().name.c_str());
     return true;
 }
 
@@ -3113,14 +3112,14 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         // scripts dir, else config/scripts). Stores the path; shows the name.
         const std::string v = cur.is_string() ? cur.get<std::string>() : "";
         std::string preview = v.empty() ? "(pick)" : v;
-        for (const ScriptInfo& si : scripts_) {
+        for (const ScriptInfo& si : session_.Scripts()) {
             if (si.path == v) { preview = si.name; break; }
         }
         ImGui::SetNextItemWidth(w);
         if (ImGui::BeginCombo(label, preview.c_str())) {
-            if (scripts_.empty())
-                ImGui::TextDisabled("(no scripts in %s)", scriptsDirUsed_.c_str());
-            for (const ScriptInfo& si : scripts_) {
+            if (session_.Scripts().empty())
+                ImGui::TextDisabled("(no scripts in %s)", session_.ScriptsDirUsed().c_str());
+            for (const ScriptInfo& si : session_.Scripts()) {
                 if (ImGui::Selectable(si.name.c_str(), si.path == v)) {
                     params[p.name] = si.path;
                     changed = true;
@@ -3540,27 +3539,10 @@ void App::DrawManualAdjustWindow()
 // Authoring happens in an external editor; this page lists, shows read-only
 // source (executing line highlighted), and runs/stops programs.
 
-std::string App::ScriptsDir() const
-{
-    return session_.ProductLoaded() ? session_.Product().Dir() + "/scripts" : "config/scripts";
-}
-
 void App::LoadScriptsList()
 {
-    scriptsDirUsed_ = ScriptsDir();
-    scripts_ = ListScripts(scriptsDirUsed_);
-    if (scripts_.empty() && session_.ProductLoaded()) {
-        // Product without a scripts folder — fall back like recipes do, and
-        // show the directory ACTUALLY used, not the one we wished for.
-        scriptsDirUsed_ = "config/scripts";
-        scripts_ = ListScripts(scriptsDirUsed_);
-    }
-    if (scriptSel_ >= static_cast<int>(scripts_.size()))
-        scriptSel_ = scripts_.empty() ? -1 : 0;
-    scriptSrcPath_.clear();   // force a source re-read on next draw
-    scriptSrc_.clear();
-    scriptStartErr_.clear();
-    scriptBpAnchor_ = -1;
+    session_.LoadScriptsList();
+    SyncScriptSelection();
 }
 
 void App::DrawScriptsPanel()
@@ -3581,19 +3563,19 @@ void App::DrawScriptsPanel()
     ImGui::BeginDisabled(running);
     if (ImGui::SmallButton("Reload")) LoadScriptsList();
     ImGui::EndDisabled();
-    ImGui::TextDisabled("%s", scriptsDirUsed_.c_str());
+    ImGui::TextDisabled("%s", session_.ScriptsDirUsed().c_str());
     ImGui::Separator();
-    if (scripts_.empty())
+    if (session_.Scripts().empty())
         ImGui::TextWrapped("No .lua scripts found. Author them in an external "
                            "editor and hit Reload.");
-    for (int i = 0; i < static_cast<int>(scripts_.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(session_.Scripts().size()); ++i) {
         ImGui::PushID(i);
-        if (ImGui::Selectable(scripts_[i].name.c_str(), scriptSel_ == i)) {
+        if (ImGui::Selectable(session_.Scripts()[i].name.c_str(), scriptSel_ == i)) {
             scriptSel_      = i;
             scriptBpAnchor_ = -1;   // anchor is per-script
         }
-        if (ImGui::IsItemHovered() && !scripts_[i].description.empty())
-            ImGui::SetTooltip("%s", scripts_[i].description.c_str());
+        if (ImGui::IsItemHovered() && !session_.Scripts()[i].description.empty())
+            ImGui::SetTooltip("%s", session_.Scripts()[i].description.c_str());
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -3602,8 +3584,8 @@ void App::DrawScriptsPanel()
     // ---- Middle: read-only source, executing line highlighted ----
     const float midW = avail.x - leftW - rightW - ImGui::GetStyle().ItemSpacing.x * 2.0f;
     ImGui::BeginChild("scSrc", ImVec2(midW, paneH), ImGuiChildFlags_Borders);
-    if (scriptSel_ >= 0 && scriptSel_ < static_cast<int>(scripts_.size())) {
-        const ScriptInfo& si = scripts_[scriptSel_];
+    if (scriptSel_ >= 0 && scriptSel_ < static_cast<int>(session_.Scripts().size())) {
+        const ScriptInfo& si = session_.Scripts()[scriptSel_];
         if (scriptSrcPath_ != si.path) {   // (re)load on selection change / Reload
             scriptSrcPath_ = si.path;
             scriptSrc_.clear();
@@ -3710,7 +3692,7 @@ void App::DrawScriptsPanel()
     // ---- Bottom strip: Run / Stop ----
     ImGui::BeginChild("scStrip", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
     const bool canRun = !orch_.Busy() && scriptSel_ >= 0 &&
-                        scriptSel_ < static_cast<int>(scripts_.size());
+                        scriptSel_ < static_cast<int>(session_.Scripts().size());
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
         LuaEngine::Env env;
@@ -3718,8 +3700,8 @@ void App::DrawScriptsPanel()
         env.maps      = session_.Maps();
         env.library   = session_.Recipes();
         scriptStartErr_.clear();
-        orch_.lua.SetBreakpoints(scriptBps_[scripts_[scriptSel_].path]);
-        if (!orch_.lua.Start(scripts_[scriptSel_].path, std::move(env), &scriptStartErr_))
+        orch_.lua.SetBreakpoints(scriptBps_[session_.Scripts()[scriptSel_].path]);
+        if (!orch_.lua.Start(session_.Scripts()[scriptSel_].path, std::move(env), &scriptStartErr_))
             FD_WARN("script", "start rejected: %s", scriptStartErr_.c_str());
     }
     ImGui::EndDisabled();
@@ -3752,35 +3734,8 @@ void App::DrawScriptsPanel()
 
 void App::NewProduct(const char* name)
 {
-    ProductManifest m = CreateProduct(name);
-    if (!m.Loaded()) return;
-    session_.SetProduct(std::move(m));
-    DutSession::Instance().SetProduct(session_.Product().name, session_.Product().uid,
-                                      session_.Product().DataDir());
-    session_.SavePositions();     // carry the current in-memory positions into the product
-    SaveUiSettings();
-}
-
-void App::SaveProduct()
-{
-    if (!session_.ProductLoaded()) return;
-    // "Save runs through the manifest": each entry is dispatched by role.
-    // Future roles (recipes/programs) are skipped until they have real data.
-    for (const ManifestFile& e : session_.Product().files) {
-        const std::string path = session_.Product().Dir() + "/" + e.file;
-        if (e.role == "positions") {
-            SaveSavedPositionsFile(path, session_.Positions(), e.uid);
-        } else if (e.role == "recipes") {
-            session_.SaveRecipesTo(path, e.uid);
-        } else if (e.role == "programs") {
-            session_.SaveProgramsTo(path, e.uid);
-        } else {
-            FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
-        }
-    }
-    SaveProductManifest(session_.Product());
-    FD_INFO("product", "saved '%s' (%zu manifest file(s))",
-            session_.Product().name.c_str(), session_.Product().files.size());
+    session_.NewProduct(name);
+    SaveUiSettings();   // remember as last product for the next startup
 }
 
 void App::DrawProductPopups()
@@ -4896,7 +4851,7 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
     if (ImGui::Button("XCAN", ImVec2(110.0f, 0.0f))) {
         // The product's script overrides the config one when present.
         std::string script = "config/scripts/hexapod_align.lua";
-        for (const ScriptInfo& si : scripts_) {
+        for (const ScriptInfo& si : session_.Scripts()) {
             if (si.name == "hexapod_align") { script = si.path; break; }
         }
         LuaEngine::Env env;

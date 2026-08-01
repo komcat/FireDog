@@ -1,8 +1,105 @@
 #include "session/ProductSession.h"
 
+#include "core/DutSession.h"
 #include "core/Log.h"
 
 namespace firedog {
+
+// ---- Startup + product lifecycle -------------------------------------------
+
+bool ProductSession::LoadInitial(const std::string& lastProduct)
+{
+    LoadPositions();   // config fallback (no product yet)
+    LoadMaps();        // node-edge maps (Mapped Path tab)
+
+    bool ok = true;
+    if (!lastProduct.empty() && !LoadProduct(lastProduct)) {
+        FD_WARN("product", "could not reload last product '%s'", lastProduct.c_str());
+        ok = false;
+    }
+    if (!product_.Loaded()) LoadRecipesFromDisk();    // else LoadProduct did it
+    if (!product_.Loaded()) LoadProgramsFromDisk();
+    LoadScriptsList();   // .lua programs (product dir, else config/scripts)
+    if (product_.Loaded())   // DUT records live under the product's data/
+        DutSession::Instance().SetProduct(product_.name, product_.uid,
+                                          product_.DataDir());
+    return ok;
+}
+
+bool ProductSession::LoadProduct(const std::string& name)
+{
+    ProductManifest m = LoadProductManifest(name);
+    if (!m.Loaded()) return false;
+
+    const ManifestFile* e = m.Entry("positions");
+    if (e) {
+        std::string fileUid;
+        positions_ = LoadSavedPositionsFile(m.FilePath("positions"), &fileUid);
+        if (fileUid != e->uid)
+            FD_WARN("product", "positions uid mismatch: manifest %s vs file '%s'",
+                    e->uid.c_str(), fileUid.c_str());
+    } else {
+        FD_WARN("product", "'%s' has no positions entry; keeping current positions", name.c_str());
+    }
+    product_ = std::move(m);
+    LoadRecipesFromDisk();   // product recipes replace the config-fallback set
+    LoadProgramsFromDisk();  // product programs likewise
+    LoadScriptsList();       // product scripts likewise (config fallback)
+    DutSession::Instance().SetProduct(product_.name, product_.uid,
+                                      product_.DataDir());   // auto-closes any DUT
+    FD_INFO("product", "loaded '%s'", product_.name.c_str());
+    return true;
+}
+
+void ProductSession::NewProduct(const char* name)
+{
+    ProductManifest m = CreateProduct(name);
+    if (!m.Loaded()) return;
+    product_ = std::move(m);
+    DutSession::Instance().SetProduct(product_.name, product_.uid,
+                                      product_.DataDir());
+    SavePositions();   // carry the current in-memory positions into the product
+}
+
+void ProductSession::SaveProduct()
+{
+    if (!product_.Loaded()) return;
+    // "Save runs through the manifest": each entry is dispatched by role.
+    for (const ManifestFile& e : product_.files) {
+        const std::string path = product_.Dir() + "/" + e.file;
+        if (e.role == "positions") {
+            SaveSavedPositionsFile(path, positions_, e.uid);
+        } else if (e.role == "recipes") {
+            SaveRecipesTo(path, e.uid);
+        } else if (e.role == "programs") {
+            SaveProgramsTo(path, e.uid);
+        } else {
+            FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
+        }
+    }
+    SaveProductManifest(product_);
+    FD_INFO("product", "saved '%s' (%zu manifest file(s))",
+            product_.name.c_str(), product_.files.size());
+}
+
+// ---- Scripts (.lua programs; authored externally, scanned here) -------------
+
+std::string ProductSession::ScriptsDir() const
+{
+    return product_.Loaded() ? product_.Dir() + "/scripts" : "config/scripts";
+}
+
+void ProductSession::LoadScriptsList()
+{
+    scriptsDirUsed_ = ScriptsDir();
+    scripts_ = ListScripts(scriptsDirUsed_);
+    if (scripts_.empty() && product_.Loaded()) {
+        // Product without a scripts folder — fall back like recipes do, and
+        // show the directory ACTUALLY used, not the one we wished for.
+        scriptsDirUsed_ = "config/scripts";
+        scripts_ = ListScripts(scriptsDirUsed_);
+    }
+}
 
 void ProductSession::LoadPositions()
 {

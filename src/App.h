@@ -143,8 +143,8 @@ private:
     void DrawManualAdjustWindow();    // GLOBAL manual_adjust jog window — non-modal, always on top
     // Programs page (View menu, full-page) — Phase C1: list/run .lua programs.
     void DrawScriptsPanel();          // page body: scripts | source | run info
-    void LoadScriptsList();           // scan the scripts dir (product, else config)
-    std::string ScriptsDir() const;
+    void LoadScriptsList();           // session rescan + Scripts page selection sync
+    void SyncScriptSelection();       // clamp scriptSel_ / drop the cached source view
     // DUT Records viewer (View menu, full-page, read-only) — Phase D2.
     void DrawDutViewPanel();          // serial list | entries table | summary
     void LoadDutList();               // scan the product's data/ for records
@@ -176,7 +176,7 @@ private:
     void DrawProductPopups();  // Load/New modal dialogs (opened from File menu)
     bool LoadProduct(const std::string& name);
     void NewProduct(const char* name);
-    void SaveProduct();
+    void ResetDocumentSelections();   // re-point the UI after a document reload
 
     GlHost host_;
 
@@ -375,10 +375,8 @@ private:
     char edNameBuf_[64]       = "";
     char edSearchBuf_[64]     = "";      // palette search filter
 
-    // Scripts page state: scanned scripts + the loaded source view.
-    std::vector<ScriptInfo>  scripts_;
+    // Scripts page UI state — the scanned list itself lives in session_.
     int                      scriptSel_ = -1;
-    std::string              scriptsDirUsed_;   // the dir the list came from
     // Per-script breakpoints (keyed by path; click a source row to toggle,
     // shift+click for a range from the anchor = last plainly clicked row).
     std::map<std::string, std::set<int>> scriptBps_;
