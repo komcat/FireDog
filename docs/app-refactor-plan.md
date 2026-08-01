@@ -167,15 +167,17 @@ ProductSession (this is the concrete reason state goes first).
    + `Busy()`/`StopAll()`; 62 call sites; Go-button gate fixed. CLAUDE.md +
    run-page-design.md updated.
 
-**Phase 2 — ProductSession** (all renames inside the still-single App.cpp) — NEXT
-3. Skeleton: positions + maps (+ teach-merge method; call stays in Update()).
-4. Recipes + dirty (SwitchPage guard → `session_.RecipesDirty()`).
-5. Programs.
-6. Product lifecycle + scripts + DutSession wiring; `Run()` startup collapses to
-   `session_.LoadInitial(lastProduct)`.
-7. `MakeRecipeEnv/MakeLuaEnv` replace the six Env sites.
+**Phase 2 — ProductSession** (all renames inside the still-single App.cpp) — ✅ DONE
+3. ~~Skeleton: positions + maps (+ teach-merge method; call stays in Update()).~~
+   Also took `product_` — `SavePositions` can't resolve its target path without it.
+4. ~~Recipes + dirty (SwitchPage guard → `session_.RecipesDirty()`).~~
+5. ~~Programs.~~
+6. ~~Product lifecycle + scripts + DutSession wiring; `Run()` startup collapses to
+   `session_.LoadInitial(lastProduct)`.~~ UI half kept in App as
+   `ResetDocumentSelections()` + `SyncScriptSelection()`.
+7. ~~`MakeRecipeEnv/MakeLuaEnv` replace the six Env sites.~~ There were **seven**.
 
-**Phase 3 — UI file split** (pure moves; verify `--color-moved`)
+**Phase 3 — UI file split** (pure moves; verify `--color-moved`) — NEXT
 8. Widgets.{h,cpp} extraction (MUST precede page moves — three tables serve two future
    TUs each: kKeiRanges, kSteps, kFonts; copying instead of hoisting = silent drift).
 9. PageCamera, PageCld, PagePsu (lowest coupling).

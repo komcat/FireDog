@@ -637,10 +637,7 @@ void App::StartDeckRun(int mode)
         }
     }
 
-    RecipeEngine::Env env;
-    env.positions = session_.Positions();
-    env.maps      = session_.Maps();
-    env.library   = session_.Recipes();
+    RecipeEngine::Env env = session_.MakeRecipeEnv();
     if (!orch_.programs.Start(kind, label, prog.uid, std::move(queue), std::move(env),
                               &runStartErr_))
         FD_WARN("program", "run rejected: %s", runStartErr_.c_str());
@@ -1196,10 +1193,7 @@ void App::StartXcanPreset(const std::string& device, int presetIdx)
     }
     const XcanPreset& p  = xcanPresets_[presetIdx];
     const XcanTarget& tp = xcanTargets_[xcanPresetSel_];
-    LuaEngine::Env env;
-    env.positions = session_.Positions();
-    env.maps      = session_.Maps();
-    env.library   = session_.Recipes();
+    LuaEngine::Env env = session_.MakeLuaEnv();
     env.initialCtx = {
         {"align_device", device},
         {"align_topic", std::string(runXcanTopic_)},
@@ -1591,10 +1585,7 @@ void App::StartRasterScan(const std::string& device)
     for (const ScriptInfo& si : session_.Scripts()) {
         if (si.name == "raster_scan") { script = si.path; break; }
     }
-    LuaEngine::Env env;
-    env.positions = session_.Positions();
-    env.maps      = session_.Maps();
-    env.library   = session_.Recipes();
+    LuaEngine::Env env = session_.MakeLuaEnv();
     env.initialCtx = {
         {"raster_device", device},
         {"raster_topic", std::string(runXcanTopic_)},
@@ -3265,10 +3256,7 @@ void App::DrawRecipeRunStrip(float height)
                         recipeSel_ < static_cast<int>(session_.Recipes().size());
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
-        RecipeEngine::Env env;
-        env.positions = session_.Positions();
-        env.maps      = session_.Maps();
-        env.library   = session_.Recipes();
+        RecipeEngine::Env env = session_.MakeRecipeEnv();
         RecipeEngine::StartOpts opts;
         opts.stepMode = edStepMode_;
         if (edStepMode_) opts.startPath = edStepSel_;   // from the selection
@@ -3293,10 +3281,8 @@ void App::DrawRecipeRunStrip(float height)
                                                          : selStep->nickname);
         one.steps.push_back(*selStep);
         one.steps.front().enabled = true;   // a disabled row can still be tested
-        RecipeEngine::Env env;
-        env.positions = session_.Positions();
-        env.maps      = session_.Maps();
-        env.library   = session_.Recipes();   // sub_recipe references still resolve
+        // Full Env, not just this step: sub_recipe references still resolve.
+        RecipeEngine::Env env = session_.MakeRecipeEnv();
         recipeStartErr_.clear();
         if (!orch_.recipe.Start(one, std::move(env), &recipeStartErr_))
             FD_WARN("recipe", "step run rejected: %s", recipeStartErr_.c_str());
@@ -3695,10 +3681,7 @@ void App::DrawScriptsPanel()
                         scriptSel_ < static_cast<int>(session_.Scripts().size());
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
-        LuaEngine::Env env;
-        env.positions = session_.Positions();
-        env.maps      = session_.Maps();
-        env.library   = session_.Recipes();
+        LuaEngine::Env env = session_.MakeLuaEnv();
         scriptStartErr_.clear();
         orch_.lua.SetBreakpoints(scriptBps_[session_.Scripts()[scriptSel_].path]);
         if (!orch_.lua.Start(session_.Scripts()[scriptSel_].path, std::move(env), &scriptStartErr_))
@@ -4854,10 +4837,7 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
         for (const ScriptInfo& si : session_.Scripts()) {
             if (si.name == "hexapod_align") { script = si.path; break; }
         }
-        LuaEngine::Env env;
-        env.positions = session_.Positions();
-        env.maps      = session_.Maps();
-        env.library   = session_.Recipes();
+        LuaEngine::Env env = session_.MakeLuaEnv();
         env.initialCtx = {
             {"align_device", hardware_.MotionName(static_cast<std::size_t>(xcanDevice_))},
             {"align_topic", std::string(xcanTopic_)},

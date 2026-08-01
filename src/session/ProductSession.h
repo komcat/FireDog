@@ -21,6 +21,7 @@
 #include "command/LuaEngine.h"   // ScriptInfo / ListScripts (no Lua headers leak)
 #include "command/Program.h"
 #include "command/Recipe.h"
+#include "command/RecipeEngine.h"
 #include "core/MotionMap.h"
 #include "core/Product.h"
 #include "core/SavedPositions.h"
@@ -90,6 +91,15 @@ public:
     // config/scripts. ScriptsDirUsed() reports the dir ACTUALLY scanned.
     std::string ScriptsDir() const;
     void LoadScriptsList();
+
+    // ---- engine hand-off ----
+    // The ONE place a run's Env is built. Copy-at-Start is the concurrency
+    // contract: the engines get a snapshot of the document and never read the
+    // session again, so a run is immune to edits made while it executes.
+    // Every launch site goes through these — hand-copying the three fields is
+    // how a caller ends up forgetting the library and breaking sub_recipe.
+    RecipeEngine::Env MakeRecipeEnv() const;
+    LuaEngine::Env    MakeLuaEnv() const;
 
     // Teach hand-backs from save_position steps (queued on Workflow by engine
     // worker threads, drained on the UI thread): merge by name — the app-side

@@ -255,6 +255,26 @@ std::string ProductSession::ProgramsDump() const
     return arr.dump();
 }
 
+// ---- Engine hand-off -------------------------------------------------------
+
+RecipeEngine::Env ProductSession::MakeRecipeEnv() const
+{
+    RecipeEngine::Env env;
+    env.positions = positions_;
+    env.maps      = maps_;
+    env.library   = recipes_;
+    return env;
+}
+
+LuaEngine::Env ProductSession::MakeLuaEnv() const
+{
+    LuaEngine::Env env;
+    env.positions = positions_;
+    env.maps      = maps_;
+    env.library   = recipes_;   // fd.run_recipe / sub_recipe resolve against this
+    return env;
+}
+
 void ProductSession::MergeTaughtPositions(
     const std::vector<std::pair<std::string, SavedPos>>& taught)
 {
