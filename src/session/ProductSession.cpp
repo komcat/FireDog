@@ -100,6 +100,64 @@ std::string ProductSession::RecipesDump() const
     return arr.dump();
 }
 
+// ---- Programs (Run page) — same persistence conventions as recipes ---------
+
+void ProductSession::LoadProgramsFromDisk()
+{
+    if (product_.Loaded()) {
+        const ManifestFile* e = product_.Entry("programs");
+        if (e) {
+            programs_ = LoadProgramsFile(product_.FilePath("programs"), &programsUid_);
+            if (!programs_.empty()) {
+                if (!programsUid_.empty() && programsUid_ != e->uid)
+                    FD_WARN("product", "programs uid mismatch: manifest %s vs file '%s'",
+                            e->uid.c_str(), programsUid_.c_str());
+                programsBaseline_ = ProgramsDump();
+                return;
+            }
+            FD_INFO("program", "product '%s' has no programs yet - using config programs",
+                    product_.name.c_str());
+        }
+    }
+    programsUid_.clear();
+    programs_ = LoadPrograms();
+    programsBaseline_ = ProgramsDump();
+}
+
+void ProductSession::SavePrograms()
+{
+    std::string path = "config/programs.local.json";
+    std::string uid  = programsUid_;
+    if (product_.Loaded()) {
+        if (const ManifestFile* e = product_.Entry("programs")) {
+            path = product_.FilePath("programs");
+            uid  = e->uid;
+        }
+    }
+    if (uid.empty()) uid = GenerateUid();
+    programsUid_ = uid;
+    if (SaveProgramsFile(path, programs_, uid)) {
+        programsBaseline_ = ProgramsDump();
+        FD_INFO("program", "saved %zu program(s) to %s", programs_.size(), path.c_str());
+    } else {
+        FD_WARN("program", "could not save programs to %s", path.c_str());
+    }
+}
+
+void ProductSession::SaveProgramsTo(const std::string& path, const std::string& uid)
+{
+    SaveProgramsFile(path, programs_, uid);
+    programsUid_      = uid;
+    programsBaseline_ = ProgramsDump();
+}
+
+std::string ProductSession::ProgramsDump() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const Program& p : programs_) arr.push_back(ProgramToJson(p));
+    return arr.dump();
+}
+
 void ProductSession::MergeTaughtPositions(
     const std::vector<std::pair<std::string, SavedPos>>& taught)
 {

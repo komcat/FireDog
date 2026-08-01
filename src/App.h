@@ -160,10 +160,7 @@ private:
     void SaveScanPresets() const;
     void DrawRunRasterBlock();        // Raster tab: area-scan launcher (raster_scan.lua)
     void StartRasterScan(const std::string& device);
-    void LoadProgramsFromDisk();      // product programs role, else config
-    void SavePrograms();
-    std::string ProgramsDump() const;
-    bool ProgramsDirty() const { return ProgramsDump() != programsBaseline_; }
+    void LoadProgramsFromDisk();      // session load + deck selection reset
     void LoadRecipesFromDisk();       // session load + UI selection reset
     void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
     void DrawExitConfirmModal();      // intercepts the OS close request (X / Alt+F4)
@@ -434,11 +431,9 @@ private:
     double rasterFastSpanUm_ = 40.0;                  // Y total width (+/- half)
     double rasterFastStepUm_ = 4.0;                   // sample pitch per row
 
-    // Run page state: the program deck + selection (recipe -1 = slot-level),
-    // light edit mode, and the runner's last start rejection.
-    std::vector<Program> programs_;
-    std::string          programsUid_;       // file uid (product integrity)
-    std::string          programsBaseline_;  // dirty compare
+    // Run page UI state: the deck selection (recipe -1 = slot-level), light
+    // edit mode, and the runner's last start rejection. The programs
+    // themselves live in session_.
     int  progSel_       = -1;
     int  deckSlot_      = -1;
     int  deckRecipe_    = -1;

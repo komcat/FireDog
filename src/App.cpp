@@ -600,11 +600,11 @@ void App::DrawMainWindow()
 void App::StartDeckRun(int mode)
 {
     runStartErr_.clear();
-    if (progSel_ < 0 || progSel_ >= static_cast<int>(programs_.size())) {
+    if (progSel_ < 0 || progSel_ >= static_cast<int>(session_.Programs().size())) {
         runStartErr_ = "no program selected";
         return;
     }
-    const Program& prog = programs_[progSel_];
+    const Program& prog = session_.Programs()[progSel_];
 
     std::vector<ProgramRunner::Item> queue;
     const auto addRecipe = [&](const std::string& slotName, const std::string& uid) {
@@ -668,7 +668,7 @@ void App::DrawRunPanel()
     const float  leftW  = 300.0f;
     const float  rightW = 280.0f;
 
-    const bool haveProg = progSel_ >= 0 && progSel_ < static_cast<int>(programs_.size());
+    const bool haveProg = progSel_ >= 0 && progSel_ < static_cast<int>(session_.Programs().size());
 
     // ---- Top strip: run controls ----
     ImGui::BeginChild("runStrip", ImVec2(0.0f, stripH), ImGuiChildFlags_Borders);
@@ -694,8 +694,8 @@ void App::DrawRunPanel()
     ImGui::TextDisabled(onRecipe ? "recipe" : onSlot ? "slot" : "program");
     ImGui::SameLine();
     ImGui::BeginDisabled(running);
-    if (ImGui::Button(ProgramsDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
-        SavePrograms();
+    if (ImGui::Button(session_.ProgramsDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
+        session_.SavePrograms();
     ImGui::EndDisabled();
     {
         const DutSession::Info di = DutSession::Instance().GetInfo();
@@ -712,11 +712,11 @@ void App::DrawRunPanel()
     ImGui::BeginChild("runDeck", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
     ImGui::BeginDisabled(running);
     ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::BeginCombo("##prog", haveProg ? programs_[progSel_].name.c_str()
+    if (ImGui::BeginCombo("##prog", haveProg ? session_.Programs()[progSel_].name.c_str()
                                              : "(program)")) {
-        for (int i = 0; i < static_cast<int>(programs_.size()); ++i) {
+        for (int i = 0; i < static_cast<int>(session_.Programs().size()); ++i) {
             ImGui::PushID(i);
-            if (ImGui::Selectable(programs_[i].name.c_str(), progSel_ == i)) {
+            if (ImGui::Selectable(session_.Programs()[i].name.c_str(), progSel_ == i)) {
                 progSel_    = i;
                 deckSlot_   = -1;
                 deckRecipe_ = -1;
@@ -731,7 +731,7 @@ void App::DrawRunPanel()
     // granularity); in Edit mode the deck shows ONLY the active slot, so a
     // big program edits one slot at a time. "(all slots)" = whole program.
     {
-        Program* prog = haveProg ? &programs_[progSel_] : nullptr;
+        Program* prog = haveProg ? &session_.Programs()[progSel_] : nullptr;
         if (prog && deckSlot_ >= static_cast<int>(prog->slots.size()))
             deckSlot_ = -1;   // stale index (slot deleted) — back to all
         char prev[64];
@@ -768,8 +768,8 @@ void App::DrawRunPanel()
         if (ImGui::SmallButton("New")) {
             Program p;
             p.uid = GenerateUid();   // the traceability identity, minted once
-            programs_.push_back(std::move(p));
-            progSel_    = static_cast<int>(programs_.size()) - 1;
+            session_.Programs().push_back(std::move(p));
+            progSel_    = static_cast<int>(session_.Programs().size()) - 1;
             deckSlot_   = -1;
             deckRecipe_ = -1;
         }
@@ -778,14 +778,14 @@ void App::DrawRunPanel()
         if (ImGui::SmallButton("Del")) runOpenDelete_ = true;
         ImGui::SameLine();
         if (ImGui::SmallButton("+ Slot")) {
-            programs_[progSel_].slots.push_back({});
+            session_.Programs()[progSel_].slots.push_back({});
             // The new slot becomes active so Edit's filtered view shows it.
-            deckSlot_   = static_cast<int>(programs_[progSel_].slots.size()) - 1;
+            deckSlot_   = static_cast<int>(session_.Programs()[progSel_].slots.size()) - 1;
             deckRecipe_ = -1;
         }
         ImGui::EndDisabled();
         if (haveProg) {
-            Program& prog = programs_[progSel_];
+            Program& prog = session_.Programs()[progSel_];
             char nbuf[64];
             std::snprintf(nbuf, sizeof(nbuf), "%s", prog.name.c_str());
             ImGui::SetNextItemWidth(-40.0f);
@@ -797,11 +797,11 @@ void App::DrawRunPanel()
     ImGui::Separator();
 
     if (!haveProg) {
-        ImGui::TextWrapped(programs_.empty()
+        ImGui::TextWrapped(session_.Programs().empty()
                                ? "No programs yet - Edit > New creates one."
                                : "Pick a program above.");
     } else {
-        Program& prog = programs_[progSel_];
+        Program& prog = session_.Programs()[progSel_];
         for (int si = 0; si < static_cast<int>(prog.slots.size()); ++si) {
             // An active slot filters the tree to just that slot (Edit or
             // not); "(all slots)" in the combo shows the whole program.
@@ -974,9 +974,9 @@ void App::DrawRunPanel()
         }
     } else {
         ImGui::TextDisabled("Select a slot or recipe on the left, then Run.");
-        if (haveProg && !programs_[progSel_].description.empty()) {
+        if (haveProg && !session_.Programs()[progSel_].description.empty()) {
             ImGui::Separator();
-            ImGui::TextWrapped("%s", programs_[progSel_].description.c_str());
+            ImGui::TextWrapped("%s", session_.Programs()[progSel_].description.c_str());
         }
     }
     ImGui::EndChild();
@@ -1013,10 +1013,10 @@ void App::DrawRunPanel()
     if (ImGui::BeginPopupModal("Delete Program", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         if (haveProg)
-            ImGui::Text("Delete program '%s'?", programs_[progSel_].name.c_str());
+            ImGui::Text("Delete program '%s'?", session_.Programs()[progSel_].name.c_str());
         if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveProg) {
-            programs_.erase(programs_.begin() + progSel_);
-            progSel_    = programs_.empty() ? -1 : 0;
+            session_.Programs().erase(session_.Programs().begin() + progSel_);
+            progSel_    = session_.Programs().empty() ? -1 : 0;
             deckSlot_   = -1;
             deckRecipe_ = -1;
             ImGui::CloseCurrentPopup();
@@ -1991,61 +1991,15 @@ void App::LoadRecipesFromDisk()
     recipeStartErr_.clear();
 }
 
-// ---- Programs (Run page) — same persistence conventions as recipes ---------
-
-std::string App::ProgramsDump() const
-{
-    nlohmann::json arr = nlohmann::json::array();
-    for (const Program& p : programs_) arr.push_back(ProgramToJson(p));
-    return arr.dump();
-}
-
+// Thin wrapper (like LoadRecipesFromDisk): session loads, App resets the deck
+// selection — a freshly loaded set selects its first program.
 void App::LoadProgramsFromDisk()
 {
-    progSel_    = -1;
+    session_.LoadProgramsFromDisk();
+    progSel_    = session_.Programs().empty() ? -1 : 0;
     deckSlot_   = -1;
     deckRecipe_ = -1;
     runStartErr_.clear();
-    if (session_.ProductLoaded()) {
-        const ManifestFile* e = session_.Product().Entry("programs");
-        if (e) {
-            programs_ = LoadProgramsFile(session_.Product().FilePath("programs"), &programsUid_);
-            if (!programs_.empty()) {
-                if (!programsUid_.empty() && programsUid_ != e->uid)
-                    FD_WARN("product", "programs uid mismatch: manifest %s vs file '%s'",
-                            e->uid.c_str(), programsUid_.c_str());
-                programsBaseline_ = ProgramsDump();
-                if (!programs_.empty()) progSel_ = 0;
-                return;
-            }
-            FD_INFO("program", "product '%s' has no programs yet - using config programs",
-                    session_.Product().name.c_str());
-        }
-    }
-    programsUid_.clear();
-    programs_ = LoadPrograms();
-    programsBaseline_ = ProgramsDump();
-    if (!programs_.empty()) progSel_ = 0;
-}
-
-void App::SavePrograms()
-{
-    std::string path = "config/programs.local.json";
-    std::string uid  = programsUid_;
-    if (session_.ProductLoaded()) {
-        if (const ManifestFile* e = session_.Product().Entry("programs")) {
-            path = session_.Product().FilePath("programs");
-            uid  = e->uid;
-        }
-    }
-    if (uid.empty()) uid = GenerateUid();
-    programsUid_ = uid;
-    if (SaveProgramsFile(path, programs_, uid)) {
-        programsBaseline_ = ProgramsDump();
-        FD_INFO("program", "saved %zu program(s) to %s", programs_.size(), path.c_str());
-    } else {
-        FD_WARN("program", "could not save programs to %s", path.c_str());
-    }
 }
 
 // ---- Recipe Editor (View menu, full page) — Phase B1: browse + run ----------
@@ -3819,9 +3773,7 @@ void App::SaveProduct()
         } else if (e.role == "recipes") {
             session_.SaveRecipesTo(path, e.uid);
         } else if (e.role == "programs") {
-            SaveProgramsFile(path, programs_, e.uid);
-            programsUid_      = e.uid;
-            programsBaseline_ = ProgramsDump();
+            session_.SaveProgramsTo(path, e.uid);
         } else {
             FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
         }
@@ -6128,7 +6080,7 @@ void App::DrawExitConfirmModal()
         // Point out what is actually at risk right now.
         if (session_.RecipesDirty())
             ImGui::BulletText("Recipe editor has unsaved edits");
-        if (ProgramsDirty())
+        if (session_.ProgramsDirty())
             ImGui::BulletText("Program deck has unsaved edits");
         if (orch_.Busy())
             ImGui::BulletText("A recipe/script/path move is still running");

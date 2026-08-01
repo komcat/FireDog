@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "command/Program.h"
 #include "command/Recipe.h"
 #include "core/MotionMap.h"
 #include "core/Product.h"
@@ -35,6 +36,9 @@ public:
 
     std::vector<Recipe>&       Recipes()       { return recipes_; }
     const std::vector<Recipe>& Recipes() const { return recipes_; }
+
+    std::vector<Program>&       Programs()       { return programs_; }
+    const std::vector<Program>& Programs() const { return programs_; }
 
     // ---- product manifest ----
     const ProductManifest& Product() const { return product_; }
@@ -59,6 +63,13 @@ public:
     std::string RecipesDump() const;    // canonical serialization
     bool RecipesDirty() const { return RecipesDump() != recipesBaseline_; }
 
+    // Programs (Run page) — same persistence conventions as recipes.
+    void LoadProgramsFromDisk();
+    void SavePrograms();
+    void SaveProgramsTo(const std::string& path, const std::string& uid);
+    std::string ProgramsDump() const;
+    bool ProgramsDirty() const { return ProgramsDump() != programsBaseline_; }
+
     // Teach hand-backs from save_position steps (queued on Workflow by engine
     // worker threads, drained on the UI thread): merge by name — the app-side
     // uid wins for existing names so recipe references stay stable — then
@@ -73,6 +84,10 @@ private:
     std::vector<Recipe> recipes_;
     std::string         recipesUid_;        // file uid (product integrity check)
     std::string         recipesBaseline_;   // serialized state at load/save
+
+    std::vector<Program> programs_;
+    std::string          programsUid_;
+    std::string          programsBaseline_;
 };
 
 } // namespace firedog
