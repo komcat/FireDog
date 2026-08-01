@@ -1,6 +1,10 @@
 // WndJog.cpp : the Jog window (View menu) and the velocity combo it shares
 // with the Motion page. Definitions of App members — see App.h.
 //
+// The window has two tabs: "Jog" (the motion fleet) and "Camera" (the camera
+// fleet — device combo + the Camera page's exposure controls, reused rather
+// than copied so the seed/apply rule lives in one place).
+//
 // Jog KINEMATICS are not here: the UI only picks a device, a step and a
 // direction, and Workflow::JogGlobal maps that through the device's
 // AxisTransform. Jog is armed via a checkbox and defaults OFF because the
@@ -33,9 +37,44 @@ void App::DrawJogWindow()
                             ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(250.0f, 640.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Jog", &showJog_)) {
-        DrawJogPanel();
+        // Two tabs so the window covers both "move the stage" and "see it":
+        // Jog = the motion fleet, Camera = the camera fleet (device + exposure).
+        if (ImGui::BeginTabBar("JogTabs")) {
+            if (ImGui::BeginTabItem("Jog")) {
+                DrawJogPanel();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Camera")) {
+                DrawJogCameraTab();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
     }
     ImGui::End();
+}
+
+// Camera tab of the Jog window: pick the camera, then set its exposure. The
+// exposure widgets are the Camera page's (DrawCameraExposureControls), so both
+// surfaces share one seeding rule and one apply path. Connect/disconnect stays
+// on the Camera page — this tab only tunes a camera that is already up.
+void App::DrawJogCameraTab()
+{
+    // Device combo. HardwareManager owns a single Pylon camera today, so this
+    // lists one entry; the loop is what a second camera would grow into.
+    const ConnState st = hardware_.CameraState();
+    ImGui::TextUnformatted("Device");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const std::string& camName = hardware_.CameraName();
+    if (ImGui::BeginCombo("##camdev", camName.c_str())) {
+        ImGui::Selectable(camName.c_str(), true);
+        ImGui::EndCombo();
+    }
+    DeviceStatusLine(st, camName.c_str());
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Exposure");
+    DrawCameraExposureControls();
 }
 
 // Jog controls (its own window). Buttons + W/D·A/S·R/F keys route through the

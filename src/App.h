@@ -90,10 +90,12 @@ private:
     void DrawRightPanel();     // 15% column: Overview placeholder
     void DrawJogWindow();      // undocked Jog window (toggled from View menu)
     void DrawJogPanel();       // jog controls: device/velocity/step/direction/keys
+    void DrawJogCameraTab();   // Jog window "Camera" tab: camera combo + exposure
     void DrawVelocityCombo(std::size_t di);   // shared velocity combo (Jog + Motion page)
     // Camera page — the (single) Pylon camera.
     void DrawCameraListPanel();    // left:   status + connect/disconnect
     void DrawCameraDetailPanel();  // middle: exposure + pixel->mm + preview
+    void DrawCameraExposureControls();   // exposure slider+input (page + Jog tab)
     void DrawCameraInfoPanel();    // right:  identity + stream info
     // Keithley page — the 6482 picoammeter.
     void DrawKeithleyListPanel();    // left:   status + connect/disconnect
@@ -331,6 +333,7 @@ private:
     // gantry, so it must be explicitly armed via the checkbox.
     bool showChart_       = true;
     bool enableClickMove_ = false;
+    int  auxZStepIndex_   = 2;   // index into kAuxZSteps (WndAux.cpp), default 100um
 
     // Window visibility (View menu) + jog arming.
     bool showAux_  = true;

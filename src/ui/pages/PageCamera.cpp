@@ -66,39 +66,47 @@ void App::DrawCameraListPanel()
     }
 }
 
-void App::DrawCameraDetailPanel()
+// Exposure controls (µs; log slider — useful ranges span decades). Lives here
+// because this page owns them, but the Jog window's Camera tab calls it too, so
+// both surfaces share one seeding rule and one apply path.
+void App::DrawCameraExposureControls()
 {
     const ConnState st  = hardware_.CameraState();
     PylonCamera&    cam = hardware_.Camera();
 
-    // ---- Exposure (µs; log slider — useful ranges span decades) ----
-    ImGui::TextUnformatted("Exposure");
-    ImGui::Separator();
     if (st != ConnState::Connected) {
         ImGui::TextDisabled("connect the camera to adjust exposure");
         camExpoPulled_ = false;
-    } else {
-        if (!camExpoPulled_) {   // seed the edit value from the camera once
-            const double cur = cam.ExposureUs();
-            if (cur > 0.0) { camExposureUs_ = static_cast<float>(cur); camExpoPulled_ = true; }
-        }
-        double lo = 0.0, hi = 0.0;
-        cam.ExposureRange(lo, hi);
-        if (lo <= 0.0 || hi <= lo) { lo = 20.0; hi = 100000.0; }   // sane fallback
-
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::SliderFloat("##expo", &camExposureUs_,
-                           static_cast<float>(lo), static_cast<float>(hi),
-                           "%.0f us", ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemDeactivatedAfterEdit())          // apply once on release
-            workflow_.SetCameraExposure(camExposureUs_);
-
-        ImGui::SetNextItemWidth(140.0f);
-        ImGui::InputFloat("us##expoIn", &camExposureUs_, 0.0f, 0.0f, "%.0f");
-        ImGui::SameLine();
-        if (ImGui::Button("Apply")) workflow_.SetCameraExposure(camExposureUs_);
-        ImGui::TextDisabled("range %.0f - %.0f us", lo, hi);
+        return;
     }
+    if (!camExpoPulled_) {   // seed the edit value from the camera once
+        const double cur = cam.ExposureUs();
+        if (cur > 0.0) { camExposureUs_ = static_cast<float>(cur); camExpoPulled_ = true; }
+    }
+    double lo = 0.0, hi = 0.0;
+    cam.ExposureRange(lo, hi);
+    if (lo <= 0.0 || hi <= lo) { lo = 20.0; hi = 100000.0; }   // sane fallback
+
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SliderFloat("##expo", &camExposureUs_,
+                       static_cast<float>(lo), static_cast<float>(hi),
+                       "%.0f us", ImGuiSliderFlags_Logarithmic);
+    if (ImGui::IsItemDeactivatedAfterEdit())          // apply once on release
+        workflow_.SetCameraExposure(camExposureUs_);
+
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::InputFloat("us##expoIn", &camExposureUs_, 0.0f, 0.0f, "%.0f");
+    ImGui::SameLine();
+    if (ImGui::Button("Apply")) workflow_.SetCameraExposure(camExposureUs_);
+    ImGui::TextDisabled("range %.0f - %.0f us", lo, hi);
+}
+
+void App::DrawCameraDetailPanel()
+{
+    // ---- Exposure ----
+    ImGui::TextUnformatted("Exposure");
+    ImGui::Separator();
+    DrawCameraExposureControls();
 
     ImGui::Spacing();
     // ---- Pixel -> mm calibration (drives Aux overlay + click-to-move live) ----

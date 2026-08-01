@@ -5,7 +5,11 @@
 //
 // Click-to-move maps an image click through the pixel->mm calibration to
 // Workflow::MoveGantryRelativeMM. It drives the real gantry, so it defaults OFF
-// and must be armed explicitly.
+// and must be armed explicitly; the cursor crosshair + dX/dY readout are only
+// drawn while it is armed, since they describe the move a click would command.
+//
+// The Z arrows (gantry-main, up = Z-, down = Z+) are ordinary jog: they go
+// through Workflow::JogGantryZ and are gated by the shared jogArmed_ flag.
 #include "App.h"
 
 #include "imgui.h"
@@ -21,6 +25,16 @@
 #include <cstdio>
 
 namespace firedog {
+
+namespace {
+// Size of the cursor crosshair drawn over the image, in screen px.
+constexpr float kCursorCrossPx = 30.0f;
+
+// Step sizes offered by the Aux window's gantry-Z buttons — a short subset of
+// the shared kSteps table (indices into it, so the mm values never drift).
+constexpr int kAuxZSteps[]  = {5, 6, 9, 12, 14};   // 5um, 10um, 100um, 1mm, 5mm
+constexpr int kAuxZStepCount = static_cast<int>(sizeof(kAuxZSteps) / sizeof(kAuxZSteps[0]));
+} // namespace
 
 void App::DrawAuxWindow()
 {
@@ -67,9 +81,11 @@ void App::DrawAuxWindow()
         const ImU32 chair = IM_COL32(80, 230, 120, 200);
         dl->AddLine(ImVec2(origin.x, center.y), ImVec2(origin.x + avail.x, center.y), chair, 1.0f);
         dl->AddLine(ImVec2(center.x, origin.y), ImVec2(center.x, origin.y + avail.y), chair, 1.0f);
-        dl->AddCircle(center, 6.0f, chair, 0, 1.5f);
 
-        if (haveImg && imgHovered) {
+        // The cursor marker + world-distance readout only appear while
+        // click-to-move is armed: they annotate the move a click would command,
+        // so with the feature off they are just clutter over the image.
+        if (haveImg && imgHovered && enableClickMove_) {
             const ImVec2 m = ImGui::GetIO().MousePos;
             // Screen -> camera pixels. The image is "cover"-fit with a single
             // uniform scale, so 1 camera px = `scale` screen px on both axes.
@@ -80,12 +96,13 @@ void App::DrawAuxWindow()
             const float dxMM  = dxPix * pixelToMmX_;              // real-world offset
             const float dyMM  = dyPix * pixelToMmY_;
 
-            // Line from center to cursor + a marker dot (red when click-to-move
-            // is armed, so it's clear a click will command the gantry).
-            const ImU32 markCol = enableClickMove_ ? IM_COL32(255, 90, 90, 255)
-                                                   : IM_COL32(255, 220, 90, 255);
+            // Line from center to cursor + a 30x30 px crosshair on the cursor
+            // (red: armed, so a click will command the gantry).
+            const ImU32 markCol = IM_COL32(255, 90, 90, 255);
             dl->AddLine(center, m, IM_COL32(255, 220, 90, 160), 1.0f);
-            dl->AddCircleFilled(m, 3.5f, markCol);
+            const float mh = kCursorCrossPx * 0.5f;
+            dl->AddLine(ImVec2(m.x - mh, m.y), ImVec2(m.x + mh, m.y), markCol, 1.5f);
+            dl->AddLine(ImVec2(m.x, m.y - mh), ImVec2(m.x, m.y + mh), markCol, 1.5f);
 
             // World-distance label near the cursor (kept inside the image).
             char lbl[96];
@@ -100,8 +117,7 @@ void App::DrawAuxWindow()
             dl->AddText(lp, IM_COL32(255, 235, 150, 255), lbl);
 
             // Left-click -> move gantry-main (ACS) by this XY offset, via layer 2.
-            // Only when armed via the "Click-to-move" checkbox (it moves real HW).
-            if (enableClickMove_ && imgClicked) workflow_.MoveGantryRelativeMM(dxMM, dyMM);
+            if (imgClicked) workflow_.MoveGantryRelativeMM(dxMM, dyMM);
         }
 
         // ---- Overlay: camera status, top-left (dark plate for readability) ----
@@ -126,6 +142,31 @@ void App::DrawAuxWindow()
         if (ImGui::Checkbox("Chart", &showChart_)) SaveUiSettings();
         ImGui::SameLine();
         if (ImGui::Checkbox("Click-to-move", &enableClickMove_)) SaveUiSettings();
+        ImGui::SameLine();
+        ImGui::Checkbox("Arm jog", &jogArmed_);   // same flag the Jog window arms
+
+        // ---- gantry-main Z: up = Z-, down = Z+, with a step-size combo ----
+        // Real motion, so it follows the jog arming rule. Layer 2 owns the
+        // kinematics (JogGantryZ finds the gantry and applies the transform).
+        if (auxZStepIndex_ < 0 || auxZStepIndex_ >= kAuxZStepCount) auxZStepIndex_ = 2;
+        const double zstep = kSteps[kAuxZSteps[auxZStepIndex_]].mm;
+        ImGui::BeginDisabled(!jogArmed_);
+        ImGui::BeginGroup();
+        if (ImGui::ArrowButton("##auxZUp", ImGuiDir_Up))   workflow_.JogGantryZ(-zstep);
+        if (ImGui::ArrowButton("##auxZDown", ImGuiDir_Down)) workflow_.JogGantryZ(+zstep);
+        ImGui::EndGroup();
+        ImGui::SameLine();
+        ImGui::BeginGroup();
+        ImGui::TextDisabled("gantry-main Z");
+        ImGui::SetNextItemWidth(110.0f);
+        if (ImGui::BeginCombo("##auxZStep", kSteps[kAuxZSteps[auxZStepIndex_]].label)) {
+            for (int i = 0; i < kAuxZStepCount; ++i)
+                if (ImGui::Selectable(kSteps[kAuxZSteps[i]].label, auxZStepIndex_ == i))
+                    auxZStepIndex_ = i;
+            ImGui::EndCombo();
+        }
+        ImGui::EndGroup();
+        ImGui::EndDisabled();
         ImGui::EndChild();
         ImGui::PopStyleColor();
 

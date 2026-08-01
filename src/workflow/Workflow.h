@@ -44,6 +44,11 @@ public:
     // ACS gantry is available. The UI never touches the device directly.
     bool MoveGantryRelativeMM(double dxMM, double dyMM);
 
+    // Jog gantry-main (ACS) along GLOBAL Z by a signed step in mm. Backs the Aux
+    // window's Z buttons; goes through the same transform as any other jog.
+    // False if no ACS gantry is available (or Z is unmapped).
+    bool JogGantryZ(double deltaMM);
+
     // ---- Jog (layer 2 owns the kinematics + command) ------------------------
     void SetTransforms(std::map<std::string, AxisTransform> t);
     bool SetJogVelocity(std::size_t devIdx, double mmPerSec);
@@ -162,6 +167,10 @@ public:
     std::vector<std::pair<std::string, SavedPos>> TakeSavedPositions();
 
 private:
+    // Fleet index of the gantry: "gantry-main" by name, else the first ACS
+    // controller. Returns hw_.MotionCount() when there is none.
+    std::size_t GantryIndex() const;
+
     void StartCamera(const HardwareConfig& hw);
     void LaunchCameraConnect();   // async connect from camCfg_ (Start + reconnect)
     void LaunchKeithleyConnect(); // async connect from keiCfg_ (Start + reconnect)

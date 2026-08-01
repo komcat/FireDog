@@ -843,24 +843,41 @@ const char* Workflow::StatusText() const
     return hw_.AllConnected() ? "ready" : "connecting hardware...";
 }
 
+std::size_t Workflow::GantryIndex() const
+{
+    // Locate gantry-main (fall back to the first ACS controller).
+    for (size_t i = 0; i < hw_.MotionCount(); ++i) {
+        IMotionController* m = hw_.MotionDevice(i);
+        if (m && m->Type() == "ACS" && m->Name() == "gantry-main") return i;
+    }
+    for (size_t i = 0; i < hw_.MotionCount(); ++i) {
+        IMotionController* m = hw_.MotionDevice(i);
+        if (m && m->Type() == "ACS") return i;
+    }
+    return hw_.MotionCount();
+}
+
+bool Workflow::JogGantryZ(double deltaMM)
+{
+    const std::size_t gi = GantryIndex();
+    if (gi >= hw_.MotionCount()) {
+        FD_WARN("workflow", "gantry Z jog: no ACS gantry available");
+        return false;
+    }
+    // Same path as the Jog window: global direction -> local axis via transform
+    // (JogGlobal/JogLocalAxis also carry the safety-block check).
+    const float gz = (deltaMM >= 0.0) ? 1.0f : -1.0f;
+    return JogGlobal(gi, 0.0f, 0.0f, gz, std::fabs(deltaMM));
+}
+
 bool Workflow::MoveGantryRelativeMM(double dxMM, double dyMM)
 {
     if (SafetyBlocked()) {
         FD_WARN("safety", "move blocked - acknowledge the safety alert first");
         return false;
     }
-    // Locate gantry-main (fall back to the first ACS controller).
-    IMotionController* g = nullptr;
-    for (size_t i = 0; i < hw_.MotionCount(); ++i) {
-        IMotionController* m = hw_.MotionDevice(i);
-        if (m && m->Type() == "ACS" && m->Name() == "gantry-main") { g = m; break; }
-    }
-    if (!g) {
-        for (size_t i = 0; i < hw_.MotionCount(); ++i) {
-            IMotionController* m = hw_.MotionDevice(i);
-            if (m && m->Type() == "ACS") { g = m; break; }
-        }
-    }
+    const std::size_t gi = GantryIndex();
+    IMotionController* g = (gi < hw_.MotionCount()) ? hw_.MotionDevice(gi) : nullptr;
     if (!g) { FD_WARN("workflow", "click-to-move: no ACS gantry available"); return false; }
 
     // Relative move = current position + requested offset, X and Y together.
