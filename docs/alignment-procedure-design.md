@@ -404,6 +404,46 @@ it:
    about the transform can promise it in advance. The last issued move stays on
    screen to compare against.
 
+### Showing the operator what they are aiming at
+
+Marking is done through a ~3 mm field of view against nominals that can be
+centimetres apart, so the surfaces draw three things over the image, all
+projected from machine mm through the **live** pose so they stay on their
+features as the stage moves:
+
+* the **nominal** being aimed at (red), computed from the live frame every
+  frame — it is what the marks are measured against;
+* **marks already taken**, so the second point is placed relative to the first
+  rather than from memory;
+* the **pt1/pt2 step diagrams** in the footer row, the inactive one at 30 %.
+
+The important case is the one that does not fit: a point outside the view
+becomes an **arrow on the box edge, labelled with its distance**
+(`DrawWorldMark`). Without it, "the target is 5.6 mm off to the left" and "the
+target is where I am looking" are the same picture — which is exactly how a run
+measures one feature and aims at another, and only finds out when `max_mm`
+refuses the correction.
+
+The run-time path carries these as `PickRequest::hints`: the *worker* computes
+them, because only it has the live frame and the run context, and the UI only
+projects. The pages compute their own from the same numbers.
+
+Once an arrow says the target is 6 mm away, the operator needs to *get* there,
+so a **right click drives the gantry** to put the clicked point under the centre
+— on every marking surface, the pick window included. Two consequences worth
+stating:
+
+* it is behind the shared **arming flag**, because it is click-to-move by
+  another name, and marking is otherwise safe with jog disarmed. There is no
+  `orch_.Busy()` gate: the pick window exists only *during* a run, and being
+  able to bring a feature into view is the whole point of asking a human —
+  `manual_adjust` jogs mid-run on the same argument;
+* the **crosshair jumps to the centre with it**. Leaving it on its old pixel
+  would be wrong in a way nothing on screen shows: after the stage moves that
+  pixel looks at a different physical place, and OK would capture a point off by
+  the whole move. `DrawMarkPicker` reports the request rather than performing it
+  — it has no device access — and the page issues it through layer 2.
+
 ### Knowing what a residual means
 
 After a correction the object is measured again, and the leftover delta is the
@@ -427,6 +467,114 @@ similar and neither improving with another move.
 Nothing here is persisted: it measures this operator, these optics and this
 part, right now.
 
+### Running a placement from a recipe
+
+The page is the bench surface; a production run needs the same thing as a step.
+That is four commands and a script, mirroring the alignment family exactly —
+`place_mark` (one point, one prompt), `place_apply` (the arithmetic, no motion),
+`place_move` (apply + one relative move), and `place_run` over
+`placement_procedure.lua`.
+
+**The script exists because the procedure is a LOOP.** One correction lands
+within the accuracy of the marking and the transform; re-measuring is what turns
+that into a number instead of a hope, and the second pass usually removes what
+the first one left. So:
+
+```lua
+for attempt = 1, TRIES do
+    fd.place_mark{ alignment = ALIGN, index = 1, ctx_prefix = PREFIX }
+    fd.place_mark{ alignment = ALIGN, index = 2, ctx_prefix = PREFIX }
+    fd.place_apply{ alignment = ALIGN, nominal = NOM, ctx_prefix = PREFIX }
+    if fd.ctx[PREFIX .. "_dist"] <= TOL then placed = true break end
+    fd.place_move{ alignment = ALIGN, nominal = NOM, device = DEV, max_mm = MAXMM }
+end
+if not placed then error("...") end   -- a silent 0.3 mm miss is worse than none
+```
+
+A loop with an operator inside it is exactly what belongs in an editable file
+rather than compiled into a step — the same argument `align_run` makes.
+
+**It teaches the frame first, by default** (`align_first`). A nominal is stored
+in local coordinates, so without a live frame there is nothing to convert it
+through — and the live frame is cleared at every program start, DUT open and
+product load (§5b). A placement that merely *assumed* one would therefore fail
+on its first step about half the times anybody used it. Turning it off is for
+the case it was reserved for: a program that has already aligned this part and
+is placing several objects on it, because the frame belongs to the part, not to
+each placement.
+
+**Two surfaces launch it, one code path.** A `place_run` step is the production
+route; the Placement page's *Run guided placement* button is the bench one, and
+it injects the same keys through `LuaEngine::Env::initialCtx` exactly as the
+Alignment page's Run button does. Running the file bare from the Scripts page
+fails on its first parameter, which is correct and worth keeping: nothing on
+that page says which object is going onto what. The button exists because
+without it the script would be reachable only by first authoring a recipe.
+
+The guided run is armed like the manual button — a scripted correction is still
+a computed destination. That arming checkbox is duplicated into the guided
+block, because the manual one sits below the correction readout, which does not
+render until both marks exist; without a copy the run could never be armed.
+
+### Making it unattended
+
+The two prompts are the only human left in the loop, and they go the same way an
+`auto` alignment station's did: a **taught detection model per mark**, private to
+the nominal and named `vdet_<procUid>_<nomUid>_p<N>`. `Workflow::Detect` fills
+the same `PickResult` the crosshair fills, so the midpoint, the correction, the
+move and the verify loop are byte-identical whether a detector or an operator
+produced the point.
+
+They are taught on the **same page the station detectors use** — the Placement
+page's *Set up pt1/pt2 detect…* opens `PageVisionTeach` with the nominal as the
+owner. One difference was needed: that page used to `Close` to Alignment
+unconditionally, so it now carries `visionReturnPage_` and goes back to whoever
+opened it.
+
+Ownership is per **nominal**, not per procedure, on the rule the whole vision
+layer already follows: an ROI, a threshold and a taught patch only mean anything
+at the pose and exposure they were tuned at, and each nominal is viewed from its
+own place. A nominal's delete drops its models (`DropNominalDetectors`), a
+procedure's delete drops every nominal's, and a duplicate copies them with their
+patch files — `CopyVisionModelAs` was factored out of the station copy so the
+`.pgm` handling exists once.
+
+**The fallback defaults ON here**, unlike a station's. A station teaches a frame
+that everything downstream depends on, so a silent human substitution there
+would corrupt the record; a placement is a per-part operation an operator is
+usually standing over, where asking beats failing the run. It is never *silent*
+either way: a fallback logs a warning naming the model and the reason, and each
+captured point logs `(manual)` or `(auto)`, so nobody can believe a run was
+automatic when it was not. Untick it on a nominal that must never quietly become
+hand-placed.
+
+Four things the commands do that the page's habits made obvious:
+
+* **The prompt is the existing pick window.** `PickRequest` grew a `label`, so
+  the same window and the same `AwaitPick` handshake say "point 1 of 2 on the
+  object" instead of "mark E1". One window, two vocabularies.
+* **Nothing in the family drives the camera.** Getting the object in view is a
+  `move_to_position` step above `place_run`, where the recipe editor offers a
+  real device-scoped picker. `place_run` briefly had a `position` parameter of
+  its own; it was removed on discovering what it would actually be — a raw
+  position **uid** typed into a text box, because `ExecutionContext::FindPosition`
+  resolves by uid only and the editor's picker is scoped to the step's `device`,
+  which here is the *holder*, not the camera. Keeping the move out is also what
+  lets the two marks come from two different views without `place_mark` growing
+  a station concept.
+* **`max_mm` is a hard failure, not a clamp.** The page shows its ceiling to a
+  human who can judge it; a recipe has nobody watching, and a correction bigger
+  than the ceiling is a broken input rather than a big correction.
+* **`place_move` erases the marks it consumed** (`ExecutionContext::CtxErase`),
+  so the next `place_apply` must be given fresh ones. Without that, a second
+  pass would re-derive and re-apply a correction that has already been made —
+  the ctx equivalent of the page's cleared marks.
+
+`CaptureWorldPoint` is shared with `align_station`: pose-after-pick, then
+`w = pose + offset`. One copy, because a second one that read the pose in a
+different order would be wrong in a way nothing would show except a part placed
+20 µm out.
+
 Both mark pickers are the same widget (`DrawMarkPicker`, `ui/Widgets.h`),
 hoisted out of the nominal page the moment this one needed it: two copies of the
 machine-mm↔pixel projection would drift, and the point of the shared
@@ -449,6 +597,10 @@ to a pose a human taught, while this destination is *computed*, so a mis-taught
 frame sends the stage somewhere unexpected — the same risk class as
 click-to-move.
 | `align_run` | typed one-step wrapper over `alignment_procedure.lua` |
+| `place_mark` | ask the operator to mark one point on a gripped object (index 1 or 2) |
+| `place_apply` | marks + nominal → the correction, into ctx. **No motion** |
+| `place_move` | `place_apply` + one relative move on the holding device, `max_mm` guarded |
+| `place_run` | typed one-step wrapper over `placement_procedure.lua` |
 
 `align_run` is the **`xcan` pattern**: a real parameter form whose values become
 ctx keys, then `RunLuaFile`. The script *is* the procedure — editable, and
@@ -498,15 +650,19 @@ rendered as a picker in the recipe editor. It is **not** device-scoped like
    so it was kept out of this one.
 6. **A nominal has no command yet.** It is document data plus two pages and the
    frame panel's *Use*; no recipe step reads one.
-7. **Placement is a UI action only** (§6c). There is no `place_local` command,
-   so a recipe cannot do it: measuring the object needs an operator marking two
-   features, which is the same reason an `auto` alignment station had to wait
-   for a detector. The move itself is already layer 2
-   (`Workflow::MoveRelativeGlobal`), so a command would be the marking, not the
-   motion.
-8. **Placement corrects translation only.** A nominal is a point, so the
-   correction is a 2-D shift: if the gripper picked the object up rotated, the
-   page cannot see it and the shift will not fix it. The information is
+7. **An unattended placement needs a model taught per nominal per mark** — two
+   teach sessions before a nominal can place anything without a human, and they
+   only hold at the pose and exposure they were tuned at. Nothing shares a model
+   between nominals, by design; if the same object is genuinely viewed the same
+   way at several of them, that is real duplicated work.
+8. **A nominal is referenced by plain text.** `place_apply`/`place_move` take
+   `nominal` as a `String`, so the recipe editor shows a text field and
+   `CheckReferences` cannot validate it — unlike `alignment`, which is an
+   `AlignUid`. A rename inside a procedure therefore breaks a recipe silently
+   until it runs.
+9. **Placement corrects translation only.** A nominal is a point, so the
+   correction is a 2-D shift: if the gripper picked the object up rotated,
+   neither the page nor the script can see it and the shift will not fix it. The information is
    *available* — the object's two marks have a direction, and storing the
    nominal's mark direction alongside its midpoint would give a Δθ to command on
    the holder's W — but a nominal deliberately stores a point today, so that is

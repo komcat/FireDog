@@ -49,7 +49,9 @@
 
 #include "imgui.h"
 
+#include "core/Log.h"
 #include "ui/Widgets.h"
+#include "vision/HalconDetector.h"   // Available() — object detection needs a licence
 
 #include <cmath>
 #include <cstdio>
@@ -97,6 +99,38 @@ void App::OpenAlignPlace(const AlignProc& a, const std::string& nomUid)
     SwitchPage(Page::AlignPlace);   // every page switch routes through here
 }
 
+// Launch the procedure script with this page's settings. Same channel the
+// Alignment page's Run button uses: parameters go in through
+// LuaEngine::Env::initialCtx, where fd.param reads them — which is exactly what
+// place_run does from a recipe, so the guided run and the production run are
+// one code path. Gated on the WHOLE orchestration, never a subset of engines.
+void App::StartPlacementRun(const AlignProc& a, const AlignNominal& n,
+                            const std::string& device)
+{
+    // The product's own copy of the script wins over the shipped one — the same
+    // rule ExecutionContext::ResolveScript applies for the command. Expressed
+    // over the already-scanned list here because this launch does not go
+    // through a command. If one changes, change both.
+    std::string script = "config/scripts/placement_procedure.lua";
+    for (const ScriptInfo& si : session_.Scripts()) {
+        if (si.name == "placement_procedure") { script = si.path; break; }
+    }
+    LuaEngine::Env env = session_.MakeLuaEnv();
+    env.initialCtx = {
+        {"place_alignment", a.uid},        // uid, not name: a rename mid-run is harmless
+        {"place_nominal",   n.uid},
+        {"place_device",    device},
+        {"place_align_first", plcAlignFirst_},
+        {"place_tries",     static_cast<double>(plcTries_)},
+        {"place_tol_mm",    static_cast<double>(plcTolMM_)},
+        {"place_max_mm",    static_cast<double>(plcMaxMM_)},
+        {"place_prefix",    std::string("place")},
+    };
+    plcStartErr_.clear();
+    if (!orch_.lua.Start(script, std::move(env), &plcStartErr_))
+        FD_WARN("align", "placement run rejected: %s", plcStartErr_.c_str());
+}
+
 // ---- The page --------------------------------------------------------------
 
 void App::DrawAlignPlacePanel()
@@ -115,6 +149,14 @@ void App::DrawAlignPlacePanel()
     // half from a record would be wrong by the difference and look right.
     AlignResult frame;
     const bool haveLive = workflow_.LiveFrame(a->uid, &frame);
+
+    // Resolved here rather than in the panel below, because the IMAGE (drawn
+    // first) needs the nominal's machine position to mark it. Recomputed every
+    // frame from the live frame — this is the number that follows the part.
+    const AlignNominal* nom = FindAlignNominal(*a, plcNomUid_);
+    double nomMx = 0.0, nomMy = 0.0;
+    if (nom && haveLive)
+        AlignLocalToMachine(frame, nom->lx, nom->ly, &nomMx, &nomMy);
 
     // The pose the marks are measured against: the procedure's device, because
     // that is the one carrying the camera.
@@ -154,9 +196,16 @@ void App::DrawAlignPlacePanel()
     // ---- Left: the live image ----------------------------------------------
     ImGui::BeginChild("apImg", ImVec2(imgW, avail.y), ImGuiChildFlags_Borders);
     {
-        const CameraMark marks[2] = {
-            {plcPt_[0].wx, plcPt_[0].wy, plcHave_[0], "pt1"},
-            {plcPt_[1].wx, plcPt_[1].wy, plcHave_[1], "pt2"},
+        // Three marks: the two being placed, plus the NOMINAL they are aimed at.
+        // The nominal is usually outside the field of view, which is exactly
+        // when it matters — it becomes an edge arrow with its distance, so
+        // measuring one feature while aiming at another is visible immediately
+        // rather than after the correction is refused.
+        const CameraMark marks[3] = {
+            {plcPt_[0].wx, plcPt_[0].wy, plcHave_[0], "pt1", 0},
+            {plcPt_[1].wx, plcPt_[1].wy, plcHave_[1], "pt2", 0},
+            {nomMx, nomMy, (nom != nullptr) && haveLive,
+             nom ? nom->name.c_str() : "", IM_COL32(255, 90, 90, 255)},
         };
         MarkPicker mp;
         mp.tex           = cameraTex_;
@@ -168,12 +217,21 @@ void App::DrawAlignPlacePanel()
         mp.gx            = gx;
         mp.gy            = gy;
         mp.marks         = marks;
-        mp.markCount     = 2;
+        mp.markCount     = 3;
         mp.midpointLabel = "object";
+        EnsureMarkIcons();
+        mp.icons[0]      = markIcons_[0];
+        mp.icons[1]      = markIcons_[1];
+        mp.activeMark    = plcActive_;
         mp.px            = &plcPx_;
         mp.py            = &plcPy_;
         mp.zoom          = &plcZoom_;
-        DrawMarkPicker("##plcInput", ImGui::GetContentRegionAvail(), mp);
+        const MarkPickerResult r =
+            DrawMarkPicker("##plcInput", ImGui::GetContentRegionAvail(), mp);
+        if (r.moveRequested) {
+            if (jogArmed_) workflow_.MoveGantryRelativeMM(r.dxMM, r.dyMM);
+            else FD_WARN("align", "click-to-move ignored - arm first");
+        }
     }
     ImGui::EndChild();
     ImGui::SameLine();
@@ -181,8 +239,24 @@ void App::DrawAlignPlacePanel()
     // ---- Right: target, measurement, correction -----------------------------
     ImGui::BeginChild("apCtl", ImVec2(rightW, avail.y), ImGuiChildFlags_Borders);
 
-    ImGui::TextUnformatted(a->name.c_str());
     ImGui::TextDisabled("place a gripped object on a taught nominal");
+    // Self-sufficient: pick the procedure here rather than only inheriting the
+    // Alignment page's selection, which is what lets this page be a View-menu
+    // entry instead of something reachable only from a nominal's button.
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::BeginCombo("procedure", a->name.c_str())) {
+        for (const AlignProc& other : list) {
+            if (!ImGui::Selectable(other.name.c_str(), other.uid == a->uid)) continue;
+            plcProcUid_ = other.uid;
+            plcNomUid_  = other.nominals.empty() ? std::string()
+                                                 : other.nominals.front().uid;
+            // A measurement belongs to the procedure it was taken under.
+            plcHave_[0] = plcHave_[1] = false;
+            plcSamples_.clear();
+            plcLastMove_.clear();
+        }
+        ImGui::EndCombo();
+    }
     ImGui::Separator();
 
     if (haveLive) {
@@ -191,12 +265,34 @@ void App::DrawAlignPlacePanel()
         ImGui::TextColored(kBad, "NO LIVE FRAME");
         ImGui::TextWrapped("Both the target and the measurement are expressed through the "
                            "frame, so it has to be the one taught for the part on the "
-                           "machine now. Run the procedure on the Alignment page first.");
+                           "machine now.");
+    }
+
+    // Teach it here rather than sending the operator to another page for the
+    // one thing this page cannot work without. Same launcher the Alignment
+    // page's Run button uses (StartAlignmentRun -> alignment_procedure.lua), so
+    // it stays the single code path a frame comes into existence through.
+    {
+        const bool ready = !a->s1.posUid.empty() && !a->s2.posUid.empty();
+        ImGui::BeginDisabled(orch_.Busy() || !ready);
+        if (ImGui::Button(haveLive ? "Re-teach frame" : "Run alignment",
+                          ImVec2(150.0f, 0.0f)))
+            StartAlignmentRun(*a);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!orch_.lua.Running());
+        if (ImGui::Button("Stop##frame", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
+        ImGui::EndDisabled();
+        if (!ready)
+            ImGui::TextColored(kWarn, "both stations need a position (Alignment page)");
+        else if (orch_.Busy() && !orch_.lua.Running())
+            ImGui::TextDisabled("another run is active");
+        if (!alignStartErr_.empty())
+            ImGui::TextColored(kBad, "%s", alignStartErr_.c_str());
     }
 
     // ---- Target -------------------------------------------------------------
     ImGui::SeparatorText("Target (nominal)");
-    const AlignNominal* nom = FindAlignNominal(*a, plcNomUid_);
     if (a->nominals.empty()) {
         ImGui::TextColored(kWarn, "this procedure has no nominals taught");
     } else {
@@ -209,15 +305,40 @@ void App::DrawAlignPlacePanel()
             ImGui::EndCombo();
         }
     }
-    double nomMx = 0.0, nomMy = 0.0;
     if (nom) {
-        ImGui::Text("local     %.4f, %.4f mm", nom->lx, nom->ly);
-        if (haveLive) {
-            // Where that local point sits on THIS part. Recomputed every frame
-            // from the live frame — this is the number that moves with the part.
-            AlignLocalToMachine(frame, nom->lx, nom->ly, &nomMx, &nomMy);
-            ImGui::Text("machine   %.4f, %.4f mm", nomMx, nomMy);
+        // Detection models for the object's two marks — the only thing standing
+        // between this page and an unattended placement. Same teach page the
+        // alignment stations use; a model is private to THIS nominal and dies
+        // with it. Fallback stays available and is logged when it fires, so a
+        // procedure can never quietly claim to be automatic.
+        AlignNominal& mn = *FindAlignNominal(*a, nom->uid);
+        std::string why;
+        const bool halcon = HalconDetector::Available(&why);
+        for (int k = 1; k <= 2; ++k) {
+            ImGui::PushID(k);
+            const VisionModel* dm = NominalDetector(*a, mn, k);
+            char btn[40];
+            std::snprintf(btn, sizeof(btn), dm ? "Teach pt%d detect..."
+                                               : "Set up pt%d detect...", k);
+            ImGui::BeginDisabled(orch_.Busy());
+            if (ImGui::Button(btn)) OpenVisionTeachForNominal(*a, mn, k);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (!dm)          ImGui::TextDisabled("manual");
+            else if (!halcon) ImGui::TextColored(kBad, "%s", why.c_str());
+            else              ImGui::TextDisabled("%s", dm->method.c_str());
+            ImGui::PopID();
         }
+        ImGui::Checkbox("ask the operator when detection fails", &mn.autoFallbackManual);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("On, a failed detection prompts for that mark instead of\n"
+                              "failing the step - always with a warning in the log, so a\n"
+                              "procedure cannot look automatic while a human marks it.");
+
+        ImGui::Text("local     %.4f, %.4f mm", nom->lx, nom->ly);
+        // Where that local point sits on THIS part (computed above, before the
+        // image, which marks it).
+        if (haveLive) ImGui::Text("machine   %.4f, %.4f mm", nomMx, nomMy);
     }
 
     // ---- The mover ----------------------------------------------------------
@@ -256,6 +377,71 @@ void App::DrawAlignPlacePanel()
         }
     } else if (!plcDevice_.empty()) {
         ImGui::TextColored(kBad, "'%s' is not in the fleet", plcDevice_.c_str());
+    }
+
+    // ---- Guided run ---------------------------------------------------------
+    // The scripted twin of everything below: it prompts for the two marks in
+    // the crosshair pick window, corrects, and re-measures until the residual
+    // is inside tol. Armed like the manual button — a scripted correction is
+    // still a COMPUTED destination, and the arm checkbox is right here.
+    ImGui::SeparatorText("Guided run (placement_procedure.lua)");
+    {
+        const bool running = orch_.lua.Running();
+        // The same flag the manual Move button arms, with its own widget id:
+        // that one lives below the correction, which does not render until both
+        // marks exist — so without a copy here the guided run could never be
+        // armed at all.
+        ImGui::Checkbox("Arm##guided", &jogArmed_);
+        ImGui::SameLine();
+        // On, the script teaches the frame itself, so the run needs no live one
+        // to start — which is what makes this button work on a fresh app.
+        ImGui::Checkbox("align first", &plcAlignFirst_);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Re-teach the frame for THIS part before placing.\n"
+                              "Turn off only when something already aligned it in\n"
+                              "this session - a nominal cannot be used without a\n"
+                              "live frame, and it is cleared at program start,\n"
+                              "DUT open and product load.");
+        ImGui::SetNextItemWidth(70.0f);
+        ImGui::InputInt("tries", &plcTries_, 0, 0);
+        if (plcTries_ < 1) plcTries_ = 1;
+        if (plcTries_ > 5) plcTries_ = 5;
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.0f);
+        ImGui::InputFloat("tol mm", &plcTolMM_, 0.0f, 0.0f, "%.4f");
+        if (plcTolMM_ < 0.0001f) plcTolMM_ = 0.0001f;
+
+        // No live frame needed when the run teaches one — that is the whole
+        // point of align_first, and requiring both would make the button dead
+        // on exactly the fresh-app case it exists for.
+        const bool canRun = nom && (haveLive || plcAlignFirst_) &&
+                            mover && mover->IsConnected() &&
+                            jogArmed_ && !orch_.Busy();
+        ImGui::BeginDisabled(!canRun);
+        if (ImGui::Button("Run guided placement", ImVec2(200.0f, 0.0f)))
+            StartPlacementRun(*a, *nom, plcDevice_);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!running);
+        if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
+        ImGui::EndDisabled();
+
+        if (!nom)                                ImGui::TextDisabled("pick a nominal");
+        else if (!haveLive && !plcAlignFirst_)
+            ImGui::TextDisabled("no live frame - tick 'align first' or run the alignment");
+        else if (!mover || !mover->IsConnected())ImGui::TextDisabled("mover not connected");
+        else if (!jogArmed_)                     ImGui::TextDisabled("arm first");
+        else if (orch_.Busy() && !running)       ImGui::TextDisabled("another run is active");
+        else if (plcAlignFirst_)
+            ImGui::TextDisabled("teaches the frame, then prompts for both marks");
+        else ImGui::TextDisabled("prompts for both marks, corrects, re-measures");
+        if (!plcStartErr_.empty())
+            ImGui::TextColored(kBad, "%s", plcStartErr_.c_str());
+        if (running) {
+            const LuaEngine::Status lst = orch_.lua.GetStatus();
+            ImGui::TextDisabled("%s  %s", LuaEngine::StateName(lst.state),
+                                lst.error.empty() ? "" : lst.error.c_str());
+        }
     }
 
     // ---- Measurement --------------------------------------------------------

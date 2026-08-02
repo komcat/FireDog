@@ -220,8 +220,11 @@ void App::DrawManualAdjustWindow()
 
 // The align_station crosshair pick: the engine worker blocks in
 // AwaitPickInternal while the operator marks a feature on the live image.
-// NOTHING MOVES here — the answer is a point in the current field of view, so
-// the whole window is safe with jog disarmed and needs no arming checkbox.
+// MARKING never moves anything — the answer is a point in the current field of
+// view. One thing here does: a RIGHT click drives the gantry so the clicked
+// feature lands under the centre, which is behind the shared arming flag. The
+// feature exists because the thing to mark is often outside a 3 mm field of
+// view, and hunting for it with the Jog window while a run waits is worse.
 //
 // The pixel->mm conversion happens HERE, not in the command: only the UI knows
 // the live pixelToMm calibration. The crosshair starts at the image centre, so
@@ -253,8 +256,14 @@ void App::DrawAlignPickWindow()
     // whatever had it, so the arrow-key nudge would do nothing until the
     // operator happened to click the window.
     if (newPick) ImGui::SetNextWindowFocus();
-    char title[128];
-    std::snprintf(title, sizeof(title), "Alignment - mark E%d###AlignPick", req.station);
+    // Same window, same handshake, two vocabularies: a frame teach marks E
+    // points, a placement marks points on an object. The ### id is fixed so it
+    // stays ONE window whichever asked.
+    char title[160];
+    if (req.label.empty())
+        std::snprintf(title, sizeof(title), "Alignment - mark E%d###AlignPick", req.station);
+    else
+        std::snprintf(title, sizeof(title), "Mark %s###AlignPick", req.label.c_str());
     ImGui::Begin(title, nullptr,
                  ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNavInputs |
@@ -262,13 +271,18 @@ void App::DrawAlignPickWindow()
     ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());   // always on top
 
     ImGui::TextUnformatted(req.message.c_str());
-    ImGui::TextDisabled("%s  -  E%d  -  click to place (recentres), arrow keys nudge "
-                        "1 px (Shift = 10 px), wheel zooms",
-                        req.alignName.c_str(), req.station);
+    char what[64];
+    if (req.label.empty()) std::snprintf(what, sizeof(what), "E%d", req.station);
+    else                   std::snprintf(what, sizeof(what), "%s", req.label.c_str());
+    ImGui::TextDisabled("%s  -  %s  -  left click places, RIGHT click drives there "
+                        "(arm first), arrows nudge 1 px (Shift = 10), wheel zooms",
+                        req.alignName.c_str(), what);
     ImGui::Separator();
 
     // Footer height reserved so the image never pushes the buttons off-window.
-    const float footerH = ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f;
+    // The button row is twice as tall when it leads with the step diagrams.
+    const float footerH = ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f +
+                          (req.label.empty() ? 0.0f : ImGui::GetFrameHeight());
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImVec2 avail = ImGui::GetContentRegionAvail();
     avail.y = avail.y > footerH + 40.0f ? avail.y - footerH : 40.0f;
@@ -302,6 +316,36 @@ void App::DrawAlignPickWindow()
 
     if (haveImg && imgClicked)
         view.ToCamera(ImGui::GetIO().MousePos, &pickPx_, &pickPy_);
+
+    // RIGHT click drives the gantry so the clicked feature lands under the
+    // centre. This is the one thing in this window that MOVES, so it is behind
+    // the shared arming flag — click-to-move is named in the rules for exactly
+    // this reason, and the window is otherwise safe with jog disarmed.
+    //
+    // No orch_.Busy() gate, deliberately: this window only ever exists DURING a
+    // run, and being able to bring a feature into view is the whole point of
+    // asking a human. manual_adjust jogs mid-run on the same argument.
+    //
+    // The crosshair follows to the centre, because that is where the clicked
+    // feature is going. Leaving it on its old PIXEL would be wrong in a way
+    // nothing on screen shows: after the move, that pixel looks somewhere else,
+    // and OK would capture a point off by the whole move.
+    if (haveImg && imgHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+        pixelToMmX_ > 0.0f && pixelToMmY_ > 0.0f) {
+        float cx = 0.0f, cy = 0.0f;
+        view.ToCamera(ImGui::GetIO().MousePos, &cx, &cy);
+        const double mdx = static_cast<double>(cx - static_cast<float>(cameraW_) * 0.5f) *
+                           static_cast<double>(pixelToMmX_);
+        const double mdy = static_cast<double>(cy - static_cast<float>(cameraH_) * 0.5f) *
+                           static_cast<double>(pixelToMmY_);
+        if (jogArmed_) {
+            workflow_.MoveGantryRelativeMM(mdx, mdy);
+            pickPx_ = static_cast<float>(cameraW_) * 0.5f;
+            pickPy_ = static_cast<float>(cameraH_) * 0.5f;
+        } else {
+            FD_WARN("align", "click-to-move ignored - tick Arm in the pick window");
+        }
+    }
     // Wheel zoom over the image. Applies from the NEXT frame (the view was
     // already computed above) — a frame of latency nobody can see.
     if (haveImg && imgHovered && ImGui::GetIO().MouseWheel != 0.0f) {
@@ -362,6 +406,39 @@ void App::DrawAlignPickWindow()
                           ImVec2(lp.x + lts.x + 4.0f, lp.y + lts.y + 2.0f),
                           IM_COL32(0, 0, 0, 170), 3.0f);
         dl->AddText(lp, IM_COL32(255, 235, 150, 255), lbl);
+
+        // The run's own reference points: the nominal being aimed at, and any
+        // mark already taken. Projected through the LIVE gantry pose, so they
+        // stay on their features as the stage moves — and an off-screen one
+        // becomes an arrow on the edge with its distance, which is the only
+        // thing that distinguishes "the target is over there" from "the target
+        // is where I am looking".
+        double gx = 0.0, gy = 0.0;
+        if (!req.hints.empty() && workflow_.GantryXY(gx, gy) &&
+            pixelToMmX_ > 0.0f && pixelToMmY_ > 0.0f) {
+            WorldMarkView wv;
+            wv.view       = view;
+            wv.boxMin     = origin;
+            wv.boxMax     = ImVec2(origin.x + avail.x, origin.y + avail.y);
+            wv.gx         = gx;
+            wv.gy         = gy;
+            wv.pixelToMmX = pixelToMmX_;
+            wv.pixelToMmY = pixelToMmY_;
+            wv.imgW       = cameraW_;
+            wv.imgH       = cameraH_;
+            for (const ExecutionContext::PickHint& h : req.hints) {
+                CameraMark cm;
+                cm.wx    = h.wx;
+                cm.wy    = h.wy;
+                cm.have  = true;
+                cm.label = h.label.c_str();
+                // The nominal reads as the target, not as another mark: it is
+                // the only one here the operator is NOT placing.
+                cm.col   = (&h == &req.hints.front()) ? IM_COL32(255, 90, 90, 255)
+                                                      : IM_COL32(120, 200, 255, 255);
+                DrawWorldMark(dl, wv, cm, 18.0f);
+            }
+        }
         dl->PopClipRect();
     }
 
@@ -375,6 +452,15 @@ void App::DrawAlignPickWindow()
         if (fromScript) orch_.lua.AnswerPick(ok, r);
         else            orch_.recipe.AnswerPick(ok, r);
     };
+    // The step diagrams lead the button row, and ONLY when an object is being
+    // marked: they draw two corners of a part, which is what place_mark asks
+    // for and is not what E1/E2 are (two features that fix an axis, anywhere on
+    // the part). A `label` is exactly the signal that this is the object case.
+    if (!req.label.empty()) {
+        EnsureMarkIcons();
+        const MarkIcon icons[2] = {markIcons_[0], markIcons_[1]};
+        DrawMarkIconsInline(icons, req.station - 1, ImGui::GetFrameHeight() * 2.0f);
+    }
     ImGui::BeginDisabled(!haveImg);
     if (ImGui::Button("OK (Mark here)", ImVec2(160.0f, 0.0f))) answer(true);
     ImGui::EndDisabled();
@@ -388,6 +474,15 @@ void App::DrawAlignPickWindow()
                        ImGuiSliderFlags_Logarithmic);
     ImGui::SameLine();
     if (ImGui::SmallButton("Fit")) pickZoom_ = 1.0f;
+    ImGui::SameLine();
+    // The gate for right-click-to-move, and the only control here that arms
+    // anything. Shared with the Jog window, so a session that armed once stays
+    // armed — which is the behaviour an operator marking several points wants.
+    ImGui::Checkbox("Arm move", &jogArmed_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Right-click on the image drives the gantry so that point\n"
+                          "lands under the centre crosshair. Marking itself never\n"
+                          "moves anything.");
     ImGui::SameLine();
     ImGui::TextDisabled("%.5f / %.5f mm per px", pixelToMmX_, pixelToMmY_);
     ImGui::End();

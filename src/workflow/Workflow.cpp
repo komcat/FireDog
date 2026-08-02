@@ -1245,8 +1245,10 @@ bool Workflow::GlobalDeltaToAxes(std::size_t devIdx, double gxMM, double gyMM,
 }
 
 bool Workflow::MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM,
-                                  double gzMM)
+                                  double gzMM,
+                                  std::vector<std::pair<std::string, double>>* issued)
 {
+    if (issued) issued->clear();
     if (SafetyBlocked()) {
         FD_WARN("safety", "move blocked - acknowledge the safety alert first");
         return false;
@@ -1286,6 +1288,7 @@ bool Workflow::MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM,
 
     FD_INFO("workflow", "%s relative move dGlobal=(%+.4f, %+.4f, %+.4f) mm | %s",
             m->Name().c_str(), gxMM, gyMM, gzMM, detail.c_str());
+    if (issued) *issued = targets;
     return m->MoveAbsolute(targets);
 }
 

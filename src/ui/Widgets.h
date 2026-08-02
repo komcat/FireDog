@@ -137,7 +137,57 @@ struct CameraMark {
     double      wx = 0.0, wy = 0.0;   // machine mm
     bool        have  = false;
     const char* label = nullptr;
+    // 0 = the default "latched mark" colour. Set to distinguish a reference
+    // point (a nominal, say) from the marks being placed.
+    unsigned int col = 0;
 };
+
+// Everything needed to put a MACHINE-mm point on screen: the view, the box it
+// is clipped to, and the pose + calibration the projection goes through.
+struct WorldMarkView {
+    CameraView view;
+    ImVec2     boxMin{}, boxMax{};
+    double     gx = 0.0, gy = 0.0;          // pose the image centre corresponds to
+    float      pixelToMmX = 0.0f, pixelToMmY = 0.0f;
+    int        imgW = 0, imgH = 0;
+};
+
+// Draw one such point. Inside the box it is a labelled cross; OUTSIDE it is an
+// arrow on the box edge pointing at it, labelled with the distance.
+//
+// The arrow is the point of this function. A nominal 6 mm away is not merely
+// invisible in a 3 mm field of view — nothing on screen distinguishes "the
+// target is off to the left" from "the target is where I am looking", which is
+// exactly how a run ends up measuring one feature and aiming at another.
+void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
+                   float crossLen);
+
+// A loaded PNG, ready to draw. Zero `tex` = not available, and every drawing
+// path treats that as "skip", so a missing asset costs a diagram and nothing
+// else.
+struct MarkIcon {
+    unsigned int tex = 0;
+    int          w = 0, h = 0;
+};
+
+// Decode a PNG to 8-bit RGBA. A leaf helper (no GL, no App): the caller turns
+// the pixels into a texture, because texture lifetime is state and this header
+// keeps none.
+bool LoadPngRGBA(const char* path, std::vector<unsigned char>* rgba,
+                 int* width, int* height);
+
+// The two "mark this corner" diagrams, laid out INLINE on the current line (the
+// footer row, beside the buttons) rather than floated over the image: over the
+// image they cover the thing being marked, and at a zoom that is exactly where
+// the feature tends to be. The one the operator is being asked for is opaque,
+// the other is dimmed to 30 %, so which point is wanted reads at a glance
+// rather than from a caption somebody has to find.
+//
+// `active` is a 0-based index; -1 dims both. Drawn through the window's draw
+// list with an ImGui::Dummy reserving the space, so the tint works on every
+// ImGui version (Image()'s tint parameter did not survive 1.92). Leaves the
+// cursor on the same line — call SameLine-free and just keep adding widgets.
+void DrawMarkIconsInline(const MarkIcon icons[2], int active, float height);
 
 // Inputs, plus pointers to the caller's crosshair/zoom state (App members —
 // this helper keeps none of its own, per the no-state rule above).
@@ -152,15 +202,29 @@ struct MarkPicker {
     // Non-null draws the midpoint of marks 0 and 1 (both latched) under this
     // label — the point those two marks exist to define.
     const char* midpointLabel = nullptr;
+    // Step diagrams, bottom-left. `activeMark` is the 0-based mark the operator
+    // should place next; the other is dimmed.
+    MarkIcon icons[2];
+    int      activeMark = -1;
     float* px   = nullptr;               // crosshair, camera px   (in/out)
     float* py   = nullptr;
     float* zoom = nullptr;               // magnification >= 1     (in/out)
 };
 
+// What a right-click asked for. The widget cannot move anything itself — it
+// has no device access, by this header's rule — so it reports the relative move
+// that would bring the clicked point to the image centre and the caller decides
+// whether that is allowed.
+struct MarkPickerResult {
+    bool   moveRequested = false;
+    double dxMM = 0.0, dyMM = 0.0;   // relative, machine frame
+};
+
 // Fill `box` with the image, the overlay and the input handling, then a footer
-// row (hint + zoom slider + Fit). Arrow keys nudge the crosshair only while the
-// mouse is over the hosting window, so they never steal from a field beside it.
-void DrawMarkPicker(const char* id, const ImVec2& box, const MarkPicker& mp);
+// row (icons + hint + zoom slider + Fit). Arrow keys nudge the crosshair only
+// while the mouse is over the hosting window, so they never steal from a field
+// beside it. LEFT click places the crosshair; RIGHT click asks to drive there.
+MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPicker& mp);
 
 // Connection-state presentation, used by every device page.
 ImVec4      StateColor(ConnState s);

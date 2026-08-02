@@ -27,6 +27,7 @@
 #include "vision/HalconDetector.h"   // Available() — the licence gate for auto mode
 #include "workflow/Workflow.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -86,6 +87,33 @@ double CtxNumber(ExecutionContext& ctx, const std::string& key, bool* found)
     if (!v || !std::holds_alternative<double>(*v)) { if (found) *found = false; return 0.0; }
     if (found) *found = true;
     return std::get<double>(*v);
+}
+
+// Turn a captured pick into a world point: where the device is, plus where in
+// the frame the feature was marked. Read the pose AFTER the capture — nothing
+// moved, but this is the pose the pixel offset is relative to.
+//
+// Shared by align_station and place_mark. One copy on purpose: a second one
+// that read the pose in a different order would be wrong in a way no test
+// would show, only a part placed 20 um out.
+CommandResult CaptureWorldPoint(ExecutionContext& ctx, IMotionController* m,
+                                const ExecutionContext::PickResult& pick,
+                                AlignPoint* e)
+{
+    m->RequestFastPoll();
+    if (!ctx.Sleep(120)) return CommandResult::Fail("stopped");
+    const std::map<std::string, double> live = m->Positions();
+    const auto itx = live.find("X"), ity = live.find("Y");
+    if (itx == live.end() || ity == live.end())
+        return CommandResult::Fail("device '" + m->Name() + "' does not report X/Y");
+
+    e->gx = itx->second;
+    e->gy = ity->second;
+    e->px = pick.px;
+    e->py = pick.py;
+    e->wx = e->gx + pick.dxMM;
+    e->wy = e->gy + pick.dyMM;
+    return CommandResult::Success();
 }
 
 // ---- align_station -------------------------------------------------------
@@ -222,22 +250,10 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     }
 
     // The world point: where the gantry is, plus where in the frame the feature
-    // was marked (by hand or by the detector). Read the pose AFTER the capture —
-    // nothing moved, but this is the pose the pixel offset is relative to.
-    m->RequestFastPoll();
-    if (!ctx.Sleep(120)) return CommandResult::Fail("stopped");
-    const std::map<std::string, double> live = m->Positions();
-    const auto itx = live.find("X"), ity = live.find("Y");
-    if (itx == live.end() || ity == live.end())
-        return CommandResult::Fail("device '" + proc->device + "' does not report X/Y");
-
+    // was marked (by hand or by the detector).
     AlignPoint e;
-    e.gx = itx->second;
-    e.gy = ity->second;
-    e.px = pick.px;
-    e.py = pick.py;
-    e.wx = e.gx + pick.dxMM;
-    e.wy = e.gy + pick.dyMM;
+    const CommandResult captured = CaptureWorldPoint(ctx, m, pick, &e);
+    if (!captured.ok) return captured;
 
     // Feedback to the live overlays, the moment the point exists. align_solve
     // only fires after BOTH stations, so without this the Aux window would have
@@ -393,6 +409,325 @@ CommandResult ExecMoveLocal(ExecutionContext& ctx, const ParamValues& p)
                                    : "timeout driving to the local coordinate");
 }
 
+// ---- placement -----------------------------------------------------------
+// Put an object that some OTHER device is holding onto a taught nominal. The
+// UI twin of these three is ui/pages/PageAlignPlace.cpp; see
+// docs/alignment-procedure-design.md §6c for why only a delta can cross
+// between two devices whose origins have never been related.
+
+// ctx key for one component of a marked object point: "<prefix>_p1_wx" etc.
+std::string ObjKey(const std::string& prefix, int index, const char* field)
+{
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%s_p%d_%s", prefix.c_str(), index, field);
+    return buf;
+}
+
+CommandResult ExecPlaceMark(ExecutionContext& ctx, const ParamValues& p)
+{
+    const AlignProc* proc = ctx.FindAlign(p.GetString("alignment"));
+    if (!proc) return CommandResult::Fail("alignment procedure not found: '" +
+                                          p.GetString("alignment") + "'");
+    const int index = p.GetInt("index");
+    if (index != 1 && index != 2) return CommandResult::Fail("index must be 1 or 2");
+
+    // The pose device is the one carrying the CAMERA — the alignment's own
+    // device — never the one holding the object. A mark is a measurement
+    // through the lens, so it is relative to where the lens is.
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, proc->device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    // How the mark is found. A nominal may carry a taught model per mark; that
+    // is what makes a placement unattended. Resolve it BEFORE anything else so a
+    // stale uid costs nothing, and mirror align_station's auto path exactly —
+    // the detector fills the SAME PickResult the crosshair fills, so everything
+    // downstream is identical either way.
+    const AlignNominal* nom = FindAlignNominal(*proc, p.GetString("nominal"));
+    const VisionModel*  model = nullptr;
+    std::string autoErr;
+    if (nom) {
+        const std::string det = (index == 1) ? nom->det1 : nom->det2;
+        if (!det.empty()) {
+            model = ctx.FindVisionModel(det);
+            if (!model)
+                autoErr = "point " + std::to_string(index) + " names no detection "
+                          "model '" + det + "'";
+            else if (std::string why; !HalconDetector::Available(&why))
+                autoErr = "cannot run detection model '" + model->name + "': " + why;
+        }
+    } else if (!p.GetString("nominal").empty()) {
+        return CommandResult::Fail("alignment '" + proc->name + "' has no nominal '" +
+                                   p.GetString("nominal") + "'");
+    }
+
+    ExecutionContext::PickResult pick;
+    bool manual = (model == nullptr && autoErr.empty());   // no model asked for at all
+
+    if (model && autoErr.empty()) {
+        // Prove the frame is post-move before believing it — the same gate
+        // align_station and auto_focus use.
+        const int fresh = p.GetInt("fresh_frames");
+        if (fresh > 0) {
+            const unsigned long long seq0 = ctx.Wf().CameraFrameSeq();
+            const auto fr = ctx.WaitUntil(
+                [&] {
+                    return ctx.Wf().CameraFrameSeq() >=
+                           seq0 + static_cast<unsigned long long>(fresh);
+                },
+                2000, 10);
+            if (fr == ExecutionContext::WaitResult::Stopped)
+                return CommandResult::Fail("stopped");
+            if (fr == ExecutionContext::WaitResult::Timeout)
+                FD_WARN("align", "object point %d: no new frame within 2000 ms - "
+                                 "detecting on the latest frame (feed stalled?)", index);
+        }
+
+        VisionDetection det;
+        ctx.Wf().Detect(*model, ctx.VisionDir(), &det);
+        if (det.ok) {
+            pick.px   = det.xPx;
+            pick.py   = det.yPx;
+            pick.dxMM = det.dxMM;
+            pick.dyMM = det.dyMM;
+            FD_INFO("align", "object point %d: '%s' found at (%.2f, %.2f) px, score %.3f",
+                    index, model->name.c_str(), det.xPx, det.yPx, det.score);
+        } else {
+            autoErr = "'" + model->name + "': " + det.error;
+        }
+    }
+
+    // Detection asked for and not delivered. Falling back is the nominal's
+    // choice and defaults ON — but never silently: the warning names what
+    // failed, so nobody can believe a run was automatic when it was not.
+    if (!autoErr.empty()) {
+        if (nom && !nom->autoFallbackManual)
+            return CommandResult::Fail(autoErr + " (tick the nominal's fallback, or "
+                                       "re-teach the model)");
+        FD_WARN("align", "object point %d: %s - asking the operator", index,
+                autoErr.c_str());
+        manual = true;
+    }
+
+    // Nothing drives here: the object has to be in view already, which the
+    // script arranges with move_to_position. Keeping the move out means the two
+    // marks may come from two different views without this command growing a
+    // second station concept.
+    ExecutionContext::PickRequest req;
+    req.alignName = proc->name;
+    req.station   = index;
+    // The window TITLE. A caller that repeats the pair (a verify pass) can say
+    // so here — without it, the second round is indistinguishable from the
+    // first and reads as a second object being placed.
+    req.label = ctx.Substitute(p.GetString("label"));
+    if (req.label.empty()) {
+        char lbl[64];
+        std::snprintf(lbl, sizeof(lbl), "point %d of 2 on the object", index);
+        req.label = lbl;
+    }
+
+    // What to show the operator alongside the crosshair. Both are computed
+    // here, because only the worker has the live frame and the run context.
+    //
+    // The NOMINAL first: it is the thing the marks are being measured against,
+    // and seeing it — or an arrow saying it is 5.6 mm off to the left — is what
+    // turns "mark the object" into "mark THIS object".
+    if (nom) {
+        AlignResult frame;
+        if (ctx.Wf().LiveFrame(proc->uid, &frame) && frame.valid) {
+            ExecutionContext::PickHint h;
+            AlignLocalToMachine(frame, nom->lx, nom->ly, &h.wx, &h.wy);
+            h.label = nom->name;
+            req.hints.push_back(std::move(h));
+        }
+    }
+    // ...then the mark already taken, so the second one can be placed relative
+    // to the first rather than from memory.
+    for (int prev = 1; prev < index; ++prev) {
+        bool fx = false, fy = false;
+        ExecutionContext::PickHint h;
+        h.wx = CtxNumber(ctx, ObjKey(p.GetString("ctx_prefix"), prev, "wx"), &fx);
+        h.wy = CtxNumber(ctx, ObjKey(p.GetString("ctx_prefix"), prev, "wy"), &fy);
+        if (!fx || !fy) continue;
+        h.label = "pt" + std::to_string(prev);
+        req.hints.push_back(std::move(h));
+    }
+
+    req.message = ctx.Substitute(p.GetString("message"));
+    if (req.message.empty()) {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf),
+                      "Mark point %d of 2 on the object (their MIDPOINT is its "
+                      "reference point), then OK", index);
+        req.message = buf;
+    }
+
+    if (manual && !ctx.AwaitPick(req, &pick))
+        return CommandResult::Fail("cancelled by operator");
+
+    AlignPoint e;
+    const CommandResult captured = CaptureWorldPoint(ctx, m, pick, &e);
+    if (!captured.ok) return captured;
+
+    const std::string prefix = p.GetString("ctx_prefix");
+    ctx.CtxSet(ObjKey(prefix, index, "gx"), e.gx);
+    ctx.CtxSet(ObjKey(prefix, index, "gy"), e.gy);
+    ctx.CtxSet(ObjKey(prefix, index, "px"), e.px);
+    ctx.CtxSet(ObjKey(prefix, index, "py"), e.py);
+    ctx.CtxSet(ObjKey(prefix, index, "wx"), e.wx);
+    ctx.CtxSet(ObjKey(prefix, index, "wy"), e.wy);
+
+    FD_INFO("align", "object point %d (%s): %s (%.4f, %.4f) + mark (%+.4f, %+.4f) = "
+                     "(%.4f, %.4f) mm",
+            index, manual ? "manual" : "auto", proc->device.c_str(), e.gx, e.gy,
+            pick.dxMM, pick.dyMM, e.wx, e.wy);
+    return CommandResult::Success();
+}
+
+// The shared arithmetic behind place_apply and place_move: read the two marks,
+// take their midpoint, and difference it against the nominal expressed on THIS
+// part. Everything lands in ctx either way, so a dry run and a real one leave
+// the same trail.
+struct PlaceSolution {
+    double objMx = 0.0, objMy = 0.0, objLx = 0.0, objLy = 0.0;
+    double nomMx = 0.0, nomMy = 0.0;
+    double dMx = 0.0, dMy = 0.0;     // machine-frame correction VECTOR
+    double dLx = 0.0, dLy = 0.0;     // the same thing in local (O1) terms
+    double dist = 0.0;
+};
+
+CommandResult SolvePlacement(ExecutionContext& ctx, const ParamValues& p,
+                             const AlignProc** procOut, PlaceSolution* out)
+{
+    std::string err;
+    AlignResult frame;
+    const AlignProc* proc = LiveProc(ctx, p.GetString("alignment"), &frame, &err);
+    if (!proc) return CommandResult::Fail(err);
+    *procOut = proc;
+
+    const AlignNominal* nom = FindAlignNominal(*proc, p.GetString("nominal"));
+    if (!nom)
+        return CommandResult::Fail("alignment '" + proc->name + "' has no nominal '" +
+                                   p.GetString("nominal") + "'");
+
+    const std::string prefix = p.GetString("ctx_prefix");
+    bool ok = true, f = false;
+    const double p1x = CtxNumber(ctx, ObjKey(prefix, 1, "wx"), &f); ok = ok && f;
+    const double p1y = CtxNumber(ctx, ObjKey(prefix, 1, "wy"), &f); ok = ok && f;
+    const double p2x = CtxNumber(ctx, ObjKey(prefix, 2, "wx"), &f); ok = ok && f;
+    const double p2y = CtxNumber(ctx, ObjKey(prefix, 2, "wy"), &f); ok = ok && f;
+    if (!ok)
+        return CommandResult::Fail("no marked object points in ctx under prefix '" +
+                                   prefix + "' - run place_mark for 1 and 2 first");
+
+    out->objMx = (p1x + p2x) * 0.5;
+    out->objMy = (p1y + p2y) * 0.5;
+    AlignMachineToLocal(frame, out->objMx, out->objMy, &out->objLx, &out->objLy);
+    // The nominal on THIS part: local coordinates through the frame just taught.
+    AlignLocalToMachine(frame, nom->lx, nom->ly, &out->nomMx, &out->nomMy);
+
+    // The correction. Taken in MACHINE mm as nominal - object: the frame's
+    // origin cancels, which is what makes the answer meaningful to a device
+    // that has never been related to that origin. The rotation does NOT cancel,
+    // and must not — both points came through the same live frame.
+    out->dMx  = out->nomMx - out->objMx;
+    out->dMy  = out->nomMy - out->objMy;
+    out->dLx  = nom->lx - out->objLx;
+    out->dLy  = nom->ly - out->objLy;
+    out->dist = std::sqrt(out->dMx * out->dMx + out->dMy * out->dMy);
+
+    ctx.CtxSet(prefix + "_obj_x",  out->objMx);
+    ctx.CtxSet(prefix + "_obj_y",  out->objMy);
+    ctx.CtxSet(prefix + "_obj_lx", out->objLx);
+    ctx.CtxSet(prefix + "_obj_ly", out->objLy);
+    ctx.CtxSet(prefix + "_nom_x",  out->nomMx);
+    ctx.CtxSet(prefix + "_nom_y",  out->nomMy);
+    ctx.CtxSet(prefix + "_dx",     out->dMx);
+    ctx.CtxSet(prefix + "_dy",     out->dMy);
+    ctx.CtxSet(prefix + "_dlx",    out->dLx);
+    ctx.CtxSet(prefix + "_dly",    out->dLy);
+    ctx.CtxSet(prefix + "_dist",   out->dist);
+    return CommandResult::Success();
+}
+
+CommandResult ExecPlaceApply(ExecutionContext& ctx, const ParamValues& p)
+{
+    const AlignProc* proc = nullptr;
+    PlaceSolution s;
+    const CommandResult solved = SolvePlacement(ctx, p, &proc, &s);
+    if (!solved.ok) return solved;
+
+    FD_INFO("align", "'%s' -> '%s': object (%.4f, %.4f), nominal (%.4f, %.4f), "
+                     "delta (%+.4f, %+.4f) = %.4f mm",
+            proc->name.c_str(), p.GetString("nominal").c_str(), s.objMx, s.objMy,
+            s.nomMx, s.nomMy, s.dMx, s.dMy, s.dist);
+    return CommandResult::Success();
+}
+
+CommandResult ExecPlaceMove(ExecutionContext& ctx, const ParamValues& p)
+{
+    const AlignProc* proc = nullptr;
+    PlaceSolution s;
+    const CommandResult solved = SolvePlacement(ctx, p, &proc, &s);
+    if (!solved.ok) return solved;
+
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, p.GetString("device"), &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    // The ceiling the page puts on screen, as a hard failure here: unattended,
+    // there is nobody to notice that a mis-taught frame turned a 0.2 mm nudge
+    // into a 20 mm lunge. A correction bigger than this is a broken input, not
+    // a big correction.
+    const double maxMM = p.GetDouble("max_mm");
+    if (s.dist > maxMM) {
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+                      "correction %.4f mm exceeds max_mm %.4f - check the frame and "
+                      "the marks (object (%.4f, %.4f), nominal (%.4f, %.4f))",
+                      s.dist, maxMM, s.objMx, s.objMy, s.nomMx, s.nomMy);
+        return CommandResult::Fail(buf);
+    }
+
+    const double vel = p.GetDouble("velocity_mm_s");
+    if (vel > 0.0 && !ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx), vel))
+        return CommandResult::Fail("velocity change rejected");
+
+    // Layer 2 maps the machine-frame vector onto this device's own axes and
+    // adds it to the live pose. `issued` comes back so the arrival wait watches
+    // exactly what was commanded rather than recomputing from a moving pose.
+    std::vector<std::pair<std::string, double>> issued;
+    if (!ctx.Wf().MoveRelativeGlobal(static_cast<std::size_t>(idx), s.dMx, s.dMy, 0.0,
+                                     &issued))
+        return CommandResult::Fail("placement move rejected");
+
+    const auto arrived = WaitArrive(ctx, m, issued, p.GetDouble("tol_mm"),
+                                    p.GetInt("timeout_ms"));
+    if (arrived != ExecutionContext::WaitResult::Ok) {
+        ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
+        return CommandResult::Fail(arrived == ExecutionContext::WaitResult::Stopped
+                                       ? "stopped"
+                                       : "timeout driving the placement correction");
+    }
+    const CommandResult settled = WaitSettle(ctx, m, idx);
+    if (!settled.ok) return settled;
+
+    // The marks describe where the object WAS. Drop them so a second
+    // place_apply cannot silently reuse them and report a correction that has
+    // already been spent — the same reason the page clears them.
+    const std::string prefix = p.GetString("ctx_prefix");
+    for (int i = 1; i <= 2; ++i)
+        for (const char* fld : {"gx", "gy", "px", "py", "wx", "wy"})
+            ctx.CtxErase(ObjKey(prefix, i, fld));
+
+    FD_INFO("align", "'%s': placement move of %.4f mm issued on %s - re-mark to "
+                     "measure the residual",
+            proc->name.c_str(), s.dist, p.GetString("device").c_str());
+    return CommandResult::Success();
+}
+
 } // namespace
 
 void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
@@ -466,6 +801,64 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                   },
                   CommandSpec::Needs::None, ExecMoveLocal});
 
+    // ---- placement ------------------------------------------------------
+    reg.Register({"place_mark", "Align",
+                  "Ask the operator to mark one point on a gripped object",
+                  {
+                      {"alignment", PT::AlignUid, true, {}, 0, 0, {},
+                       "alignment procedure - its device is the one carrying the camera"},
+                      {"index", PT::Int, true, {}, 1, 2, {}, "1 or 2; the MIDPOINT is the point"},
+                      {"nominal", PT::String, false, "", 0, 0, {},
+                       "nominal whose taught detector finds this mark; empty = always ask"},
+                      {"message", PT::String, false, "", 0, 0, {},
+                       "instruction shown to the operator ({key} substitutes ctx values)"},
+                      {"label", PT::String, false, "", 0, 0, {},
+                       "window title text; say which pass this is when repeating"},
+                      {"ctx_prefix", PT::String, false, "place", 0, 0, {},
+                       "marked point goes to <prefix>_p<N>_gx/gy/px/py/wx/wy"},
+                      {"fresh_frames", PT::Int, false, 2, 0, 10, {},
+                       "detected marks only: new frames required before detecting "
+                       "(0 = use the latest, blind)"},
+                      PreDelayParam(), PostDelayParam(),
+                  },
+                  CommandSpec::Needs::None, ExecPlaceMark});
+
+    reg.Register({"place_apply", "Align",
+                  "Compute the correction from the marked object to a nominal (no motion)",
+                  {
+                      {"alignment", PT::AlignUid, true, {}, 0, 0, {},
+                       "alignment procedure (uid or name)"},
+                      {"nominal", PT::String, true, {}, 0, 0, {},
+                       "nominal on that procedure (uid or name)"},
+                      {"ctx_prefix", PT::String, false, "place", 0, 0, {},
+                       "reads <prefix>_p1_*/<prefix>_p2_*, writes <prefix>_obj_x/_obj_y/"
+                       "_obj_lx/_obj_ly/_nom_x/_nom_y/_dx/_dy/_dlx/_dly/_dist"},
+                  },
+                  CommandSpec::Needs::None, ExecPlaceApply});
+
+    reg.Register({"place_move", "Align",
+                  "Move the holding device so the marked object lands on a nominal",
+                  {
+                      {"alignment", PT::AlignUid, true, {}, 0, 0, {},
+                       "alignment procedure (uid or name)"},
+                      {"nominal", PT::String, true, {}, 0, 0, {},
+                       "nominal on that procedure (uid or name)"},
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {},
+                       "the device HOLDING the object (not the camera's)"},
+                      {"max_mm", PT::Double, false, 2.0, 0.0001, 50.0, {},
+                       "refuse a correction larger than this - unattended, a "
+                       "mis-taught frame has nobody to notice it"},
+                      {"ctx_prefix", PT::String, false, "place", 0, 0, {},
+                       "same prefix place_mark wrote; the marks are DROPPED after the move"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {},
+                       "arrival tolerance"},
+                      {"velocity_mm_s", PT::Double, false, 0.0, 0, 0, {},
+                       "optional velocity for this move; 0 = keep current"},
+                      PreDelayParam(), PostDelayParam(),
+                  },
+                  CommandSpec::Needs::None, ExecPlaceMove});
+
     // Typed one-step wrapper over the procedure script — the `xcan` pattern, so
     // the procedure stays an editable .lua while a recipe runs it as one step.
     CommandRegistry* rp = &reg;
@@ -488,6 +881,56 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                       // shipped one — the Alignment page's Run button already
                       // prefers it, and "the same procedure" must not mean a
                       // different file depending on which surface launched it.
+                      const std::string file = c.ResolveScript(p.GetString("file"));
+                      const std::string err = RunLuaFile(file, *rp, c, {}, false, nullptr);
+                      return err.empty() ? CommandResult::Success()
+                                         : CommandResult::Fail(err);
+                  }});
+
+    // The placement equivalent, and the reason the whole thing is a script: the
+    // procedure is a LOOP — measure, correct, measure again, stop when the
+    // residual is inside tolerance — and a loop with an operator in it belongs
+    // somewhere editable, not compiled into a step.
+    //
+    // It does NOT drive to a viewing position. Getting the object in front of
+    // the camera is `move_to_position` in the recipe above it, where the editor
+    // offers a real device-scoped picker; a `position` parameter here would have
+    // to be a raw uid in a text box, and would be the second command in this
+    // family pretending to be a mover.
+    reg.Register({"place_run", "Align",
+                  "Run a whole placement (placement_procedure.lua)",
+                  {
+                      {"alignment", PT::AlignUid, true, {}, 0, 0, {},
+                       "alignment procedure (uid or name)"},
+                      {"nominal", PT::String, true, {}, 0, 0, {},
+                       "nominal to place the object on"},
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {},
+                       "the device HOLDING the object"},
+                      {"align_first", PT::Bool, false, true, 0, 0, {},
+                       "re-teach the frame before placing; off when the program "
+                       "already aligned this part and is placing several objects"},
+                      {"tries", PT::Int, false, 2, 1, 5, {},
+                       "measure/correct attempts before the residual must be inside tol"},
+                      {"tol_mm", PT::Double, false, 0.02, 0.0001, 5.0, {},
+                       "residual that counts as placed"},
+                      {"max_mm", PT::Double, false, 2.0, 0.0001, 50.0, {},
+                       "largest single correction allowed"},
+                      {"ctx_prefix", PT::String, false, "place", 0, 0, {},
+                       "ctx prefix the script marks and solves under"},
+                      {"file", PT::ScriptFile, false,
+                       "config/scripts/placement_procedure.lua", 0, 0, {},
+                       "script override; the product's own copy of this filename wins"},
+                  },
+                  CommandSpec::Needs::None,
+                  [rp](ExecutionContext& c, const ParamValues& p) {
+                      c.CtxSet("place_alignment", p.GetString("alignment"));
+                      c.CtxSet("place_nominal",   p.GetString("nominal"));
+                      c.CtxSet("place_device",    p.GetString("device"));
+                      c.CtxSet("place_align_first", p.GetBool("align_first"));
+                      c.CtxSet("place_tries",     static_cast<double>(p.GetInt("tries")));
+                      c.CtxSet("place_tol_mm",    p.GetDouble("tol_mm"));
+                      c.CtxSet("place_max_mm",    p.GetDouble("max_mm"));
+                      c.CtxSet("place_prefix",    p.GetString("ctx_prefix"));
                       const std::string file = c.ResolveScript(p.GetString("file"));
                       const std::string err = RunLuaFile(file, *rp, c, {}, false, nullptr);
                       return err.empty() ? CommandResult::Success()

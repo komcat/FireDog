@@ -138,8 +138,8 @@ void App::DrawAlignNominalPanel()
     ImGui::BeginChild("anImg", ImVec2(imgW, avail.y), ImGuiChildFlags_Borders);
     {
         const CameraMark marks[2] = {
-            {nomPt_[0].wx, nomPt_[0].wy, nomHave_[0], "pt1"},
-            {nomPt_[1].wx, nomPt_[1].wy, nomHave_[1], "pt2"},
+            {nomPt_[0].wx, nomPt_[0].wy, nomHave_[0], "pt1", 0},
+            {nomPt_[1].wx, nomPt_[1].wy, nomHave_[1], "pt2", 0},
         };
         MarkPicker mp;
         mp.tex           = cameraTex_;
@@ -153,10 +153,21 @@ void App::DrawAlignNominalPanel()
         mp.marks         = marks;
         mp.markCount     = 2;
         mp.midpointLabel = "nominal";
+        EnsureMarkIcons();
+        mp.icons[0]      = markIcons_[0];
+        mp.icons[1]      = markIcons_[1];
+        mp.activeMark    = nomActive_;
         mp.px            = &nomPx_;
         mp.py            = &nomPy_;
         mp.zoom          = &nomZoom_;
-        DrawMarkPicker("##nomInput", ImGui::GetContentRegionAvail(), mp);
+        const MarkPickerResult r =
+            DrawMarkPicker("##nomInput", ImGui::GetContentRegionAvail(), mp);
+        // Right-click drove somewhere: click-to-move is an armed action (the
+        // rule the Aux window's version follows), and layer 2 owns the move.
+        if (r.moveRequested) {
+            if (jogArmed_) workflow_.MoveGantryRelativeMM(r.dxMM, r.dyMM);
+            else FD_WARN("align", "click-to-move ignored - arm jog first");
+        }
     }
     ImGui::EndChild();
     ImGui::SameLine();

@@ -123,6 +123,9 @@ nlohmann::json NominalToJson(const AlignNominal& n)
     j["span_mm"]  = n.spanMm;
     j["taught_at"] = n.taughtAt;
     j["frame_at"]  = n.frameAt;
+    j["det1"]      = n.det1;
+    j["det2"]      = n.det2;
+    j["auto_fallback_manual"] = n.autoFallbackManual;
     return j;
 }
 
@@ -142,6 +145,9 @@ AlignNominal NominalFromJson(const nlohmann::json& j)
     n.spanMm   = j.value("span_mm", 0.0);
     n.taughtAt = j.value("taught_at", "");
     n.frameAt  = j.value("frame_at", "");
+    n.det1     = j.value("det1", "");
+    n.det2     = j.value("det2", "");
+    n.autoFallbackManual = j.value("auto_fallback_manual", true);
     return n;
 }
 

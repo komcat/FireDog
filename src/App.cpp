@@ -210,6 +210,30 @@ void App::Update(float dt)
 // blocks: the editor stays up and its Unsaved Changes modal (Save / Discard /
 // Cancel) completes the switch to edLeaveTarget_. Entering a takeover page
 // from a hardware page remembers it so the editor's Close returns there.
+// The pt1/pt2 diagrams shown over the live image while an object is being
+// marked. Loaded lazily and ONCE (success or failure): the first surface that
+// wants them runs long after GL is up, and a missing assets/ folder must cost a
+// diagram, never a frame of retrying every draw.
+void App::EnsureMarkIcons()
+{
+    if (markIconsTried_) return;
+    markIconsTried_ = true;
+
+    const char* paths[2] = {"assets/icons/pt1.png", "assets/icons/pt2.png"};
+    for (int i = 0; i < 2; ++i) {
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+        if (!LoadPngRGBA(paths[i], &rgba, &w, &h)) {
+            FD_WARN("ui", "mark icon '%s' not loaded - the step diagram is skipped",
+                    paths[i]);
+            continue;
+        }
+        markIcons_[i].tex = host_.MakeTextureRGBA(w, h, rgba.data());
+        markIcons_[i].w   = w;
+        markIcons_[i].h   = h;
+    }
+}
+
 void App::SwitchPage(Page p)
 {
     if (currentPage_ == p) return;

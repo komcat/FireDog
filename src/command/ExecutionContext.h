@@ -53,10 +53,29 @@ public:
     // Crosshair pick (the Alignment Procedure's manual mode): the run pauses
     // while the UI shows the live camera image and the operator marks a feature.
     // Nothing moves — the answer is a point in the CURRENT field of view.
+    // A point in MACHINE mm the pick window should show while the operator
+    // marks: the nominal being aimed at, and whichever mark is already taken.
+    // The worker computes them because only it has the live frame and the run
+    // context; the UI only projects them through the current pose.
+    //
+    // Off-screen is the case that matters. A nominal 6 mm away is invisible in a
+    // 3 mm field of view, and nothing else on screen distinguishes "the target
+    // is off to the left" from "the target is where I am looking".
+    struct PickHint {
+        double      wx = 0.0, wy = 0.0;
+        std::string label;
+    };
+
     struct PickRequest {
         std::string message;
         std::string alignName;         // procedure being taught (window title)
         int         station = 1;       // 1 => E1, 2 => E2
+        // What the operator is being asked to mark, when it is not an E point:
+        // empty keeps the alignment wording ("mark E1"), set replaces it, so a
+        // placement can say "point 1 of 2 on the lens" through the SAME window
+        // and the same handshake. The window identity is unchanged either way.
+        std::string label;
+        std::vector<PickHint> hints;
     };
     // The UI answers in camera pixels AND in millimetres: only the UI knows the
     // live pixel_to_mm calibration, so the conversion stays there and the worker
@@ -101,6 +120,11 @@ public:
     // ---- Run context (inter-step data) --------------------------------------
     void                    CtxSet(const std::string& key, CtxValue v);
     std::optional<CtxValue> CtxGet(const std::string& key) const;
+    // Remove a key. For a measurement a later step must NOT silently reuse:
+    // place_move drops the object marks it just consumed, so a second solve
+    // has to be given fresh ones rather than re-deriving a correction that has
+    // already been applied. Missing keys are not an error.
+    void                    CtxErase(const std::string& key);
     std::vector<std::pair<std::string, CtxValue>> CtxSnapshot() const;
     // Replace "{key}" occurrences with ctx values (unknown keys left as-is).
     std::string Substitute(const std::string& text) const;

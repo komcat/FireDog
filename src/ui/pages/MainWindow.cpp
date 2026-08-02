@@ -90,6 +90,26 @@ void App::DrawMainWindow()
                     ToggleEditorPage(Page::TransformEdit);
                 if (ImGui::MenuItem("Alignment", nullptr, currentPage_ == Page::Align))
                     ToggleEditorPage(Page::Align);
+                // Placement IS reachable from a nominal's Place... button, but
+                // that is three clicks deep inside another page — findable only
+                // by someone who already knows it exists. It opens on whatever
+                // procedure the Alignment page has selected and picks that
+                // procedure's own combo up from there, so the menu costs it
+                // nothing: unlike the two teach pages, it carries no state that
+                // only the caller could supply.
+                {
+                    std::vector<AlignProc>& al = session_.Aligns();
+                    const bool haveProc = alignSel_ >= 0 &&
+                                          alignSel_ < static_cast<int>(al.size());
+                    if (ImGui::MenuItem("Placement", nullptr,
+                                        currentPage_ == Page::AlignPlace, haveProc)) {
+                        AlignProc& a = al[static_cast<std::size_t>(alignSel_)];
+                        OpenAlignPlace(a, a.nominals.empty() ? std::string()
+                                                             : a.nominals.front().uid);
+                    }
+                    if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip("Select an alignment procedure first (View > Alignment)");
+                }
                 if (ImGui::MenuItem("Scripts", nullptr, currentPage_ == Page::Scripts))
                     ToggleEditorPage(Page::Scripts);
                 if (ImGui::MenuItem("DUT Records", nullptr, currentPage_ == Page::DutView)) {
@@ -168,10 +188,13 @@ void App::DrawMainWindow()
             // does not update prevPage_, so Close has to name Align explicitly
             // or it would jump to whatever hardware page happened to be open
             // before the Alignment page was.
-            const Page closeTo = (currentPage_ == Page::VisionTeach ||
-                                  currentPage_ == Page::AlignNominal ||
-                                  currentPage_ == Page::AlignPlace) ? Page::Align
-                                                                    : prevPage_;
+            // Vision teach is shared by the alignment stations and the nominals'
+            // object detectors, so it carries its own return page rather than
+            // naming one here.
+            const Page closeTo = (currentPage_ == Page::VisionTeach) ? visionReturnPage_
+                                 : (currentPage_ == Page::AlignNominal ||
+                                    currentPage_ == Page::AlignPlace)  ? Page::Align
+                                                                       : prevPage_;
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
             ImGui::TextUnformatted(title);

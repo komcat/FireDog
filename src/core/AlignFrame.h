@@ -91,6 +91,19 @@ struct AlignNominal {
     double      spanMm = 0.0;         // |p1->p2| — diagnostic, like AlignResult::spanMm
     std::string taughtAt;             // "2026-08-01T10:22:31"
     std::string frameAt;              // capturedAt of the frame it was converted through
+
+    // How the OBJECT's two marks are found when something is placed here.
+    // Empty uid = ask the operator; set = a taught detection model, named
+    // `vdet_<procUid>_<nomUid>_p<N>` on the same private-ownership rule as an
+    // alignment station's detector.
+    //
+    // The fallback defaults ON here, unlike a station's, because a placement is
+    // a per-part operation an operator is usually standing over: failing the
+    // whole run beats nothing, but asking beats both. It is never SILENT — a
+    // fallback logs a warning naming what failed, so a procedure cannot quietly
+    // claim to be automatic while a human places every point.
+    std::string det1, det2;
+    bool        autoFallbackManual = true;
 };
 
 // The document: a named, uid'd, reusable procedure.

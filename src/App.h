@@ -11,6 +11,7 @@
 #include "imgui.h"
 
 #include "ui/GlHost.h"
+#include "ui/Widgets.h"        // MarkIcon (the pt1/pt2 step diagrams)
 #include "command/CommandRegistry.h"   // ParamSpec (schema forms)
 #include "command/LuaEngine.h"         // ScriptInfo (Scripts page)
 #include "command/Orchestration.h"     // registry + engines + runner, one unit
@@ -30,11 +31,13 @@ namespace firedog {
 // Which content the Main window shows. Hardware pages are selected via the
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
-// VisionTeach, AlignNominal and AlignPlace are takeovers like the rest, but
-// deliberately NOT in the View menu: each always belongs to one alignment
-// procedure, so the only way in is that procedure's button, and their Close
-// always returns to Align rather than to prevPage_ (a takeover->takeover switch
-// does not update prevPage_).
+// VisionTeach and AlignNominal are takeovers that are deliberately NOT in the
+// View menu: each teaches ONE station or nominal, so the only way in is that
+// thing's own button. AlignPlace is in the menu — it carries no state the
+// caller has to supply (it picks its own procedure and nominal), and being
+// three clicks deep inside another page made it findable only by someone who
+// already knew it was there. All three Close back to Align rather than to
+// prevPage_ (a takeover->takeover switch does not update prevPage_).
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
                   Align, VisionTeach, AlignNominal, AlignPlace };
@@ -181,6 +184,13 @@ private:
     // COMPUTE ONLY — nothing is wired to move yet.
     void DrawAlignPlacePanel();                    // page body (takeover frame)
     void OpenAlignPlace(const AlignProc& a, const std::string& nomUid);
+    // Launch placement_procedure.lua with this page's settings — the guided
+    // twin of the manual flow beside it, and the SAME code path a recipe's
+    // place_run step takes. Without it the script is only reachable from a
+    // recipe, because running it bare from the Scripts page injects no
+    // parameters and it fails on the first one by design.
+    void StartPlacementRun(const AlignProc& a, const AlignNominal& n,
+                           const std::string& device);
     // Vision detection teach window (GLOBAL, non-modal — a big live image does
     // not fit the Alignment page's middle column). Opened from a station card;
     // tunes that station's detection model until it finds the feature reliably.
@@ -197,6 +207,16 @@ private:
     const VisionModel* StationDetector(const AlignProc& a, int station) const;
     void DropAlignStationDetectors(const AlignProc& a);  // with the procedure
     void CopyAlignStationDetectors(const AlignProc& src, AlignProc& dst);
+    // The same page and the same private-ownership rule, for the two marks that
+    // locate an OBJECT being placed on a nominal: `vdet_<procUid>_<nomUid>_p<N>`.
+    // Teaching these is what lets a placement run without an operator; a
+    // detector that fails still falls back to asking, loudly.
+    void OpenVisionTeachForNominal(AlignProc& a, AlignNominal& n, int index);
+    const VisionModel* NominalDetector(const AlignProc& a, const AlignNominal& n,
+                                       int index) const;
+    void DropNominalDetectors(const AlignProc& a, const AlignNominal& n);
+    // Copy a model under a new private name, patch file included; "" on failure.
+    std::string CopyVisionModelAs(const VisionModel& src, const std::string& newName);
     void DrawVisionTeachImage(VisionModel& m);           // live image + ROI/box drag
     void DrawVisionTeachParams(VisionModel& m);          // method + parameter form
     void RefreshVisionTemplateTex(const VisionModel& m); // taught-patch thumbnail
@@ -275,6 +295,13 @@ private:
     // UpdateCameraTexture() by every view that shows the live image (Aux,
     // Camera page); the isNew flag makes a second call per frame a no-op.
     void UpdateCameraTexture();
+    // The pt1/pt2 step diagrams (assets/icons), loaded once on first use — GL
+    // has to be up, and every surface that wants them draws long after that.
+    // A missing file leaves tex 0, which every drawing path skips.
+    void      EnsureMarkIcons();
+    MarkIcon  markIcons_[2];
+    bool      markIconsTried_ = false;
+
     unsigned int               cameraTex_ = 0;
     int                        cameraW_ = 0, cameraH_ = 0;
     std::vector<unsigned char> frameBuf_;
@@ -504,6 +531,14 @@ private:
     // refused and the operator has to raise it deliberately.
     float       plcMaxMM_ = 2.0f;
     std::string plcLastMove_;   // what was last issued, to compare the re-measure against
+    // Guided-run settings, the script's loop contract (place_run's defaults).
+    // align_first defaults ON: the live frame is cleared at program start, DUT
+    // open and product load, so a placement that assumed one would fail about
+    // half the times it was used.
+    bool        plcAlignFirst_ = true;
+    int         plcTries_ = 2;
+    float       plcTolMM_ = 0.02f;
+    std::string plcStartErr_;   // why the last guided run refused to start
     // Repeatability check: repeated measurements of the SAME, stationary
     // object. Their spread is the MARKING error — the floor under any
     // placement, and the only thing that says whether a leftover residual is a
@@ -515,6 +550,10 @@ private:
     // Page::VisionTeach IS the "open" flag; visionSelUid_ says which model.
     std::string visionSelUid_;          // model being tuned ("" = none)
     std::string visionOwnerLabel_;      // "calibrate plate  -  station 1 (E1)"
+    // Where Close goes: the page belongs to whoever opened it (a station card on
+    // Align, an object mark on Placement), and a takeover->takeover switch does
+    // not update prevPage_.
+    Page        visionReturnPage_ = Page::Align;
     // Width of the parameter column, dragged by the splitter between the two
     // panes and persisted in UiSettings. Its own field rather than the main
     // window's rightW_: this window is not part of that five-region layout and

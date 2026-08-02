@@ -123,6 +123,12 @@ void ExecutionContext::CtxSet(const std::string& key, CtxValue v)
     ctx_[key] = std::move(v);
 }
 
+void ExecutionContext::CtxErase(const std::string& key)
+{
+    const std::scoped_lock lock(ctxMu_);
+    ctx_.erase(key);
+}
+
 std::optional<CtxValue> ExecutionContext::CtxGet(const std::string& key) const
 {
     const std::scoped_lock lock(ctxMu_);

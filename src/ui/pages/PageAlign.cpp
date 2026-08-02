@@ -553,6 +553,7 @@ void App::DrawAlignNominalList(AlignProc& a)
         ImGui::SameLine();
         if (ImGui::SmallButton("Delete")) {
             FD_INFO("align", "'%s': dropped nominal '%s'", a.name.c_str(), n.name.c_str());
+            DropNominalDetectors(a, n);   // its private object models go with it
             a.nominals.erase(a.nominals.begin() + static_cast<long>(i));
             session_.SaveAligns();   // taught by hand — persisted like the frame
             ImGui::EndDisabled();

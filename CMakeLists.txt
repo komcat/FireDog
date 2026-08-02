@@ -366,6 +366,16 @@ function(firedog_stage_runtime tgt)
                 "${CMAKE_CURRENT_SOURCE_DIR}/config" "$<TARGET_FILE_DIR:${tgt}>/config"
         COMMENT "Copying config to output directory")
 
+    # UI artwork (the pt1/pt2 mark icons). Separate from config/ because it is
+    # NOT runtime-writable: nothing edits these, so they never get the
+    # xxx.local.json treatment and a rebuild simply refreshes them.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:${tgt}>/assets"
+            COMMENT "Copying assets to output directory")
+    endif()
+
     if(PYLON_FOUND AND PYLON_RUNTIME_DIR AND EXISTS "${PYLON_RUNTIME_DIR}")
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory

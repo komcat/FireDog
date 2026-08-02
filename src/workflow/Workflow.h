@@ -83,7 +83,12 @@ public:
     // placement correction on a hexapod is. Safety-blocked like every other
     // move. The CALLER owns the decision that the delta is sane: this is a
     // computed destination, so it belongs behind an arming flag.
-    bool MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM, double gzMM);
+    //
+    // `issued` (optional) receives the ABSOLUTE per-axis targets actually
+    // commanded, so a caller that has to wait for arrival waits on exactly what
+    // was sent rather than recomputing it from a pose that has since moved.
+    bool MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM, double gzMM,
+                            std::vector<std::pair<std::string, double>>* issued = nullptr);
     // Stop all motion on one device (jog panel Stop button).
     bool StopMotion(std::size_t devIdx);
 

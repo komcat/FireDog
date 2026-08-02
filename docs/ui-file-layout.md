@@ -104,6 +104,14 @@ cover-fit-plus-follow-the-mark mapping between camera and screen pixels lived in
 has to mean the same thing in both surfaces, and two copies of that arithmetic
 would drift the moment one gained a feature.
 
+`Widgets.cpp` also implements **stb_image** (`LoadPngRGBA`), the project's only
+PNG *reader* — `stb_image_write`'s implementation lives in `CommandsDut.cpp` and
+the two headers are independent. It sits here because this TU already owns the
+jobs that talk to the outside world (ShellExecute, the filesystem). Texture
+lifetime is state, so the decode is a leaf helper and the GL texture belongs to
+`App` (`EnsureMarkIcons`, `App.cpp`) — loaded once on first use, since a missing
+`assets/` must cost a diagram rather than a retry every frame.
+
 `DrawMarkPicker` (`CameraMark` / `MarkPicker`) is the rule applied a second
 time, one level up: the whole *mark a feature* surface — crosshair, click, wheel
 zoom, arrow nudge, and latched marks projected from machine mm back through the
@@ -145,7 +153,7 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/pages/PageAlign.cpp` | Alignment page: procedures \| stations + Run \| the taught frame + its nominals | 400 |
 | `src/ui/pages/PageVisionTeach.cpp` | Vision detection teach page (takeover, reached only from a station card): live image + ROI/template drag, method form, Detect/Live, reliability | 600 |
 | `src/ui/pages/PageAlignNominal.cpp` | Nominal teach page (takeover, reached only from the frame panel): two crosshair marks, their midpoint converted through the live frame into local (O1) | 250 |
-| `src/ui/pages/PageAlignPlace.cpp` | Placement page (takeover, reached from a nominal): measures a gripped object the same way, computes the relative correction onto its holding device's axes and issues it behind the arming flag + a visible ceiling | 340 |
+| `src/ui/pages/PageAlignPlace.cpp` | Placement page (takeover; **View menu** or a nominal's *Place…*): measures a gripped object the same way, computes the relative correction onto its holding device's axes and issues it behind the arming flag + a visible ceiling | 340 |
 | `src/ui/pages/PageScripts.cpp` | Scripts page + Lua debugger controls | 215 |
 | `src/ui/pages/PageDutView.cpp` | DUT Records viewer (read-only) | 150 |
 | `src/ui/pages/PageWatchEdit.cpp` / `PageTransformEdit.cpp` | the two full-page config editors | 135 / 131 |
