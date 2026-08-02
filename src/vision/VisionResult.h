@@ -28,7 +28,7 @@ namespace firedog {
 struct VisionDetection {
     bool        ok = false;
     std::string error;              // why not, when !ok (empty when ok)
-    std::string method;             // which detector produced it ("circle"/"ncc")
+    std::string method;             // which detector produced it ("circle"/"ncc"/"corner")
     int         count = 0;          // candidates found; the BEST one is reported
 
     // Location — full-frame absolute camera pixels, anchor offset already applied.
@@ -37,11 +37,17 @@ struct VisionDetection {
     // (Workflow owns the camera's pixel_to_mm calibration); 0 if uncalibrated.
     double dxMM = 0.0, dyMM = 0.0;
 
-    double angleDeg = 0.0;          // pattern match; always 0 for a circle
+    // Pattern match: the match angle. Corner: the direction from the reported
+    // corner towards the square's centre (screen convention, y down), which with
+    // width/height below reconstructs the whole square from the point. Always 0
+    // for a circle, which has no orientation.
+    double angleDeg = 0.0;
     double score    = 0.0;          // 0..1, higher is better, cross-method
     double radiusPx = 0.0;          // circle fit
-    double widthPx = 0.0, heightPx = 0.0;   // feature size (bounding box)
-    double lengthPx = 0.0;          // RESERVED for an edge/line method
+    // Feature size (bounding box). Corner: the two edges leaving the reported
+    // corner, width at angleDeg-45 and height at angleDeg+45.
+    double widthPx = 0.0, heightPx = 0.0;
+    double lengthPx = 0.0;          // corner: the mean side. RESERVED otherwise
 
     unsigned long long frameSeq = 0;   // which camera frame produced this
     double elapsedMs = 0.0;            // detector wall time, for the ROI warning

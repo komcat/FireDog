@@ -220,6 +220,12 @@ private:
     void DrawVisionTeachImage(VisionModel& m);           // live image + ROI/box drag
     void DrawVisionTeachParams(VisionModel& m);          // method + parameter form
     void RefreshVisionTemplateTex(const VisionModel& m); // taught-patch thumbnail
+    // The anchor pick, in its own window rather than on the parameter column's
+    // thumbnail: there one screen pixel covers several template pixels, so a
+    // click was a coarse guess dressed up as a measurement. Opens by itself
+    // after a (re-)teach — a fresh patch always has its anchor back at centre.
+    void DrawVisionAnchorWindow(VisionModel& m);
+    void OpenVisionAnchorPicker();                       // open + refit
     void StartVisionReliabilityRun(const VisionModel& m);   // ad-hoc vision_test recipe
     // Worker->UI hand-off for a finished reliability run. Drains Workflow's
     // queue (the engine's Status ctx is already gone by the time the run reads
@@ -564,7 +570,8 @@ private:
     float       visionFocusX_ = 0.0f;   // camera px the view is centred on
     float       visionFocusY_ = 0.0f;
     // Rubber-band drag over the image. 0 = idle, 1 = dragging the search ROI,
-    // 2 = dragging the template box, 3 = picking the anchor point.
+    // 2 = dragging the template box. (The anchor is picked in its own window,
+    // never on the live image — see DrawVisionAnchorWindow.)
     int   visionDragMode_ = 0;
     bool  visionDragging_ = false;
     float visionDragX0_ = 0.0f, visionDragY0_ = 0.0f;
@@ -586,6 +593,10 @@ private:
     std::string        visionRelUid_;      // which model it belongs to
     VisionReliability  visionRelPending_;
     bool               visionRelHave_ = false;
+    // The anchor-pick window (NCC only). Zoom 0 means "fit on the next draw",
+    // which is what a freshly taught patch of unknown size needs.
+    bool               visionAnchorOpen_ = false;
+    float              visionAnchorZoom_ = 0.0f;
 
     // ---- Aux window vision overlay -----------------------------------------
     // The last detection, aged in Update rather than timed in a Draw: a marker

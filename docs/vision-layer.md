@@ -10,7 +10,7 @@ The layer has three parts, split by what a missing licence costs:
 | Focus measure + the one RGB→luma conversion | `vision/FocusMetric.{h,cpp}` | **No** — plain C++ |
 | HALCON availability | `vision/HalconEngine.{h,cpp}` | Optional (`HAS_HALCON`) |
 | Detection models (documents) | `vision/VisionModel.{h,cpp}`, `vision/VisionResult.h` | **No** — authorable anywhere |
-| Detectors — circle/fiducial + gray NCC | `vision/HalconDetector.{h,cpp}` | **Yes** (`HAS_HALCON` + licence) |
+| Detectors — circle/fiducial, gray NCC, square corner | `vision/HalconDetector.{h,cpp}` | **Yes** (`HAS_HALCON` + licence) |
 
 **Auto-focus must never depend on HALCON.** Focus is the one vision operation
 the machine needs to run a product, and a licence file is machine-local state

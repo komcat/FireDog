@@ -122,7 +122,7 @@ UI-thread-only and the engine holds a *copy* of the document.
 ## 5. Auto mode
 
 An `auto` station locates its feature with a **taught detection model** —
-circle/fiducial or gray NCC pattern match, both HALCON-backed. The station's
+circle/fiducial, gray NCC pattern match or square corner, all HALCON-backed. The station's
 `detector` field holds the model's uid; it was put there precisely so a
 procedure authored before detectors existed would survive their arrival, and
 uid-or-name resolution means an old free-text value still resolves.

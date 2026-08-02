@@ -94,6 +94,43 @@ NccParams NccFromJson(const nlohmann::json& j)
     return n;
 }
 
+nlohmann::json CornerToJson(const CornerParams& c)
+{
+    nlohmann::json j;
+    j["mode"]               = c.mode;
+    j["polarity"]           = c.polarity;
+    j["min_score"]          = c.minScore;
+    j["angle_tol_deg"]      = c.angleToleranceDeg;
+    j["smooth_px"]          = c.smoothPx;
+    j["auto_threshold"]     = c.autoThreshold;
+    j["threshold"]          = c.threshold;
+    j["size_px"]            = c.sizePx;
+    j["size_tol_pct"]       = c.sizeTolPct;
+    j["closing_radius"]     = c.closingRadius;
+    j["min_rectangularity"] = c.minRectangularity;
+    j["corner"]             = c.corner;
+    return j;
+}
+
+CornerParams CornerFromJson(const nlohmann::json& j)
+{
+    CornerParams c;
+    if (!j.is_object()) return c;
+    c.mode              = j.value("mode", 1);
+    c.polarity          = j.value("polarity", 0);
+    c.minScore          = j.value("min_score", 0.5);
+    c.angleToleranceDeg = j.value("angle_tol_deg", 5.0);
+    c.smoothPx          = j.value("smooth_px", 1.0);
+    c.autoThreshold     = j.value("auto_threshold", true);
+    c.threshold         = j.value("threshold", 128);
+    c.sizePx            = j.value("size_px", 40.0);
+    c.sizeTolPct        = j.value("size_tol_pct", 40.0);
+    c.closingRadius     = j.value("closing_radius", 2.0);
+    c.minRectangularity = j.value("min_rectangularity", 0.75);
+    c.corner            = j.value("corner", 0);
+    return c;
+}
+
 nlohmann::json RelToJson(const VisionReliability& r)
 {
     nlohmann::json j;
@@ -215,6 +252,79 @@ bool LoadGrayPgm(const std::string& path, std::vector<unsigned char>* gray,
     return true;
 }
 
+// ---- the synthesised corner template ---------------------------------------
+
+int CornerTemplateSide(const CornerParams& c)
+{
+    int n = static_cast<int>(c.sizePx + 0.5);
+    if (n < 8)   n = 8;
+    if (n > 256) n = 256;
+    if (n & 1)   ++n;      // even, so the vertex lands exactly on the patch centre
+    return n;
+}
+
+std::vector<unsigned char> MakeCornerTemplate(const CornerParams& c, int* nOut)
+{
+    const int n    = CornerTemplateSide(c);
+    const int half = n / 2;
+
+    const unsigned char fg = (c.polarity == 0) ? 40 : 215;   // the material
+    const unsigned char bg = (c.polarity == 0) ? 215 : 40;   // what surrounds it
+    std::vector<unsigned char> p(static_cast<std::size_t>(n) * n, bg);
+
+    // The material fills the quadrant OPPOSITE the named corner: the bottom-left
+    // corner of a shape has the shape up-and-right of it.
+    const int q  = (((c.corner >= 0 && c.corner < 4) ? c.corner : 0) + 2) % 4;
+    const int x0 = (q == 0 || q == 3) ? 0 : half;
+    const int y0 = (q == 0 || q == 1) ? 0 : half;
+    for (int y = y0; y < y0 + half; ++y)
+        for (int x = x0; x < x0 + half; ++x)
+            p[static_cast<std::size_t>(y) * n + x] = fg;
+
+    // Soften the edges. A razor-sharp synthetic step still correlates against a
+    // real edge, but a real edge is a one-or-two pixel ramp, and matching a step
+    // to a ramp is what makes the sub-pixel position land on a whole pixel more
+    // often than it should. Two box passes ~ a small gaussian, and cost nothing
+    // at these sizes.
+    int r = static_cast<int>(c.smoothPx + 0.5);
+    if (r > half / 2) r = half / 2;
+    if (r > 0) {
+        std::vector<unsigned char> t(p.size());
+        const int wnd = 2 * r + 1;
+        for (int pass = 0; pass < 2; ++pass) {
+            for (int y = 0; y < n; ++y) {
+                for (int x = 0; x < n; ++x) {
+                    int sum = 0;
+                    for (int k = -r; k <= r; ++k) {
+                        int xx = x + k;
+                        if (xx < 0)  xx = 0;
+                        if (xx >= n) xx = n - 1;
+                        sum += p[static_cast<std::size_t>(y) * n + xx];
+                    }
+                    t[static_cast<std::size_t>(y) * n + x] =
+                        static_cast<unsigned char>(sum / wnd);
+                }
+            }
+            for (int x = 0; x < n; ++x) {
+                for (int y = 0; y < n; ++y) {
+                    int sum = 0;
+                    for (int k = -r; k <= r; ++k) {
+                        int yy = y + k;
+                        if (yy < 0)  yy = 0;
+                        if (yy >= n) yy = n - 1;
+                        sum += t[static_cast<std::size_t>(yy) * n + x];
+                    }
+                    p[static_cast<std::size_t>(y) * n + x] =
+                        static_cast<unsigned char>(sum / wnd);
+                }
+            }
+        }
+    }
+
+    if (nOut) *nOut = n;
+    return p;
+}
+
 // ---- lookup --------------------------------------------------------------
 
 const VisionModel* FindVisionModel(const std::vector<VisionModel>& list,
@@ -244,6 +354,7 @@ nlohmann::json VisionModelToJson(const VisionModel& m)
     j["exposure_us"]   = m.exposureUs;
     j["circle"]        = CircleToJson(m.circle);
     j["ncc"]           = NccToJson(m.ncc);
+    j["corner"]        = CornerToJson(m.corner);
     j["template_file"] = m.templateFile;
     j["reliability"]   = RelToJson(m.rel);
     return j;
@@ -262,6 +373,7 @@ VisionModel VisionModelFromJson(const nlohmann::json& j)
     if (j.contains("roi"))         m.roi    = RoiFromJson(j["roi"]);
     if (j.contains("circle"))      m.circle = CircleFromJson(j["circle"]);
     if (j.contains("ncc"))         m.ncc    = NccFromJson(j["ncc"]);
+    if (j.contains("corner"))      m.corner = CornerFromJson(j["corner"]);
     if (j.contains("reliability")) m.rel    = RelFromJson(j["reliability"]);
     return m;
 }

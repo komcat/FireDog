@@ -1,4 +1,5 @@
-// HalconDetector.cpp : circle/fiducial and gray NCC detection. See the header.
+// HalconDetector.cpp : circle/fiducial, gray NCC and square-corner detection.
+// See the header.
 //
 // With vision/HalconEngine.cpp, one of only two translation units that include
 // a HALCON header. Without HAS_HALCON it compiles the "built without the SDK"
@@ -11,6 +12,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <vector>
 
 #ifdef HAS_HALCON
@@ -47,6 +49,22 @@ double NowMs()
 {
     using namespace std::chrono;
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
+
+// NCC settings for a synthesised corner template. `use_polarity` deliberately:
+// the operator said which way round the contrast runs, and ignoring it would
+// let a dark-on-light corner match a light-on-dark one 90 degrees away.
+NccParams CornerNccParams(const CornerParams& c, int n)
+{
+    NccParams np;
+    np.minScore          = c.minScore;
+    np.maxMatches        = 1;
+    np.numLevels         = 0;          // let HALCON pick the pyramid depth
+    np.angleToleranceDeg = c.angleToleranceDeg;
+    np.metric            = "use_polarity";
+    np.useAnchor         = false;      // the vertex IS the template centre
+    np.tmplW = np.tmplH  = n;
+    return np;
 }
 
 #endif   // HAS_HALCON
@@ -211,6 +229,164 @@ struct HalconDetector::Impl {
         }
     }
 
+    // A contrasting square, reported at ONE of its four corners.
+    //
+    // threshold -> close -> connect -> area window from the size slider ->
+    // rectangularity gate -> largest survivor -> sub-pixel smallest_rectangle2
+    // over its XLD border. The rectangle fit is what buys the sub-pixel corner:
+    // the region itself is whole pixels, so taking a corner off it would quantise
+    // every measurement to the grid the reliability run is trying to measure.
+    //
+    // The reported ANGLE is the direction from the corner towards the square's
+    // centre (screen convention, y down), and `widthPx`/`heightPx` are the two
+    // edges leaving that corner, ordered so that width lies at angle-45deg and
+    // height at angle+45deg. That triple reconstructs the whole square from the
+    // reported point alone, which is what lets the teach overlay draw exactly
+    // what was found instead of a box centred on the wrong place.
+    // Mode 1: the synthesised two-edge template. The match itself is ordinary
+    // NCC — the whole difference is that the patch came from MakeCornerPatch
+    // instead of off the frame, so DetectNcc does the work and this only
+    // re-expresses the answer in the corner convention.
+    bool DetectCornerTemplate(const unsigned char* gray, int w, int h, VisionDetection* out)
+    {
+        if (!nccReady)
+            return Miss(out, "the corner template was not built - check the size");
+        if (!DetectNcc(gray, w, h, out)) return false;
+
+        // Direction from the vertex INTO the material, screen convention (x
+        // right, y down, positive clockwise). The material fills the quadrant
+        // OPPOSITE the reported corner, so a bottom-left corner points up-right.
+        // The match angle turns it — HALCON's angle is counter-clockwise, this
+        // one clockwise, hence the subtraction.
+        static const double kBisector[4] = {-135.0, -45.0, 45.0, 135.0};   // TL TR BR BL
+        const CornerParams& c = model.corner;
+        const int q = (((c.corner >= 0 && c.corner < 4) ? c.corner : 0) + 2) % 4;
+        const double half = 0.5 * static_cast<double>(model.ncc.tmplW);
+
+        out->angleDeg = kBisector[q] - out->angleDeg;
+        // The two edges leaving the vertex — half the patch each, which is
+        // exactly the filled quadrant the overlay then draws.
+        out->widthPx = out->heightPx = half;
+        out->lengthPx = half;
+        return true;
+    }
+
+    bool DetectCorner(const unsigned char* gray, int w, int h, VisionDetection* out)
+    {
+        const CornerParams& c = model.corner;
+        if (c.mode == 1) return DetectCornerTemplate(gray, w, h, out);
+        try {
+            HImage img;
+            img.GenImage1("byte", static_cast<Hlong>(w), static_cast<Hlong>(h),
+                          static_cast<void*>(const_cast<unsigned char*>(gray)));
+
+            // Auto is the default because a corner mark is defined by CONTRAST,
+            // not by an absolute grey: max_separability re-splits per frame, so
+            // the model survives the lamp ageing and the part changing finish.
+            HRegion region;
+            if (c.autoThreshold) {
+                HTuple usedThr;
+                region = img.BinaryThreshold(HString("max_separability"),
+                                             HString(c.polarity == 0 ? "dark" : "light"),
+                                             &usedThr);
+            } else {
+                const double t = static_cast<double>(c.threshold);
+                region = (c.polarity == 0) ? img.Threshold(0.0, t)
+                                           : img.Threshold(t, 255.0);
+            }
+
+            HRegion closed = (c.closingRadius > 0.0) ? region.ClosingCircle(c.closingRadius)
+                                                     : region;
+            HRegion connected = closed.Connection();
+
+            // The size slider IS the search: an area window either side of
+            // side^2 is what rejects the rest of the scene.
+            double sMin = c.sizePx * (1.0 - c.sizeTolPct / 100.0);
+            double sMax = c.sizePx * (1.0 + c.sizeTolPct / 100.0);
+            if (sMin < 2.0)    sMin = 2.0;
+            if (sMax <= sMin)  sMax = sMin + 1.0;
+
+            HRegion byArea = connected.SelectShape("area", "and", sMin * sMin, sMax * sMax);
+            // Rectangularity is 1.0 for a perfect rectangle at ANY rotation, so
+            // this gate does not assume the part is square to the camera.
+            HRegion byRect = byArea.SelectShape("rectangularity", "and",
+                                                c.minRectangularity, 1.0);
+
+            const Hlong n = byRect.CountObj();
+            out->count = static_cast<int>(n);
+            if (n <= 0)
+                return Miss(out, "no square of that size passed the area/rectangularity filter");
+
+            // More than one survivor: take the largest, as the circle path does.
+            // The area window is already tight, so anything still standing is
+            // the mark or a duplicate of it.
+            HRegion best = (n > 1) ? byRect.SelectShapeStd("max_area", 70) : byRect;
+
+            HXLDCont contour = best.GenContourRegionXld("border");
+            HTuple row, col, phi, len1, len2;
+            contour.SmallestRectangle2Xld(&row, &col, &phi, &len1, &len2);
+            if (len1.Length() <= 0 || len1.D() <= 0.0 || len2.D() <= 0.0)
+                return Miss(out, "could not fit a rectangle to the region");
+
+            // HALCON: phi is counter-clockwise about a downward row axis, and
+            // Length1/Length2 are HALF extents. Main axis in (x = col, y = row)
+            // is therefore (cos phi, -sin phi), and its perpendicular (sin phi,
+            // cos phi).
+            const double cx = col.D(), cy = row.D(), p = phi.D();
+            const double ux =  std::cos(p) * len1.D(), uy = -std::sin(p) * len1.D();
+            const double vx =  std::sin(p) * len2.D(), vy =  std::cos(p) * len2.D();
+
+            const double px[4] = {cx - ux - vx, cx + ux - vx, cx + ux + vx, cx - ux + vx};
+            const double py[4] = {cy - uy - vy, cy + uy - vy, cy + uy + vy, cy - uy + vy};
+
+            // Name the four in IMAGE terms, so "top-left" keeps meaning the same
+            // thing when the part is rotated: x+y is smallest at the top-left and
+            // largest at the bottom-right, x-y largest at the top-right.
+            int iTL = 0, iTR = 0, iBR = 0, iBL = 0;
+            for (int i = 1; i < 4; ++i) {
+                if (px[i] + py[i] < px[iTL] + py[iTL]) iTL = i;
+                if (px[i] + py[i] > px[iBR] + py[iBR]) iBR = i;
+                if (px[i] - py[i] > px[iTR] - py[iTR]) iTR = i;
+                if (px[i] - py[i] < px[iBL] - py[iBL]) iBL = i;
+            }
+            const int order[4] = {iTL, iTR, iBR, iBL};
+            const int k = order[(c.corner >= 0 && c.corner < 4) ? c.corner : 0];
+
+            const double qx = px[k], qy = py[k];
+            // The two edges leaving this corner: the neighbours are the corners
+            // that differ from it in exactly one of the two axis signs, which is
+            // +-2*u and +-2*v about the corner.
+            const double su = ((qx - cx) * ux + (qy - cy) * uy) >= 0.0 ? -1.0 : 1.0;
+            const double sv = ((qx - cx) * vx + (qy - cy) * vy) >= 0.0 ? -1.0 : 1.0;
+            const double e1x = su * 2.0 * ux, e1y = su * 2.0 * uy;   // along the main axis
+            const double e2x = sv * 2.0 * vx, e2y = sv * 2.0 * vy;   // along the other
+
+            const double bis = std::atan2((e1y + e2y), (e1x + e2x));   // towards the centre
+            const double a1  = std::atan2(e1y, e1x) - bis;
+            const double e1L = std::sqrt(e1x * e1x + e1y * e1y);
+            const double e2L = std::sqrt(e2x * e2x + e2y * e2y);
+            // Order the two edges by which side of the bisector they fall on, so
+            // width is always the -45deg one. sin() rather than the raw
+            // difference: the subtraction can land either side of +-pi.
+            const bool e1First = std::sin(a1) < 0.0;
+
+            out->xPx      = qx;
+            out->yPx      = qy;
+            out->angleDeg = bis * 180.0 / kPi;
+            out->widthPx  = e1First ? e1L : e2L;
+            out->heightPx = e1First ? e2L : e1L;
+            out->lengthPx = 0.5 * (e1L + e2L);      // the mean side, for the readout
+            // Rectangularity as the 0..1 quality figure, the same shape of
+            // number the circle method reports as circularity.
+            out->score = best.Rectangularity().D();
+            out->ok    = true;
+            return true;
+        } catch (const HException& e) {
+            return Miss(out, std::string("corner detection failed: ")
+                             + e.ErrorMessage().Text());
+        }
+    }
+
     bool DetectNcc(const unsigned char* gray, int w, int h, VisionDetection* out)
     {
         if (!nccReady) return Miss(out, "no template has been taught for this model");
@@ -300,6 +476,21 @@ bool HalconDetector::Load(const VisionModel& m, const std::string& modelDir,
         // FireDog would otherwise draw a box the wrong size around a good match.
         impl_->model.ncc.tmplW = tw;
         impl_->model.ncc.tmplH = th;
+    } else if (m.method == "corner") {
+        if (m.corner.mode == 1) {
+            // Synthesise the patch and build an NCC model from it, here at Load
+            // rather than per detect: create_ncc_model is the expensive call,
+            // and the parameters cannot change without a reload (Workflow
+            // stamps the whole document, so an edit already forces one).
+            int n = 0;
+            const std::vector<unsigned char> patch = MakeCornerTemplate(m.corner, &n);
+            const NccParams np = CornerNccParams(m.corner, n);
+            // The corner method has no ncc block of its own; borrowing it is
+            // what lets DetectNcc run unchanged over the synthetic template.
+            impl_->model.ncc = np;
+            if (!impl_->BuildNcc(np, patch.data(), n, n, err)) return false;
+        }
+        // Mode 0 carries no built state — it is all parameters, per detect.
     } else if (m.method != "circle") {
         if (err) *err = "unknown detection method '" + m.method + "'";
         return false;
@@ -371,9 +562,10 @@ bool HalconDetector::Detect(const unsigned char* rgb, int w, int h, VisionDetect
         return Miss(out, "the search ROI does not overlap the frame");
     }
 
-    const bool found = (impl_->model.method == "ncc")
-        ? impl_->DetectNcc(gray.data(), used.w, used.h, out)
-        : impl_->DetectCircle(gray.data(), used.w, used.h, out);
+    const bool found =
+        (impl_->model.method == "ncc")      ? impl_->DetectNcc(gray.data(), used.w, used.h, out)
+      : (impl_->model.method == "corner")   ? impl_->DetectCorner(gray.data(), used.w, used.h, out)
+                                           : impl_->DetectCircle(gray.data(), used.w, used.h, out);
 
     // Report FULL-FRAME pixels whatever the ROI was. Exactly one place adds the
     // offset, so no consumer has to know whether an ROI was in play.

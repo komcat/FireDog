@@ -1,5 +1,5 @@
-// HalconDetector.h : the feature detectors — circle/fiducial and gray NCC
-// pattern matching, both backed by MVTec HALCON.
+// HalconDetector.h : the feature detectors — circle/fiducial, gray NCC pattern
+// matching and the square-corner finder, all backed by MVTec HALCON.
 //
 // This is the one place in FireDog where an image is actually ANALYSED.
 // Everything else in src/vision either scores sharpness (FocusMetric, plain

@@ -69,6 +69,64 @@ struct NccParams {
     int tmplW = 0, tmplH = 0;       // taught patch size, for the UI and sanity checks
 };
 
+// A 90-degree corner, in two flavours — because "a corner" in a real scene is
+// usually NOT a free-standing square.
+//
+// MODE 1, TWO EDGES (the default). The template is SYNTHESISED IN MEMORY from
+// these parameters: a patch with one quadrant filled, matched by NCC. Nothing is
+// taught and nothing is stored on disk — a corner is a geometric primitive, and
+// needing a photograph of one is a maintenance cost with no information in it.
+// This is the mode for the end of a bar, the corner of a die, the meeting of two
+// straight edges: the feature only has to be locally right, so a region that
+// runs off the ROI (which defeats any blob search) is fine.
+//   * `sizePx` is the template size, i.e. how much of each edge is matched. Keep
+//     it inside the shortest straight run either edge has: for a bar end, no
+//     more than the bar's thickness.
+//
+// MODE 0, SOLID SQUARE. The blob chain, for a printed or machined square mark
+// that really is isolated: threshold -> close -> connect -> an area window of
+// side^2 over [1-tol .. 1+tol] -> rectangularity (1.0 for a perfect rectangle at
+// ANY rotation, so it does not assume the part is square to the camera) ->
+// sub-pixel rectangle fit, then the named corner. The four are classified in
+// image terms AFTER the fit, so a rotated part still reports the one picked.
+//
+// `corner` means the SAME THING in both modes: which corner of the feature the
+// detector reports. In mode 1 the material therefore fills the OPPOSITE quadrant
+// of the synthesised patch — the bottom-left corner of a shape has the shape
+// up-and-right of it. Naming the filled quadrant instead was the first cut, and
+// it was wrong the way an inverted axis is wrong: every operator read
+// "bottom-left" as the corner they were marking, which is the diagonal opposite
+// of the quadrant that fills.
+struct CornerParams {
+    int    mode          = 1;      // 1 = two-edge template, 0 = solid square blob
+    int    polarity      = 0;      // 0 = dark material on light, 1 = bright on dark
+    double sizePx        = 40.0;   // template size (mode 1) / square side (mode 0), px
+    int    corner        = 0;      // reported corner: 0 TL, 1 TR, 2 BR, 3 BL
+
+    // ---- mode 1 -----------------------------------------------------------
+    double minScore      = 0.5;    // NCC score floor
+    double angleToleranceDeg = 5.0;   // rotation search either way; 0 = none (fastest)
+    double smoothPx      = 1.0;    // soften the synthetic edges to match a real one
+
+    // ---- mode 0 -----------------------------------------------------------
+    bool   autoThreshold = true;   // per-frame max_separability split
+    int    threshold     = 128;    // used only when autoThreshold is off
+    double sizeTolPct    = 40.0;   // +/- on the side; the area window derives from it
+    double closingRadius = 2.0;    // fills speckle before the shape filters
+    double minRectangularity = 0.75;
+};
+
+// The mode-1 template, synthesised from the parameters: a square patch with the
+// quadrant OPPOSITE `corner` filled, edges softened, so the named corner lands
+// exactly at the patch centre and the match reports it with no anchor. `n`
+// receives the side actually used (even, clamped to 8..256).
+//
+// Here rather than in HalconDetector because the teach page draws the same thing
+// as a diagram: two implementations of "which quadrant fills" is exactly how the
+// picture and the search end up disagreeing.
+int CornerTemplateSide(const CornerParams& c);
+std::vector<unsigned char> MakeCornerTemplate(const CornerParams& c, int* n);
+
 // What the last reliability run measured. A RECORD, never a gate: the run tells
 // an operator whether the model is trustworthy, and refusing to save a model
 // that scored badly would just mean tuning it somewhere else.
@@ -84,13 +142,16 @@ struct VisionReliability {
 struct VisionModel {
     std::string uid;
     std::string name   = "detect";
-    std::string method = "circle";     // "circle" | "ncc"
+    std::string method = "circle";     // "circle" | "ncc" | "corner"
 
     VisionRoi roi;
     double    exposureUs = 0.0;        // 0 = leave the camera exposure alone
 
+    // All three sets are carried whatever the method is, so switching method to
+    // compare two approaches does not throw the other one's tuning away.
     CircleParams circle;
     NccParams    ncc;
+    CornerParams corner;
 
     // Taught template patch, "<uid>.pgm", RELATIVE to the model directory.
     // Relative on purpose: bobcat stores an absolute path, which makes a

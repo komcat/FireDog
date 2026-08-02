@@ -15,17 +15,107 @@ sharpness and `HalconEngine` only answered "is HALCON installed and licensed?".
 The Alignment Procedure's **auto** mode was structure with nothing behind it —
 `align_station` failed with *"feature detection is not implemented"*.
 
-Now an alignment station can locate E1/E2 without an operator. Two methods,
-both ported from `bobcat_engine`'s HALCON plugins minus OpenCV:
+Now an alignment station can locate E1/E2 without an operator. Three methods —
+the first two ported from `bobcat_engine`'s HALCON plugins minus OpenCV, the
+third written here:
 
 | Method | Chain | Returns |
 |---|---|---|
 | `circle` | threshold → closing → connection → area & circularity filter → largest → `fit_circle_contour_xld` (Tukey) | XY, radius, circularity as the score |
 | `ncc` | `create_ncc_model` / `find_ncc_model` over a taught patch, plus an operator-placed anchor | XY, angle, score |
+| `corner`, **two edges** (default) | a template **synthesised in memory** from the parameters — one quadrant filled, softened — matched by `find_ncc_model` | XY of the vertex, the material direction, NCC score |
+| `corner`, solid square | threshold (auto or fixed) → closing → connection → **area window from the size slider** → rectangularity gate → largest → `smallest_rectangle2_xld` → the named corner | XY of one corner, the two edges, rectangularity as the score |
 
 Shape-based matching and edge/line measurement are **not** in this build.
-`VisionDetection` reserves `lengthPx` for the latter so adding it does not change
-the result shape.
+
+### Why `corner` is its own method and not a tuned `circle`
+
+A machined or printed **square corner mark** is the third thing a station is
+routinely asked to find, and neither existing method locates one:
+
+* `circle` fits a circle — a square fails its circularity gate by construction,
+  and its *centre* is not the point of interest anyway;
+* `ncc` can match a corner, but only after somebody teaches a patch of *that*
+  corner at *that* magnification and exposure, and then re-teaches it when any
+  of that changes. A corner is a geometric primitive; needing a taught image of
+  one is a maintenance cost with no information in it.
+
+### The default is a SYNTHESISED template, not a blob search
+
+The first cut of `corner` only had the blob chain, and it fails on the corner
+people actually mark: the **end of a bar**. That region runs off the ROI, so its
+area is nothing like `side²` and no area window can contain it — the detector
+correctly reported *"no square of that size passed the area/rectangularity
+filter"* while the corner sat in plain view.
+
+So mode 1 turns the problem round. A corner is two straight edges meeting at 90°,
+which is a **template you can compute**: a square patch with one quadrant filled,
+softened by a couple of box-blur passes, matched by ordinary NCC. Consequences:
+
+* **Nothing is taught and nothing is stored.** `MakeCornerTemplate`
+  (`vision/VisionModel.cpp`, plain C++ so the teach page can draw the same thing)
+  builds the patch at `Load()` from the parameters. There is no `.pgm`, nothing to copy with a
+  duplicated procedure, and nothing that can go stale against the numbers beside
+  it — the failure mode the taught NCC path has to spend a `templateFile` and a
+  patch-lifetime rule on.
+* **The feature only has to be locally right.** Whatever the region does outside
+  the patch is irrelevant, which is exactly the property the blob chain lacks.
+* **The vertex is the patch centre**, so the match reports it directly and
+  `useAnchor` stays off — the anchor exists for a taught patch whose point of
+  interest is somewhere off-centre, and a synthesised one has no such problem.
+* **One `corner` parameter, meaning the same thing in both modes**: which corner
+  *of the feature* is reported. The synthesised patch therefore fills the
+  quadrant **diagonally opposite** — the bottom-left corner of a shape has the
+  shape up-and-right of it. The first cut named the filled quadrant instead
+  (`material side`), and it was wrong the way an inverted axis is wrong: every
+  reading of "bottom-left" meant the corner being marked, so the vertex came back
+  at the far end of the patch from where it was wanted. The teach page draws the
+  patch as a **clickable diagram** built from the same `MakeCornerTemplate`, so
+  the picture cannot disagree with the search.
+* `metric` is `use_polarity` deliberately: the operator said which way the
+  contrast runs, and ignoring it would let a dark-on-light corner match a
+  light-on-dark one 90° away.
+* **The edges are softened before the model is built.** A razor-sharp synthetic
+  step still correlates against a real edge, but a real edge is a one-or-two
+  pixel ramp, and matching a step to a ramp is what makes the "sub-pixel"
+  position land on a whole pixel more often than it should.
+
+The one number that needs care is the size: it is how much of each edge is
+matched, so it must stay inside the shortest straight run either edge has — for a
+bar end, no more than the bar's thickness, or the filled quadrant reaches past
+the far edge and the score collapses.
+
+### The solid-square mode
+
+Kept for a printed or machined square mark that really is isolated. The size is a
+**slider** there too: the same mark is a different number of pixels at every
+magnification, and the size is what the search is made of — the accepted area
+window is `side²` over `[1-tol … 1+tol]`, and that window is what rejects the
+rest of the scene.
+
+Three decisions inside it:
+
+* **Sub-pixel comes from the XLD rectangle fit**, not from the region. The
+  region is whole pixels, so reading a corner off it would quantise every
+  measurement to the grid a reliability run exists to measure.
+* **Auto threshold (`max_separability`) is the default.** A corner mark is
+  defined by contrast, not by an absolute grey, so a per-frame split is what
+  survives a lamp ageing or a change of part finish. The fixed threshold stays
+  for a scene where the auto split has something else to latch onto.
+* **Which corner is a parameter, and it is named in image terms.** The four are
+  classified *after* the fit (`x+y` smallest at top-left, `x−y` largest at
+  top-right), so a rotated part still reports the corner the operator picked
+  rather than "whichever one HALCON listed first".
+
+`angleDeg` is repurposed rather than expanded: for a corner it is the direction
+from the reported point **into the material** — the square's centre in mode 0,
+the filled quadrant turned by the match angle in mode 1 — and `widthPx`/
+`heightPx` are the two edges leaving that corner, ordered at `angle−45°` and
+`angle+45°`. That triple reconstructs the square from the reported point, which is what
+lets the teach overlay draw exactly what was found — a *centred* box, the shape
+the other methods use, would straddle the corner and show a square that is not
+there. `lengthPx` carries the mean side for the readout. **No new fields**:
+`VisionResult`'s whole point is that a new detector cannot grow a new shape.
 
 ## 2. A separate document, owned by one station
 
@@ -206,13 +296,23 @@ would spill out of the very column the operator is allowed to narrow.
 
 A few decisions worth keeping:
 
-* **The anchor is placed on the THUMBNAIL, not the live image.** The offset is
-  defined relative to the template centre, and the thumbnail is the only view
-  where that is literally what is on screen. `useAnchor` derives from the
-  numbers (`|offset| > 0.1 px`) rather than being a third thing to keep in step
-  with them — bobcat's rule, and it removes a state.
-* **A re-teach clears the anchor.** It was an offset from a *different* patch
-  centre; carrying it over would point at nothing in particular.
+* **The anchor is placed on the TEMPLATE, not the live image.** The offset is
+  defined relative to the template centre, and the patch is the only view where
+  that is literally what is on screen. `useAnchor` derives from the numbers
+  (`|offset| > 0.1 px`) rather than being a third thing to keep in step with
+  them — bobcat's rule, and it removes a state.
+* **The pick has its own window** (`DrawVisionAnchorWindow`), and it is the only
+  place the anchor can be set. On the parameter column's thumbnail the patch is
+  packed into ~200 px, so one click covers several template pixels — a coarse
+  guess dressed up as a measurement, and a stray one silently moves the point
+  every later measurement is reported at. The window magnifies the patch
+  (fit … x32), tracks a drag, and takes arrow-key nudges of 1 px (0.1 px with
+  shift). The thumbnail keeps drawing the crosshair and now *opens* the picker.
+  Deliberately not modal: Live detect keeps drawing the reported point on the
+  big image, and watching that mark move with the anchor is the confirmation.
+* **A re-teach clears the anchor and opens the picker.** The old offset was
+  measured from a *different* patch centre, so it is reset to the centre —
+  which is exactly the state that needs a pick, so the window comes up with it.
 * **Rubber-band drags are armed by a button**, not drag-anywhere. An accidental
   click must not reshape the search window while somebody is judging a result.
 * **The detection point is drawn separately from the fitted shape.** With an

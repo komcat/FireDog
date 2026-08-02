@@ -107,6 +107,139 @@ std::string NominalDetectorName(const std::string& procUid, const std::string& n
     return "vdet_" + procUid + "_" + nomUid + "_p" + std::to_string(index);
 }
 
+// The corner form's two halves, plus the diagram they share. File-scope helpers
+// rather than more branches inline: they hold no state (every value is a
+// CornerParams field), and the two modes share nothing below the reported corner
+// — mode 1 builds its template out of numbers, mode 0 runs a blob chain.
+
+// What mode 1 is actually looking for, drawn at diagram scale: the material
+// quadrant filled the way MakeCornerTemplate fills it, with the reported point
+// crossed at the vertex. Click a quadrant to name that corner.
+//
+// It exists because "which corner" is a picture, not a word: naming the filled
+// quadrant instead of the corner was read backwards by everyone who tried it,
+// and a diagram that cannot disagree with the search is the fix that sticks.
+void CornerDiagram(CornerParams& c)
+{
+    constexpr float kS = 84.0f;
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##cornerdiag", ImVec2(kS, kS));
+    if (ImGui::IsItemClicked()) {
+        const ImVec2 mp = ImGui::GetIO().MousePos;
+        const bool right = (mp.x - o.x) > kS * 0.5f;
+        const bool low   = (mp.y - o.y) > kS * 0.5f;
+        // The click names a CORNER — the corner of the material that sits at the
+        // centre of the diagram, which is the quadrant diagonally opposite.
+        c.corner = low ? (right ? 0 : 1) : (right ? 3 : 2);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Click the quadrant your material sits in.\n"
+                          "The cross is what the detector reports: the corner\n"
+                          "where the two edges meet.");
+
+    const ImU32 fg = (c.polarity == 0) ? IM_COL32(40, 40, 44, 255)
+                                       : IM_COL32(215, 215, 215, 255);
+    const ImU32 bg = (c.polarity == 0) ? IM_COL32(215, 215, 215, 255)
+                                       : IM_COL32(30, 30, 34, 255);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(o, ImVec2(o.x + kS, o.y + kS), bg);
+
+    const int   q = (((c.corner >= 0 && c.corner < 4) ? c.corner : 0) + 2) % 4;
+    const float h = kS * 0.5f;
+    const ImVec2 a(o.x + ((q == 0 || q == 3) ? 0.0f : h),
+                   o.y + ((q == 0 || q == 1) ? 0.0f : h));
+    dl->AddRectFilled(a, ImVec2(a.x + h, a.y + h), fg);
+    dl->AddRect(o, ImVec2(o.x + kS, o.y + kS), IM_COL32(120, 120, 130, 255));
+
+    const ImVec2 ctr(o.x + h, o.y + h);   // the vertex, always the diagram centre
+    dl->AddLine(ImVec2(ctr.x - 12.0f, ctr.y), ImVec2(ctr.x + 12.0f, ctr.y), kAnchorCol, 2.0f);
+    dl->AddLine(ImVec2(ctr.x, ctr.y - 12.0f), ImVec2(ctr.x, ctr.y + 12.0f), kAnchorCol, 2.0f);
+}
+
+void DrawCornerEdgeForm(CornerParams& c, float itemW, double mmX)
+{
+    CornerDiagram(c);
+    ImGui::SameLine();
+    ImGui::TextWrapped("The cross is the reported point. Click the shaded quadrant "
+                       "to say where your material is.");
+
+    float sz = static_cast<float>(c.sizePx);
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::SliderFloat("edge length px", &sz, 8.0f, 256.0f, "%.0f",
+                           ImGuiSliderFlags_Logarithmic))
+        c.sizePx = static_cast<double>(sz);
+    if (mmX > 0.0) ImGui::TextDisabled("%.0f px = %.3f mm", c.sizePx, c.sizePx * mmX);
+
+    float ms = static_cast<float>(c.minScore);
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::SliderFloat("min score", &ms, 0.1f, 1.0f, "%.2f"))
+        c.minScore = static_cast<double>(ms);
+    float at = static_cast<float>(c.angleToleranceDeg);
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::DragFloat("angle tol (deg)", &at, 0.5f, 0.0f, 180.0f, "%.1f"))
+        c.angleToleranceDeg = static_cast<double>(at);
+    float sm = static_cast<float>(c.smoothPx);
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::DragFloat("edge softness px", &sm, 0.1f, 0.0f, 8.0f, "%.1f"))
+        c.smoothPx = static_cast<double>(sm);
+
+    HelpText("The template is BUILT from these numbers - there is nothing to teach and "
+             "nothing on disk. A patch of this size with one quadrant filled is matched "
+             "by NCC, and the vertex is its centre. Keep the edge length inside the "
+             "shortest straight run either edge has: for the end of a bar, no more than "
+             "the bar's thickness. Softness matches the synthetic step to a real edge's "
+             "ramp - 1 px suits most optics, raise it if the image is soft.");
+    HelpText("A low score usually means the size is wrong (the patch is reaching past the "
+             "end of one edge) or the material side is the wrong one of the four.");
+}
+
+void DrawCornerBlobForm(CornerParams& c, float itemW, double mmX)
+{
+    ImGui::Checkbox("auto threshold", &c.autoThreshold);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Re-splits light from dark on every frame\n"
+                          "(max_separability). A corner mark is defined by\n"
+                          "CONTRAST, not by an absolute grey, so this is what\n"
+                          "survives a lamp ageing or a change of finish.");
+    ImGui::BeginDisabled(c.autoThreshold);
+    ImGui::SetNextItemWidth(itemW);
+    ImGui::DragInt("grey threshold", &c.threshold, 1.0f, 1, 254);
+    ImGui::EndDisabled();
+
+    // The size IS the search: the area window is derived from it, so it gets the
+    // slider and the derived window is printed underneath.
+    float sz = static_cast<float>(c.sizePx);
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::SliderFloat("square size px", &sz, 4.0f, 800.0f, "%.0f",
+                           ImGuiSliderFlags_Logarithmic))
+        c.sizePx = static_cast<double>(sz);
+    float tol = static_cast<float>(c.sizeTolPct);
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::SliderFloat("size tolerance", &tol, 5.0f, 90.0f, "+/- %.0f %%"))
+        c.sizeTolPct = static_cast<double>(tol);
+    const double lo = c.sizePx * (1.0 - c.sizeTolPct / 100.0);
+    const double hi = c.sizePx * (1.0 + c.sizeTolPct / 100.0);
+    ImGui::TextDisabled("accepts sides %.0f .. %.0f px  (area %.0f .. %.0f px2)",
+                        lo, hi, lo * lo, hi * hi);
+    if (mmX > 0.0) ImGui::TextDisabled("%.0f px = %.3f mm", c.sizePx, c.sizePx * mmX);
+
+    float cr = static_cast<float>(c.closingRadius);
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::DragFloat("closing radius", &cr, 0.1f, 0.0f, 30.0f, "%.1f"))
+        c.closingRadius = static_cast<double>(cr);
+    float mr = static_cast<float>(c.minRectangularity);
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::SliderFloat("min rectangularity", &mr, 0.0f, 1.0f, "%.2f"))
+        c.minRectangularity = static_cast<double>(mr);
+
+    HelpText("Threshold -> close -> connect -> area window from the size -> "
+             "rectangularity gate -> largest -> sub-pixel rectangle fit, then the corner "
+             "you picked. The corners are named in IMAGE terms and classified after the "
+             "fit, so a rotated part still reports the one you asked for. Rectangularity "
+             "is 1.0 for a perfect rectangle at any angle - drop it only if the mark has "
+             "rounded corners.");
+}
+
 // Normalise a rubber-band drag into a positive-extent rectangle clamped to the
 // image. Dragging up-left is as natural as down-right, and a negative width
 // would reach HALCON as an empty region.
@@ -144,6 +277,7 @@ void App::OpenVisionTeach(AlignProc& a, int station)
     visionDragMode_   = 0;
     visionDragging_   = false;
     visionSlowWarned_ = false;
+    visionAnchorOpen_ = false;   // never inherit the last station's open picker
 
     // Address the model by its canonical private NAME, not by whatever uid the
     // station happens to hold: the name is the ownership record, so this is the
@@ -284,6 +418,7 @@ void App::OpenVisionTeachForNominal(AlignProc& a, AlignNominal& n, int index)
     visionDragMode_   = 0;
     visionDragging_   = false;
     visionSlowWarned_ = false;
+    visionAnchorOpen_ = false;
 
     const std::string name = NominalDetectorName(a.uid, n.uid, index);
     VisionModel* m = FindVisionModel(session_.VisionModels(), name);
@@ -357,6 +492,132 @@ void App::RefreshVisionTemplateTex(const VisionModel& m)
     visionTmplTex_ = host_.EnsureTextureRGB(visionTmplTex_, w, h, rgb.data());
     visionTmplW_   = w;
     visionTmplH_   = h;
+}
+
+void App::OpenVisionAnchorPicker()
+{
+    visionAnchorOpen_ = true;
+    visionAnchorZoom_ = 0.0f;   // refit — the patch size is whatever was just cut
+}
+
+// ---- The anchor pick -------------------------------------------------------
+// Its own window, and the ONLY place the anchor can be set. The offset is a
+// sub-pixel property of the template, so it has to be picked on a view where a
+// template pixel is a visible thing: the parameter column's thumbnail packs the
+// patch into ~200 px, where one click covers several pixels and a stray one
+// silently moves the point every later measurement is reported at.
+//
+// Not a modal: the camera keeps running underneath, Live detect keeps drawing
+// the reported point on the big image, and watching that mark move as the
+// anchor is dragged is the confirmation that the pick was right.
+void App::DrawVisionAnchorWindow(VisionModel& m)
+{
+    if (!visionAnchorOpen_) return;
+    if (m.method != "ncc" || m.templateFile.empty()) { visionAnchorOpen_ = false; return; }
+
+    RefreshVisionTemplateTex(m);   // keyed on uid|file|size, so this is a no-op once loaded
+    if (!visionTmplTex_ || visionTmplW_ <= 0 || visionTmplH_ <= 0) {
+        visionAnchorOpen_ = false;
+        return;
+    }
+
+    NccParams& n  = m.ncc;
+    const float tw = static_cast<float>(visionTmplW_);
+    const float th = static_cast<float>(visionTmplH_);
+
+    if (visionAnchorZoom_ <= 0.0f) {
+        const float fit = 420.0f / (tw > th ? tw : th);
+        visionAnchorZoom_ = fminf(fmaxf(fit, 1.0f), 32.0f);
+    }
+    const float z = visionAnchorZoom_;
+
+    // A sub-tenth-pixel offset IS the centre (bobcat's rule), so the flag is
+    // derived from the numbers rather than being a third thing to keep in step.
+    // Clamped to the patch: an anchor outside the template is not a point on
+    // the feature, it is a typo.
+    const auto commit = [&]() {
+        const double hx = static_cast<double>(tw) * 0.5, hy = static_cast<double>(th) * 0.5;
+        if (n.anchorOffsetX < -hx) n.anchorOffsetX = -hx;
+        if (n.anchorOffsetX >  hx) n.anchorOffsetX =  hx;
+        if (n.anchorOffsetY < -hy) n.anchorOffsetY = -hy;
+        if (n.anchorOffsetY >  hy) n.anchorOffsetY =  hy;
+        n.useAnchor = std::fabs(n.anchorOffsetX) > 0.1 || std::fabs(n.anchorOffsetY) > 0.1;
+    };
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::Begin("Anchor point", &visionAnchorOpen_, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Click (or drag) the point this model should REPORT.");
+        HelpText("The anchor rides with the match and rotates by the match angle, so it "
+                 "stays on the feature. Arrow keys nudge by 1 px, shift+arrow by 0.1 px.");
+
+        // Bounded box with scrollbars rather than an unbounded auto-resize: at
+        // x32 a 200 px patch is 6400 px wide and the window would leave the screen.
+        const float dispW = tw * z, dispH = th * z;
+        const ImVec2 box(fminf(dispW, 900.0f) + 2.0f, fminf(dispH, 640.0f) + 2.0f);
+        ImGui::BeginChild("anchimg", box, ImGuiChildFlags_Borders,
+                          ImGuiWindowFlags_HorizontalScrollbar);
+        const ImVec2 o = ImGui::GetCursorScreenPos();
+        ImGui::Image((ImTextureID)(intptr_t)visionTmplTex_, ImVec2(dispW, dispH));
+        ImGui::SetCursorScreenPos(o);
+        ImGui::InvisibleButton("##anchorpick", ImVec2(dispW, dispH),
+                               ImGuiButtonFlags_MouseButtonLeft);
+        // Track while held, not just on release: dragging the crosshair onto
+        // the feature is how a sub-pixel pick actually gets made.
+        if (ImGui::IsItemActive()) {
+            const ImVec2 mp = ImGui::GetIO().MousePos;
+            n.anchorOffsetX = static_cast<double>((mp.x - o.x) / z) - static_cast<double>(tw) * 0.5;
+            n.anchorOffsetY = static_cast<double>((mp.y - o.y) / z) - static_cast<double>(th) * 0.5;
+            commit();
+        }
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 c0(o.x + dispW * 0.5f, o.y + dispH * 0.5f);   // the patch centre
+        dl->AddLine(ImVec2(o.x, c0.y), ImVec2(o.x + dispW, c0.y), IM_COL32(255, 255, 255, 40), 1.0f);
+        dl->AddLine(ImVec2(c0.x, o.y), ImVec2(c0.x, o.y + dispH), IM_COL32(255, 255, 255, 40), 1.0f);
+        const ImVec2 ac(c0.x + static_cast<float>(n.anchorOffsetX) * z,
+                        c0.y + static_cast<float>(n.anchorOffsetY) * z);
+        dl->AddLine(ImVec2(ac.x - 14.0f, ac.y), ImVec2(ac.x + 14.0f, ac.y), kAnchorCol, 1.5f);
+        dl->AddLine(ImVec2(ac.x, ac.y - 14.0f), ImVec2(ac.x, ac.y + 14.0f), kAnchorCol, 1.5f);
+        dl->AddCircle(ac, 4.0f, kAnchorCol, 0, 1.5f);
+        ImGui::EndChild();
+
+        // Focused = this window or its child, so the nudge works whether the
+        // last click landed on the image or on a control below it.
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+            const double step = ImGui::GetIO().KeyShift ? 0.1 : 1.0;
+            bool moved = false;
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))  { n.anchorOffsetX -= step; moved = true; }
+            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) { n.anchorOffsetX += step; moved = true; }
+            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))    { n.anchorOffsetY -= step; moved = true; }
+            if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))  { n.anchorOffsetY += step; moved = true; }
+            if (moved) commit();
+        }
+
+        ImGui::Text("anchor %+.2f, %+.2f px%s", n.anchorOffsetX, n.anchorOffsetY,
+                    n.useAnchor ? "" : "   (centre)");
+        ImGui::TextDisabled("template %d x %d px", visionTmplW_, visionTmplH_);
+
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderFloat("zoom", &visionAnchorZoom_, 1.0f, 32.0f, "x%.1f",
+                           ImGuiSliderFlags_Logarithmic);
+        ImGui::SameLine();
+        if (ImGui::Button("Fit")) visionAnchorZoom_ = 0.0f;
+
+        if (ImGui::Button("Centre")) {
+            n.anchorOffsetX = n.anchorOffsetY = 0.0;
+            n.useAnchor = false;
+        }
+        ImGui::SameLine();
+        // Save here, not only on the page's Save: the pick is the whole reason
+        // this window exists, and an anchor lost to a crash is a re-teach.
+        if (ImGui::Button("Done")) {
+            session_.SaveVision();
+            workflow_.InvalidateDetector(m.uid);   // next detect rebuilds with the new anchor
+            visionAnchorOpen_ = false;
+        }
+    }
+    ImGui::End();
 }
 
 void App::StartVisionReliabilityRun(const VisionModel& m)
@@ -516,6 +777,10 @@ void App::DrawVisionTeachImage(VisionModel& m)
                         visionTmplKey_.clear();
                         visionErr_.clear();
                         visionHaveDet_ = false;
+                        // Straight into the anchor pick: the anchor is the
+                        // point the model REPORTS, and a patch cut around a
+                        // feature has just had it reset to the box centre.
+                        OpenVisionAnchorPicker();
                         // The .pgm is already on disk, so save the document too
                         // rather than leaving a patch file with no model row
                         // pointing at it. (Parameter edits stay explicit-Save.)
@@ -562,7 +827,23 @@ void App::DrawVisionTeachImage(VisionModel& m)
     if (visionHaveDet_ && visionDet_.ok) {
         const ImVec2 c = view.ToScreen(static_cast<float>(visionDet_.xPx),
                                        static_cast<float>(visionDet_.yPx));
-        if (visionDet_.radiusPx > 0.0) {
+        if (visionDet_.method == "corner" && visionDet_.widthPx > 0.0) {
+            // The detected square, drawn from the reported corner outwards: the
+            // angle points at the centre and the two edges leave at +-45 from
+            // it. Not the generic centred box below — for a corner that box
+            // would straddle the point and show a square that is not there.
+            const double b = visionDet_.angleDeg * 3.14159265358979323846 / 180.0;
+            const double a1 = b - 0.78539816339744831, a2 = b + 0.78539816339744831;
+            const ImVec2 e1(static_cast<float>(std::cos(a1) * visionDet_.widthPx) * view.scale,
+                            static_cast<float>(std::sin(a1) * visionDet_.widthPx) * view.scale);
+            const ImVec2 e2(static_cast<float>(std::cos(a2) * visionDet_.heightPx) * view.scale,
+                            static_cast<float>(std::sin(a2) * visionDet_.heightPx) * view.scale);
+            const ImVec2 quad[4] = {c,
+                                    ImVec2(c.x + e1.x, c.y + e1.y),
+                                    ImVec2(c.x + e1.x + e2.x, c.y + e1.y + e2.y),
+                                    ImVec2(c.x + e2.x, c.y + e2.y)};
+            dl->AddPolyline(quad, 4, kHitCol, ImDrawFlags_Closed, 2.0f);
+        } else if (visionDet_.radiusPx > 0.0) {
             dl->AddCircle(c, static_cast<float>(visionDet_.radiusPx) * view.scale,
                           kHitCol, 0, 2.0f);
         } else if (visionDet_.widthPx > 0.0 && visionDet_.heightPx > 0.0) {
@@ -656,10 +937,14 @@ void App::DrawVisionTeachParams(VisionModel& m)
 
     // ---- 3. Method ----
     ImGui::SeparatorText("Method");
-    int method = (m.method == "ncc") ? 1 : 0;
-    if (ImGui::RadioButton("Circle / fiducial", method == 0)) { m.method = "circle"; visionHaveDet_ = false; }
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Pattern (NCC)", method == 1)) { m.method = "ncc"; visionHaveDet_ = false; }
+    int method = (m.method == "ncc") ? 1 : (m.method == "corner") ? 2 : 0;
+    const char* methods[] = {"Circle / fiducial", "Pattern (NCC)", "Square corner"};
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::Combo("method", &method, methods, 3)) {
+        m.method = (method == 1) ? "ncc" : (method == 2) ? "corner" : "circle";
+        visionHaveDet_    = false;
+        visionAnchorOpen_ = false;   // the picker belongs to the NCC form
+    }
 
     if (m.method == "circle") {
         CircleParams& c = m.circle;
@@ -692,6 +977,31 @@ void App::DrawVisionTeachParams(VisionModel& m)
         HelpText("Threshold -> close -> connect -> area & circularity filter -> "
                  "largest -> robust circle fit. Start with the grey window, then "
                  "widen min area until the feature survives.");
+    } else if (m.method == "corner") {
+        CornerParams& c = m.corner;
+        // Mode first: it decides which half of this form even applies, and
+        // "two edges" is the one that works on a corner attached to something
+        // (a bar end, a die edge) rather than an isolated square.
+        int cmode = (c.mode == 0) ? 1 : 0;
+        const char* modes[] = {"two edges (no teaching)", "solid square (blob)"};
+        ImGui::SetNextItemWidth(itemW);
+        if (ImGui::Combo("shape", &cmode, modes, 2)) {
+            c.mode = (cmode == 0) ? 1 : 0;
+            visionHaveDet_ = false;
+        }
+
+        const char* pol[] = {"dark material on light", "bright material on dark"};
+        ImGui::SetNextItemWidth(itemW);
+        ImGui::Combo("contrast", &c.polarity, pol, 2);
+
+        // Shared by both modes, and it means the same thing in each: which
+        // corner OF THE FEATURE comes back as the measurement.
+        const char* corners[] = {"top-left", "top-right", "bottom-right", "bottom-left"};
+        ImGui::SetNextItemWidth(itemW);
+        ImGui::Combo("report corner", &c.corner, corners, 4);
+
+        if (c.mode == 1) DrawCornerEdgeForm(c, itemW, mmX);
+        else             DrawCornerBlobForm(c, itemW, mmX);
     } else {
         NccParams& n = m.ncc;
         ImGui::BeginDisabled(!halcon);
@@ -708,10 +1018,11 @@ void App::DrawVisionTeachParams(VisionModel& m)
 
         RefreshVisionTemplateTex(m);
         if (visionTmplTex_ && visionTmplW_ > 0 && visionTmplH_ > 0) {
-            // Show the patch at a legible size and let a click on it place the
-            // anchor. Anchoring on the THUMBNAIL rather than the live image is
-            // deliberate: the offset is defined relative to the template, and
-            // this is the only view where that is literally what is on screen.
+            // A PREVIEW of the patch and where the anchor sits on it. Picking
+            // happens in DrawVisionAnchorWindow, not here: at this scale one
+            // screen pixel is several template pixels, so a click was a coarse
+            // guess dressed up as a measurement — and a stray one silently
+            // moved the point the model reports.
             const float maxW = ImGui::GetContentRegionAvail().x;
             const float sc   = fminf(fminf(maxW / static_cast<float>(visionTmplW_), 4.0f),
                                      160.0f / static_cast<float>(visionTmplH_));
@@ -720,22 +1031,11 @@ void App::DrawVisionTeachParams(VisionModel& m)
             const ImVec2 tOrigin = ImGui::GetCursorScreenPos();
             ImGui::Image((ImTextureID)(intptr_t)visionTmplTex_, sz);
             ImGui::SetCursorScreenPos(tOrigin);
-            if (ImGui::InvisibleButton("##anchorPick", sz)) {
-                const ImVec2 mp = ImGui::GetIO().MousePos;
-                n.anchorOffsetX = static_cast<double>((mp.x - tOrigin.x) / sc) -
-                                  static_cast<double>(visionTmplW_) * 0.5;
-                n.anchorOffsetY = static_cast<double>((mp.y - tOrigin.y) / sc) -
-                                  static_cast<double>(visionTmplH_) * 0.5;
-                // Match bobcat: a sub-tenth-pixel offset IS the centre, so the
-                // flag derives from the numbers instead of being a third thing
-                // to keep in step with them.
-                n.useAnchor = std::fabs(n.anchorOffsetX) > 0.1 ||
-                              std::fabs(n.anchorOffsetY) > 0.1;
-            }
+            if (ImGui::InvisibleButton("##anchorPick", sz)) OpenVisionAnchorPicker();
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Click to place the anchor - the point this model\n"
-                                  "REPORTS. It rides with the match, rotating by the\n"
-                                  "match angle, so it stays on the feature.");
+                ImGui::SetTooltip("Click to open the anchor picker - the anchor is the\n"
+                                  "point this model REPORTS. It rides with the match,\n"
+                                  "rotating by the match angle, so it stays on the feature.");
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const ImVec2 ac(tOrigin.x + sz.x * 0.5f +
                                 static_cast<float>(n.anchorOffsetX) * sc,
@@ -746,6 +1046,7 @@ void App::DrawVisionTeachParams(VisionModel& m)
             ImGui::TextDisabled("anchor %+.1f, %+.1f px%s",
                                 n.anchorOffsetX, n.anchorOffsetY,
                                 n.useAnchor ? "" : " (centre)");
+            if (ImGui::Button("Set anchor...")) OpenVisionAnchorPicker();
             ImGui::SameLine();
             if (ImGui::SmallButton("Centre")) {
                 n.anchorOffsetX = n.anchorOffsetY = 0.0;
@@ -803,6 +1104,10 @@ void App::DrawVisionTeachParams(VisionModel& m)
             ImGui::Text("dX %+.4f  dY %+.4f mm", visionDet_.dxMM, visionDet_.dyMM);
             if (m.method == "ncc")
                 ImGui::Text("angle %.3f deg", visionDet_.angleDeg);
+            else if (m.method == "corner")
+                ImGui::Text("sides %.1f x %.1f px  (%.4f mm)  corner->centre %.1f deg",
+                            visionDet_.widthPx, visionDet_.heightPx,
+                            visionDet_.lengthPx * mmX, visionDet_.angleDeg);
             else
                 ImGui::Text("radius %.2f px  (%.4f mm)", visionDet_.radiusPx,
                             visionDet_.radiusPx * mmX);
@@ -970,6 +1275,10 @@ void App::DrawVisionTeachPanel()
     ImGui::BeginChild("visparams", ImVec2(visionParamW_, bodyH), ImGuiChildFlags_Borders);
     DrawVisionTeachParams(*m);
     ImGui::EndChild();
+
+    // Floating, so it is drawn outside the two body children — a window begun
+    // inside a child would inherit its clip rect.
+    DrawVisionAnchorWindow(*m);
 
     // ---- Footer ----
     ImGui::TextUnformatted("zoom");
