@@ -30,6 +30,7 @@ const char* ParamTypeName(ParamType t)
     case ParamType::Slide:        return "slide";
     case ParamType::PositionUid:  return "position uid";
     case ParamType::AlignUid:     return "alignment";
+    case ParamType::VisionUid:    return "detection model";
     case ParamType::MapName:      return "map name";
     case ParamType::PinName:      return "pin name";
     case ParamType::TopicName:    return "topic";
@@ -84,6 +85,7 @@ bool TypeMatches(ParamType t, const nlohmann::json& v)
     case ParamType::Slide:
     case ParamType::PositionUid:
     case ParamType::AlignUid:
+    case ParamType::VisionUid:
     case ParamType::MapName:
     case ParamType::PinName:
     case ParamType::TopicName:

@@ -20,6 +20,12 @@ struct UiSettings {
     float rightW = 0.0f;
     float lowerH = 0.0f;
 
+    // Vision teach window: width of its parameter column in px (0 = default).
+    // Its own field rather than sharing rightW: that window is not part of the
+    // main five-region layout, and its column has to hold a whole parameter
+    // form, so the two sizes have nothing useful to say to each other.
+    float visionParamW = 0.0f;
+
     // Aux window toggles. NOTE: clickToMove restored true means a click drives
     // the real gantry immediately on startup.
     bool showChart   = true;

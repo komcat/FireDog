@@ -6,6 +6,9 @@
 #include "core/AlignFrame.h"           // AlignResult (taught-frame hand-back queue)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
 #include "hardware/HardwareConfig.h"   // AxisTransform, HardwareConfig
+#include "vision/HalconDetector.h"     // the cached detectors (PIMPL, no SDK leak)
+#include "vision/VisionModel.h"
+#include "vision/VisionResult.h"
 
 #include <atomic>
 #include <cstddef>
@@ -128,6 +131,39 @@ public:
     int  FocusRoiPx() const { return focusRoiPx_; }
     FocusSample LatestFocus() const;
 
+    // The camera's pixel -> mm calibration, live. Layer 2 owns it because an
+    // AUTO alignment station has no UI in the loop: a detector reports pixels
+    // and something has to turn them into millimetres on the worker thread.
+    // (The manual crosshair pick still converts in the UI, where the operator's
+    // click already is — see docs/alignment-procedure-design.md §3.)
+    void CameraPixelToMm(double& x, double& y) const;
+    void SetCameraPixelToMm(double x, double y);
+
+    // ---- Vision: feature detection (layer 2 owns the sampling) --------------
+    // Unlike the focus measure, these DO require HALCON. That asymmetry is the
+    // rule, not an accident: focus and the manual pick must survive an expired
+    // licence, automatic detection need not.
+    //
+    // Detectors are cached per model uid — building an NCC model is the
+    // expensive part, and a live tuning loop would otherwise rebuild it every
+    // frame. InvalidateDetector drops one after an edit, a re-teach or a delete.
+
+    // Grab the newest frame and run `m` over it. ALWAYS fills `out` (a miss is
+    // ok = false plus a reason); returns out->ok. Publishes the vision/* topics
+    // and caches the result. Thread-safe: the wizard and an engine worker may
+    // both call it.
+    bool Detect(const VisionModel& m, const std::string& modelDir,
+                VisionDetection* out);
+
+    // Teach `m`'s template from the newest frame. Writes the .pgm under
+    // `modelDir` and reports the patch size the caller stores in the model.
+    bool TeachDetector(const VisionModel& m, const std::string& modelDir,
+                       const VisionRoi& patch, int* tmplW, int* tmplH,
+                       std::string* err);
+
+    void InvalidateDetector(const std::string& uid);   // empty uid = drop all
+    VisionDetection LatestDetection() const;
+
     // ---- Keithley commands (Keithley page) ----------------------------------
     // Reconnect rebuilds the driver from the config captured at Start; the
     // runtime setters require Connected and are safe against the poll loop.
@@ -204,6 +240,16 @@ public:
     void QueueAlignResult(const std::string& uid, const AlignResult& r);
     std::vector<std::pair<std::string, AlignResult>> TakeAlignResults();
 
+    // ---- Reliability hand-back (vision_test command) ------------------------
+    // The SAME route, and for a reason worth writing down: the engine's Status
+    // ctx snapshot is NOT a usable channel for a finished run. RecipeEngine
+    // clears runCtx_ in its terminal block BEFORE the state becomes Completed,
+    // so a UI that waits for Completed and then reads Status.ctx always reads an
+    // empty map. Anything a command has to hand back after the run must be
+    // queued here.
+    void QueueVisionReliability(const std::string& uid, const VisionReliability& r);
+    std::vector<std::pair<std::string, VisionReliability>> TakeVisionReliability();
+
 private:
     // Fleet index of the gantry: "gantry-main" by name, else the first ACS
     // controller. Returns hw_.MotionCount() when there is none.
@@ -248,6 +294,10 @@ private:
     std::mutex alignMu_;
     std::vector<std::pair<std::string, AlignResult>> alignQueue_;
 
+    // Reliability-result queue (same producer/consumer split).
+    std::mutex visionRelMu_;
+    std::vector<std::pair<std::string, VisionReliability>> visionRelQueue_;
+
     // Motion is inhibited while a CRITICAL safety alert is unacknowledged.
     bool SafetyBlocked() const
     {
@@ -281,6 +331,16 @@ private:
     std::atomic<bool>          focusStream_{false};
     std::atomic<int>           focusRoiPx_{256};
     unsigned long long         focusSeqSeen_ = 0;   // Update(): last frame scored
+
+    // Feature detection. Its own mutex, not focusMu_: a live tuning detect can
+    // take tens of milliseconds, and holding that lock would stall the UI's
+    // per-frame focus readout for no reason. Detectors are keyed by model uid
+    // and rebuilt lazily whenever the cached copy no longer matches the model.
+    mutable std::mutex                                        detectMu_;
+    std::vector<unsigned char>                                detectBuf_;
+    std::map<std::string, std::unique_ptr<HalconDetector>>    detectors_;
+    std::map<std::string, std::string>                        detectorStamp_;
+    VisionDetection                                           lastDetection_;
 
     // Keithley config captured at Start (same pattern as the camera).
     KeithleyConfig keiCfg_;

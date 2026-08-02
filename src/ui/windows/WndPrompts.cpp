@@ -275,38 +275,16 @@ void App::DrawAlignPickWindow()
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     // ---- View transform: screen px per CAMERA px, and which camera-px window
-    // is on screen. `fit` is the old cover fit (fill the box, crop the
-    // overflow); zoom multiplies it, so zoom 1.0 reproduces the previous view
-    // exactly and the default 1.5 magnifies the feature by 50%.
-    //
-    // The window follows the MARK (clamped to the image), so a zoomed view can
-    // never hide the crosshair and the arrow-key nudge always stays visible.
-    // Because zoom >= 1 and `fit` is a cover fit, the visible window is always
-    // inside the image — no letterboxing to handle.
-    const float fit = haveImg ? fmaxf(avail.x / static_cast<float>(cameraW_),
-                                      avail.y / static_cast<float>(cameraH_))
-                              : 1.0f;
-    const float s  = fit * pickZoom_;                  // screen px per camera px
-    const float vw = avail.x / s, vh = avail.y / s;    // visible camera-px extent
-    const auto viewClamp = [](float v, float half, float extent) {
-        return (half * 2.0f >= extent) ? extent * 0.5f
-                                       : fminf(fmaxf(v, half), extent - half);
-    };
-    const float viewLeft =
-        viewClamp(pickPx_, vw * 0.5f, static_cast<float>(cameraW_)) - vw * 0.5f;
-    const float viewTop =
-        viewClamp(pickPy_, vh * 0.5f, static_cast<float>(cameraH_)) - vh * 0.5f;
-    // camera px -> screen, and back.
-    const auto toScreen = [&](float px, float py) {
-        return ImVec2(origin.x + (px - viewLeft) * s, origin.y + (py - viewTop) * s);
-    };
+    // is on screen. Shared with the vision teach window (ui/Widgets.h) so a
+    // pixel means the same thing in both surfaces: a cover fit times a zoom,
+    // with the window following the MARK so a zoomed view can never hide the
+    // crosshair and the arrow-key nudge always stays visible.
+    const CameraView view = MakeCameraView(origin, avail, cameraW_, cameraH_,
+                                           pickPx_, pickPy_, pickZoom_);
+    const auto toScreen = [&](float px, float py) { return view.ToScreen(px, py); };
 
     if (haveImg) {
-        const ImVec2 uv0(viewLeft / static_cast<float>(cameraW_),
-                         viewTop / static_cast<float>(cameraH_));
-        const ImVec2 uv1((viewLeft + vw) / static_cast<float>(cameraW_),
-                         (viewTop + vh) / static_cast<float>(cameraH_));
-        ImGui::Image((ImTextureID)(intptr_t)cameraTex_, avail, uv0, uv1);
+        ImGui::Image((ImTextureID)(intptr_t)cameraTex_, avail, view.Uv0(), view.Uv1());
     } else {
         dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y),
                           IM_COL32(18, 18, 22, 255));
@@ -322,11 +300,8 @@ void App::DrawAlignPickWindow()
     const bool imgClicked = ImGui::InvisibleButton("##pickInput", avail);
     const bool imgHovered = ImGui::IsItemHovered();
 
-    if (haveImg && imgClicked) {
-        const ImVec2 m = ImGui::GetIO().MousePos;
-        pickPx_ = viewLeft + (m.x - origin.x) / s;
-        pickPy_ = viewTop  + (m.y - origin.y) / s;
-    }
+    if (haveImg && imgClicked)
+        view.ToCamera(ImGui::GetIO().MousePos, &pickPx_, &pickPy_);
     // Wheel zoom over the image. Applies from the NEXT frame (the view was
     // already computed above) — a frame of latency nobody can see.
     if (haveImg && imgHovered && ImGui::GetIO().MouseWheel != 0.0f) {

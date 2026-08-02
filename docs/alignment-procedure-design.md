@@ -1,7 +1,8 @@
 # Alignment procedure: a taught local coordinate system (O1)
 
-*Why the frame is two points and rigid, where the crosshair pick lives, and why
-"auto mode" is deliberately a stub. Reference material for the shipped code:
+*Why the frame is two points and rigid, where the crosshair pick lives, and how
+an auto station gets the same point from a detector. Reference material for the
+shipped code:
 `src/core/AlignFrame.{h,cpp}`, `src/command/CommandsAlign.cpp`,
 `src/ui/pages/PageAlign.cpp`, `config/scripts/alignment_procedure.lua`.*
 
@@ -118,21 +119,35 @@ The **result** travels the other way through the taught-position route:
 stores it against the procedure uid and persists — because `ProductSession` is
 UI-thread-only and the engine holds a *copy* of the document.
 
-## 5. Why auto mode is a stub
+## 5. Auto mode
 
-There is no feature detection in this build. `src/vision/` is the focus metric
-(plain C++) and HALCON *availability probing*; no image ever reaches
-`HalconEngine`, and there is no shape model, NCC or blob code anywhere.
+An `auto` station locates its feature with a **taught detection model** —
+circle/fiducial or gray NCC pattern match, both HALCON-backed. The station's
+`detector` field holds the model's uid; it was put there precisely so a
+procedure authored before detectors existed would survive their arrival, and
+uid-or-name resolution means an old free-text value still resolves.
 
-So an `auto` station is **stored and validated but fails at run time** with
-"feature detection is not implemented", unless `auto_fallback_manual` is set, in
-which case it logs a warning and asks the operator. That is deliberate: a silent
-fallback would let a procedure claim to be automatic while a human placed every
-point. The `detector` field carries the intended model name so a procedure
-authored now survives the day a detector arrives.
+The capture is the only thing that differs. `Workflow::Detect` fills the **same
+`PickResult`** the crosshair window fills — pixel plus millimetre offset from
+the image centre — so `e.wx = gx + pick.dxMM`, the ctx writes, `align_solve` and
+`QueueAlignResult` are byte-identical either way. There is still exactly one way
+a taught frame comes into existence.
 
-The same reasoning as the auto-focus rule applies here: **the manual pick must
-never depend on HALCON.** It does not — it is ImGui over a Pylon frame.
+Failure is loud on purpose. A missing model, an unlicensed HALCON and a genuine
+miss all resolve to one message, and the step **fails** with it unless
+`auto_fallback_manual` is set — in which case it logs a warning and asks the
+operator. A silent fallback would let a procedure claim to be automatic while a
+human placed every point.
+
+**The manual pick still never depends on HALCON** — it is ImGui over a Pylon
+frame, so a licence problem cannot stop an operator teaching a frame. Detection
+is deliberately outside that rule; see `docs/vision-detection-design.md` §3.
+
+One thing moved because of this: the **pixel→mm calibration now lives in
+`Workflow`** (`CameraPixelToMm`/`SetCameraPixelToMm` over the `camCfg_` captured
+at Start), because an auto station has no UI in the loop to do the conversion.
+The manual pick still converts UI-side as §3 describes; both read the same
+numbers, and the Camera page's fields write through to layer 2.
 
 ## 6. Storage
 
@@ -183,11 +198,22 @@ purpose: when a station is 2 mm off, somebody has to be able to see the number.
 The station card shows the coordinates too, since a private position is not on
 the Motion table.
 
+### Private detection models
+
+An **auto** station's detector follows the identical pattern, for the identical
+reason. It is named `vdet_<procUid>_<station>`, created on first use by the
+teach window, dropped by `DropAlignStationDetectors` when the procedure is
+deleted, and copied (patch file included) by `CopyAlignStationDetectors` when it
+is duplicated. There is no picker and no rename: an ROI, a grey window and a
+taught patch only mean anything at the pose and exposure they were tuned at, so
+a model that happens to suit a second station is a coincidence rather than a
+reuse. Detail in `docs/vision-detection-design.md` §2.
+
 ## 7. Commands and the script
 
 | Command | Role |
 |---|---|
-| `align_station` | drive to the station, apply exposure/lighting, capture E1 or E2 into ctx |
+| `align_station` | drive to the station, apply exposure/lighting, capture E1 or E2 into ctx (crosshair or detector) |
 | `align_solve` | build the frame from the two ctx points, publish it to ctx, persist it |
 | `align_apply` | local (O1) → machine XY into ctx; fails if no frame is taught |
 | `move_local` | `align_apply` + one coordinated move (arrival + settle via `MotionWaits.h`) |
@@ -221,8 +247,9 @@ rendered as a picker in the recipe editor. It is **not** device-scoped like
 1. **No zoom in the pick window.** Precision is bounded by the on-screen scale
    plus the arrow-key nudge.
 2. **Calibration is two scalars.** `pixel_to_mm_x/y` carry no rotation or skew
-   term, so a camera rotated relative to the stage biases every pick. The frame
-   cannot correct for that — it is measured through the same lens.
+   term, so a camera rotated relative to the stage biases every pick — manual or
+   detected alike. The frame cannot correct for that — it is measured through
+   the same lens.
 3. **Z is untouched.** `move_local` passes `z_mm` straight through as a machine
    coordinate; the frame is 2-D.
 4. **Lighting is a placeholder.** No illumination device exists in

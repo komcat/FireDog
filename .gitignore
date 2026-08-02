@@ -6,6 +6,9 @@
 # FireDog user-local runtime config (ui.local.json, positions.local.json, ...)
 *.local.json
 
+# Taught vision template patches, the side files of config/vision.local.json.
+config/vision/
+
 # User-specific files
 *.rsuser
 *.suo

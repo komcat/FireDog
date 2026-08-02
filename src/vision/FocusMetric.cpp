@@ -102,4 +102,25 @@ double MeanLumaRgb(const unsigned char* rgb, int imgW, int imgH, const FocusRoi&
     return sum / (static_cast<double>(r.w) * r.h);
 }
 
+FocusRoi RgbToGray8(const unsigned char* rgb, int imgW, int imgH, const FocusRoi& roi,
+                    std::vector<unsigned char>& out)
+{
+    out.clear();
+    if (!rgb || imgW <= 0 || imgH <= 0) return FocusRoi{};
+    const FocusRoi r = ClampRoi(imgW, imgH, roi);
+    if (r.w <= 0 || r.h <= 0) return FocusRoi{};
+
+    out.resize(static_cast<size_t>(r.w) * r.h);
+    for (int y = 0; y < r.h; ++y) {
+        const unsigned char* src = rgb + (static_cast<size_t>(r.y + y) * imgW + r.x) * 3;
+        unsigned char*       dst = out.data() + static_cast<size_t>(y) * r.w;
+        for (int x = 0; x < r.w; ++x, src += 3) {
+            const float v = Luma(src);
+            dst[x] = v <= 0.0f ? 0 : (v >= 255.0f ? 255
+                                    : static_cast<unsigned char>(v + 0.5f));
+        }
+    }
+    return r;
+}
+
 } // namespace firedog

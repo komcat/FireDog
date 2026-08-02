@@ -35,6 +35,8 @@ enum class ParamType {
     Slide,          // pneumatic slide name
     PositionUid,    // SavedPositions uid (resolved against the step's "device")
     AlignUid,       // Alignment-procedure uid (or name) in the product document
+    VisionUid,      // Vision detection-model uid (or name); like AlignUid, NOT
+                    // device-scoped — a model belongs to the camera, not a stage
     MapName,        // MotionMap name (resolved against the step's "device")
     PinName,        // IO pin name (resolved against the step's "device")
     TopicName,      // DataBus topic (no validation — topics create on demand)

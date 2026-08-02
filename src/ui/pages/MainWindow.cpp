@@ -151,14 +151,21 @@ void App::DrawMainWindow()
         if (currentPage_ == Page::WatchEdit || currentPage_ == Page::TransformEdit ||
             currentPage_ == Page::RecipeEdit || currentPage_ == Page::Scripts ||
             currentPage_ == Page::DutView || currentPage_ == Page::Run ||
-            currentPage_ == Page::Align) {
+            currentPage_ == Page::Align || currentPage_ == Page::VisionTeach) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
                                 : currentPage_ == Page::Scripts       ? "Scripts"
                                 : currentPage_ == Page::DutView       ? "DUT Records"
                                 : currentPage_ == Page::Align         ? "Alignment"
+                                : currentPage_ == Page::VisionTeach   ? "Vision detection"
                                                                       : "Run";
+            // Vision teach is only ever reached FROM the Alignment page, and a
+            // takeover -> takeover switch does not update prevPage_, so Close
+            // has to name Align explicitly or it would jump to whatever hardware
+            // page happened to be open before the Alignment page was.
+            const Page closeTo = (currentPage_ == Page::VisionTeach) ? Page::Align
+                                                                     : prevPage_;
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
             ImGui::TextUnformatted(title);
@@ -167,7 +174,7 @@ void App::DrawMainWindow()
                                  ImGui::GetStyle().FramePadding.x * 2.0f;
             ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - closeW);
             if (ImGui::Button("Close"))
-                SwitchPage(prevPage_);   // dirty recipe edits raise the guard
+                SwitchPage(closeTo);   // dirty recipe edits raise the guard
             ImGui::Separator();
             if (currentPage_ == Page::WatchEdit)          DrawWatchEditPanel();
             else if (currentPage_ == Page::TransformEdit) DrawTransformEditPanel();
@@ -175,6 +182,7 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::Scripts)       DrawScriptsPanel();
             else if (currentPage_ == Page::DutView)       DrawDutViewPanel();
             else if (currentPage_ == Page::Align)         DrawAlignPanel();
+            else if (currentPage_ == Page::VisionTeach)   DrawVisionTeachPanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();

@@ -1,0 +1,138 @@
+// VisionModel.h : a taught feature detector, as a document.
+//
+// A detection model is everything needed to find one feature again: which part
+// of the frame to look in, which method to use, that method's tuning, the
+// taught template (pattern matching only) and a record of how reliably it last
+// performed. It is named and uid'd so an alignment station — or, later, a
+// recipe step — references it instead of carrying a copy of the settings.
+//
+// Deliberately a DOCUMENT, not autosaved state: explicit Save plus a dirty
+// baseline, exactly like recipes and alignment procedures. Tuning a detector is
+// an authoring act, and half-tuned parameters must not reach the next run.
+//
+// Persistence follows core/AlignFrame.{h,cpp} exactly — the product's
+// {uid}.vision.json when a product is loaded, else config/vision.local.json
+// with a config/vision.json fallback. Tolerant load: a missing or malformed
+// file yields an empty vector, never throws.
+//
+// No vendor SDK reaches this header. The Halcon-backed detector that CONSUMES a
+// model lives in vision/HalconDetector.{h,cpp}; a model can be listed, edited
+// and saved on a machine with no HALCON at all.
+#pragma once
+
+#include <string>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+namespace firedog {
+
+// The search window, in full-frame camera pixels. Disabled = search the whole
+// frame. An ROI is the cheapest speed-up there is and usually the difference
+// between a detector that can run live and one that cannot.
+struct VisionRoi {
+    bool enabled = false;
+    int  x = 0, y = 0, w = 0, h = 0;
+};
+
+// Circle / fiducial, the blob-then-robust-fit chain. Ported from
+// bobcat_engine's HalconCircleDetectionRobustPlugin, which is the variant in
+// production use there (the sub-pixel-edge variant does not filter on
+// circularity and picks up far more junk).
+struct CircleParams {
+    int    thresholdMin   = 0;      // grey window for the feature ...
+    int    thresholdMax   = 100;    // ... polarity decides which side is used
+    double closingRadius  = 10.5;   // morphological close, fills speckle gaps
+    int    minArea        = 500;
+    int    maxArea        = 999999;
+    double minCircularity = 0.7;
+    int    polarity       = 0;      // 0 = dark feature on light, 1 = bright on dark
+    int    fitMethod      = 0;      // 0 = atukey, 1 = geotukey (both robust)
+};
+
+// Gray normalised-cross-correlation pattern match, plus an operator-placed
+// anchor. The anchor is what makes a match usable as a coordinate: the point of
+// interest is rarely the centre of a legible template.
+struct NccParams {
+    double      minScore   = 0.7;
+    int         maxMatches = 1;
+    int         numLevels  = 0;     // 0 = let HALCON choose the pyramid depth
+    double      angleToleranceDeg = 0.0;   // 0 = no rotation search (fastest)
+    std::string metric     = "ignore_global_polarity";   // | "use_polarity"
+
+    // Anchor offset RELATIVE TO THE TEMPLATE CENTRE, in template pixels. It is
+    // rotated by the match angle before being applied, so it stays attached to
+    // the feature rather than to the screen.
+    bool   useAnchor = false;
+    double anchorOffsetX = 0.0, anchorOffsetY = 0.0;
+
+    int tmplW = 0, tmplH = 0;       // taught patch size, for the UI and sanity checks
+};
+
+// What the last reliability run measured. A RECORD, never a gate: the run tells
+// an operator whether the model is trustworthy, and refusing to save a model
+// that scored badly would just mean tuning it somewhere else.
+struct VisionReliability {
+    int    runs = 0, ok = 0;
+    double meanScore = 0.0;
+    double meanXPx = 0.0, meanYPx = 0.0;
+    double stdXPx  = 0.0, stdYPx  = 0.0;
+    double maxDevPx = 0.0;          // worst distance from the mean point
+    std::string testedAt;           // "2026-08-01T10:22:31"
+};
+
+struct VisionModel {
+    std::string uid;
+    std::string name   = "detect";
+    std::string method = "circle";     // "circle" | "ncc"
+
+    VisionRoi roi;
+    double    exposureUs = 0.0;        // 0 = leave the camera exposure alone
+
+    CircleParams circle;
+    NccParams    ncc;
+
+    // Taught template patch, "<uid>.pgm", RELATIVE to the model directory.
+    // Relative on purpose: bobcat stores an absolute path, which makes a
+    // product folder non-relocatable the moment it is copied to another PC.
+    std::string templateFile;
+
+    VisionReliability rel;
+};
+
+// ---- the taught patch ----------------------------------------------------
+// 8-bit binary PGM (P5). Plain C++, ~20 lines: FireDog carries no image codec,
+// and a format any viewer opens means a taught template can still be inspected
+// on a machine with no HALCON licence. `gray` is w*h bytes, row-major.
+
+bool SaveGrayPgm(const std::string& path, const unsigned char* gray, int w, int h);
+bool LoadGrayPgm(const std::string& path, std::vector<unsigned char>* gray,
+                 int* w, int* h);
+
+// ---- lookup --------------------------------------------------------------
+// Resolve by uid first, then by exact name — stations store the uid (so a
+// rename is safe), operators and scripts use the name.
+const VisionModel* FindVisionModel(const std::vector<VisionModel>& list,
+                                   const std::string& uidOrName);
+VisionModel*       FindVisionModel(std::vector<VisionModel>& list,
+                                   const std::string& uidOrName);
+
+// ---- persistence ---------------------------------------------------------
+// Round-trip helpers, also used for the session's dirty baseline (a canonical
+// dump compared against the state at load/save — the recipes convention).
+nlohmann::json VisionModelToJson(const VisionModel& m);
+VisionModel    VisionModelFromJson(const nlohmann::json& j);
+
+// Reads config/vision.local.json, falling back to config/vision.json.
+std::vector<VisionModel> LoadVisionModels();
+
+// Explicit-path variants used by the product system. `uidOut` (if given)
+// receives the file's own "uid" field so the caller can check it against the
+// product manifest; `uid` (if non-empty) is written into the file.
+std::vector<VisionModel> LoadVisionModelsFile(const std::string& path,
+                                              std::string* uidOut = nullptr);
+bool SaveVisionModelsFile(const std::string& path,
+                          const std::vector<VisionModel>& models,
+                          const std::string& uid);
+
+} // namespace firedog

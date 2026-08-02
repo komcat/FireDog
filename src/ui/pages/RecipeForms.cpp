@@ -322,6 +322,39 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             ImGui::TextColored(kStaleRed, "unknown alignment procedure - re-pick");
         break;
     }
+    case ParamType::VisionUid: {
+        // Same shape as AlignUid: not device-scoped, stores the uid, shows the
+        // name. The method rides along in the row because "circle" and "ncc"
+        // fail for completely different reasons and the name rarely says which.
+        const std::string v = cur.is_string() ? cur.get<std::string>() : "";
+        std::string preview = v.empty() ? "(pick)" : v;
+        bool resolved       = v.empty();
+        if (const VisionModel* vm = FindVisionModel(session_.VisionModels(), v)) {
+            preview  = vm->name;
+            resolved = true;
+        }
+        if (!resolved) pushStale();
+        ImGui::SetNextItemWidth(w);
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        if (!resolved) ImGui::PopStyleColor(4);
+        if (open) {
+            if (session_.VisionModels().empty())
+                ImGui::TextDisabled("(no detection models - teach one from an "
+                                    "alignment station)");
+            else
+                for (const VisionModel& vm : session_.VisionModels()) {
+                    const std::string row = vm.name + "  (" + vm.method + ")";
+                    if (ImGui::Selectable(row.c_str(), vm.uid == v)) {
+                        params[p.name] = vm.uid;
+                        changed = true;
+                    }
+                }
+            ImGui::EndCombo();
+        }
+        if (!resolved)
+            ImGui::TextColored(kStaleRed, "unknown detection model - re-pick");
+        break;
+    }
     case ParamType::MapName: {
         const std::string dev = params.value("device", std::string());
         const std::string v   = cur.is_string() ? cur.get<std::string>() : "";

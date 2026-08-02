@@ -115,9 +115,15 @@ void App::DrawCameraDetailPanel()
     ImGui::TextUnformatted("Pixel -> mm calibration");
     ImGui::Separator();
     ImGui::SetNextItemWidth(160.0f);
-    ImGui::InputFloat("X mm/px", &pixelToMmX_, 0.0f, 0.0f, "%.5f");
+    bool calEdited = ImGui::InputFloat("X mm/px", &pixelToMmX_, 0.0f, 0.0f, "%.5f");
     ImGui::SetNextItemWidth(160.0f);
-    ImGui::InputFloat("Y mm/px", &pixelToMmY_, 0.0f, 0.0f, "%.5f");
+    calEdited |= ImGui::InputFloat("Y mm/px", &pixelToMmY_, 0.0f, 0.0f, "%.5f");
+    // Push edits into layer 2 as well: the UI converts pixels for the manual
+    // crosshair pick and click-to-move, but an AUTO alignment station converts
+    // on a worker thread with no UI in the loop, and the two must not disagree.
+    if (calEdited)
+        workflow_.SetCameraPixelToMm(static_cast<double>(pixelToMmX_),
+                                     static_cast<double>(pixelToMmY_));
     if (ImGui::Button("Save to config")) {
         if (HardwareConfig::SaveCameraSettings("config/hardware.json", cameraId_,
                                                pixelToMmX_, pixelToMmY_,

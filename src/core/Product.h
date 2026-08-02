@@ -16,7 +16,7 @@ namespace firedog {
 
 // One core-file entry in the manifest.
 struct ManifestFile {
-    std::string role;   // "positions" | "recipes" | "programs" | "alignments"
+    std::string role;   // "positions" | "recipes" | "programs" | "alignments" | "vision"
     std::string uid;    // 8-hex uid, also the filename prefix
     std::string file;   // "{uid}.{role}.json", relative to the product folder
 };

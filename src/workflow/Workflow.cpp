@@ -15,8 +15,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 
 namespace firedog {
 namespace {
@@ -356,6 +358,18 @@ std::vector<std::pair<std::string, AlignResult>> Workflow::TakeAlignResults()
 {
     const std::lock_guard<std::mutex> lock(alignMu_);
     return std::exchange(alignQueue_, {});
+}
+
+void Workflow::QueueVisionReliability(const std::string& uid, const VisionReliability& r)
+{
+    const std::lock_guard<std::mutex> lock(visionRelMu_);
+    visionRelQueue_.emplace_back(uid, r);
+}
+
+std::vector<std::pair<std::string, VisionReliability>> Workflow::TakeVisionReliability()
+{
+    const std::lock_guard<std::mutex> lock(visionRelMu_);
+    return std::exchange(visionRelQueue_, {});
 }
 
 void Workflow::StartCamera(const HardwareConfig& hw)
@@ -916,6 +930,133 @@ Workflow::FocusSample Workflow::LatestFocus() const
 {
     std::lock_guard<std::mutex> lock(focusMu_);
     return lastFocus_;
+}
+
+void Workflow::CameraPixelToMm(double& x, double& y) const
+{
+    x = camCfg_.pixelToMmX;
+    y = camCfg_.pixelToMmY;
+}
+
+void Workflow::SetCameraPixelToMm(double x, double y)
+{
+    if (x > 0.0) camCfg_.pixelToMmX = x;
+    if (y > 0.0) camCfg_.pixelToMmY = y;
+}
+
+// ---- Vision: feature detection ----------------------------------------------
+
+void Workflow::InvalidateDetector(const std::string& uid)
+{
+    std::lock_guard<std::mutex> lock(detectMu_);
+    if (uid.empty()) { detectors_.clear(); detectorStamp_.clear(); return; }
+    detectors_.erase(uid);
+    detectorStamp_.erase(uid);
+}
+
+VisionDetection Workflow::LatestDetection() const
+{
+    std::lock_guard<std::mutex> lock(detectMu_);
+    return lastDetection_;
+}
+
+bool Workflow::Detect(const VisionModel& m, const std::string& modelDir,
+                      VisionDetection* out)
+{
+    VisionDetection local;
+    VisionDetection* det = out ? out : &local;
+    *det = VisionDetection{};
+    det->method = m.method;
+
+    {
+        std::lock_guard<std::mutex> lock(detectMu_);
+
+        // Rebuild whenever the model's serialization differs from the one the
+        // cached detector was built with. Comparing the whole document rather
+        // than a "dirty" flag means no edit path can forget to invalidate:
+        // HALCON bakes the angle range and the pyramid depth into the model, so
+        // a stale detector silently ignores half the parameter form.
+        const std::string stamp = VisionModelToJson(m).dump();
+        auto it = detectors_.find(m.uid);
+        if (it == detectors_.end() || detectorStamp_[m.uid] != stamp) {
+            auto d = std::make_unique<HalconDetector>();
+            std::string err;
+            if (!d->Load(m, modelDir, &err)) {
+                det->ok    = false;
+                det->error = err;
+                lastDetection_ = *det;
+                return false;
+            }
+            detectorStamp_[m.uid] = stamp;
+            it = detectors_.insert_or_assign(m.uid, std::move(d)).first;
+        }
+
+        int w = 0, h = 0;
+        unsigned long long seq = 0;
+        if (!hw_.Camera().GetLatestFrameSeq(detectBuf_, w, h, seq) || w <= 0 || h <= 0) {
+            det->ok    = false;
+            det->error = "no camera frame";
+            lastDetection_ = *det;
+            return false;
+        }
+
+        it->second->Detect(detectBuf_.data(), w, h, det);
+        det->frameSeq = seq;   // Detect resets the struct; stamp the provenance after
+
+        // Pixels -> millimetres from the image centre, using the live camera
+        // calibration. Doing it HERE, once, is what lets an auto station run
+        // with no UI in the loop.
+        if (det->ok) {
+            det->dxMM = (det->xPx - 0.5 * w) * camCfg_.pixelToMmX;
+            det->dyMM = (det->yPx - 0.5 * h) * camCfg_.pixelToMmY;
+        }
+        lastDetection_ = *det;
+    }
+
+    // Published outside the lock: a subscriber must never be able to deadlock
+    // against a detect. Misses go on the stream too — a reliability run counts
+    // them, so suppressing them would flatter every model.
+    const double t = NowSec();
+    DataBus& bus = DataBus::Instance();
+    bus.Stream(topics::kVisionOk).Publish(t, det->ok ? 1.0 : 0.0);
+    if (det->ok) {
+        bus.Stream(topics::kVisionX).Publish(t, det->xPx);
+        bus.Stream(topics::kVisionY).Publish(t, det->yPx);
+        bus.Stream(topics::kVisionScore).Publish(t, det->score);
+        bus.Stream(topics::kVisionAngle).Publish(t, det->angleDeg);
+    }
+    return det->ok;
+}
+
+bool Workflow::TeachDetector(const VisionModel& m, const std::string& modelDir,
+                             const VisionRoi& patch, int* tmplW, int* tmplH,
+                             std::string* err)
+{
+    std::lock_guard<std::mutex> lock(detectMu_);
+
+    int w = 0, h = 0;
+    unsigned long long seq = 0;
+    if (!hw_.Camera().GetLatestFrameSeq(detectBuf_, w, h, seq) || w <= 0 || h <= 0) {
+        if (err) *err = "no camera frame to teach from";
+        return false;
+    }
+
+    // The model directory is created on demand — a product that never taught a
+    // template has no vision/ folder, and the first teach is when it needs one.
+    std::error_code ec;
+    std::filesystem::create_directories(modelDir, ec);
+
+    auto d = std::make_unique<HalconDetector>();
+    const std::string pgm = modelDir + "/" + m.uid + ".pgm";
+    if (!d->Teach(m, detectBuf_.data(), w, h, patch, pgm, tmplW, tmplH, err))
+        return false;
+
+    // The caller is about to write tmplW/tmplH and the filename back into the
+    // model, which changes its stamp — so drop the cache entry rather than
+    // adopting this detector under a stamp that is already stale.
+    detectors_.erase(m.uid);
+    detectorStamp_.erase(m.uid);
+    return true;
 }
 
 std::size_t Workflow::GantryIndex() const

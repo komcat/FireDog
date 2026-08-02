@@ -7,9 +7,13 @@
 // align_run is the typed one-step wrapper over alignment_procedure.lua, the
 // same shape as `xcan` — the script IS the procedure, so it stays editable.
 //
-// Why the pick answer arrives in millimetres: only the UI knows the live
-// pixel_to_mm calibration, so it converts and the worker just adds the offset
-// to the gantry pose. See docs/alignment-procedure-design.md.
+// Why a MANUAL pick answer arrives in millimetres: the operator's click happens
+// in the UI, which is where the on-screen pixel mapping already lives, so it
+// converts and the worker just adds the offset to the gantry pose. An AUTO
+// station has no UI in the loop, so Workflow::Detect does the same conversion
+// on the worker side with the same camera calibration — the two routes fill the
+// same PickResult and everything downstream is identical.
+// See docs/alignment-procedure-design.md.
 #include "command/Commands.h"
 
 #include "command/CommandRegistry.h"
@@ -20,6 +24,7 @@
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"
 #include "hardware/motion/IMotionController.h"
+#include "vision/HalconDetector.h"   // Available() — the licence gate for auto mode
 #include "workflow/Workflow.h"
 
 #include <cstdio>
@@ -106,8 +111,31 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     const auto targets = StationTargets(*pos, m);
     if (targets.empty()) return CommandResult::Fail("station position shares no axes with device");
 
+    // Resolve the detector BEFORE moving, so a mis-typed model name costs no
+    // travel — but do not act on the failure yet: whether it is fatal depends on
+    // auto_fallback_manual, and that decision belongs beside the capture.
+    const VisionModel* model = nullptr;
+    std::string autoErr;
+    if (st.mode == "auto") {
+        model = ctx.FindVisionModel(st.detector);
+        if (!model) {
+            autoErr = st.detector.empty()
+                ? "station " + std::to_string(station) + " is set to auto but names "
+                  "no detection model"
+                : "station " + std::to_string(station) + " names no detection model '" +
+                  st.detector + "'";
+        } else if (std::string why; !HalconDetector::Available(&why)) {
+            autoErr = "cannot run detection model '" + model->name + "': " + why;
+        }
+    }
+
     // Exposure BEFORE the move, so the sensor settles while the axes travel.
-    if (st.exposureUs > 0.0 && !ctx.Wf().SetCameraExposure(st.exposureUs))
+    // The station's own setting wins; a model carries the exposure it was tuned
+    // at, which is what makes a taught detector reproducible on its own.
+    const double expoUs = st.exposureUs > 0.0
+        ? st.exposureUs
+        : (model ? model->exposureUs : 0.0);
+    if (expoUs > 0.0 && !ctx.Wf().SetCameraExposure(expoUs))
         return CommandResult::Fail("camera exposure change rejected (camera connected?)");
     const CommandResult light = ApplyLighting(ctx, st.lighting);
     if (!light.ok) return light;
@@ -125,20 +153,60 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     const CommandResult settled = WaitSettle(ctx, m, idx);
     if (!settled.ok) return settled;
 
-    // Auto mode has no detector behind it yet — say so instead of pretending.
+    // Where the E point comes from. Both routes fill the SAME PickResult — the
+    // pixel and the millimetre offset from the image centre — so everything
+    // downstream is identical whether a detector or an operator produced it.
+    ExecutionContext::PickResult pick;
     bool manual = (st.mode != "auto");
-    if (!manual) {
+
+    if (!manual && autoErr.empty()) {
+        // Prove the frame is post-move before believing it: frame #1 may have
+        // been integrating while the stage travelled, frame #2 is wholly from
+        // the station. Same gate auto_focus uses.
+        const int fresh = p.GetInt("fresh_frames");
+        if (fresh > 0) {
+            const unsigned long long seq0 = ctx.Wf().CameraFrameSeq();
+            const auto fr = ctx.WaitUntil(
+                [&] {
+                    return ctx.Wf().CameraFrameSeq() >=
+                           seq0 + static_cast<unsigned long long>(fresh);
+                },
+                2000, 10);
+            if (fr == ExecutionContext::WaitResult::Stopped)
+                return CommandResult::Fail("stopped");
+            if (fr == ExecutionContext::WaitResult::Timeout)
+                FD_WARN("align", "'%s' station %d: no new frame within 2000 ms - "
+                                 "detecting on the latest frame (feed stalled?)",
+                        proc->name.c_str(), station);
+        }
+
+        VisionDetection det;
+        ctx.Wf().Detect(*model, ctx.VisionDir(), &det);
+        if (det.ok) {
+            pick.px   = det.xPx;
+            pick.py   = det.yPx;
+            pick.dxMM = det.dxMM;
+            pick.dyMM = det.dyMM;
+            FD_INFO("align", "'%s' E%d: '%s' found at (%.2f, %.2f) px, score %.3f",
+                    proc->name.c_str(), station, model->name.c_str(),
+                    det.xPx, det.yPx, det.score);
+        } else {
+            autoErr = "'" + model->name + "': " + det.error;
+        }
+    }
+
+    // A failure anywhere in the auto path lands here. Falling back is opt-in
+    // BECAUSE a silent fallback would let a procedure claim to be automatic
+    // while a human placed every point.
+    if (!manual && !autoErr.empty()) {
         if (!st.autoFallbackManual)
-            return CommandResult::Fail(
-                "station " + std::to_string(station) +
-                " is set to auto, but feature detection is not implemented "
-                "(set auto_fallback_manual or switch the station to manual)");
-        FD_WARN("align", "'%s' station %d: auto unavailable - asking the operator",
-                proc->name.c_str(), station);
+            return CommandResult::Fail(autoErr +
+                " (set auto_fallback_manual or switch the station to manual)");
+        FD_WARN("align", "'%s' station %d: %s - asking the operator",
+                proc->name.c_str(), station, autoErr.c_str());
         manual = true;
     }
 
-    ExecutionContext::PickResult pick;
     if (manual) {
         ExecutionContext::PickRequest req;
         req.alignName = proc->name;
@@ -153,9 +221,9 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
             return CommandResult::Fail("cancelled by operator");
     }
 
-    // The world point: where the gantry is, plus where in the frame the
-    // operator marked. Read the pose AFTER the pick — nothing moved, but this
-    // is the pose the pixel offset is relative to.
+    // The world point: where the gantry is, plus where in the frame the feature
+    // was marked (by hand or by the detector). Read the pose AFTER the capture —
+    // nothing moved, but this is the pose the pixel offset is relative to.
     m->RequestFastPoll();
     if (!ctx.Sleep(120)) return CommandResult::Fail("stopped");
     const std::map<std::string, double> live = m->Positions();
@@ -179,8 +247,10 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     ctx.CtxSet(PointKey(prefix, station, "wx"), e.wx);
     ctx.CtxSet(PointKey(prefix, station, "wy"), e.wy);
 
-    FD_INFO("align", "'%s' E%d: gantry (%.4f, %.4f) + pick (%+.4f, %+.4f) = (%.4f, %.4f) mm",
-            proc->name.c_str(), station, e.gx, e.gy, pick.dxMM, pick.dyMM, e.wx, e.wy);
+    FD_INFO("align", "'%s' E%d (%s): gantry (%.4f, %.4f) + mark (%+.4f, %+.4f) "
+                     "= (%.4f, %.4f) mm",
+            proc->name.c_str(), station, manual ? "manual" : "auto",
+            e.gx, e.gy, pick.dxMM, pick.dyMM, e.wx, e.wy);
     return CommandResult::Success();
 }
 
@@ -320,6 +390,9 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                        "arrival tolerance"},
                       {"ctx_prefix", PT::String, false, "frame", 0, 0, {},
                        "captured point goes to <prefix>_e<N>_gx/gy/px/py/wx/wy"},
+                      {"fresh_frames", PT::Int, false, 2, 0, 10, {},
+                       "auto stations only: new frames required after arrival "
+                       "before detecting (0 = use the latest, blind)"},
                       PreDelayParam(), PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecAlignStation});

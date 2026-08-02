@@ -1,7 +1,8 @@
 // ProductSession.h : the application document — everything the operator's
 // *product* consists of (saved positions, motion maps, recipes, programs,
-// scripts, alignment procedures) plus the manifest they belong to, and the ONE
-// place that knows the product-file / config-fallback persistence convention.
+// scripts, alignment procedures, vision detection models) plus the manifest
+// they belong to, and the ONE place that knows the product-file /
+// config-fallback persistence convention.
 //
 // UI-THREAD ONLY. No locks, no ImGui, no Workflow/HardwareManager. The engines
 // never read this live: they receive a COPY through Env at Start — copy-at-
@@ -26,6 +27,7 @@
 #include "core/MotionMap.h"
 #include "core/Product.h"
 #include "core/SavedPositions.h"
+#include "vision/VisionModel.h"
 
 namespace firedog {
 
@@ -45,6 +47,9 @@ public:
 
     std::vector<AlignProc>&       Aligns()       { return aligns_; }
     const std::vector<AlignProc>& Aligns() const { return aligns_; }
+
+    std::vector<VisionModel>&       VisionModels()       { return vision_; }
+    const std::vector<VisionModel>& VisionModels() const { return vision_; }
 
     // Scripts are scanned from disk, never edited here (authoring is external).
     const std::vector<ScriptInfo>& Scripts()        const { return scripts_; }
@@ -105,6 +110,32 @@ public:
     // the procedure `uid` and persist. False when the uid is unknown.
     bool ApplyAlignResult(const std::string& uid, const AlignResult& result);
 
+    // Vision detection models — same persistence conventions as recipes and
+    // alignment procedures: a tuned detector is a document, so explicit Save
+    // plus a dirty baseline. Half-tuned parameters must not reach the next run.
+    void LoadVisionFromDisk();
+    void SaveVision();
+    void SaveVisionTo(const std::string& path, const std::string& uid);
+    std::string VisionDump() const;
+    bool VisionDirty() const { return VisionDump() != visionBaseline_; }
+
+    // Where taught template patches live: products/<name>/vision when a product
+    // is loaded, else config/vision. Created on demand by the save path — the
+    // model JSON stores only the RELATIVE filename, so a product folder can be
+    // copied to another machine and still find its templates.
+    std::string VisionDir() const;
+
+    // Delete a model AND its taught template file. The .pgm is owned by the
+    // model (it is named after its uid), and an orphan would sit in a directory
+    // nobody ever looks at — the same reasoning that makes deleting an
+    // alignment procedure drop its private station positions.
+    bool DeleteVisionModel(const std::string& uid);
+
+    // Copy every current model's taught patch from `fromDir` into `toDir`.
+    // Used when a new product inherits the in-memory models: a reference across
+    // product folders would break the moment either one is moved.
+    void CopyVisionTemplates(const std::string& fromDir, const std::string& toDir) const;
+
     // Scripts: the product's scripts/ dir when it has one with content, else
     // config/scripts. ScriptsDirUsed() reports the dir ACTUALLY scanned.
     std::string ScriptsDir() const;
@@ -151,6 +182,10 @@ private:
     std::vector<AlignProc> aligns_;
     std::string            alignsUid_;
     std::string            alignsBaseline_;
+
+    std::vector<VisionModel> vision_;
+    std::string              visionUid_;
+    std::string              visionBaseline_;
 
     std::vector<ScriptInfo> scripts_;
     std::string             scriptsDirUsed_;   // the dir the list came from

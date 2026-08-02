@@ -4,6 +4,8 @@
 #include "core/Log.h"
 
 #include <cstdio>
+#include <filesystem>
+#include <system_error>
 
 namespace firedog {
 
@@ -22,6 +24,7 @@ bool ProductSession::LoadInitial(const std::string& lastProduct)
     if (!product_.Loaded()) LoadRecipesFromDisk();    // else LoadProduct did it
     if (!product_.Loaded()) LoadProgramsFromDisk();
     if (!product_.Loaded()) LoadAlignsFromDisk();
+    if (!product_.Loaded()) LoadVisionFromDisk();
     LoadScriptsList();   // .lua programs (product dir, else config/scripts)
     if (product_.Loaded())   // DUT records live under the product's data/
         DutSession::Instance().SetProduct(product_.name, product_.uid,
@@ -49,9 +52,11 @@ bool ProductSession::LoadProduct(const std::string& name)
     // their saves would fall back to config/ forever. Backfill on load — this
     // is load time, never draw time.
     EnsureManifestRole(product_, "alignments");
+    EnsureManifestRole(product_, "vision");
     LoadRecipesFromDisk();   // product recipes replace the config-fallback set
     LoadProgramsFromDisk();  // product programs likewise
     LoadAlignsFromDisk();    // product alignment procedures likewise
+    LoadVisionFromDisk();    // product vision detection models likewise
     LoadScriptsList();       // product scripts likewise (config fallback)
     DutSession::Instance().SetProduct(product_.name, product_.uid,
                                       product_.DataDir());   // auto-closes any DUT
@@ -63,6 +68,10 @@ void ProductSession::NewProduct(const char* name)
 {
     ProductManifest m = CreateProduct(name);
     if (!m.Loaded()) return;
+    // Where the current models' templates live, captured BEFORE the manifest
+    // swap moves VisionDir() to the new product.
+    const std::string oldVisionDir = VisionDir();
+
     product_ = std::move(m);
     DutSession::Instance().SetProduct(product_.name, product_.uid,
                                       product_.DataDir());
@@ -72,6 +81,14 @@ void ProductSession::NewProduct(const char* name)
     // it would silently give the new product the old part's origin.
     for (AlignProc& a : aligns_) a.result = AlignResult{};
     if (!aligns_.empty()) SaveAligns();
+
+    // Detection models carry over too, but a model is useless without its
+    // taught patch, so the .pgm files are COPIED rather than referenced across
+    // products — the new product must stay self-contained when it is moved.
+    if (!vision_.empty()) {
+        CopyVisionTemplates(oldVisionDir, VisionDir());
+        SaveVision();
+    }
 }
 
 void ProductSession::SaveProduct()
@@ -88,6 +105,8 @@ void ProductSession::SaveProduct()
             SaveProgramsTo(path, e.uid);
         } else if (e.role == "alignments") {
             SaveAlignsTo(path, e.uid);
+        } else if (e.role == "vision") {
+            SaveVisionTo(path, e.uid);
         } else {
             FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
         }
@@ -348,6 +367,107 @@ bool ProductSession::ApplyAlignResult(const std::string& uid, const AlignResult&
     return true;
 }
 
+// ---- Vision detection models — same conventions as alignment procedures ----
+
+std::string ProductSession::VisionDir() const
+{
+    return product_.Loaded() ? product_.Dir() + "/vision" : "config/vision";
+}
+
+void ProductSession::LoadVisionFromDisk()
+{
+    if (product_.Loaded()) {
+        const ManifestFile* e = product_.Entry("vision");
+        if (e) {
+            vision_ = LoadVisionModelsFile(product_.FilePath("vision"), &visionUid_);
+            if (!vision_.empty()) {
+                if (!visionUid_.empty() && visionUid_ != e->uid)
+                    FD_WARN("product", "vision uid mismatch: manifest %s vs file '%s'",
+                            e->uid.c_str(), visionUid_.c_str());
+                visionBaseline_ = VisionDump();
+                return;
+            }
+            // A product with an empty seed file adopts the manifest uid anyway,
+            // so the first Save lands in the product and not in config/.
+            visionUid_      = e->uid;
+            vision_.clear();
+            visionBaseline_ = VisionDump();
+            return;
+        }
+        FD_WARN("product", "'%s' has no vision entry; using config vision models",
+                product_.name.c_str());
+    }
+    visionUid_.clear();
+    vision_ = LoadVisionModels();   // config/vision.local.json -> vision.json
+    visionBaseline_ = VisionDump();
+}
+
+void ProductSession::SaveVision()
+{
+    std::string path = "config/vision.local.json";
+    std::string uid  = visionUid_;
+    if (product_.Loaded()) {
+        if (const ManifestFile* e = product_.Entry("vision")) {
+            path = product_.FilePath("vision");
+            uid  = e->uid;
+        }
+    }
+    if (uid.empty()) uid = GenerateUid();
+    visionUid_ = uid;
+    if (SaveVisionModelsFile(path, vision_, uid)) {
+        visionBaseline_ = VisionDump();
+        FD_INFO("vision", "saved %zu detection model(s) to %s", vision_.size(), path.c_str());
+    } else {
+        FD_WARN("vision", "could not save detection models to %s", path.c_str());
+    }
+}
+
+void ProductSession::SaveVisionTo(const std::string& path, const std::string& uid)
+{
+    SaveVisionModelsFile(path, vision_, uid);
+    visionUid_      = uid;
+    visionBaseline_ = VisionDump();
+}
+
+std::string ProductSession::VisionDump() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const VisionModel& m : vision_) arr.push_back(VisionModelToJson(m));
+    return arr.dump();
+}
+
+bool ProductSession::DeleteVisionModel(const std::string& uid)
+{
+    for (auto it = vision_.begin(); it != vision_.end(); ++it) {
+        if (it->uid != uid) continue;
+        if (!it->templateFile.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(VisionDir() + "/" + it->templateFile, ec);
+        }
+        FD_INFO("vision", "deleted detection model '%s'", it->name.c_str());
+        vision_.erase(it);
+        return true;
+    }
+    return false;
+}
+
+void ProductSession::CopyVisionTemplates(const std::string& fromDir,
+                                         const std::string& toDir) const
+{
+    if (fromDir == toDir) return;
+    std::error_code ec;
+    std::filesystem::create_directories(toDir, ec);
+    for (const VisionModel& m : vision_) {
+        if (m.templateFile.empty()) continue;
+        std::filesystem::copy_file(fromDir + "/" + m.templateFile,
+                                   toDir + "/" + m.templateFile,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec)
+            FD_WARN("vision", "could not copy template '%s' into %s (%s)",
+                    m.templateFile.c_str(), toDir.c_str(), ec.message().c_str());
+    }
+}
+
 // ---- Engine hand-off -------------------------------------------------------
 
 RecipeEngine::Env ProductSession::MakeRecipeEnv() const
@@ -357,6 +477,8 @@ RecipeEngine::Env ProductSession::MakeRecipeEnv() const
     env.maps      = maps_;
     env.library   = recipes_;
     env.aligns    = aligns_;
+    env.visionModels = vision_;
+    env.visionDir    = VisionDir();
     return env;
 }
 
@@ -367,6 +489,8 @@ LuaEngine::Env ProductSession::MakeLuaEnv() const
     env.maps      = maps_;
     env.library   = recipes_;   // fd.run_recipe / sub_recipe resolve against this
     env.aligns    = aligns_;
+    env.visionModels = vision_;
+    env.visionDir    = VisionDir();
     return env;
 }
 

@@ -25,6 +25,7 @@
 #include "command/ExecutionContext.h"
 #include "command/MotionWaits.h"
 #include "core/Log.h"
+#include "core/Product.h"   // NowStamp (reliability timestamp)
 #include "hardware/HardwareManager.h"
 #include "vision/HalconEngine.h"
 #include "workflow/Workflow.h"
@@ -318,6 +319,192 @@ CommandResult ExecHalconStatus(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// ---- Feature detection ------------------------------------------------------
+// Unlike auto-focus, these DO require HALCON — see vision/HalconDetector.h for
+// why that asymmetry is deliberate. The detector reports "not found" and "no
+// licence" through the same field, so both are counted honestly by a
+// reliability run instead of one of them looking like a crash.
+
+// Wait until the camera has produced `freshFrames` frames since now, then run
+// the model. Same evidence-over-delay gate as SampleFocus above, and the same
+// degradation on a stalled feed: warn once, detect on the latest frame.
+bool SampleDetect(ExecutionContext& ctx, const VisionModel& m, int freshFrames,
+                  int frameTimeoutMs, bool& warnedStale, VisionDetection& out)
+{
+    if (freshFrames > 0) {
+        const unsigned long long seq0 = ctx.Wf().CameraFrameSeq();
+        const auto r = ctx.WaitUntil(
+            [&] {
+                return ctx.Wf().CameraFrameSeq() >=
+                       seq0 + static_cast<unsigned long long>(freshFrames);
+            },
+            frameTimeoutMs, 10);
+        if (r == ExecutionContext::WaitResult::Stopped) return false;
+        if (r == ExecutionContext::WaitResult::Timeout && !warnedStale) {
+            warnedStale = true;
+            FD_WARN("vision", "vision_detect: camera produced no new frame within %d ms - "
+                              "using the latest frame instead (feed stalled?)",
+                    frameTimeoutMs);
+        }
+    }
+    ctx.Wf().Detect(m, ctx.VisionDir(), &out);
+    return true;
+}
+
+// Flatten a detection into ctx. One writer, so the wizard, a recipe step and an
+// auto alignment station all describe a result with the same key names.
+void WriteDetectCtx(ExecutionContext& ctx, const std::string& prefix,
+                    const VisionDetection& d)
+{
+    ctx.CtxSet(prefix + ".ok", d.ok);
+    ctx.CtxSet(prefix + ".count", static_cast<double>(d.count));
+    ctx.CtxSet(prefix + ".x_px", d.xPx);
+    ctx.CtxSet(prefix + ".y_px", d.yPx);
+    ctx.CtxSet(prefix + ".dx_mm", d.dxMM);
+    ctx.CtxSet(prefix + ".dy_mm", d.dyMM);
+    ctx.CtxSet(prefix + ".angle_deg", d.angleDeg);
+    ctx.CtxSet(prefix + ".score", d.score);
+    ctx.CtxSet(prefix + ".radius_px", d.radiusPx);
+    ctx.CtxSet(prefix + ".elapsed_ms", d.elapsedMs);
+    ctx.CtxSet(prefix + ".error", d.error);
+}
+
+CommandResult ExecVisionDetect(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string name   = p.GetString("model");
+    const std::string prefix = p.GetString("ctx_prefix");
+
+    const VisionModel* m = ctx.FindVisionModel(name);
+    if (!m) return CommandResult::Fail("detection model '" + name + "' not found");
+
+    const double expo = p.GetDouble("exposure_us");
+    // The model's own exposure is the default; the step may override it. A
+    // detector is tuned AT an exposure, so carrying it with the model is what
+    // makes a taught model reproducible.
+    const double useExpo = expo > 0.0 ? expo : m->exposureUs;
+    if (useExpo > 0.0) ctx.Wf().SetCameraExposure(useExpo);
+
+    VisionDetection d;
+    bool warnedStale = false;
+    if (!SampleDetect(ctx, *m, p.GetInt("fresh_frames"), p.GetInt("frame_timeout_ms"),
+                      warnedStale, d))
+        return CommandResult::Fail("stopped");
+
+    WriteDetectCtx(ctx, prefix, d);
+
+    if (d.ok) {
+        FD_INFO("vision", "'%s': (%.2f, %.2f) px  dx %+.4f dy %+.4f mm  "
+                          "angle %.3f deg  score %.3f  (%.1f ms)",
+                m->name.c_str(), d.xPx, d.yPx, d.dxMM, d.dyMM, d.angleDeg,
+                d.score, d.elapsedMs);
+    } else {
+        FD_WARN("vision", "'%s': %s", m->name.c_str(), d.error.c_str());
+    }
+
+    // `require` is what turns a miss into a failed step. Off by default so a
+    // recipe can branch on `<prefix>.ok` instead — the halcon_status pattern.
+    if (p.GetBool("require") && !d.ok)
+        return CommandResult::Fail("'" + m->name + "': " + d.error);
+    return CommandResult::Success();
+}
+
+// Run a model N times and report the spread. This is the honest answer to "is
+// this detector trustworthy?": a single successful detect proves nothing, and
+// the number that matters is how far the reported point wanders when nothing
+// has moved.
+CommandResult ExecVisionTest(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string name   = p.GetString("model");
+    const std::string prefix = p.GetString("ctx_prefix");
+    const int runs     = p.GetInt("runs");
+    const int interval = p.GetInt("interval_ms");
+    const bool trace   = p.GetBool("trace");
+
+    const VisionModel* m = ctx.FindVisionModel(name);
+    if (!m) return CommandResult::Fail("detection model '" + name + "' not found");
+
+    if (m->exposureUs > 0.0) ctx.Wf().SetCameraExposure(m->exposureUs);
+
+    std::vector<VisionDetection> hits;
+    hits.reserve(static_cast<std::size_t>(runs));
+    int attempted = 0;
+    bool warnedStale = false;
+
+    for (int i = 0; i < runs; ++i) {
+        VisionDetection d;
+        if (!SampleDetect(ctx, *m, p.GetInt("fresh_frames"),
+                          p.GetInt("frame_timeout_ms"), warnedStale, d))
+            return CommandResult::Fail("stopped");
+        ++attempted;
+        if (d.ok) hits.push_back(d);
+        if (trace)
+            FD_INFO("vision", "vtest,%d,%d,%.4f,%.4f,%.4f,%.2f",
+                    i, d.ok ? 1 : 0, d.xPx, d.yPx, d.score, d.elapsedMs);
+        if (i + 1 < runs && interval > 0 && !ctx.Sleep(interval))
+            return CommandResult::Fail("stopped");
+    }
+
+    const std::size_t n = hits.size();
+    double meanX = 0, meanY = 0, meanS = 0, sdX = 0, sdY = 0, maxDev = 0;
+    if (n > 0) {
+        for (const VisionDetection& d : hits) {
+            meanX += d.xPx; meanY += d.yPx; meanS += d.score;
+        }
+        meanX /= static_cast<double>(n);
+        meanY /= static_cast<double>(n);
+        meanS /= static_cast<double>(n);
+        for (const VisionDetection& d : hits) {
+            const double ex = d.xPx - meanX, ey = d.yPx - meanY;
+            sdX += ex * ex;
+            sdY += ey * ey;
+            const double dev = std::sqrt(ex * ex + ey * ey);
+            if (dev > maxDev) maxDev = dev;
+        }
+        // Population sigma, not sample sigma: this is the spread of the runs we
+        // actually did, not an estimate of some larger population.
+        sdX = std::sqrt(sdX / static_cast<double>(n));
+        sdY = std::sqrt(sdY / static_cast<double>(n));
+    }
+
+    const double okPct = attempted > 0
+        ? 100.0 * static_cast<double>(n) / static_cast<double>(attempted) : 0.0;
+
+    ctx.CtxSet(prefix + ".runs", static_cast<double>(attempted));
+    ctx.CtxSet(prefix + ".ok", static_cast<double>(n));
+    ctx.CtxSet(prefix + ".ok_pct", okPct);
+    ctx.CtxSet(prefix + ".mean_score", meanS);
+    ctx.CtxSet(prefix + ".mean_x_px", meanX);
+    ctx.CtxSet(prefix + ".mean_y_px", meanY);
+    ctx.CtxSet(prefix + ".std_x_px", sdX);
+    ctx.CtxSet(prefix + ".std_y_px", sdY);
+    ctx.CtxSet(prefix + ".max_dev_px", maxDev);
+
+    // Hand the same numbers back to the UI thread through Workflow's queue, NOT
+    // through the engine's Status ctx snapshot: RecipeEngine clears runCtx_ in
+    // its terminal block BEFORE the state becomes Completed, so a UI waiting for
+    // Completed and then reading Status.ctx always reads an empty map. This is
+    // the taught-position / taught-frame route, and it is the only one that
+    // survives the end of a run.
+    VisionReliability rel;
+    rel.runs      = attempted;
+    rel.ok        = static_cast<int>(n);
+    rel.meanScore = meanS;
+    rel.meanXPx   = meanX;
+    rel.meanYPx   = meanY;
+    rel.stdXPx    = sdX;
+    rel.stdYPx    = sdY;
+    rel.maxDevPx  = maxDev;
+    rel.testedAt  = NowStamp();
+    ctx.Wf().QueueVisionReliability(m->uid, rel);
+
+    FD_INFO("vision", "'%s' reliability: %zu/%d ok (%.0f%%)  score %.3f  "
+                      "sigma %.3f/%.3f px  worst %.3f px",
+            m->name.c_str(), n, attempted, okPct, meanS, sdX, sdY, maxDev);
+
+    if (n == 0) return CommandResult::Fail("'" + m->name + "': not detected in any run");
+    return CommandResult::Success();
+}
+
 } // namespace
 
 void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareManager& /*hw*/)
@@ -373,6 +560,47 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                        "ctx key prefix for the results"},
                   },
                   CommandSpec::Needs::None, ExecHalconStatus});
+
+    reg.Register({"vision_detect", "Vision",
+                  "Locate a taught feature with a detection model; results into ctx",
+                  {
+                      {"model", PT::VisionUid, true, {}, 0, 0, {},
+                       "detection model (uid or name)"},
+                      {"exposure_us", PT::Double, false, 0.0, 0.0, 1.0e7, {},
+                       "override the model's exposure; 0 = use the model's"},
+                      {"fresh_frames", PT::Int, false, 2, 0, 10, {},
+                       "new frames required before detecting (0 = use the latest)"},
+                      {"frame_timeout_ms", PT::Int, false, 2000, 50, 30000, {},
+                       "ceiling on the fresh-frame wait; then the latest frame is used"},
+                      {"require", PT::Bool, false, false, 0, 0, {},
+                       "fail the step when nothing is detected (else branch on <prefix>.ok)"},
+                      {"ctx_prefix", PT::String, false, "vision", 0, 0, {},
+                       "results go to <prefix>.ok/.x_px/.y_px/.dx_mm/.dy_mm/.angle_deg/"
+                       ".score/.radius_px/.count/.elapsed_ms/.error"},
+                      PreDelayParam(),
+                      PostDelayParam(),
+                  },
+                  CommandSpec::Needs::Camera, ExecVisionDetect});
+
+    reg.Register({"vision_test", "Vision",
+                  "Run a detection model N times and report the hit rate and spread",
+                  {
+                      {"model", PT::VisionUid, true, {}, 0, 0, {},
+                       "detection model (uid or name)"},
+                      {"runs", PT::Int, false, 20, 1, 500, {}, "how many detections to take"},
+                      {"interval_ms", PT::Int, false, 100, 0, 10000, {},
+                       "pause between runs"},
+                      {"fresh_frames", PT::Int, false, 1, 0, 10, {},
+                       "new frames required per run (1 = never score the same frame twice)"},
+                      {"frame_timeout_ms", PT::Int, false, 2000, 50, 30000, {},
+                       "ceiling on the fresh-frame wait"},
+                      {"trace", PT::Bool, false, false, 0, 0, {},
+                       "log one CSV line per run: vtest,i,ok,x_px,y_px,score,ms"},
+                      {"ctx_prefix", PT::String, false, "vision_test", 0, 0, {},
+                       "results go to <prefix>.runs/.ok/.ok_pct/.mean_score/.mean_x_px/"
+                       ".mean_y_px/.std_x_px/.std_y_px/.max_dev_px"},
+                  },
+                  CommandSpec::Needs::Camera, ExecVisionTest});
 }
 
 } // namespace firedog

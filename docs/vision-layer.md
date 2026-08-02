@@ -3,17 +3,23 @@
 *Reference for `src/vision/`, the `auto_focus` / `halcon_status` commands, and how
 FireDog behaves when HALCON is absent or unlicensed. Summary lives in CLAUDE.md.*
 
-The layer has two halves that are deliberately independent:
+The layer has three parts, split by what a missing licence costs:
 
-| Half | Files | Needs a vendor SDK? |
+| Part | Files | Needs a vendor SDK? |
 |---|---|---|
-| Focus measure | `vision/FocusMetric.{h,cpp}` | **No** — plain C++ |
+| Focus measure + the one RGB→luma conversion | `vision/FocusMetric.{h,cpp}` | **No** — plain C++ |
 | HALCON availability | `vision/HalconEngine.{h,cpp}` | Optional (`HAS_HALCON`) |
+| Detection models (documents) | `vision/VisionModel.{h,cpp}`, `vision/VisionResult.h` | **No** — authorable anywhere |
+| Detectors — circle/fiducial + gray NCC | `vision/HalconDetector.{h,cpp}` | **Yes** (`HAS_HALCON` + licence) |
 
 **Auto-focus must never depend on HALCON.** Focus is the one vision operation
 the machine needs to run a product, and a licence file is machine-local state
 that can expire. Keeping the metric to ~100 lines of plain C++ means a licence
 problem degrades inspection, never alignment.
+
+**Feature detection deliberately sits outside that rule** — it is a convenience
+over the manual crosshair pick, so a licence failure costs time rather than
+capability. Full rationale in `docs/vision-detection-design.md` §3.
 
 `src/vision/` compiles into **`firedog_hw`** (not the exe), so the rig gets it
 too — see `docs/build-and-sdks.md`.
@@ -42,7 +48,13 @@ Two properties worth knowing before trusting a number:
 
 `MeanLumaRgb` rides along as the guard rail: a saturated or black ROI makes the
 score meaningless, and exposure is the fix. The UI turns the readout amber
-outside luma 5–250.
+outside luma 5–250 — on the Camera tab and in the vision teach window, which
+needs the same warning for the same reason.
+
+`RgbToGray8` lives here too, and is the project's **only** RGB→luma conversion:
+it crops an ROI and converts in one pass, returning the CLAMPED ROI so a caller
+can add that origin back. A detector must go through it rather than picking its
+own weights, or two parts of the app would disagree about what a pixel is worth.
 
 ### Where it is sampled — `Workflow::MeasureFocus(roiPx)`
 
@@ -177,9 +189,12 @@ not a focus position. It is logged as a warning and still returned.
 
 ## 3. HALCON — build, runtime, licence
 
-`vision/HalconEngine.{h,cpp}` is the **only** TU that includes a HALCON header.
-Everything else asks `HalconEngine::Instance().Available()` and gets a bool plus
-a reason string.
+`vision/HalconEngine.{h,cpp}` and `vision/HalconDetector.{h,cpp}` are the **only**
+TUs that include a HALCON header. Everything else asks
+`HalconEngine::Instance().Available()` (or `HalconDetector::Available()`, which
+forwards it) and gets a bool plus a reason string. The detector is bound by the
+same probe-before-call rule: it may not touch a HALCON symbol until the
+`LoadLibrary` gate below has passed.
 
 Three independent gates, because they fail independently and need different
 fixes:
@@ -232,15 +247,47 @@ or issued for another host id.
   instead of failing halfway through a vision block. `require = true` turns it
   into a hard gate.
 
+---
+
+## 4. Feature detection
+
+Full design in **`docs/vision-detection-design.md`**; the operational summary:
+
+* A **detection model** is a uid-stamped document (search ROI, method, that
+  method's parameters, an optional taught template, a reliability record),
+  **private to one alignment station** and auto-named `vdet_<procUid>_<station>`
+  — the name is the ownership record, so the procedure's Delete drops it and its
+  Duplicate copies it. Product data: manifest role `vision`, file
+  `{uid}.vision.json`, with the `config/vision.local.json` → `vision.json`
+  fallback. Taught patches are 8-bit
+  PGMs under `ProductSession::VisionDir()`, named `<modelUid>.pgm` and referenced
+  **relatively**; the model owns the file and deleting the model drops it.
+* Two methods: `circle` (blob → robust `fit_circle_contour_xld`) and `ncc`
+  (gray normalised cross-correlation over a taught patch, plus an
+  operator-placed anchor that rotates with the match). Both ported from
+  `bobcat_engine`'s HALCON plugins, minus OpenCV.
+* `Workflow::Detect(model, dir, &out)` grabs the newest frame, runs the cached
+  detector, converts to millimetres with the camera calibration it now owns
+  (`CameraPixelToMm`), caches the result and publishes `vision/x_px`,
+  `vision/y_px`, `vision/score`, `vision/angle_deg`, `vision/ok`.
+* Commands `vision_detect` and `vision_test` (category **Vision**), plus
+  `ParamType::VisionUid` — the `AlignUid` shape exactly.
+* The **teach wizard** is a full-page takeover (`ui/pages/PageVisionTeach.cpp`,
+  `Page::VisionTeach`) reached only from an auto alignment station's button; its
+  Close returns to the Alignment page. Everything HALCON-backed is disabled with
+  `HalconEngine`'s reason shown verbatim when the licence is absent.
+
 ## Manual feature marking needs no vision at all
 
 The Alignment Procedure's manual mode marks a feature by **placing a crosshair
 on the live image** — ImGui over a Pylon frame, plus the camera's
 `pixel_to_mm_x/y` scale. No HALCON, no focus metric, no detector, so a licence
-problem cannot stop an operator teaching a local frame. Its "auto" mode is
-structure only and fails loudly at run time, precisely because there is no
-feature detection in this build. See `docs/alignment-procedure-design.md` §5.
+problem cannot stop an operator teaching a local frame. Its "auto" mode does
+need HALCON, and fails loudly (or falls back to the crosshair when the procedure
+asked for that) rather than pretending. See
+`docs/alignment-procedure-design.md` §5.
 
 Related: `docs/build-and-sdks.md` (SDK gating rules), `docs/command-layer.md`
 (the registry), `docs/xcan-scan-design.md` §4.3 (the freshness idea this borrows),
-`docs/alignment-procedure-design.md` (the crosshair pick).
+`docs/alignment-procedure-design.md` (the crosshair pick),
+`docs/vision-detection-design.md` (detection models and the teach wizard).

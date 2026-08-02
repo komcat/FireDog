@@ -68,6 +68,10 @@ it replaced. No PIMPL is needed: `App.h` contains no vendor headers.
    `App::SwitchPage`, which owns the takeover/`prevPage_` bookkeeping and the
    dirty-recipe guard. The one documented exception is the Run deck's
    right-click-to-edit shortcut.
+   Note that `prevPage_` is only updated on a **non-takeover → takeover** switch,
+   so a takeover that opens another takeover must name its return page itself.
+   `Page::VisionTeach` is the case: it is reached only from an alignment station
+   card, and its Close targets `Page::Align` explicitly.
 4. **The layer rule is unchanged.** A page reads `HardwareManager::Snapshot()`
    / accessors and the DataBus (pull-`Snapshot` only, no subscriptions), and
    issues every command through `Workflow`. No page constructs a device or runs
@@ -90,9 +94,15 @@ commits, and verify with `git diff --color-moved`.
 
 Stateless helpers and lookup tables with **more than one consumer**:
 `StateColor`/`Glyph`/`Text`, `DeviceStatusLine`, `Splitter`, `FormatCurrent`,
-`MeasuredHz`, `KeiRangeIndexFor`, and the `kFonts` / `kSteps` / `kKeiRanges` /
-`kUiSettingsPath` tables. Tables are `inline constexpr` so they are one entity
-rather than a per-TU copy.
+`MeasuredHz`, `KeiRangeIndexFor`, `CameraView`/`MakeCameraView`, and the
+`kFonts` / `kSteps` / `kKeiRanges` / `kUiSettingsPath` tables. Tables are
+`inline constexpr` so they are one entity rather than a per-TU copy.
+
+`CameraView` is the worked example of the hoist rule: the zoomable
+cover-fit-plus-follow-the-mark mapping between camera and screen pixels lived in
+`WndPrompts.cpp` until `PageVisionTeach.cpp` needed the *same* mapping. A pixel
+has to mean the same thing in both surfaces, and two copies of that arithmetic
+would drift the moment one gained a feature.
 
 Two hard constraints:
 
@@ -125,7 +135,8 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/pages/PageRecipeEdit.cpp` | editor page, step tree, palette, toolbar, run strip, step-path helpers | 879 |
 | `src/ui/pages/RecipeForms.cpp` | `DrawRecipeInspector` / `DrawParamWidget` / `DrawConditionEditor` | 495 |
 | `src/ui/pages/PageRun.cpp` | deck, execution view, Scan band (Raster \| XCAN), both launchers, preset modals | 1144 |
-| `src/ui/pages/PageAlign.cpp` | Alignment page: procedures \| stations + Run \| the taught frame | 320 |
+| `src/ui/pages/PageAlign.cpp` | Alignment page: procedures \| stations + Run \| the taught frame | 350 |
+| `src/ui/pages/PageVisionTeach.cpp` | Vision detection teach page (takeover, reached only from a station card): live image + ROI/template drag, method form, Detect/Live, reliability | 600 |
 | `src/ui/pages/PageScripts.cpp` | Scripts page + Lua debugger controls | 215 |
 | `src/ui/pages/PageDutView.cpp` | DUT Records viewer (read-only) | 150 |
 | `src/ui/pages/PageWatchEdit.cpp` / `PageTransformEdit.cpp` | the two full-page config editors | 135 / 131 |

@@ -48,6 +48,8 @@ public:
         MotionMapSet           maps;
         std::vector<Recipe>    library;
         std::vector<AlignProc> aligns;   // taught local frames (align_* commands)
+        std::vector<VisionModel> visionModels;   // taught detectors (vision_* commands)
+        std::string              visionDir;      // where their template patches live
     };
 
     // Step-mode start options: with stepMode the worker pauses BEFORE every

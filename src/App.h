@@ -30,9 +30,13 @@ namespace firedog {
 // Which content the Main window shows. Hardware pages are selected via the
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
+// VisionTeach is a takeover like the rest, but deliberately NOT in the View
+// menu: it always belongs to one alignment station, so the only way in is that
+// station's button, and its Close always returns to Align rather than to
+// prevPage_ (a takeover->takeover switch does not update prevPage_).
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
-                  Align };
+                  Align, VisionTeach };
 
 // One XCAN launch preset (a button on the Run page's Scan band): the step
 // ladder + the hexapod_align.lua tunables injected at launch. Five slots;
@@ -164,6 +168,31 @@ private:
     // linger somewhere nobody looks.
     void TeachAlignStation(AlignProc& a, int station);
     void DropAlignStationPositions(const AlignProc& a);
+    // Vision detection teach window (GLOBAL, non-modal — a big live image does
+    // not fit the Alignment page's middle column). Opened from a station card;
+    // tunes that station's detection model until it finds the feature reliably.
+    // Every HALCON-backed control is disabled with the licence reason when
+    // HalconDetector::Available() says no.
+    //
+    // A model is PRIVATE to one station, on the same principle as the private
+    // station positions above: parameters and a taught patch only mean anything
+    // at the pose and exposure they were tuned at, so there is nothing to share
+    // and nothing to name by hand. The model is named `vdet_<procUid>_<station>`
+    // and that name IS the ownership record — hence the two maintenance calls.
+    void DrawVisionTeachPanel();                         // page body (takeover frame)
+    void OpenVisionTeach(AlignProc& a, int station);     // creates the model, switches page
+    const VisionModel* StationDetector(const AlignProc& a, int station) const;
+    void DropAlignStationDetectors(const AlignProc& a);  // with the procedure
+    void CopyAlignStationDetectors(const AlignProc& src, AlignProc& dst);
+    void DrawVisionTeachImage(VisionModel& m);           // live image + ROI/box drag
+    void DrawVisionTeachParams(VisionModel& m);          // method + parameter form
+    void RefreshVisionTemplateTex(const VisionModel& m); // taught-patch thumbnail
+    void StartVisionReliabilityRun(const VisionModel& m);   // ad-hoc vision_test recipe
+    // Worker->UI hand-off for a finished reliability run. Drains Workflow's
+    // queue (the engine's Status ctx is already gone by the time the run reads
+    // Completed) and PARKS the result; the page's Accept button is what puts it
+    // on the model. Called from Update(), like the other two drains.
+    void DrainVisionTestResult();
     // Programs page (View menu, full-page) — Phase C1: list/run .lua programs.
     void DrawScriptsPanel();          // page body: scripts | source | run info
     void LoadScriptsList();           // session rescan + Scripts page selection sync
@@ -419,6 +448,48 @@ private:
     double alignProbeX_ = 0.0;   // right panel's local->machine check inputs
     double alignProbeY_ = 0.0;
     std::string alignStartErr_;  // why the last Run refused to start
+
+    // Vision teach page state — the models themselves live in session_.
+    // Page::VisionTeach IS the "open" flag; visionSelUid_ says which model.
+    std::string visionSelUid_;          // model being tuned ("" = none)
+    std::string visionOwnerLabel_;      // "calibrate plate  -  station 1 (E1)"
+    // Width of the parameter column, dragged by the splitter between the two
+    // panes and persisted in UiSettings. Its own field rather than the main
+    // window's rightW_: this window is not part of that five-region layout and
+    // its column has to hold a whole parameter form.
+    float       visionParamW_ = 380.0f;
+    bool        visionParamSplitting_ = false;   // edge-detect the drag END
+    float       visionZoom_  = 1.0f;    // magnification over the cover fit
+    float       visionFocusX_ = 0.0f;   // camera px the view is centred on
+    float       visionFocusY_ = 0.0f;
+    // Rubber-band drag over the image. 0 = idle, 1 = dragging the search ROI,
+    // 2 = dragging the template box, 3 = picking the anchor point.
+    int   visionDragMode_ = 0;
+    bool  visionDragging_ = false;
+    float visionDragX0_ = 0.0f, visionDragY0_ = 0.0f;
+    float visionDragX1_ = 0.0f, visionDragY1_ = 0.0f;
+    // Last detection + whether to redo it on every new frame. Live is off by
+    // default: a full-frame pattern match is not free, and the cost only earns
+    // its keep while somebody is actually turning the knobs.
+    VisionDetection    visionDet_;
+    bool               visionHaveDet_ = false;
+    bool               visionLive_    = false;
+    unsigned long long visionSeqSeen_ = 0;
+    bool               visionSlowWarned_ = false;   // "detect is slow" — say it once
+    std::string        visionErr_;                  // last teach/save failure
+    int                visionTestRuns_ = 20;
+    // A finished reliability run, parked until the operator accepts it. NOT
+    // written straight onto the model: whether 20/20 at 0.05 px is good enough
+    // is a judgement about this part and this feature, and the person who just
+    // watched the run is the one qualified to make it.
+    std::string        visionRelUid_;      // which model it belongs to
+    VisionReliability  visionRelPending_;
+    bool               visionRelHave_ = false;
+    // Taught-patch thumbnail. Keyed by the model uid it was loaded for, so a
+    // model switch or a re-teach reloads it and nothing else does.
+    unsigned int visionTmplTex_ = 0;
+    int          visionTmplW_ = 0, visionTmplH_ = 0;
+    std::string  visionTmplKey_;
 
     // Scripts page UI state — the scanned list itself lives in session_.
     int                      scriptSel_ = -1;

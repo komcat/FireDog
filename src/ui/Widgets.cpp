@@ -27,6 +27,33 @@ int KeiRangeIndexFor(double amps)
     return best;
 }
 
+CameraView MakeCameraView(const ImVec2& origin, const ImVec2& size,
+                          int imgW, int imgH, float focusX, float focusY, float zoom)
+{
+    CameraView v;
+    v.origin = origin;
+    v.size   = size;
+    v.imgW   = imgW;
+    v.imgH   = imgH;
+    if (imgW <= 0 || imgH <= 0) { v.scale = 1.0f; return v; }
+
+    const float fit = fmaxf(size.x / static_cast<float>(imgW),
+                            size.y / static_cast<float>(imgH));
+    v.scale = fit * (zoom > 0.0f ? zoom : 1.0f);
+    v.vw    = size.x / v.scale;
+    v.vh    = size.y / v.scale;
+
+    // Centre on the focus point, but never past the image edge: half a window
+    // wider than the image would letterbox, so that case centres instead.
+    const auto clamp = [](float c, float half, float extent) {
+        return (half * 2.0f >= extent) ? extent * 0.5f
+                                       : fminf(fmaxf(c, half), extent - half);
+    };
+    v.left = clamp(focusX, v.vw * 0.5f, static_cast<float>(imgW)) - v.vw * 0.5f;
+    v.top  = clamp(focusY, v.vh * 0.5f, static_cast<float>(imgH)) - v.vh * 0.5f;
+    return v;
+}
+
 ImVec4 StateColor(ConnState s) {
     switch (s) {
         case ConnState::Connected:  return ImVec4(0.40f, 0.90f, 0.50f, 1.0f);

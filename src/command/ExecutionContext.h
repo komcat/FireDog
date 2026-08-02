@@ -13,6 +13,7 @@
 #pragma once
 
 #include "core/AlignFrame.h"
+#include "vision/VisionModel.h"
 #include "core/MotionMap.h"
 #include "core/SavedPositions.h"
 
@@ -80,7 +81,9 @@ public:
 
     ExecutionContext(Workflow& wf, HardwareManager& hw,
                      SavedPosMap& positions, const MotionMapSet& maps,
-                     const std::vector<AlignProc>& aligns, Hooks hooks);
+                     const std::vector<AlignProc>& aligns,
+                     const std::vector<VisionModel>& visionModels,
+                     std::string visionDir, Hooks hooks);
     ExecutionContext(const ExecutionContext&) = delete;
     ExecutionContext& operator=(const ExecutionContext&) = delete;
 
@@ -108,6 +111,9 @@ public:
     const SavedPosMap&  Positions() const { return positions_; }
     const MotionMapSet& Maps() const { return maps_; }
     const std::vector<AlignProc>& Aligns() const { return aligns_; }
+    const std::vector<VisionModel>& VisionModels() const { return visionModels_; }
+    // Where the models' taught template patches live, for this run's document.
+    const std::string& VisionDir() const { return visionDir_; }
 
     // ---- Name resolution helpers (fleet index lookups; -1 if unknown) -------
     int MotionIndexByName(const std::string& name) const;
@@ -117,6 +123,8 @@ public:
     const MotionMap* FindMap(const std::string& device, const std::string& mapName) const;
     // Alignment procedure by uid, else by name (see FindAlignProc).
     const AlignProc* FindAlign(const std::string& uidOrName) const;
+    // Vision detection model by uid, else by name (see FindVisionModel).
+    const VisionModel* FindVisionModel(const std::string& uidOrName) const;
 
     // Teach: record `vals` as the device's saved position `name` — update by
     // name (uid kept stable) or create. Mutates the RUN's copy, so later steps
@@ -138,6 +146,9 @@ private:
                                       // thread only; RecordPosition may mutate)
     const MotionMapSet& maps_;        // stable for the whole run
     const std::vector<AlignProc>& aligns_;   // ditto
+    const std::vector<VisionModel>& visionModels_;   // ditto
+    std::string         visionDir_;                  // by value: it is a path,
+                                                     // not a live document
     Hooks               hooks_;
 
     mutable std::mutex              ctxMu_;

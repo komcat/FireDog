@@ -29,8 +29,11 @@ std::string CtxValueToString(const CtxValue& v)
 ExecutionContext::ExecutionContext(Workflow& wf, HardwareManager& hw,
                                    SavedPosMap& positions,
                                    const MotionMapSet& maps,
-                                   const std::vector<AlignProc>& aligns, Hooks hooks)
+                                   const std::vector<AlignProc>& aligns,
+                                   const std::vector<VisionModel>& visionModels,
+                                   std::string visionDir, Hooks hooks)
     : wf_(wf), hw_(hw), positions_(positions), maps_(maps), aligns_(aligns),
+      visionModels_(visionModels), visionDir_(std::move(visionDir)),
       hooks_(std::move(hooks))
 {
 }
@@ -188,6 +191,11 @@ const MotionMap* ExecutionContext::FindMap(const std::string& device,
 const AlignProc* ExecutionContext::FindAlign(const std::string& uidOrName) const
 {
     return FindAlignProc(aligns_, uidOrName);
+}
+
+const VisionModel* ExecutionContext::FindVisionModel(const std::string& uidOrName) const
+{
+    return firedog::FindVisionModel(visionModels_, uidOrName);
 }
 
 bool ExecutionContext::AwaitPrompt(const std::string& message)

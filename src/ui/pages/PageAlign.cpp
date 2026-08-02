@@ -17,6 +17,7 @@
 #include "imgui.h"
 
 #include "core/Log.h"
+#include "vision/HalconDetector.h"   // Available() — auto stations need a licence
 
 #include <cstdio>
 #include <string>
@@ -230,6 +231,9 @@ void App::DrawAlignListPanel()
             (s == 1 ? a.s1 : a.s2).posUid = np.uid;
             pl.push_back(std::move(np));
         }
+        // Private DETECTION MODELS copy the same way and for the same reason —
+        // patch file included, so the duplicate is self-contained.
+        CopyAlignStationDetectors(src, a);
         list.push_back(a);
         alignSel_ = static_cast<int>(list.size()) - 1;
         alignNameBuf_[0] = '\0';
@@ -238,6 +242,7 @@ void App::DrawAlignListPanel()
     ImGui::SameLine();
     if (ImGui::SmallButton("Delete")) {
         DropAlignStationPositions(list[static_cast<std::size_t>(alignSel_)]);
+        DropAlignStationDetectors(list[static_cast<std::size_t>(alignSel_)]);
         list.erase(list.begin() + alignSel_);
         alignSel_ = list.empty() ? -1 : 0;
         alignNameBuf_[0] = '\0';
@@ -375,19 +380,59 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
             st.lighting.value = static_cast<double>(lv);
     }
 
-    // Auto mode is structure only — there is no feature detector in the build.
+    // How the E point is marked. Manual = a crosshair on the live image (plain
+    // ImGui over a Pylon frame, so it never depends on a vision licence). Auto =
+    // a taught detection model, which DOES need HALCON — hence the licence line
+    // right here rather than a surprise at run time.
     int mode = (st.mode == "auto") ? 1 : 0;
     if (ImGui::RadioButton("Manual (crosshair)", mode == 0)) st.mode = "manual";
     ImGui::SameLine();
     if (ImGui::RadioButton("Auto (detect)", mode == 1)) st.mode = "auto";
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("No feature detector is implemented yet - an auto station\n"
-                          "fails at run time unless it may fall back to manual.");
+        ImGui::SetTooltip("Locate the feature with a taught detection model\n"
+                          "(circle/fiducial or gray pattern match). Needs HALCON.");
     if (st.mode == "auto") {
         ImGui::Indent();
-        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
-                           "feature detection is not implemented");
+
+        // The detection model is PRIVATE to this station — auto-named
+        // `vdet_<procUid>_<n>`, created by the teach window, deleted with the
+        // procedure. There is no picker because there is nothing to pick: the
+        // ROI, threshold and taught patch only mean anything at this station's
+        // pose and exposure. `detector` caches its uid so align_station and any
+        // recipe step resolve it the same way they resolve everything else.
+        const VisionModel* model = StationDetector(a, station);
+
+        if (ImGui::Button(model ? "Teach detection..." : "Set up detection..."))
+            OpenVisionTeach(a, station);
+
+        std::string why;
+        if (!HalconDetector::Available(&why)) {
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", why.c_str());
+        } else if (!model) {
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                               "no detection set up - this station will fail at run time");
+        } else {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s%s", model->method.c_str(),
+                                (model->method == "ncc" && model->templateFile.empty())
+                                    ? "  (no template taught)" : "");
+            if (model->rel.runs > 0) {
+                ImGui::TextDisabled("%d/%d ok, sigma %.2f px, tested %s",
+                                    model->rel.ok, model->rel.runs,
+                                    model->rel.stdXPx > model->rel.stdYPx ? model->rel.stdXPx
+                                                                          : model->rel.stdYPx,
+                                    model->rel.testedAt.c_str());
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                                   "never reliability-tested");
+            }
+        }
+
         ImGui::Checkbox("fall back to a manual pick", &st.autoFallbackManual);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Off, an auto station FAILS when detection does - which is\n"
+                              "the point: a silent fallback would let a procedure claim\n"
+                              "to be automatic while a human placed every point.");
         ImGui::Unindent();
     }
     ImGui::EndDisabled();

@@ -54,6 +54,11 @@ inline constexpr int kStepCount = static_cast<int>(sizeof(kSteps) / sizeof(kStep
 inline constexpr const char* kQuickAutoFocusName   = "Autofocus (gantry-main Z)";
 inline constexpr const char* kQuickAutoFocusDevice = "gantry-main";
 
+// The ad-hoc recipe the vision teach window's Reliability button starts. Same
+// reason it is a named constant: the window matches the engine's status against
+// it so it reports only on its OWN run.
+inline constexpr const char* kVisionTestRunName = "Detection reliability";
+
 // Sweep directions the buttons offer: button label + the `direction` parameter
 // value the auto_focus command takes. Down-first because that is the usual
 // approach direction; the other two are here because a sweep whose peak lands
@@ -77,6 +82,45 @@ inline constexpr int kKeiRangeCount = static_cast<int>(sizeof(kKeiRanges) / size
 
 // Closest table row for a configured fixed range (default: 2 mA).
 int KeiRangeIndexFor(double amps);
+
+// ---- Live camera image view ------------------------------------------------
+// The zoomable "cover fit plus follow-the-mark" mapping between camera pixels
+// and screen pixels. Hoisted out of the alignment crosshair-pick window when
+// the vision teach window needed the SAME mapping: a pixel has to mean the same
+// thing in both surfaces, and two copies of this arithmetic would drift the
+// moment one of them gained a feature.
+//
+// `fit` is a COVER fit (fill the box, crop the overflow) times a zoom >= 1, so
+// the visible window is always strictly inside the image and there is no
+// letterbox case. The window follows `focus` (clamped to the image), which is
+// what stops a zoomed view from hiding the very point being marked.
+struct CameraView {
+    ImVec2 origin{};          // top-left of the image box, in screen coords
+    ImVec2 size{};            // the box's size on screen
+    float  scale = 1.0f;      // screen px per camera px
+    float  left = 0.0f, top = 0.0f;   // top-left of the visible CAMERA-px window
+    float  vw = 0.0f, vh = 0.0f;      // visible camera-px extent
+    int    imgW = 0, imgH = 0;
+
+    ImVec2 ToScreen(float px, float py) const {
+        return ImVec2(origin.x + (px - left) * scale, origin.y + (py - top) * scale);
+    }
+    // Screen point -> camera pixel. The inverse of ToScreen; used by a click.
+    void ToCamera(const ImVec2& p, float* px, float* py) const {
+        if (px) *px = left + (p.x - origin.x) / scale;
+        if (py) *py = top  + (p.y - origin.y) / scale;
+    }
+    // UVs for ImGui::Image so the texture shows exactly the visible window.
+    ImVec2 Uv0() const { return ImVec2(left / static_cast<float>(imgW),
+                                       top  / static_cast<float>(imgH)); }
+    ImVec2 Uv1() const { return ImVec2((left + vw) / static_cast<float>(imgW),
+                                       (top  + vh) / static_cast<float>(imgH)); }
+};
+
+// Build the view for an imgW x imgH image drawn at `origin` in a `size` box,
+// magnified by `zoom` (>= 1) and centred on the camera pixel (focusX, focusY).
+CameraView MakeCameraView(const ImVec2& origin, const ImVec2& size,
+                          int imgW, int imgH, float focusX, float focusY, float zoom);
 
 // Connection-state presentation, used by every device page.
 ImVec4      StateColor(ConnState s);

@@ -36,7 +36,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 | Layer | Path | Role | Topic doc |
 |---|---|---|---|
 | 1 — Hardware | `src/hardware/` | drivers + interfaces; `HardwareManager` owns every device | `docs/hardware-layer.md` |
-| 1.5 — Vision | `src/vision/` | focus metric (plain C++) + HALCON availability/licence | `docs/vision-layer.md` |
+| 1.5 — Vision | `src/vision/` | focus metric (plain C++), HALCON availability/licence, detection models + detectors | `docs/vision-layer.md`, `docs/vision-detection-design.md` |
 | 2 — Workflow | `src/workflow/` | builds devices from config, drives connect/poll, jog kinematics, motion/IO commands, safety | `docs/architecture.md` |
 | 2.5 — Commands | `src/command/` | `CommandRegistry`, `RecipeEngine`, `LuaEngine`, `Orchestration` | `docs/command-layer.md` |
 | — Document | `src/session/` | `ProductSession`: product + positions + maps + recipes + programs + scripts + alignments | `docs/state-and-config.md` |
@@ -49,7 +49,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 `architecture.md` (layering + ownership) · `build-and-sdks.md` (**targets + SDK gating**) · `hardware-layer.md` (per-device drivers) · `vision-layer.md` (focus metric, auto-focus, HALCON) · `state-and-config.md` (config files, persistence, DataBus) · `command-layer.md` (registry, recipes, Lua) · `run-and-dut.md` (programs, Run page, traceability) · `ui-layer.md` · `ui-file-layout.md` (**where UI code goes**) · `rig-console.md` (the FireDogRig console)
 
 **Design rationale — why it is that way:**
-`recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `alignment-procedure-design.md` (the taught local frame O1) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
+`recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `alignment-procedure-design.md` (the taught local frame O1) · `vision-detection-design.md` (detection models, the teach wizard, auto stations) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
 
 ## Rules
 
@@ -88,10 +88,14 @@ Breaking any of these is a defect, not a style choice.
 
 ### Vision
 - **Auto-focus must never depend on HALCON.** The focus measure is plain C++ (`vision/FocusMetric`); a licence problem degrades inspection, never alignment. The Alignment Procedure's manual crosshair pick is under the same rule — it is ImGui over a Pylon frame and nothing more.
-- **There is no feature detection in this build.** An alignment station set to `auto` fails loudly at run time; it must never silently become a manual pick unless the procedure asked for that fallback.
+- **Feature detection DOES need HALCON, and says so.** `vision/HalconDetector` (circle/fiducial + gray NCC with an anchor) is the only image analysis in the build. Without a licence the teach window is disabled with `HalconEngine`'s reason shown verbatim and an `auto` station fails loudly at run time; it must never silently become a manual pick unless the procedure asked for that fallback.
+- **`RgbToGray8` (`vision/FocusMetric`) is the one RGB→luma conversion.** A second detector must not pick its own weights. It returns the CLAMPED ROI, and a detector must add that origin back — every `VisionDetection` coordinate is full-frame.
+- **`RecipeEngine::Status.ctx` is a LIVE snapshot, not a result channel.** The engine clears `runCtx_` before the state becomes `Completed`, so a UI that waits for Completed and then reads `Status.ctx` gets an empty map. Anything a command hands back after a run goes through a `Workflow` queue drained in `App::Update` (`TakeSavedPositions` / `TakeAlignResults` / `TakeVisionReliability`).
+- **A detection model is PRIVATE to one alignment station and auto-named `vdet_<procUid>_<station>`** — the name is the ownership record, exactly like the private station positions. There is no model picker, no rename, no New/Duplicate/Delete: parameters and a taught patch only mean anything at the pose and exposure they were tuned at. Deleting a procedure must drop them (`DropAlignStationDetectors`), duplicating must copy them (`CopyAlignStationDetectors`).
+- **A detection model owns its `.pgm`** (`<modelUid>.pgm` under `ProductSession::VisionDir()`). Deleting a model drops the file (`DeleteVisionModel`); duplicating copies it. The filename in the JSON is **relative** — an absolute path makes a product folder non-relocatable.
 - **A taught frame can only be created one way**: `align_solve` → `Workflow::QueueAlignResult` → `App::Update` → `ProductSession::ApplyAlignResult`. The Alignment page runs the same script a recipe's `align_run` step does — do not add a second capture path in the UI.
 - **A procedure's private station positions are named `algn_<procUid>_<station>` and `hidden`** — the name is the ownership record. Deleting a procedure must drop them (`DropAlignStationPositions`), or hidden orphans accumulate where nobody looks. `hidden` is withheld from the recipe *picker*, never blocked at validation — an existing reference must still resolve.
-- **`vision/HalconEngine.cpp` is the only TU that includes a HALCON header**, and nothing else may call HALCON without asking it first. Probe the DLLs with `LoadLibrary` **before** any HALCON call — the SDK is `/DELAYLOAD`ed, and a missing delay-loaded import raises an SEH exception that `catch` does not handle.
+- **`vision/Halcon*.cpp` are the only TUs that include a HALCON header** (`HalconEngine.cpp`, `HalconDetector.cpp`), and nothing else may call HALCON without asking `HalconEngine::Instance().Available()` first. Probe the DLLs with `LoadLibrary` **before** any HALCON call — the SDK is `/DELAYLOAD`ed, and a missing delay-loaded import raises an SEH exception that `catch` does not handle.
 - **Frame freshness uses `PylonCamera::FrameSeq()`, never `isNew`** — `isNew` is one-shot, so the first of two consumers eats it.
 - Move waits live in `command/MotionWaits.h`. Do **not** write a second arrival/settle helper in a new command file; the two-signal settle rule is what makes a scan sample trustworthy.
 

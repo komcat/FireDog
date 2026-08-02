@@ -257,6 +257,7 @@ struct ValidateEnv {
     const SavedPosMap&     positions;
     const MotionMapSet&    maps;
     const std::vector<AlignProc>& aligns;
+    const std::vector<VisionModel>& visionModels;
     const std::vector<Recipe>& library;
     bool requireConnected = false;
     std::vector<RecipeIssue>* issues = nullptr;
@@ -351,6 +352,15 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             // the procedure carries its own device.
             if (!FindAlignProc(env.aligns, v))
                 Issue(env, where, path, "alignment procedure '" + v + "' not found");
+            break;
+        }
+        case ParamType::VisionUid: {
+            // Resolved by uid OR name, like AlignUid. Existence only: whether
+            // HALCON can actually RUN the model is a run-time question, and
+            // failing validation on a licence would make an unlicensed machine
+            // unable to even open a recipe that mentions vision.
+            if (!FindVisionModel(env.visionModels, v))
+                Issue(env, where, path, "detection model '" + v + "' not found");
             break;
         }
         case ParamType::MapName: {
@@ -495,11 +505,13 @@ std::vector<RecipeIssue> ValidateRecipe(const Recipe& r, const CommandRegistry& 
                                         const SavedPosMap& positions,
                                         const MotionMapSet& maps,
                                         const std::vector<AlignProc>& aligns,
+                                        const std::vector<VisionModel>& visionModels,
                                         const std::vector<Recipe>& library,
                                         bool requireConnected)
 {
     std::vector<RecipeIssue> issues;
-    ValidateEnv env{reg, hw, positions, maps, aligns, library, requireConnected, &issues};
+    ValidateEnv env{reg, hw, positions, maps, aligns, visionModels, library,
+                    requireConnected, &issues};
     if (r.steps.empty()) issues.push_back({"(root)", "recipe has no steps", {}});
     ValidateSteps(env, r.steps, "", {}, false, 1);
     return issues;

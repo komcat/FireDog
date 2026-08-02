@@ -16,6 +16,20 @@ inline constexpr const char* kKeithleyCh2 = "keithley/ch2";
 // at one exposure, which is exactly the Z-sweep case.
 inline constexpr const char* kCameraFocus = "camera/focus";
 
+// Feature detection, published by Workflow::Detect on every run — the wizard's
+// live tuning loop, a reliability sweep and an auto alignment station all land
+// here. Scalar streams because that is what a DataStream carries and what a
+// chart wants; Workflow::LatestDetection() holds the full record for anyone who
+// needs the angle, the radius and the error text together.
+//
+// kVisionOk is 1/0 rather than a gate: a reliability run counts misses, so the
+// misses have to be on the stream too.
+inline constexpr const char* kVisionX     = "vision/x_px";
+inline constexpr const char* kVisionY     = "vision/y_px";
+inline constexpr const char* kVisionScore = "vision/score";
+inline constexpr const char* kVisionAngle = "vision/angle_deg";
+inline constexpr const char* kVisionOk    = "vision/ok";
+
 // CLD101x laser controller streams: temperature in deg C, laser current in mA
 // (display units — unlike the Keithley topics, which publish amps).
 inline constexpr const char* kCldTemp    = "cld/temp";

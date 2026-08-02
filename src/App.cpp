@@ -33,7 +33,8 @@ bool IsTakeoverPage(Page p)
 {
     return p == Page::WatchEdit || p == Page::TransformEdit ||
            p == Page::RecipeEdit || p == Page::Scripts ||
-           p == Page::DutView || p == Page::Run || p == Page::Align;
+           p == Page::DutView || p == Page::Run || p == Page::Align ||
+           p == Page::VisionTeach;
 }
 } // namespace
 
@@ -57,6 +58,7 @@ int App::Run()
         if (ui.leftW  > 0.0f) leftW_  = ui.leftW;
         if (ui.rightW > 0.0f) rightW_ = ui.rightW;
         if (ui.lowerH > 0.0f) lowerH_ = ui.lowerH;
+        if (ui.visionParamW > 0.0f) visionParamW_ = ui.visionParamW;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
         chartScope_      = ui.chartScope;
@@ -152,6 +154,12 @@ void App::Update(float dt)
     for (const auto& [uid, frame] : workflow_.TakeAlignResults())
         session_.ApplyAlignResult(uid, frame);
 
+    // A finished reliability run writes its statistics into the detection model
+    // it tested. Here rather than in the teach window's draw for the same reason
+    // as the two above: it is DERIVED state landing on the document, and a Draw
+    // function must never mutate the document.
+    DrainVisionTestResult();
+
     // A motion device with no saved positions gets a zeroed "Home" to start
     // from. It needs the device's axis list, which only exists once the async
     // connect finished — so it is checked here rather than at startup, and not
@@ -201,6 +209,7 @@ void App::SaveUiSettings()
     s.leftW     = leftW_;
     s.rightW    = rightW_;
     s.lowerH    = lowerH_;
+    s.visionParamW = visionParamW_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.chartScope  = chartScope_;
@@ -221,6 +230,18 @@ void App::ResetDocumentSelections()
     alignSel_ = session_.Aligns().empty() ? -1 : 0;
     alignNameBuf_[0] = '\0';
     alignStartErr_.clear();
+    // The vision models are a different document now, so the teach page's
+    // selection is stale — leave the page rather than showing a uid that
+    // belongs to the previous product. Cached detectors go with it.
+    if (currentPage_ == Page::VisionTeach) SwitchPage(Page::Align);
+    visionSelUid_.clear();
+    visionOwnerLabel_.clear();
+    visionTmplKey_.clear();
+    visionHaveDet_ = false;
+    visionRelHave_ = false;
+    visionRelUid_.clear();
+    visionErr_.clear();
+    workflow_.InvalidateDetector("");
     SyncScriptSelection();
 }
 
