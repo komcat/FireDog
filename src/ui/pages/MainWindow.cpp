@@ -88,7 +88,7 @@ void App::DrawMainWindow()
                     ToggleEditorPage(Page::WatchEdit);
                 if (ImGui::MenuItem("Transforms Editor", nullptr, currentPage_ == Page::TransformEdit))
                     ToggleEditorPage(Page::TransformEdit);
-                if (ImGui::MenuItem("Alignment", nullptr, currentPage_ == Page::Align))
+                if (ImGui::MenuItem("Alignment", "F5", currentPage_ == Page::Align))
                     ToggleEditorPage(Page::Align);
                 // Placement IS reachable from a nominal's Place... button, but
                 // that is three clicks deep inside another page — findable only
@@ -110,7 +110,7 @@ void App::DrawMainWindow()
                     if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                         ImGui::SetTooltip("Select an alignment procedure first (View > Alignment)");
                 }
-                if (ImGui::MenuItem("Scripts", nullptr, currentPage_ == Page::Scripts))
+                if (ImGui::MenuItem("Scripts", "F4", currentPage_ == Page::Scripts))
                     ToggleEditorPage(Page::Scripts);
                 if (ImGui::MenuItem("DUT Records", nullptr, currentPage_ == Page::DutView)) {
                     if (currentPage_ != Page::DutView) LoadDutList();
@@ -128,14 +128,21 @@ void App::DrawMainWindow()
             ImGui::EndMenuBar();
         }
 
-        // Global page shortcuts: F1 Run, F2 Recipe Editor, F3 Motion. Activate
-        // (not toggle) — pressing the key on its own page is a no-op.
+        // Global page shortcuts: F1 Run, F2 Recipe Editor, F3 Motion, F4
+        // Scripts, F5 Alignment. Activate (not toggle) — pressing the key on
+        // its own page is a no-op.
         if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && currentPage_ != Page::Run)
             ToggleEditorPage(Page::Run);
         if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && currentPage_ != Page::RecipeEdit)
             ToggleEditorPage(Page::RecipeEdit);
         if (ImGui::IsKeyPressed(ImGuiKey_F3, false))
             SwitchPage(Page::Motion);
+        // Alt+F4 is the OS close request — never let it double as a page jump.
+        if (ImGui::IsKeyPressed(ImGuiKey_F4, false) && !ImGui::GetIO().KeyAlt &&
+            currentPage_ != Page::Scripts)
+            ToggleEditorPage(Page::Scripts);
+        if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && currentPage_ != Page::Align)
+            ToggleEditorPage(Page::Align);
 
         // Quick-access strip (all pages): one-click jump to the operator pages.
         // Same guarded routing as the F-keys (activate, not toggle — clicking
@@ -156,6 +163,10 @@ void App::DrawMainWindow()
             pageBtn("Recipe Editor (F2)", Page::RecipeEdit, true);
             ImGui::SameLine();
             pageBtn("Motion (F3)", Page::Motion, false);
+            ImGui::SameLine();
+            pageBtn("Scripts (F4)", Page::Scripts, true);
+            ImGui::SameLine();
+            pageBtn("Alignment (F5)", Page::Align, true);
             ImGui::Separator();
         }
 
