@@ -21,6 +21,7 @@ const char* ParamTypeName(ParamType t)
     switch (t) {
     case ParamType::Bool:         return "bool";
     case ParamType::Int:          return "int";
+    case ParamType::IntChoice:    return "int";   // the wire type, not the widget
     case ParamType::Double:       return "double";
     case ParamType::String:       return "string";
     case ParamType::Value:        return "value";
@@ -30,6 +31,7 @@ const char* ParamTypeName(ParamType t)
     case ParamType::Slide:        return "slide";
     case ParamType::PositionUid:  return "position uid";
     case ParamType::AlignUid:     return "alignment";
+    case ParamType::NominalUid:   return "nominal";
     case ParamType::VisionUid:    return "detection model";
     case ParamType::MapName:      return "map name";
     case ParamType::PinName:      return "pin name";
@@ -75,7 +77,8 @@ bool TypeMatches(ParamType t, const nlohmann::json& v)
 {
     switch (t) {
     case ParamType::Bool:   return v.is_boolean();
-    case ParamType::Int:    return v.is_number_integer() || v.is_number_unsigned();
+    case ParamType::Int:
+    case ParamType::IntChoice: return v.is_number_integer() || v.is_number_unsigned();
     case ParamType::Double: return v.is_number();
     case ParamType::Value:  return v.is_boolean() || v.is_number() || v.is_string();
     case ParamType::String:
@@ -85,6 +88,7 @@ bool TypeMatches(ParamType t, const nlohmann::json& v)
     case ParamType::Slide:
     case ParamType::PositionUid:
     case ParamType::AlignUid:
+    case ParamType::NominalUid:
     case ParamType::VisionUid:
     case ParamType::MapName:
     case ParamType::PinName:

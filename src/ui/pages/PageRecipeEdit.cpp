@@ -495,6 +495,21 @@ std::string App::AutoNickname(const RecipeStep& s) const
                 for (const SavedPos& sp : it->second)
                     if (sp.uid == piece) { piece = sp.name; break; }
             }
+        } else if (p.type == ParamType::NominalUid && v.is_string()) {
+            // Same reason as PositionUid: the step stores a uid, and a uid in
+            // the step tree tells the operator nothing.
+            piece = v.get<std::string>();
+            const AlignProc* ap =
+                FindAlignProc(session_.Aligns(), s.params.value("alignment", std::string()));
+            if (ap) {
+                if (const AlignNominal* nm = FindAlignNominal(*ap, piece)) piece = nm->name;
+            }
+        } else if (p.type == ParamType::IntChoice && v.is_number()) {
+            // The choice's name, for the same reason: "align_station 2" makes
+            // the reader look the numbering up.
+            const int idx = static_cast<int>(v.get<double>()) - static_cast<int>(p.minVal);
+            if (idx >= 0 && idx < static_cast<int>(p.options.size())) piece = p.options[idx];
+            else piece = num(v.get<double>());
         } else if (p.type == ParamType::ScriptFile && v.is_string()) {
             piece = v.get<std::string>();   // show the file name, not the path
             const std::size_t cut = piece.find_last_of("/\\");

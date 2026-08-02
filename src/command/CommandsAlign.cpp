@@ -741,7 +741,9 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                   {
                       {"alignment", PT::AlignUid, true, {}, 0, 0, {},
                        "alignment procedure (uid or name)"},
-                      {"station", PT::Int, true, {}, 1, 2, {}, "1 = E1 (origin), 2 = E2 (X+)"},
+                      {"station", PT::IntChoice, true, {}, 1, 2,
+                       {"E1 - origin", "E2 - X+"},
+                       "1 = E1 (origin), 2 = E2 (X+)"},
                       {"message", PT::String, false, "", 0, 0, {},
                        "instruction shown to the operator ({key} substitutes ctx values)"},
                       {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
@@ -807,8 +809,10 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                   {
                       {"alignment", PT::AlignUid, true, {}, 0, 0, {},
                        "alignment procedure - its device is the one carrying the camera"},
-                      {"index", PT::Int, true, {}, 1, 2, {}, "1 or 2; the MIDPOINT is the point"},
-                      {"nominal", PT::String, false, "", 0, 0, {},
+                      {"index", PT::IntChoice, true, {}, 1, 2,
+                       {"pt1 - first corner", "pt2 - opposite corner"},
+                       "1 or 2; the MIDPOINT is the point"},
+                      {"nominal", PT::NominalUid, false, "", 0, 0, {},
                        "nominal whose taught detector finds this mark; empty = always ask"},
                       {"message", PT::String, false, "", 0, 0, {},
                        "instruction shown to the operator ({key} substitutes ctx values)"},
@@ -828,7 +832,7 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                   {
                       {"alignment", PT::AlignUid, true, {}, 0, 0, {},
                        "alignment procedure (uid or name)"},
-                      {"nominal", PT::String, true, {}, 0, 0, {},
+                      {"nominal", PT::NominalUid, true, {}, 0, 0, {},
                        "nominal on that procedure (uid or name)"},
                       {"ctx_prefix", PT::String, false, "place", 0, 0, {},
                        "reads <prefix>_p1_*/<prefix>_p2_*, writes <prefix>_obj_x/_obj_y/"
@@ -841,7 +845,7 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                   {
                       {"alignment", PT::AlignUid, true, {}, 0, 0, {},
                        "alignment procedure (uid or name)"},
-                      {"nominal", PT::String, true, {}, 0, 0, {},
+                      {"nominal", PT::NominalUid, true, {}, 0, 0, {},
                        "nominal on that procedure (uid or name)"},
                       {"device", PT::DeviceMotion, true, {}, 0, 0, {},
                        "the device HOLDING the object (not the camera's)"},
@@ -902,7 +906,7 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                   {
                       {"alignment", PT::AlignUid, true, {}, 0, 0, {},
                        "alignment procedure (uid or name)"},
-                      {"nominal", PT::String, true, {}, 0, 0, {},
+                      {"nominal", PT::NominalUid, true, {}, 0, 0, {},
                        "nominal to place the object on"},
                       {"device", PT::DeviceMotion, true, {}, 0, 0, {},
                        "the device HOLDING the object"},

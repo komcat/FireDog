@@ -295,12 +295,14 @@ bool SlideKnown(const HardwareManager& hw, const std::string& name)
 
 // Semantic reference checks for one merged param set. The PositionUid /
 // MapName / PinName types resolve against the step's "device" param (the
-// vocabulary convention: commands with such params also carry a device param).
+// vocabulary convention: commands with such params also carry a device param),
+// and NominalUid against its "alignment" for the same reason.
 void CheckReferences(const ValidateEnv& env, const std::string& where,
                      const std::vector<std::size_t>& path,
                      const CommandSpec& spec, const nlohmann::json& merged)
 {
-    const std::string device = merged.value("device", std::string());
+    const std::string device    = merged.value("device", std::string());
+    const std::string alignment = merged.value("alignment", std::string());
     for (const ParamSpec& p : spec.params) {
         if (!merged.contains(p.name) || !merged[p.name].is_string()) continue;
         const std::string v = merged[p.name].get<std::string>();
@@ -352,6 +354,17 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             // the procedure carries its own device.
             if (!FindAlignProc(env.aligns, v))
                 Issue(env, where, path, "alignment procedure '" + v + "' not found");
+            break;
+        }
+        case ParamType::NominalUid: {
+            // Scoped to the step's "alignment", the way PositionUid is scoped to
+            // its "device". An unresolvable procedure is already reported by the
+            // AlignUid row above, so say nothing more here — one broken pick
+            // must not produce two errors.
+            const AlignProc* ap = FindAlignProc(env.aligns, alignment);
+            if (ap && !FindAlignNominal(*ap, v))
+                Issue(env, where, path, "nominal '" + v + "' not found on alignment '" +
+                                      ap->name + "'");
             break;
         }
         case ParamType::VisionUid: {

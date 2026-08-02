@@ -24,6 +24,13 @@ class ExecutionContext;
 enum class ParamType {
     Bool,
     Int,
+    IntChoice,      // an Int with named choices: `options` labels the consecutive
+                    // values from minVal up. Still a NUMBER on the wire — the
+                    // recipes that already hold 1 or 2 keep working, and the
+                    // command still reads it with GetInt. Use it where a small
+                    // integer is really an identity ("station 2" is E2, not two
+                    // of anything) and a spinner makes the operator remember
+                    // which number that was
     Double,
     String,
     Value,          // free-typed: bool, number, or string (ctx values)
@@ -35,6 +42,9 @@ enum class ParamType {
     Slide,          // pneumatic slide name
     PositionUid,    // SavedPositions uid (resolved against the step's "device")
     AlignUid,       // Alignment-procedure uid (or name) in the product document
+    NominalUid,     // Nominal uid (or name) WITHIN the step's "alignment" — the
+                    // same scoping convention PositionUid has to "device", one
+                    // level down: a nominal only means anything on its procedure
     VisionUid,      // Vision detection-model uid (or name); like AlignUid, NOT
                     // device-scoped — a model belongs to the camera, not a stage
     MapName,        // MotionMap name (resolved against the step's "device")

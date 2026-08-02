@@ -156,6 +156,31 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         }
         break;
     }
+    case ParamType::IntChoice: {
+        // `options[i]` names the value minVal + i. A value outside the list is
+        // shown as the bare number rather than snapped to a neighbour: it came
+        // from somewhere (a hand-edited recipe, a spec that has since grown a
+        // choice), and silently rewriting it would hide that.
+        const int lo = static_cast<int>(p.minVal);
+        const int v  = cur.is_number() ? static_cast<int>(cur.get<double>()) : lo;
+        const int idx = v - lo;
+        const int  n     = static_cast<int>(p.options.size());
+        const bool known = idx >= 0 && idx < n;
+        char fallback[32];
+        std::snprintf(fallback, sizeof(fallback), "%d", v);
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::BeginCombo(label, known ? p.options[idx].c_str() : fallback)) {
+            for (int i = 0; i < n; ++i) {
+                const int val = lo + i;
+                if (ImGui::Selectable(p.options[i].c_str(), val == v)) {
+                    params[p.name] = val;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        break;
+    }
     case ParamType::Double: {
         double v = cur.is_number() ? cur.get<double>() : 0.0;
         ImGui::SetNextItemWidth(w);
@@ -320,6 +345,63 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         }
         if (!resolved)
             ImGui::TextColored(kStaleRed, "unknown alignment procedure - re-pick");
+        break;
+    }
+    case ParamType::NominalUid: {
+        // Scoped to the step's OWN "alignment", the way PositionUid is scoped to
+        // its "device": a nominal is a point on one procedure's part, and the
+        // list of every nominal in the product would be a list of points that
+        // mostly cannot be placed from here.
+        //
+        // Picks store the uid, but an old recipe that holds a NAME still shows
+        // as resolved — FindAlignNominal takes either, and re-typing a hand-
+        // written recipe's params is not an upgrade the operator asked for.
+        const std::string al = params.value("alignment", std::string());
+        const AlignProc*  ap = FindAlignProc(session_.Aligns(), al);
+        const std::string v  = cur.is_string() ? cur.get<std::string>() : "";
+        std::string preview  = v.empty() ? "(pick)" : v;
+        // Optional and unset is a real setting here (place_mark: "empty = always
+        // ask"), so an empty value is never stale.
+        bool resolved = v.empty();
+        if (ap) {
+            if (const AlignNominal* nm = FindAlignNominal(*ap, v)) {
+                preview  = nm->name;
+                resolved = true;
+            }
+        } else {
+            // No procedure picked yet: nothing to resolve AGAINST, so the value
+            // is unjudged rather than wrong. The alignment row is already red.
+            resolved = true;
+        }
+        if (!resolved) pushStale();
+        ImGui::SetNextItemWidth(w);
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        if (!resolved) ImGui::PopStyleColor(4);
+        if (open) {
+            if (!ap) {
+                ImGui::TextDisabled("(pick the alignment procedure first)");
+            } else if (ap->nominals.empty()) {
+                ImGui::TextDisabled("(no nominals on '%s' - teach one from the "
+                                    "Alignment page)", ap->name.c_str());
+            } else {
+                if (!p.required && ImGui::Selectable("(none)", v.empty())) {
+                    params[p.name] = std::string();
+                    changed = true;
+                }
+                for (const AlignNominal& nm : ap->nominals) {
+                    // Match the name too: a recipe written by hand holds one.
+                    const bool sel = nm.uid == v || nm.name == v;
+                    if (ImGui::Selectable(nm.name.c_str(), sel)) {
+                        params[p.name] = nm.uid;
+                        changed = true;
+                    }
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (!resolved)
+            ImGui::TextColored(kStaleRed, "not a nominal of '%s' - re-pick",
+                               ap->name.c_str());
         break;
     }
     case ParamType::VisionUid: {
