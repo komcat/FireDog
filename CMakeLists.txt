@@ -410,9 +410,20 @@ file(GLOB_RECURSE FIREDOG_SOURCES CONFIGURE_DEPENDS
 # below — compiling them a second time here would duplicate every symbol.
 list(FILTER FIREDOG_SOURCES EXCLUDE REGEX "/src/(core|hardware|vision|workflow)/")
 
+# The app icon, compiled in as a Win32 resource (see resources/FireDog.rc for
+# why it is named GLFW_ICON). RC is enabled here rather than in project()
+# because it is the only thing in the build that needs it.
+if(WIN32)
+    enable_language(RC)
+    set(FIREDOG_ICON_RC "${CMAKE_CURRENT_SOURCE_DIR}/resources/FireDog.rc")
+else()
+    set(FIREDOG_ICON_RC "")
+endif()
+
 add_executable(FireDog
     FireDog.cpp
     FireDog.h
+    ${FIREDOG_ICON_RC}
     ${FIREDOG_SOURCES})
 
 # The project include dirs arrive PUBLIC from firedog_hw; stb is UI/command-only.

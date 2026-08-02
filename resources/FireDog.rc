@@ -1,0 +1,13 @@
+// FireDog.rc : the application icon.
+//
+// The resource is named GLFW_ICON on purpose. GLFW's Win32 window creation
+// looks up exactly that name (glfw/src/win32_window.c) and, when it finds it,
+// uses it for the window's big and small icons — so this single entry covers
+// Explorer, the taskbar, Alt+Tab and every ImGui multi-viewport window, with no
+// glfwSetWindowIcon call anywhere in our code. It is also the only icon group
+// in the binary, which is the one the shell shows for the exe.
+//
+// FireDog.ico is generated from assets/UAA.png (16/24/32/48/64/128/256, the
+// 256 PNG-compressed). Regenerate it if the logo changes; the source art stays
+// the file of record.
+GLFW_ICON ICON "FireDog.ico"
