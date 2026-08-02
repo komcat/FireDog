@@ -239,6 +239,12 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     e.wx = e.gx + pick.dxMM;
     e.wy = e.gy + pick.dyMM;
 
+    // Feedback to the live overlays, the moment the point exists. align_solve
+    // only fires after BOTH stations, so without this the Aux window would have
+    // nothing to show while station 2 is being marked — which is exactly when
+    // an operator wants to see that E1 landed where they expected.
+    ctx.Wf().QueueAlignPoint(proc->uid, station, e);
+
     const std::string prefix = p.GetString("ctx_prefix");
     ctx.CtxSet(PointKey(prefix, station, "gx"), e.gx);
     ctx.CtxSet(PointKey(prefix, station, "gy"), e.gy);

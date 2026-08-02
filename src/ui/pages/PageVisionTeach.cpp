@@ -284,6 +284,42 @@ void App::DrainVisionTestResult()
     }
 }
 
+// The E-point marks the Aux overlay draws. Two sources, and which one wins is
+// the whole design:
+//
+//   * a RUN owns them while it is executing — that is live feedback, and it has
+//     to appear as each station is captured rather than only after the solve;
+//   * otherwise they mirror the SELECTED procedure's taught frame, so the same
+//     overlay doubles as a check on what is actually stored (drive to local
+//     (0,0) and E1's mark should sit under the centre crosshair).
+//
+// The two agree by construction once a run finishes: align_solve persists the
+// same points the queue delivered.
+void App::DrainAlignPoints()
+{
+    bool got = false;
+    for (const Workflow::AlignPointMark& mk : workflow_.TakeAlignPoints()) {
+        const int i = (mk.station == 2) ? 1 : 0;
+        // A fresh E1 means a NEW run: drop the previous E2 rather than leaving
+        // last run's second point on screen next to this run's first.
+        if (i == 0) alignMarkHave_[1] = false;
+        alignMarkE_[i]    = mk.point;
+        alignMarkHave_[i] = true;
+        got = true;
+    }
+    if (got || orch_.Busy()) return;   // a live run owns the marks
+
+    const std::vector<AlignProc>& list = session_.Aligns();
+    const bool sel = alignSel_ >= 0 && alignSel_ < static_cast<int>(list.size());
+    if (sel && list[alignSel_].result.valid) {
+        alignMarkE_[0] = list[alignSel_].result.e1;
+        alignMarkE_[1] = list[alignSel_].result.e2;
+        alignMarkHave_[0] = alignMarkHave_[1] = true;
+    } else {
+        alignMarkHave_[0] = alignMarkHave_[1] = false;
+    }
+}
+
 // ---- The image band ---------------------------------------------------------
 
 void App::DrawVisionTeachImage(VisionModel& m)

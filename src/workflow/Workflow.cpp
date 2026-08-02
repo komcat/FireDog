@@ -372,6 +372,32 @@ std::vector<std::pair<std::string, VisionReliability>> Workflow::TakeVisionRelia
     return std::exchange(visionRelQueue_, {});
 }
 
+void Workflow::QueueAlignPoint(const std::string& uid, int station, const AlignPoint& p)
+{
+    const std::lock_guard<std::mutex> lock(alignPtMu_);
+    alignPtQueue_.push_back(AlignPointMark{uid, station, p});
+}
+
+std::vector<Workflow::AlignPointMark> Workflow::TakeAlignPoints()
+{
+    const std::lock_guard<std::mutex> lock(alignPtMu_);
+    return std::exchange(alignPtQueue_, {});
+}
+
+bool Workflow::GantryXY(double& x, double& y) const
+{
+    const std::size_t gi = GantryIndex();
+    if (gi >= hw_.MotionCount()) return false;
+    IMotionController* m = hw_.MotionDevice(gi);
+    if (!m || !m->IsConnected()) return false;
+    const std::map<std::string, double> pos = m->Positions();
+    const auto ix = pos.find("X"), iy = pos.find("Y");
+    if (ix == pos.end() || iy == pos.end()) return false;
+    x = ix->second;
+    y = iy->second;
+    return true;
+}
+
 void Workflow::StartCamera(const HardwareConfig& hw)
 {
     const CameraConfig* cam = hw.FirstEnabledCamera();

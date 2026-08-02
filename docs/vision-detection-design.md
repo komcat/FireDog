@@ -268,7 +268,58 @@ model that scored badly would just mean tuning it somewhere the number is not
 being recorded. The station card surfaces the recorded figure
 (`18/20 ok, sigma 0.4 px`) so a bad one is visible where it matters.
 
-## 6. The commands
+## 6. The Aux window overlay
+
+The Aux window (the operator's watching surface, often on a second monitor)
+draws two kinds of mark over the live image, behind a **Vision marks** checkbox
+persisted in `UiSettings`. It defaults **on**, unlike click-to-move, because it
+is a readout and changes nothing.
+
+**The detection** — `Workflow::LatestDetection()`, in camera pixels. Its box is
+exactly **20×20 camera pixels**, a true footprint, so its on-screen size says how
+big the feature is relative to the frame; at the Aux window's cover fit that is
+only a few screen pixels on a large sensor, which is why the crosshair arms
+extend a fixed distance *beyond* it. The box is the measurement, the arms are
+what makes it findable. A **miss** is drawn too, with its reason: "it looked and
+found nothing" is different information from "it never ran", and only one of them
+means the parameters need work.
+
+Freshness is handled in `App::Update`, not in the draw: a new detection is one
+carrying a different `frameSeq`, and the age accumulates from `dt`. It fades out
+over the last half second of a 2.5 s hold. A marker that lingers over a scene the
+stage has since left is worse than no marker.
+
+**E1 and E2** are the interesting half. They are stored in **machine
+millimetres**, not pixels, because the two points are captured at two different
+gantry poses — a stored pixel becomes a lie the moment the stage moves. They are
+projected back through the live gantry pose, the exact inverse of the capture:
+
+```
+capture:  wx = gx + (px - w/2) * pixel_to_mm_x
+overlay:  screen_x = centre + ((wx - gx) / pixel_to_mm_x) * scale
+```
+
+drawn only when the result lands inside the frame — out of view, the overlay says
+nothing rather than guessing at an edge. `Workflow::GantryXY` supplies the pose,
+because layer 2 is what knows *which* device the gantry is; a UI overlay must not
+go hunting for a device called "gantry-main".
+
+Two sources feed those marks, and which wins is the design:
+
+* **A run owns them while it executes.** `align_station` queues each point the
+  moment it captures it (`Workflow::QueueAlignPoint`), because `align_solve` only
+  fires after *both* stations — without the queue there would be nothing to show
+  while station 2 is being marked, which is exactly when an operator wants to see
+  that E1 landed where they expected. A fresh E1 drops the previous E2, so last
+  run's second point never sits beside this run's first.
+* **Otherwise they mirror the selected procedure's taught frame**, which makes
+  the same overlay a check on what is actually stored: drive to local (0, 0) and
+  E1's mark should sit under the centre crosshair.
+
+The two agree by construction once a run finishes — `align_solve` persists the
+same points the queue delivered.
+
+## 7. The commands
 
 | Command | Role |
 |---|---|
@@ -289,7 +340,7 @@ Freshness reuses the auto-focus gate (`fresh_frames = 2`): frame #1 may have
 been integrating while the stage travelled, frame #2 is wholly from the station.
 On a stalled feed it degrades to "detect on the latest frame" and warns once.
 
-## 7. `align_station` in auto mode
+## 8. `align_station` in auto mode
 
 ```
 resolve the model BEFORE moving        -- a typo costs no travel
@@ -320,7 +371,7 @@ Camera page's calibration fields write through it. The manual pick still
 converts UI-side, where the operator's click already is; the two read the same
 numbers.
 
-## 8. Known limits
+## 9. Known limits
 
 1. **No shape-based (edge) matching.** NCC needs texture and does not tolerate
    scale change; a low-contrast edge-defined feature has no good method yet.

@@ -33,6 +33,38 @@ namespace {
 // Size of the cursor crosshair drawn over the image, in screen px.
 constexpr float kCursorCrossPx = 30.0f;
 
+// The detection marker's box is 20x20 CAMERA pixels — a true footprint, so its
+// on-screen size tells you how big the feature is relative to the frame. At the
+// Aux window's cover fit that is only a few screen px on a large sensor, which
+// is why the crosshair arms extend a fixed distance BEYOND it: the box is the
+// measurement, the arms are what makes it findable.
+constexpr float kDetBoxCamPx  = 20.0f;
+constexpr float kDetArmScreen = 14.0f;
+
+// How long a detection stays on screen. A marker that lingers over a scene the
+// stage has since left is worse than no marker at all.
+constexpr float kDetHoldSec = 2.5f;
+
+constexpr ImU32 kDetHitCol  = IM_COL32(80, 240, 130, 255);
+constexpr ImU32 kDetMissCol = IM_COL32(245, 110, 90, 255);
+constexpr ImU32 kE1Col      = IM_COL32(120, 190, 255, 255);
+constexpr ImU32 kE2Col      = IM_COL32(200, 140, 255, 255);
+
+// A small dark-plated label, kept inside the image box.
+void PlateText(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
+               ImVec2 at, ImU32 col, const char* text)
+{
+    const ImVec2 ts = ImGui::CalcTextSize(text);
+    at.x = fminf(at.x, origin.x + avail.x - ts.x - 6.0f);
+    at.y = fminf(at.y, origin.y + avail.y - ts.y - 4.0f);
+    at.x = fmaxf(at.x, origin.x + 4.0f);
+    at.y = fmaxf(at.y, origin.y + 4.0f);
+    dl->AddRectFilled(ImVec2(at.x - 4.0f, at.y - 2.0f),
+                      ImVec2(at.x + ts.x + 4.0f, at.y + ts.y + 2.0f),
+                      IM_COL32(0, 0, 0, 165), 3.0f);
+    dl->AddText(at, col, text);
+}
+
 // Step sizes offered by the Aux window's gantry-Z buttons — a short subset of
 // the shared kSteps table (indices into it, so the mm values never drift).
 constexpr int kAuxZSteps[]  = {5, 6, 9, 12, 14};   // 5um, 10um, 100um, 1mm, 5mm
@@ -123,6 +155,15 @@ void App::DrawAuxWindow()
             if (imgClicked) workflow_.MoveGantryRelativeMM(dxMM, dyMM);
         }
 
+        // ---- Vision feedback: the live detection + the E1/E2 marks ----
+        // Drawn after the cursor annotations so a detection is never hidden
+        // under them, and before the control plates so a checkbox stays clickable.
+        if (haveImg && showVisionMarks_) {
+            const float scale = fmaxf(avail.x / static_cast<float>(cameraW_),
+                                      avail.y / static_cast<float>(cameraH_));
+            DrawAuxVisionMarks(dl, origin, avail, center, scale);
+        }
+
         // ---- Overlay: camera status, top-left (dark plate for readability) ----
         char camline[128];
         std::snprintf(camline, sizeof(camline), "%s  [%s]  %dx%d",
@@ -147,6 +188,13 @@ void App::DrawAuxWindow()
         if (ImGui::Checkbox("Click-to-move", &enableClickMove_)) SaveUiSettings();
         ImGui::SameLine();
         ImGui::Checkbox("Arm jog", &jogArmed_);   // same flag the Jog window arms
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Vision marks", &showVisionMarks_)) SaveUiSettings();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Overlay the last detection (20x20 camera-px box) and the\n"
+                              "alignment's E1/E2 points, projected from machine mm through\n"
+                              "the live gantry pose - so they stay on the feature as the\n"
+                              "stage moves. Purely a readout; it changes nothing.");
 
         // ---- gantry-main Z: up = Z-, down = Z+, with a step-size combo ----
         // Real motion, so it follows the jog arming rule. Layer 2 owns the
@@ -234,6 +282,96 @@ void App::DrawAuxWindow()
         }
     }
     ImGui::End();
+}
+
+// Vision feedback over the live image. Two kinds of mark, and the difference
+// between them matters:
+//
+//   * the DETECTION is in camera pixels and belongs to one frame — it is only
+//     meaningful right now, so it ages out;
+//   * E1/E2 are in MACHINE millimetres and belong to the part. They are captured
+//     at two different gantry poses, so a stored pixel would be a lie the moment
+//     the stage moves; projecting them back through the live gantry pose is what
+//     makes "E1 is over there" true at every station.
+//
+// The projection is the inverse of the capture in CommandsAlign.cpp:
+//     wx = gx + (px - w/2) * pixel_to_mm_x    ->    (wx - gx) / pixel_to_mm_x
+// so the two can only disagree if the calibration changes mid-run.
+void App::DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
+                             const ImVec2& center, float scale)
+{
+    const auto inBox = [&](const ImVec2& p) {
+        return p.x >= origin.x && p.x <= origin.x + avail.x &&
+               p.y >= origin.y && p.y <= origin.y + avail.y;
+    };
+
+    // ---- E1 / E2, projected from machine mm through the live gantry pose ----
+    double gx = 0.0, gy = 0.0;
+    if (workflow_.GantryXY(gx, gy) && pixelToMmX_ > 0.0f && pixelToMmY_ > 0.0f) {
+        for (int i = 0; i < 2; ++i) {
+            if (!alignMarkHave_[i]) continue;
+            const float sx = center.x +
+                static_cast<float>((alignMarkE_[i].wx - gx) / pixelToMmX_) * scale;
+            const float sy = center.y +
+                static_cast<float>((alignMarkE_[i].wy - gy) / pixelToMmY_) * scale;
+            const ImVec2 p(sx, sy);
+            if (!inBox(p)) continue;   // out of frame: say nothing rather than lie
+
+            const ImU32 col = (i == 0) ? kE1Col : kE2Col;
+            const float r = 9.0f;
+            dl->AddCircle(p, r, col, 0, 1.8f);
+            dl->AddLine(ImVec2(p.x - r - 6.0f, p.y), ImVec2(p.x - r + 2.0f, p.y), col, 1.8f);
+            dl->AddLine(ImVec2(p.x + r - 2.0f, p.y), ImVec2(p.x + r + 6.0f, p.y), col, 1.8f);
+            dl->AddLine(ImVec2(p.x, p.y - r - 6.0f), ImVec2(p.x, p.y - r + 2.0f), col, 1.8f);
+            dl->AddLine(ImVec2(p.x, p.y + r - 2.0f), ImVec2(p.x, p.y + r + 6.0f), col, 1.8f);
+            char lbl[64];
+            std::snprintf(lbl, sizeof(lbl), "E%d  %.4f, %.4f", i + 1,
+                          alignMarkE_[i].wx, alignMarkE_[i].wy);
+            PlateText(dl, origin, avail, ImVec2(p.x + 14.0f, p.y - 22.0f), col, lbl);
+        }
+    }
+
+    // ---- The detection this frame (or the last few) ----
+    if (auxDetAge_ > kDetHoldSec) return;
+    // Fade out over the last half second, so it reads as "this is going stale"
+    // rather than vanishing between one frame and the next.
+    const float fade = auxDetAge_ < kDetHoldSec - 0.5f
+                           ? 1.0f
+                           : (kDetHoldSec - auxDetAge_) * 2.0f;
+    const int alpha = static_cast<int>(255.0f * fminf(fmaxf(fade, 0.0f), 1.0f));
+
+    if (!auxDet_.ok) {
+        // A miss is worth drawing too: "it looked and found nothing" is
+        // different information from "it never ran", and only one of them
+        // means the parameters need work.
+        char lbl[160];
+        std::snprintf(lbl, sizeof(lbl), "no detection: %s", auxDet_.error.c_str());
+        PlateText(dl, origin, avail,
+                  ImVec2(center.x - 120.0f, origin.y + avail.y - 30.0f),
+                  (kDetMissCol & 0x00FFFFFFu) | (static_cast<ImU32>(alpha) << 24), lbl);
+        return;
+    }
+
+    const ImVec2 p(center.x + (static_cast<float>(auxDet_.xPx) -
+                               static_cast<float>(cameraW_) * 0.5f) * scale,
+                   center.y + (static_cast<float>(auxDet_.yPx) -
+                               static_cast<float>(cameraH_) * 0.5f) * scale);
+    if (!inBox(p)) return;
+
+    const ImU32 col = (kDetHitCol & 0x00FFFFFFu) | (static_cast<ImU32>(alpha) << 24);
+    const float half = kDetBoxCamPx * 0.5f * scale;   // the TRUE 20x20 camera-px box
+    dl->AddRect(ImVec2(p.x - half, p.y - half), ImVec2(p.x + half, p.y + half),
+                col, 0.0f, 0, 1.6f);
+    const float arm = half + kDetArmScreen;           // ...plus a findable pointer
+    dl->AddLine(ImVec2(p.x - arm, p.y), ImVec2(p.x - half, p.y), col, 1.6f);
+    dl->AddLine(ImVec2(p.x + half, p.y), ImVec2(p.x + arm, p.y), col, 1.6f);
+    dl->AddLine(ImVec2(p.x, p.y - arm), ImVec2(p.x, p.y - half), col, 1.6f);
+    dl->AddLine(ImVec2(p.x, p.y + half), ImVec2(p.x, p.y + arm), col, 1.6f);
+
+    char lbl[128];
+    std::snprintf(lbl, sizeof(lbl), "%.1f, %.1f px   score %.3f   %.1f ms",
+                  auxDet_.xPx, auxDet_.yPx, auxDet_.score, auxDet_.elapsedMs);
+    PlateText(dl, origin, avail, ImVec2(p.x + arm + 4.0f, p.y + 6.0f), col, lbl);
 }
 
 void App::DrawImageOverlay()

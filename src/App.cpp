@@ -61,6 +61,7 @@ int App::Run()
         if (ui.visionParamW > 0.0f) visionParamW_ = ui.visionParamW;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
+        showVisionMarks_ = ui.showVisionMarks;
         chartScope_      = ui.chartScope;
         lastProduct      = ui.lastProduct;
     }
@@ -160,6 +161,24 @@ void App::Update(float dt)
     // function must never mutate the document.
     DrainVisionTestResult();
 
+    // Captured E points, for the Aux window's live overlay. Same worker->UI
+    // route; see DrainAlignPoints for the idle fallback.
+    DrainAlignPoints();
+
+    // Age the last detection here rather than timing it in a Draw, so the value
+    // and its age can never disagree within a frame. A new detection is one on
+    // a DIFFERENT camera frame — the detector stamps the frame it used.
+    {
+        const VisionDetection d = workflow_.LatestDetection();
+        if (d.frameSeq != auxDetSeq_) {
+            auxDetSeq_ = d.frameSeq;
+            auxDet_    = d;
+            auxDetAge_ = 0.0f;
+        } else {
+            auxDetAge_ += dt;
+        }
+    }
+
     // A motion device with no saved positions gets a zeroed "Home" to start
     // from. It needs the device's axis list, which only exists once the async
     // connect finished — so it is checked here rather than at startup, and not
@@ -212,6 +231,7 @@ void App::SaveUiSettings()
     s.visionParamW = visionParamW_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
+    s.showVisionMarks = showVisionMarks_;
     s.chartScope  = chartScope_;
     s.lastProduct = session_.Product().name;
     s.Save(kUiSettingsPath);
@@ -241,6 +261,10 @@ void App::ResetDocumentSelections()
     visionRelHave_ = false;
     visionRelUid_.clear();
     visionErr_.clear();
+    // The E marks belong to the old product's procedure; DrainAlignPoints
+    // re-seeds them from the new selection on the next frame.
+    alignMarkHave_[0] = alignMarkHave_[1] = false;
+    auxDetAge_ = 1.0e6f;
     workflow_.InvalidateDetector("");
     SyncScriptSelection();
 }

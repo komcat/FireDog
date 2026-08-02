@@ -193,6 +193,9 @@ private:
     // Completed) and PARKS the result; the page's Accept button is what puts it
     // on the model. Called from Update(), like the other two drains.
     void DrainVisionTestResult();
+    // Worker->UI hand-off for the E points, plus the idle fallback that mirrors
+    // the SELECTED procedure's taught frame. Update(), like the other drains.
+    void DrainAlignPoints();
     // Programs page (View menu, full-page) — Phase C1: list/run .lua programs.
     void DrawScriptsPanel();          // page body: scripts | source | run info
     void LoadScriptsList();           // session rescan + Scripts page selection sync
@@ -217,6 +220,12 @@ private:
     void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
     void DrawExitConfirmModal();      // intercepts the OS close request (X / Alt+F4)
     void DrawAuxWindow();
+    // Vision feedback drawn over the Aux window's live image: the detection the
+    // detector just made (camera pixels) and the taught/captured E1-E2 marks
+    // (machine mm, projected back into the current view). `center`/`avail` are
+    // the image box; `scale` is screen px per camera px (the cover fit).
+    void DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
+                            const ImVec2& center, float scale);
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
     void DrawImageOverlay();   // image + vision overlay
@@ -485,6 +494,22 @@ private:
     std::string        visionRelUid_;      // which model it belongs to
     VisionReliability  visionRelPending_;
     bool               visionRelHave_ = false;
+
+    // ---- Aux window vision overlay -----------------------------------------
+    // The last detection, aged in Update rather than timed in a Draw: a marker
+    // that lingers over a scene the stage has since left is worse than none.
+    // Kept as an App member (not a Workflow poll in the draw) so the age and
+    // the value can never disagree within a frame.
+    VisionDetection    auxDet_;
+    unsigned long long auxDetSeq_ = 0;
+    float              auxDetAge_ = 1.0e6f;   // seconds since it arrived
+    // E1/E2 in MACHINE mm — captured live during a run, else mirrored from the
+    // selected procedure's taught frame. Machine space, not pixels, because the
+    // two points are captured at different gantry poses: a stored pixel would be
+    // meaningless the moment the stage moves.
+    AlignPoint alignMarkE_[2];
+    bool       alignMarkHave_[2] = {false, false};
+    bool       showVisionMarks_ = true;   // Aux checkbox, persisted
     // Taught-patch thumbnail. Keyed by the model uid it was loaded for, so a
     // model switch or a re-teach reloads it and nothing else does.
     unsigned int visionTmplTex_ = 0;

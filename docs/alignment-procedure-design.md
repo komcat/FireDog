@@ -143,6 +143,14 @@ human placed every point.
 frame, so a licence problem cannot stop an operator teaching a frame. Detection
 is deliberately outside that rule; see `docs/vision-detection-design.md` §3.
 
+Each captured point is also queued for the UI the moment it exists
+(`Workflow::QueueAlignPoint`), so the **Aux window** can mark E1 while station 2
+is still being captured — `align_solve` only fires after both, so without that
+queue there would be nothing to show at precisely the moment an operator wants
+to confirm E1 landed correctly. The marks are stored in machine mm and projected
+back through the live gantry pose, so they stay on the feature as the stage
+moves; detail in `docs/vision-detection-design.md` §6.
+
 One thing moved because of this: the **pixel→mm calibration now lives in
 `Workflow`** (`CameraPixelToMm`/`SetCameraPixelToMm` over the `camCfg_` captured
 at Start), because an auto station has no UI in the loop to do the conversion.

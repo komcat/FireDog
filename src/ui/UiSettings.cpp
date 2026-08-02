@@ -27,6 +27,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("vision_param_w")) s.visionParamW = j["vision_param_w"].get<float>();
         if (j.contains("show_chart"))    s.showChart   = j["show_chart"].get<bool>();
         if (j.contains("click_to_move")) s.clickToMove = j["click_to_move"].get<bool>();
+        if (j.contains("show_vision_marks")) s.showVisionMarks = j["show_vision_marks"].get<bool>();
         if (j.contains("chart_scope"))   s.chartScope  = j["chart_scope"].get<bool>();
         if (j.contains("last_product"))  s.lastProduct = j["last_product"].get<std::string>();
         FD_INFO("ui", "settings loaded from %s (font %d, %.0f px)",
@@ -50,6 +51,7 @@ bool UiSettings::Save(const std::string& path) const
     j["vision_param_w"] = visionParamW;
     j["show_chart"]    = showChart;
     j["click_to_move"] = clickToMove;
+    j["show_vision_marks"] = showVisionMarks;
     j["chart_scope"]   = chartScope;
     j["last_product"]  = lastProduct;
 

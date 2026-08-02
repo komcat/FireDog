@@ -250,6 +250,25 @@ public:
     void QueueVisionReliability(const std::string& uid, const VisionReliability& r);
     std::vector<std::pair<std::string, VisionReliability>> TakeVisionReliability();
 
+    // ---- E-point hand-back (align_station command) --------------------------
+    // Same route again, but for a different reason: this one is FEEDBACK, not
+    // persistence. align_solve only fires after BOTH stations are captured, so
+    // without this the UI has nothing to show while station 2 is being marked —
+    // exactly when an operator most wants to see that E1 landed correctly.
+    struct AlignPointMark {
+        std::string alignUid;
+        int         station = 0;   // 1 = E1, 2 = E2
+        AlignPoint  point;
+    };
+    void QueueAlignPoint(const std::string& uid, int station, const AlignPoint& p);
+    std::vector<AlignPointMark> TakeAlignPoints();
+
+    // Live gantry XY in machine mm. Layer 2 answers "where is the gantry"
+    // because layer 2 is what knows WHICH device that is (GantryIndex below);
+    // a UI overlay must not go hunting for a device called "gantry-main".
+    // False when there is no gantry or it does not report X/Y.
+    bool GantryXY(double& x, double& y) const;
+
 private:
     // Fleet index of the gantry: "gantry-main" by name, else the first ACS
     // controller. Returns hw_.MotionCount() when there is none.
@@ -297,6 +316,10 @@ private:
     // Reliability-result queue (same producer/consumer split).
     std::mutex visionRelMu_;
     std::vector<std::pair<std::string, VisionReliability>> visionRelQueue_;
+
+    // Captured-E-point queue (same producer/consumer split).
+    std::mutex alignPtMu_;
+    std::vector<AlignPointMark> alignPtQueue_;
 
     // Motion is inhibited while a CRITICAL safety alert is unacknowledged.
     bool SafetyBlocked() const

@@ -31,6 +31,10 @@ struct UiSettings {
     bool showChart   = true;
     bool clickToMove = false;
 
+    // Aux window: overlay the last vision detection + the alignment E1/E2 marks.
+    // Safe to default ON — unlike clickToMove it is a readout, not an action.
+    bool showVisionMarks = true;
+
     // Keithley chart style: true = scope look (bare canvas, overlay legend +
     // live value), false = classic axes/ticks plot.
     bool chartScope  = true;
