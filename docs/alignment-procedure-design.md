@@ -157,6 +157,56 @@ at Start), because an auto station has no UI in the loop to do the conversion.
 The manual pick still converts UI-side as §3 describes; both read the same
 numbers, and the Camera page's fields write through to layer 2.
 
+## 5b. The frame's lifetime — live vs recorded
+
+A taught frame describes where **one physical part** sat. The moment that part
+could have changed, the frame is not merely stale but actively dangerous:
+`move_local` would drive to coordinates derived from it without complaining, and
+the resulting move looks exactly like a correct one — it is simply wrong by
+however far the part shifted.
+
+So the frame exists in two places with two different jobs:
+
+| | Where | Job |
+|---|---|---|
+| **Live** | `Workflow` (`SetLiveFrame` / `LiveFrame`) | the only thing `align_apply`, `move_local` and *Move here* will consume |
+| **Recorded** | `AlignProc::result`, in the product file | history: the Alignment page shows it, the Aux overlay draws its E1/E2, traceability keeps it |
+
+**No run ever consumes the recorded copy.** `align_solve` sets the live frame
+unconditionally — `save` decides whether the frame is *recorded*, not whether
+this session may move against the part it just measured.
+
+The live frame is cleared at every boundary where the part might have changed:
+
+* **program start** (`App::StartDeckRun`) — every deck run teaches its own frame
+  or fails loudly;
+* **DUT open** — edge-detected in `App::Update` off `DutSession::GetInfo()`
+  rather than hooked into the two `Open` call sites, so a third one cannot be
+  added without the reset firing;
+* **product load / app start** (`App::ResetDocumentSelections`).
+
+Why `Workflow` and not the engine's `Env`: **a program runs each slot as its own
+engine `Start`**, so per-run state would be wiped between the recipe that aligns
+and the recipe that works. The lifetime has to be the program, and `Workflow` is
+the layer that spans runs.
+
+This is also what makes the one-run pattern work at all. `align_solve` cannot
+write into `Env::aligns` (a `const` copy-at-Start), so before this the sequence
+
+```lua
+fd.align_run{ alignment = "calibrate plate" }
+fd.move_local{ alignment = "calibrate plate", x_mm = 3.5, y_mm = 0 }
+```
+
+would have moved against the *previous* run's frame. Now the first line
+publishes to `Workflow` and the second reads it back — same run, same program,
+any number of slots later.
+
+The Alignment page shows the two states separately (`LIVE taught …` versus
+`NO LIVE FRAME` over the record), and *Move here* is gated on the live one:
+a button that would drive against last week's record is the same bug with a
+friendlier face.
+
 ## 6. Storage
 
 A procedure is product data, so it lives with the product: manifest role
@@ -223,7 +273,7 @@ reuse. Detail in `docs/vision-detection-design.md` §2.
 |---|---|
 | `align_station` | drive to the station, apply exposure/lighting, capture E1 or E2 into ctx (crosshair or detector) |
 | `align_solve` | build the frame from the two ctx points, publish it to ctx, persist it |
-| `align_apply` | local (O1) → machine XY into ctx; fails if no frame is taught |
+| `align_apply` | local (O1) → machine XY into ctx; fails unless a **live** frame was taught this session (§5b) |
 | `move_local` | `align_apply` + one coordinated move (arrival + settle via `MotionWaits.h`) |
 
 The Alignment page's right panel is the interactive twin of the last two: type a
@@ -237,8 +287,22 @@ click-to-move.
 
 `align_run` is the **`xcan` pattern**: a real parameter form whose values become
 ctx keys, then `RunLuaFile`. The script *is* the procedure — editable, and
-re-runnable from the Scripts page, from a recipe step, and from the Alignment
-page's Run button, all through the same code path.
+re-runnable from the Scripts page, from a recipe step, from Lua
+(`fd.align_run{...}`, since every registered command gets an `fd.` binding), and
+from the Alignment page's Run button, all through the same code path.
+
+**Which file it runs**: `ExecutionContext::ResolveScript` prefers the product's
+own copy of that filename (under `ScriptsDir()`, the dir the session actually
+scanned) over the shipped `config/scripts/` one. The Alignment page's Run button
+already did this; without the same rule in the command, "run the alignment
+procedure" would mean a *different file* depending on which surface launched it —
+a recipe would silently run the shipped script while the page ran the edited one.
+The page expresses the rule over its already-scanned list because it launches the
+script directly rather than through a command; the two must stay in step.
+
+`run_script`, `xcan` and `raster_scan` still take their `file` literally. That is
+a known inconsistency, left alone deliberately: changing it would re-point any
+existing product that happens to carry a stale copy of `hexapod_align.lua`.
 
 That last point is the design's centre of gravity: **the page does not capture
 points itself.** Run launches the script; the pick window surfaces; the frame

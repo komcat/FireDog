@@ -83,7 +83,7 @@ public:
                      SavedPosMap& positions, const MotionMapSet& maps,
                      const std::vector<AlignProc>& aligns,
                      const std::vector<VisionModel>& visionModels,
-                     std::string visionDir, Hooks hooks);
+                     std::string visionDir, std::string scriptsDir, Hooks hooks);
     ExecutionContext(const ExecutionContext&) = delete;
     ExecutionContext& operator=(const ExecutionContext&) = delete;
 
@@ -114,6 +114,21 @@ public:
     const std::vector<VisionModel>& VisionModels() const { return visionModels_; }
     // Where the models' taught template patches live, for this run's document.
     const std::string& VisionDir() const { return visionDir_; }
+    // The scripts directory this run resolves against — the product's when it
+    // has one with content, else config/scripts (whatever the session actually
+    // scanned).
+    const std::string& ScriptsDir() const { return scriptsDir_; }
+
+    // A product's own copy of a script wins over the shipped one. Given a
+    // default like "config/scripts/alignment_procedure.lua", return
+    // "<ScriptsDir()>/alignment_procedure.lua" when that file exists, else the
+    // path unchanged.
+    //
+    // This exists because a command that hard-codes the shipped path silently
+    // ignores the copy an operator edited for THIS product — the Alignment
+    // page's Run button already prefers the product copy, and a recipe step
+    // running "the same" procedure must not quietly run a different file.
+    std::string ResolveScript(const std::string& path) const;
 
     // ---- Name resolution helpers (fleet index lookups; -1 if unknown) -------
     int MotionIndexByName(const std::string& name) const;
@@ -147,8 +162,8 @@ private:
     const MotionMapSet& maps_;        // stable for the whole run
     const std::vector<AlignProc>& aligns_;   // ditto
     const std::vector<VisionModel>& visionModels_;   // ditto
-    std::string         visionDir_;                  // by value: it is a path,
-                                                     // not a live document
+    std::string         visionDir_;                  // by value: they are paths,
+    std::string         scriptsDir_;                  // not live documents
     Hooks               hooks_;
 
     mutable std::mutex              ctxMu_;

@@ -14,6 +14,7 @@
 #include "ui/UiSettings.h"
 #include "ui/Widgets.h"
 #include "command/Commands.h"
+#include "core/DutSession.h"   // the DUT-open edge that drops taught frames
 #include "core/Log.h"
 #include "vision/HalconEngine.h"
 
@@ -165,6 +166,19 @@ void App::Update(float dt)
     // route; see DrainAlignPoints for the idle fallback.
     DrainAlignPoints();
 
+    // A NEW DUT is a new physical part, so any taught frame stops meaning
+    // anything. Edge-detected off DutSession's own state rather than hooked
+    // into the two Open call sites (the dut_open command and the Overview
+    // button), so a third one cannot be added without this firing.
+    {
+        const DutSession::Info di = DutSession::Instance().GetInfo();
+        const std::string key = di.open ? di.serial + "|" + di.openedAt : std::string();
+        if (key != dutOpenKey_) {
+            dutOpenKey_ = key;
+            if (!key.empty()) workflow_.ClearLiveFrames("new DUT opened");
+        }
+    }
+
     // Age the last detection here rather than timing it in a Draw, so the value
     // and its age can never disagree within a frame. A new detection is one on
     // a DIFFERENT camera frame — the detector stamps the frame it used.
@@ -265,6 +279,9 @@ void App::ResetDocumentSelections()
     // re-seeds them from the new selection on the next frame.
     alignMarkHave_[0] = alignMarkHave_[1] = false;
     auxDetAge_ = 1.0e6f;
+    // A different product is a different part: no taught frame survives it.
+    // This also covers app start, since Run() calls us before the first frame.
+    workflow_.ClearLiveFrames("product loaded");
     workflow_.InvalidateDetector("");
     SyncScriptSelection();
 }

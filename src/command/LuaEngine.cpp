@@ -607,7 +607,7 @@ void LuaEngine::ThreadMain(std::string path, Env env)
     // the lua_State (created and destroyed inside RunLuaFile).
     ExecutionContext ctx(
         wf_, hw_, env.positions, env.maps, env.aligns,
-        env.visionModels, env.visionDir,
+        env.visionModels, env.visionDir, env.scriptsDir,
         ExecutionContext::Hooks{
             [this] { return HookShouldStop(); },
             [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },

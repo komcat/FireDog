@@ -372,6 +372,43 @@ std::vector<std::pair<std::string, VisionReliability>> Workflow::TakeVisionRelia
     return std::exchange(visionRelQueue_, {});
 }
 
+void Workflow::SetLiveFrame(const std::string& alignUid, const AlignResult& r)
+{
+    const std::lock_guard<std::mutex> lock(frameMu_);
+    liveFrames_[alignUid] = r;
+}
+
+bool Workflow::LiveFrame(const std::string& alignUid, AlignResult* out) const
+{
+    const std::lock_guard<std::mutex> lock(frameMu_);
+    const auto it = liveFrames_.find(alignUid);
+    if (it == liveFrames_.end() || !it->second.valid) return false;
+    if (out) *out = it->second;
+    return true;
+}
+
+void Workflow::ClearLiveFrames(const char* reason)
+{
+    std::size_t n = 0;
+    {
+        const std::lock_guard<std::mutex> lock(frameMu_);
+        n = liveFrames_.size();
+        liveFrames_.clear();
+    }
+    // Logged even at zero would be noise; logged when it MATTERS is the point —
+    // "why did move_local start failing" has to be answerable from the log.
+    if (n > 0)
+        FD_INFO("align", "live taught frame(s) cleared: %s (%zu dropped) - "
+                         "re-run the alignment before any move_local",
+                reason ? reason : "reset", n);
+}
+
+std::size_t Workflow::LiveFrameCount() const
+{
+    const std::lock_guard<std::mutex> lock(frameMu_);
+    return liveFrames_.size();
+}
+
 void Workflow::QueueAlignPoint(const std::string& uid, int station, const AlignPoint& p)
 {
     const std::lock_guard<std::mutex> lock(alignPtMu_);

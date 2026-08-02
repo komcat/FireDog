@@ -95,7 +95,10 @@ bool StationPositionCombo(const char* label, const SavedPosMap& positions,
 // them. Gated on the WHOLE orchestration, never a subset of the engines.
 void App::StartAlignmentRun(const AlignProc& a)
 {
-    // The product's copy of the script wins over the shipped one.
+    // The product's copy of the script wins over the shipped one. Same rule as
+    // ExecutionContext::ResolveScript (which is what the align_run command
+    // uses) — expressed over the already-scanned list here because this launch
+    // does not go through a command. If one changes, change both.
     std::string script = "config/scripts/alignment_procedure.lua";
     for (const ScriptInfo& si : session_.Scripts()) {
         if (si.name == "alignment_procedure") { script = si.path; break; }
@@ -509,19 +512,38 @@ void App::DrawAlignFramePanel()
         ImGui::TextDisabled("Local frame (O1)");
         return;
     }
-    const AlignProc&  a = list[static_cast<std::size_t>(alignSel_)];
-    const AlignResult& r = a.result;
+    const AlignProc& a = list[static_cast<std::size_t>(alignSel_)];
+
+    // LIVE frame first, because that is the one that can actually move the
+    // stage. The document's copy is a record of the last teach and may describe
+    // a part that left the machine days ago — showing them as one number would
+    // be the whole safety argument undone in the UI.
+    AlignResult live;
+    const bool haveLive = workflow_.LiveFrame(a.uid, &live);
+    const AlignResult& r = haveLive ? live : a.result;
 
     ImGui::TextUnformatted("Local frame (O1)");
     ImGui::Separator();
-    if (!r.valid) {
+
+    if (haveLive) {
+        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "LIVE  taught %s",
+                           live.capturedAt.c_str());
+        ImGui::TextDisabled("usable by move_local until the next program start,");
+        ImGui::TextDisabled("DUT open or product load.");
+    } else if (a.result.valid) {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "NO LIVE FRAME");
+        ImGui::TextWrapped("The numbers below are the RECORD of the last teach (%s). "
+                           "move_local will refuse until this procedure is run again "
+                           "in the current session - a saved frame describes where a "
+                           "part sat then, not where this one sits now.",
+                           a.result.capturedAt.c_str());
+        ImGui::Spacing();
+    } else {
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "not taught yet");
         ImGui::TextWrapped("Run the procedure: E1 becomes the origin and E1->E2 the "
                            "local X+ axis; local Y+ is X+ rotated +90 degrees.");
         return;
     }
-
-    ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "taught %s", r.capturedAt.c_str());
     ImGui::Spacing();
     ImGui::Text("origin   %.4f, %.4f mm", r.originX, r.originY);
     ImGui::Text("theta    %.4f deg", r.thetaDeg);
@@ -560,7 +582,12 @@ void App::DrawAlignFramePanel()
     }
     IMotionController* dev =
         devIdx >= 0 ? hardware_.MotionDevice(static_cast<std::size_t>(devIdx)) : nullptr;
-    const bool canMove = jogArmed_ && !orch_.Busy() && dev && dev->IsConnected();
+    // haveLive is part of the gate, not just the display: this destination is
+    // COMPUTED from a frame, so it carries exactly the hazard move_local
+    // refuses. A button that would happily drive against a record of last
+    // week's part is the same bug with a friendlier face.
+    const bool canMove =
+        haveLive && jogArmed_ && !orch_.Busy() && dev && dev->IsConnected();
 
     ImGui::Checkbox("Arm", &jogArmed_);   // the same flag the Jog window arms
     ImGui::SameLine();
@@ -571,7 +598,9 @@ void App::DrawAlignFramePanel()
             FD_WARN("align", "move to local (%.4f, %.4f) rejected", alignProbeX_, alignProbeY_);
     }
     ImGui::EndDisabled();
-    if (!dev || !dev->IsConnected())
+    if (!haveLive)
+        ImGui::TextDisabled("no live frame - run the procedure");
+    else if (!dev || !dev->IsConnected())
         ImGui::TextDisabled("%s not connected", a.device.c_str());
     else if (!jogArmed_)
         ImGui::TextDisabled("arm first");

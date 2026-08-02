@@ -300,9 +300,17 @@ CommandResult ExecAlignSolve(ExecutionContext& ctx, const ParamValues& p)
     ctx.CtxSet(prefix + "_span_mm", r.spanMm);
     ctx.CtxSet(prefix + "_valid", true);
 
+    // The LIVE frame — what align_apply / move_local will actually use. Set
+    // unconditionally, even when `save` is off: `save` decides whether the
+    // frame is RECORDED, not whether this session may move against the part it
+    // just measured. This is also what makes the frame outlive the run that
+    // taught it, so a program can align in one slot and work in the next.
+    ctx.Wf().SetLiveFrame(proc->uid, r);
+
     if (p.GetBool("save")) {
         // The document is UI-thread state: hand the frame over and let
-        // App::Update store and persist it.
+        // App::Update store and persist it. That copy is a RECORD only — no run
+        // ever consumes it (see Workflow::SetLiveFrame).
         ctx.Wf().QueueAlignResult(proc->uid, r);
     }
     FD_INFO("align", "'%s' solved: origin (%.4f, %.4f) mm, theta %.4f deg, span %.4f mm",
@@ -312,15 +320,23 @@ CommandResult ExecAlignSolve(ExecutionContext& ctx, const ParamValues& p)
 
 // ---- align_apply ---------------------------------------------------------
 
-// Resolve the procedure AND require a taught frame — the one check every
-// consumer of a frame owes the operator.
-const AlignProc* SolvedProc(ExecutionContext& ctx, const std::string& name,
-                            std::string* err)
+// Resolve the procedure AND its LIVE frame — the one check every consumer of a
+// frame owes the operator.
+//
+// The frame comes from Workflow, never from `proc->result`. The document copy
+// is a record of the LAST teach, which may have been against a different part
+// on a different day; moving against it would look exactly like a correct move
+// and be wrong by however far the part has shifted. Only a frame taught in this
+// session counts, and it is cleared whenever the part might have changed.
+const AlignProc* LiveProc(ExecutionContext& ctx, const std::string& name,
+                          AlignResult* frame, std::string* err)
 {
     const AlignProc* proc = ctx.FindAlign(name);
     if (!proc) { *err = "alignment procedure not found: '" + name + "'"; return nullptr; }
-    if (!proc->result.valid) {
-        *err = "alignment '" + proc->name + "' has no taught frame yet - run it first";
+    if (!ctx.Wf().LiveFrame(proc->uid, frame)) {
+        *err = "alignment '" + proc->name + "' has no live frame - run it in THIS "
+               "program first (a saved frame is a record of the last teach, not a "
+               "licence to move)";
         return nullptr;
     }
     return proc;
@@ -329,11 +345,12 @@ const AlignProc* SolvedProc(ExecutionContext& ctx, const std::string& name,
 CommandResult ExecAlignApply(ExecutionContext& ctx, const ParamValues& p)
 {
     std::string err;
-    const AlignProc* proc = SolvedProc(ctx, p.GetString("alignment"), &err);
+    AlignResult frame;
+    const AlignProc* proc = LiveProc(ctx, p.GetString("alignment"), &frame, &err);
     if (!proc) return CommandResult::Fail(err);
 
     double mx = 0.0, my = 0.0;
-    AlignLocalToMachine(proc->result, p.GetDouble("x_mm"), p.GetDouble("y_mm"), &mx, &my);
+    AlignLocalToMachine(frame, p.GetDouble("x_mm"), p.GetDouble("y_mm"), &mx, &my);
     const std::string prefix = p.GetString("ctx_prefix");
     ctx.CtxSet(prefix + "_x", mx);
     ctx.CtxSet(prefix + "_y", my);
@@ -345,7 +362,8 @@ CommandResult ExecAlignApply(ExecutionContext& ctx, const ParamValues& p)
 CommandResult ExecMoveLocal(ExecutionContext& ctx, const ParamValues& p)
 {
     std::string err;
-    const AlignProc* proc = SolvedProc(ctx, p.GetString("alignment"), &err);
+    AlignResult frame;
+    const AlignProc* proc = LiveProc(ctx, p.GetString("alignment"), &frame, &err);
     if (!proc) return CommandResult::Fail(err);
 
     const std::string device = p.GetString("device").empty() ? proc->device
@@ -355,7 +373,7 @@ CommandResult ExecMoveLocal(ExecutionContext& ctx, const ParamValues& p)
     if (!m) return CommandResult::Fail(err);
 
     double mx = 0.0, my = 0.0;
-    AlignLocalToMachine(proc->result, p.GetDouble("x_mm"), p.GetDouble("y_mm"), &mx, &my);
+    AlignLocalToMachine(frame, p.GetDouble("x_mm"), p.GetDouble("y_mm"), &mx, &my);
 
     std::vector<std::pair<std::string, double>> targets = {{"X", mx}, {"Y", my}};
     if (p.Has("z_mm")) targets.emplace_back("Z", p.GetDouble("z_mm"));
@@ -459,14 +477,19 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                       {"ctx_prefix", PT::String, false, "frame", 0, 0, {},
                        "ctx prefix the script captures and solves under"},
                       {"file", PT::ScriptFile, false,
-                       "config/scripts/alignment_procedure.lua", 0, 0, {}, "script override"},
+                       "config/scripts/alignment_procedure.lua", 0, 0, {},
+                       "script override; the product's own copy of this filename wins"},
                   },
                   CommandSpec::Needs::None,
                   [rp](ExecutionContext& c, const ParamValues& p) {
                       c.CtxSet("align_name", p.GetString("alignment"));
                       c.CtxSet("align_prefix", p.GetString("ctx_prefix"));
-                      const std::string err =
-                          RunLuaFile(p.GetString("file"), *rp, c, {}, false, nullptr);
+                      // A product's own alignment_procedure.lua wins over the
+                      // shipped one — the Alignment page's Run button already
+                      // prefers it, and "the same procedure" must not mean a
+                      // different file depending on which surface launched it.
+                      const std::string file = c.ResolveScript(p.GetString("file"));
+                      const std::string err = RunLuaFile(file, *rp, c, {}, false, nullptr);
                       return err.empty() ? CommandResult::Success()
                                          : CommandResult::Fail(err);
                   }});

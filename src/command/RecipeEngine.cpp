@@ -269,7 +269,7 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
 {
     ExecutionContext ctx(
         wf_, hw_, env.positions, env.maps, env.aligns,
-        env.visionModels, env.visionDir,
+        env.visionModels, env.visionDir, env.scriptsDir,
         ExecutionContext::Hooks{
             [this] { return stopReq_.load() || SafetyAborted(); },
             [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },

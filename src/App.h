@@ -523,6 +523,10 @@ private:
     std::map<std::string, std::set<int>> scriptBps_;
     int scriptBpAnchor_ = -1;
 
+    // serial|openedAt of the DUT record currently open, so Update can
+    // edge-detect a NEW one and drop the taught frames with it.
+    std::string dutOpenKey_;
+
     // DUT block (Overview left panel) + the input-prompt modal's text buffer
     // (barcode scanners type + Enter, so EnterReturnsTrue submits).
     char dutSerialBuf_[64]   = "";

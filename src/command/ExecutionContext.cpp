@@ -11,6 +11,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <system_error>
 #include <thread>
 
 namespace firedog {
@@ -31,11 +33,32 @@ ExecutionContext::ExecutionContext(Workflow& wf, HardwareManager& hw,
                                    const MotionMapSet& maps,
                                    const std::vector<AlignProc>& aligns,
                                    const std::vector<VisionModel>& visionModels,
-                                   std::string visionDir, Hooks hooks)
+                                   std::string visionDir, std::string scriptsDir,
+                                   Hooks hooks)
     : wf_(wf), hw_(hw), positions_(positions), maps_(maps), aligns_(aligns),
       visionModels_(visionModels), visionDir_(std::move(visionDir)),
-      hooks_(std::move(hooks))
+      scriptsDir_(std::move(scriptsDir)), hooks_(std::move(hooks))
 {
+}
+
+std::string ExecutionContext::ResolveScript(const std::string& path) const
+{
+    if (path.empty() || scriptsDir_.empty()) return path;
+    // Match on the FILENAME, not the whole path: the caller's default names the
+    // shipped copy, and what we are asking is "does this product have its own
+    // version of that script".
+    const std::string file = std::filesystem::path(path).filename().string();
+    if (file.empty()) return path;
+    const std::string candidate = scriptsDir_ + "/" + file;
+
+    std::error_code sameEc;
+    if (std::filesystem::equivalent(candidate, path, sameEc)) return path;   // same file
+
+    std::error_code ec;
+    if (!std::filesystem::exists(candidate, ec) || ec) return path;
+    FD_INFO("script", "using the product's copy of %s (%s)", file.c_str(),
+            candidate.c_str());
+    return candidate;
 }
 
 void ExecutionContext::RecordPosition(const std::string& device,

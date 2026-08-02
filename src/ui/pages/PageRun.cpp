@@ -174,6 +174,13 @@ void App::StartDeckRun(RunScope scope)
                                session_.Recipes(), &runStartErr_);
     if (q.items.empty()) return;   // reason already in runStartErr_
 
+    // Every deck run starts with NO taught frame. A frame from an earlier run
+    // was measured against a part that has since been handled, and move_local
+    // would drive to it without complaint — so the run must teach its own or
+    // fail loudly. Cleared here rather than inside ProgramRunner because the
+    // frames are Workflow state and layer 2.5 does not own them.
+    workflow_.ClearLiveFrames("program start");
+
     RecipeEngine::Env env = session_.MakeRecipeEnv();
     if (!orch_.programs.Start(q.kind, q.label, prog.uid, std::move(q.items),
                               std::move(env), &runStartErr_))

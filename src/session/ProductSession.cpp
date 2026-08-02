@@ -479,6 +479,10 @@ RecipeEngine::Env ProductSession::MakeRecipeEnv() const
     env.aligns    = aligns_;
     env.visionModels = vision_;
     env.visionDir    = VisionDir();
+    // The dir actually SCANNED, not the ideal one: a product with no scripts
+    // folder falls back to config/scripts, and a run must resolve against the
+    // same place the Scripts page lists.
+    env.scriptsDir   = scriptsDirUsed_;
     return env;
 }
 
@@ -491,6 +495,10 @@ LuaEngine::Env ProductSession::MakeLuaEnv() const
     env.aligns    = aligns_;
     env.visionModels = vision_;
     env.visionDir    = VisionDir();
+    // The dir actually SCANNED, not the ideal one: a product with no scripts
+    // folder falls back to config/scripts, and a run must resolve against the
+    // same place the Scripts page lists.
+    env.scriptsDir   = scriptsDirUsed_;
     return env;
 }
 

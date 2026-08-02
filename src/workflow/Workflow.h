@@ -240,6 +240,27 @@ public:
     void QueueAlignResult(const std::string& uid, const AlignResult& r);
     std::vector<std::pair<std::string, AlignResult>> TakeAlignResults();
 
+    // ---- LIVE taught frames (align_solve -> align_apply / move_local) -------
+    // Runtime state, deliberately NOT the document. A frame describes where ONE
+    // physical part sat. The moment that part could have changed, a frame taught
+    // against it is not merely stale but actively dangerous: move_local would
+    // drive to coordinates derived from it without complaining, and the error
+    // looks exactly like a correct move.
+    //
+    // So a run NEVER consumes the frame saved in the product file. That copy is
+    // a RECORD — the Alignment page shows it, the Aux overlay draws its E1/E2,
+    // traceability keeps it — and nothing more. Only a frame taught in the
+    // current session is usable, and it is cleared at every boundary where the
+    // part might have changed: program start, DUT open, product load, app start.
+    //
+    // Held HERE rather than in an engine Env because a program runs each slot as
+    // its OWN engine Start: per-run state would be wiped between the recipe that
+    // aligns and the recipe that works.
+    void SetLiveFrame(const std::string& alignUid, const AlignResult& r);
+    bool LiveFrame(const std::string& alignUid, AlignResult* out) const;
+    void ClearLiveFrames(const char* reason);
+    std::size_t LiveFrameCount() const;
+
     // ---- Reliability hand-back (vision_test command) ------------------------
     // The SAME route, and for a reason worth writing down: the engine's Status
     // ctx snapshot is NOT a usable channel for a finished run. RecipeEngine
@@ -320,6 +341,11 @@ private:
     // Captured-E-point queue (same producer/consumer split).
     std::mutex alignPtMu_;
     std::vector<AlignPointMark> alignPtQueue_;
+
+    // Live taught frames by alignment uid. Read by worker threads (move_local)
+    // and by the UI (the "live" indicator), written by align_solve.
+    mutable std::mutex                       frameMu_;
+    std::map<std::string, AlignResult>       liveFrames_;
 
     // Motion is inhibited while a CRITICAL safety alert is unacknowledged.
     bool SafetyBlocked() const
