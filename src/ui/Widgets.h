@@ -200,8 +200,14 @@ struct MarkPicker {
     const CameraMark* marks = nullptr;
     int    markCount = 0;
     // Non-null draws the midpoint of marks 0 and 1 (both latched) under this
-    // label — the point those two marks exist to define.
+    // label — the point those two marks exist to define, plus the envelope box
+    // they bound.
     const char* midpointLabel = nullptr;
+    // Spins that envelope box about the midpoint, for a footprint that sits at
+    // an angle. PURELY COSMETIC: the box is drawn from it and nothing else is,
+    // because the marks are two measured machine points and the midpoint of a
+    // pair is the same point at every angle.
+    float envelopeDeg = 0.0f;
     // Step diagrams, bottom-left. `activeMark` is the 0-based mark the operator
     // should place next; the other is dimmed.
     MarkIcon icons[2];

@@ -74,6 +74,7 @@ void App::OpenAlignNominalTeach(const AlignProc& a, const std::string& nomUid)
     nomPt_[1]   = AlignPoint{};
     nomActive_  = 0;
     nomZoom_    = 1.5f;
+    nomEnvDeg_  = 0.0f;
     nomErr_.clear();
     nomPx_ = (cameraW_ > 0) ? static_cast<float>(cameraW_) * 0.5f : 0.0f;
     nomPy_ = (cameraH_ > 0) ? static_cast<float>(cameraH_) * 0.5f : 0.0f;
@@ -153,6 +154,7 @@ void App::DrawAlignNominalPanel()
         mp.marks         = marks;
         mp.markCount     = 2;
         mp.midpointLabel = "nominal";
+        mp.envelopeDeg   = nomEnvDeg_;
         EnsureMarkIcons();
         mp.icons[0]      = markIcons_[0];
         mp.icons[1]      = markIcons_[1];
@@ -255,6 +257,17 @@ void App::DrawAlignNominalPanel()
         const double dy = nomPt_[1].wy - nomPt_[0].wy;
         ImGui::Text("midpoint  %.4f, %.4f mm", mx, my);
         ImGui::Text("span      %.4f mm", std::sqrt(dx * dx + dy * dy));
+
+        // Overlay only. A footprint marked at an angle still has the same
+        // midpoint - the marks are two measured points and their average does
+        // not turn - so this spins the drawn box and nothing else. It is here to
+        // let the operator SEE the outline sit on the part; if it had to be
+        // stored, it would belong on the frame, not on a nominal.
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::DragFloat("box angle", &nomEnvDeg_, 0.5f, -180.0f, 180.0f, "%.1f deg");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("0")) nomEnvDeg_ = 0.0f;
+        ImGui::TextDisabled("drawing only - the saved midpoint is unaffected");
         if (haveLive) {
             double lx = 0.0, ly = 0.0;
             AlignMachineToLocal(frame, mx, my, &lx, &ly);

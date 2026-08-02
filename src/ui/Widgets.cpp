@@ -67,14 +67,18 @@ constexpr ImU32 kRefCol = IM_COL32(80, 230, 120, 140);   // image-centre referen
 constexpr ImU32 kCurCol = IM_COL32(255, 200, 60, 255);   // the live crosshair
 constexpr ImU32 kPtCol  = IM_COL32(120, 200, 255, 255);  // a latched mark
 constexpr ImU32 kMidCol = IM_COL32(255, 90, 90, 255);    // their midpoint
+constexpr ImU32 kEnvCol = IM_COL32(255, 90, 90, 110);    // the span they bound
 
 // A labelled cross. `len` is what distinguishes the live crosshair from the
-// latched marks at a glance, so the overlay needs no legend.
-void DrawCross(ImDrawList* dl, const ImVec2& p, ImU32 col, float len, const char* label)
+// latched marks at a glance, so the overlay needs no legend. `ring` is off for
+// the live crosshair: the circle is the size of the feature being aimed at, so
+// it hides exactly the pixels the operator is trying to line the cross up with.
+void DrawCross(ImDrawList* dl, const ImVec2& p, ImU32 col, float len, const char* label,
+               bool ring = true)
 {
     dl->AddLine(ImVec2(p.x - len, p.y), ImVec2(p.x + len, p.y), col, 2.0f);
     dl->AddLine(ImVec2(p.x, p.y - len), ImVec2(p.x, p.y + len), col, 2.0f);
-    dl->AddCircle(p, 5.0f, col, 0, 2.0f);
+    if (ring) dl->AddCircle(p, 5.0f, col, 0, 2.0f);
     if (label && label[0]) dl->AddText(ImVec2(p.x + 8.0f, p.y + 6.0f), col, label);
 }
 
@@ -306,7 +310,30 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
                 float ax = 0.0f, ay = 0.0f, bx = 0.0f, by = 0.0f;
                 toPixel(mp.marks[0].wx, mp.marks[0].wy, &ax, &ay);
                 toPixel(mp.marks[1].wx, mp.marks[1].wy, &bx, &by);
-                dl->AddLine(view.ToScreen(ax, ay), view.ToScreen(bx, by), kMidCol, 1.0f);
+                const ImVec2 sa = view.ToScreen(ax, ay);
+                const ImVec2 sb = view.ToScreen(bx, by);
+                // The footprint the two corners bound. Both marks are usually
+                // off screen together at working zoom, and a bare diagonal
+                // between two edge arrows says nothing about how big the part
+                // is; the box does, and it is what the operator is really
+                // checking when the midpoint looks wrong. Machine-axis aligned
+                // unless `envelopeDeg` spins it — this is the span the marks
+                // define, not the taught frame.
+                const ImVec2 lo(fminf(sa.x, sb.x), fminf(sa.y, sb.y));
+                const ImVec2 hi(fmaxf(sa.x, sb.x), fmaxf(sa.y, sb.y));
+                const ImVec2 c((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+                // Screen space, not camera px: the rotation stays a rotation
+                // only where the scale is the same on both axes, and the view's
+                // magnification is (px->screen is uniform, mm->px is not).
+                const float th = mp.envelopeDeg * 3.14159265358979f / 180.0f;
+                const float cs = cosf(th), sn = sinf(th);
+                const auto spin = [&](float x, float y) {
+                    const float ux = x - c.x, uy = y - c.y;
+                    return ImVec2(c.x + ux * cs - uy * sn, c.y + ux * sn + uy * cs);
+                };
+                dl->AddQuad(spin(lo.x, lo.y), spin(hi.x, lo.y),
+                            spin(hi.x, hi.y), spin(lo.x, hi.y), kEnvCol, 1.0f);
+                dl->AddLine(sa, sb, kMidCol, 1.0f);
                 CameraMark mid;
                 mid.wx    = (mp.marks[0].wx + mp.marks[1].wx) * 0.5;
                 mid.wy    = (mp.marks[0].wy + mp.marks[1].wy) * 0.5;
@@ -317,7 +344,7 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
             }
         }
 
-        DrawCross(dl, view.ToScreen(*mp.px, *mp.py), kCurCol, 22.0f, nullptr);
+        DrawCross(dl, view.ToScreen(*mp.px, *mp.py), kCurCol, 22.0f, nullptr, false);
         dl->PopClipRect();
     }
 

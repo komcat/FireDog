@@ -517,6 +517,10 @@ private:
     int         nomActive_  = 0;          // which mark "Set" will write (0 or 1)
     float       nomPx_ = 0.0f, nomPy_ = 0.0f;   // crosshair, camera px
     float       nomZoom_ = 1.5f;          // same default as the pick window
+    // Overlay only: rotates the envelope box the two marks bound, for a part
+    // whose footprint sits at an angle. It changes nothing that gets saved —
+    // the nominal is the midpoint, and the midpoint does not rotate.
+    float       nomEnvDeg_ = 0.0f;
     std::string nomErr_;                  // why the last Save refused
 
     // Placement page state. Nothing here is persisted: a measurement of where
