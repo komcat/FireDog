@@ -284,6 +284,7 @@ void App::ResetDocumentSelections()
     plcNomUid_.clear();
     plcHave_[0] = plcHave_[1] = false;
     plcLastMove_.clear();
+    plcSamples_.clear();
     visionSelUid_.clear();
     visionOwnerLabel_.clear();
     visionTmplKey_.clear();

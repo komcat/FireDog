@@ -404,6 +404,29 @@ it:
    about the transform can promise it in advance. The last issued move stays on
    screen to compare against.
 
+### Knowing what a residual means
+
+After a correction the object is measured again, and the leftover delta is the
+accuracy number. But a leftover of 0.1 mm means nothing until you know what two
+measurements of a *stationary* object disagree by — that scatter is the marking
+error, and it is the floor under every placement.
+
+So the page keeps a **repeatability sample set**: mark, *Log measure*, mark
+again, and it reports the spread in X and Y plus the worst distance from the
+mean. Logging clears the marks, because an independent sample means re-marking;
+a **move clears the whole set**, because samples taken before it describe a
+different position and would report the move itself as scatter.
+
+Read it as the discriminator it is: a residual comfortably inside the spread is
+the marking, not a miss, and a correction smaller than the spread is noise being
+chased. It also separates the two ways a placement can disappoint — a bad
+transform shows up as a residual much *larger* than the spread and in a
+consistent direction, while sloppy marking shows up as both numbers being
+similar and neither improving with another move.
+
+Nothing here is persisted: it measures this operator, these optics and this
+part, right now.
+
 Both mark pickers are the same widget (`DrawMarkPicker`, `ui/Widgets.h`),
 hoisted out of the nominal page the moment this one needed it: two copies of the
 machine-mm↔pixel projection would drift, and the point of the shared

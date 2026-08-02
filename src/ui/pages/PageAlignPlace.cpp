@@ -80,6 +80,7 @@ void App::OpenAlignPlace(const AlignProc& a, const std::string& nomUid)
     plcActive_  = 0;
     plcZoom_    = 1.5f;
     plcLastMove_.clear();
+    plcSamples_.clear();
     plcPx_ = (cameraW_ > 0) ? static_cast<float>(cameraW_) * 0.5f : 0.0f;
     plcPy_ = (cameraH_ > 0) ? static_cast<float>(cameraH_) * 0.5f : 0.0f;
 
@@ -300,6 +301,54 @@ void App::DrawAlignPlacePanel()
         ImGui::PopID();
     }
 
+    const bool   both  = plcHave_[0] && plcHave_[1];
+    const double objMx = (plcPt_[0].wx + plcPt_[1].wx) * 0.5;
+    const double objMy = (plcPt_[0].wy + plcPt_[1].wy) * 0.5;
+
+    // ---- Repeatability ------------------------------------------------------
+    // Measure the same stationary object several times and read the spread.
+    // That spread is the marking error, and it is the floor under every
+    // placement: a residual smaller than it is not a miss, and a correction
+    // smaller than it is noise being chased. Nothing here is persisted — it is
+    // a measurement of the operator and the optics, on this part, right now.
+    ImGui::Spacing();
+    ImGui::BeginDisabled(!both);
+    if (ImGui::SmallButton("Log measure")) {
+        plcSamples_.emplace_back(objMx, objMy);
+        plcHave_[0] = plcHave_[1] = false;   // an independent sample means re-marking
+        plcActive_  = 0;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(plcSamples_.empty());
+    if (ImGui::SmallButton("Reset")) plcSamples_.clear();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("n = %zu", plcSamples_.size());
+    if (plcSamples_.size() >= 2) {
+        double loX = plcSamples_[0].first,  hiX = loX;
+        double loY = plcSamples_[0].second, hiY = loY;
+        double sumX = 0.0, sumY = 0.0;
+        for (const auto& [sx, sy] : plcSamples_) {
+            loX = sx < loX ? sx : loX;  hiX = sx > hiX ? sx : hiX;
+            loY = sy < loY ? sy : loY;  hiY = sy > hiY ? sy : hiY;
+            sumX += sx;
+            sumY += sy;
+        }
+        const double n    = static_cast<double>(plcSamples_.size());
+        const double meanX = sumX / n, meanY = sumY / n;
+        double worst = 0.0;
+        for (const auto& [sx, sy] : plcSamples_) {
+            const double d = std::sqrt((sx - meanX) * (sx - meanX) +
+                                       (sy - meanY) * (sy - meanY));
+            worst = d > worst ? d : worst;
+        }
+        ImGui::TextDisabled("spread  X %.4f  Y %.4f mm   worst %.4f from mean",
+                            hiX - loX, hiY - loY, worst);
+    } else if (plcSamples_.size() == 1) {
+        ImGui::TextDisabled("mark the same two features again and log a second one");
+    }
+
     // ---- The correction -----------------------------------------------------
     ImGui::SeparatorText("Correction");
     // Above the gate on purpose: the marks are cleared by a move, so this is
@@ -307,15 +356,12 @@ void App::DrawAlignPlacePanel()
     // it is the number the re-measure will be compared against.
     if (!plcLastMove_.empty())
         ImGui::TextWrapped("last: %s", plcLastMove_.c_str());
-    const bool both = plcHave_[0] && plcHave_[1];
     if (!both || !nom || !haveLive) {
         ImGui::TextDisabled("needs a live frame, a nominal, and both marks");
         ImGui::EndChild();
         return;
     }
 
-    const double objMx = (plcPt_[0].wx + plcPt_[1].wx) * 0.5;
-    const double objMy = (plcPt_[0].wy + plcPt_[1].wy) * 0.5;
     double objLx = 0.0, objLy = 0.0;
     AlignMachineToLocal(frame, objMx, objMy, &objLx, &objLy);
 
@@ -412,6 +458,10 @@ void App::DrawAlignPlacePanel()
             // the re-measure that turns this into a closed loop.
             plcHave_[0] = plcHave_[1] = false;
             plcActive_  = 0;
+            // The samples were of the object where it USED to be. Keeping them
+            // would report the move itself as scatter — the one number the
+            // repeatability check must never contain.
+            plcSamples_.clear();
         } else {
             plcLastMove_ = "move rejected - see the log";
         }

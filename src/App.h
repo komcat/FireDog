@@ -504,6 +504,12 @@ private:
     // refused and the operator has to raise it deliberately.
     float       plcMaxMM_ = 2.0f;
     std::string plcLastMove_;   // what was last issued, to compare the re-measure against
+    // Repeatability check: repeated measurements of the SAME, stationary
+    // object. Their spread is the MARKING error — the floor under any
+    // placement, and the only thing that says whether a leftover residual is a
+    // real miss or just two operators' worth of pixel. Object midpoints in
+    // machine mm; UI-only, never persisted.
+    std::vector<std::pair<double, double>> plcSamples_;
 
     // Vision teach page state — the models themselves live in session_.
     // Page::VisionTeach IS the "open" flag; visionSelUid_ says which model.
