@@ -65,6 +65,25 @@ public:
     bool JogGlobalRot(std::size_t devIdx, float gu, float gv, float gw, double step);
     // Jog a LOCAL axis directly (e.g. rotational U/V/W) by a signed delta.
     bool JogLocalAxis(std::size_t devIdx, const std::string& axis, double deltaMM);
+    // Map a GLOBAL translation delta (mm) onto a device's OWN axes through its
+    // configured transform, keeping every component. Pure kinematics: nothing
+    // moves, nothing is checked against limits.
+    //
+    // Not JogGlobal: that one collapses the direction to its single dominant
+    // axis, which is right for a jog button and wrong for a 2-D correction —
+    // half of a diagonal would be silently dropped. `out` gets one (axis, mm)
+    // entry per mapped translation axis, ready to be added to a live pose.
+    // False when the device does not exist.
+    bool GlobalDeltaToAxes(std::size_t devIdx, double gxMM, double gyMM, double gzMM,
+                           std::vector<std::pair<std::string, double>>* out) const;
+    // Move a device BY a global translation delta (mm): GlobalDeltaToAxes maps
+    // it onto the device's own axes, the result is added to its live pose, and
+    // the whole thing goes out as ONE coordinated absolute move —
+    // MoveGantryRelativeMM generalised to any device, which is exactly what a
+    // placement correction on a hexapod is. Safety-blocked like every other
+    // move. The CALLER owns the decision that the delta is sane: this is a
+    // computed destination, so it belongs behind an arming flag.
+    bool MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM, double gzMM);
     // Stop all motion on one device (jog panel Stop button).
     bool StopMotion(std::size_t devIdx);
 

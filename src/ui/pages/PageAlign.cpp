@@ -220,6 +220,9 @@ void App::DrawAlignListPanel()
         a.uid    = GenerateUid();      // a copy is a NEW identity...
         a.name  += " copy";
         a.result = AlignResult{};      // ...and it has not been taught yet
+        // The NOMINALS come along (the plain copy above): they are local
+        // coordinates, so they mean the same thing in whatever frame the
+        // duplicate eventually teaches. Only the frame itself is per-part.
         // Private station positions belong to the ORIGINAL. Copy them under the
         // new owner so the duplicate is usable, rather than sharing rows the
         // original's Delete would take away.
@@ -505,14 +508,70 @@ void App::DrawAlignDetailPanel()
 
 // ---- Right: the derived frame ---------------------------------------------
 
+// The taught nominals: target points on the PART, held in local (O1)
+// coordinates so they follow it. Teaching happens on its own takeover page
+// (PageAlignNominal.cpp) — a mark needs a big live image, and this column is a
+// strip. Here they are only listed, re-taught, deleted, and loaded into the
+// probe fields above so "Move here" can drive to one.
+void App::DrawAlignNominalList(AlignProc& a)
+{
+    const bool busy = orch_.Busy();
+
+    ImGui::SeparatorText("Nominals (local)");
+    ImGui::BeginDisabled(busy);
+    if (ImGui::SmallButton("Teach nominal...")) OpenAlignNominalTeach(a, "");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Mark two features on the live image; their MIDPOINT is\n"
+                          "stored in this frame's local coordinates, so it names the\n"
+                          "same place on the part however the next one is loaded.");
+
+    if (a.nominals.empty()) {
+        ImGui::TextDisabled("none taught yet");
+        return;
+    }
+    for (std::size_t i = 0; i < a.nominals.size(); ++i) {
+        const AlignNominal& n = a.nominals[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Text("%s", n.name.c_str());
+        ImGui::TextDisabled("  X %.4f  Y %.4f mm   taught %s", n.lx, n.ly,
+                            n.taughtAt.c_str());
+        ImGui::BeginDisabled(busy);
+        // Use: copy into the local->machine probe above. The probe is what
+        // "Move here" reads, so this is the only wiring a nominal needs to
+        // become a destination — and it still goes through the live-frame gate.
+        if (ImGui::SmallButton("Use")) {
+            alignProbeX_ = n.lx;
+            alignProbeY_ = n.ly;
+        }
+        ImGui::SameLine();
+        // Place: measure where a gripped object actually is and work out the
+        // correction onto this nominal. Compute only — nothing moves yet.
+        if (ImGui::SmallButton("Place...")) OpenAlignPlace(a, n.uid);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Re-teach")) OpenAlignNominalTeach(a, n.uid);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Delete")) {
+            FD_INFO("align", "'%s': dropped nominal '%s'", a.name.c_str(), n.name.c_str());
+            a.nominals.erase(a.nominals.begin() + static_cast<long>(i));
+            session_.SaveAligns();   // taught by hand — persisted like the frame
+            ImGui::EndDisabled();
+            ImGui::PopID();
+            return;                  // the vector moved; redraw next frame
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+}
+
 void App::DrawAlignFramePanel()
 {
-    const std::vector<AlignProc>& list = session_.Aligns();
+    std::vector<AlignProc>& list = session_.Aligns();
     if (alignSel_ < 0 || alignSel_ >= static_cast<int>(list.size())) {
         ImGui::TextDisabled("Local frame (O1)");
         return;
     }
-    const AlignProc& a = list[static_cast<std::size_t>(alignSel_)];
+    AlignProc& a = list[static_cast<std::size_t>(alignSel_)];
 
     // LIVE frame first, because that is the one that can actually move the
     // stage. The document's copy is a record of the last teach and may describe
@@ -542,6 +601,7 @@ void App::DrawAlignFramePanel()
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "not taught yet");
         ImGui::TextWrapped("Run the procedure: E1 becomes the origin and E1->E2 the "
                            "local X+ axis; local Y+ is X+ rotated +90 degrees.");
+        DrawAlignNominalList(a);   // may hold nominals from a run that did not save
         return;
     }
     ImGui::Spacing();
@@ -606,6 +666,8 @@ void App::DrawAlignFramePanel()
         ImGui::TextDisabled("arm first");
     else if (orch_.Busy())
         ImGui::TextDisabled("a run is active");
+
+    DrawAlignNominalList(a);
 }
 
 } // namespace firedog

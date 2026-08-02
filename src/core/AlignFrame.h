@@ -67,6 +67,32 @@ struct AlignResult {
     double      spanMm = 0.0;                   // |E1 -> E2|, diagnostic
 };
 
+// One taught NOMINAL: a target point on the part, held in LOCAL (O1)
+// coordinates so it travels with the part instead of with the machine. Teach it
+// once against a part whose frame was just taught, and every later part gets
+// the same point at its own placement, because the frame moved and the local
+// coordinate did not.
+//
+// It is taught as the MIDPOINT of two operator-marked features. Two marks
+// rather than one because the interesting point is usually the CENTRE of
+// something — a die, a pocket, a footprint — and a centre is a place with no
+// feature under it to aim at. Marking two opposite corners puts the crosshair
+// on something real both times; the midpoint is then arithmetic, not judgement.
+//
+// Only `lx`/`ly` are consumed. Everything below them is the record of how the
+// point was taught, kept for the same reason AlignResult keeps its E points: a
+// suspicious number has to be auditable without re-teaching.
+struct AlignNominal {
+    std::string uid;
+    std::string name = "nominal";
+    double      lx = 0.0, ly = 0.0;   // LOCAL (O1) mm — the only field a run uses
+    AlignPoint  p1, p2;               // the two marks, machine mm
+    double      mx = 0.0, my = 0.0;   // midpoint, machine mm, AT TEACH TIME
+    double      spanMm = 0.0;         // |p1->p2| — diagnostic, like AlignResult::spanMm
+    std::string taughtAt;             // "2026-08-01T10:22:31"
+    std::string frameAt;              // capturedAt of the frame it was converted through
+};
+
 // The document: a named, uid'd, reusable procedure.
 struct AlignProc {
     std::string  uid;
@@ -74,6 +100,7 @@ struct AlignProc {
     std::string  device = "gantry-main";   // motion device the stations belong to
     AlignStation s1, s2;
     AlignResult  result;
+    std::vector<AlignNominal> nominals;    // taught targets in this frame
 };
 
 // ---- frame maths ---------------------------------------------------------
@@ -97,6 +124,19 @@ void AlignLocalToMachine(const AlignResult& r, double lx, double ly,
 void AlignMachineToLocal(const AlignResult& r, double mx, double my,
                          double* lx, double* ly);
 
+// Midpoint of two marks, converted through `frame` into local (O1), plus the
+// record fields. `out`'s uid and name are left alone — the caller owns identity.
+//
+// An INVALID frame is refused rather than passed through: AlignMachineToLocal
+// is deliberately an identity in that case, so a nominal taught through one
+// would silently be a machine coordinate wearing a local coordinate's name, and
+// would then be re-projected by the next frame into somewhere no part has ever
+// been. There is no minimum span here (unlike the frame): a nominal is a point,
+// so two coincident marks are merely a point, not a meaningless direction.
+bool SolveAlignNominal(const AlignResult& frame, const AlignPoint& p1,
+                       const AlignPoint& p2, AlignNominal* out,
+                       std::string* err = nullptr);
+
 // ---- lookup --------------------------------------------------------------
 // Resolve by uid first, then by exact name — recipes reference the uid (rename-
 // safe), scripts and operators use the name.
@@ -104,6 +144,11 @@ const AlignProc* FindAlignProc(const std::vector<AlignProc>& list,
                                const std::string& uidOrName);
 AlignProc*       FindAlignProc(std::vector<AlignProc>& list,
                                const std::string& uidOrName);
+
+// Same rule one level down: a nominal is addressed by uid or by name, within
+// the procedure that owns it.
+const AlignNominal* FindAlignNominal(const AlignProc& p, const std::string& uidOrName);
+AlignNominal*       FindAlignNominal(AlignProc& p, const std::string& uidOrName);
 
 // ---- persistence ---------------------------------------------------------
 // Round-trip helpers, also used for the session's dirty baseline (a canonical

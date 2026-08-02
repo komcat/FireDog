@@ -267,6 +267,148 @@ taught patch only mean anything at the pose and exposure they were tuned at, so
 a model that happens to suit a second station is a coincidence rather than a
 reuse. Detail in `docs/vision-detection-design.md` §2.
 
+## 6b. Nominals — targets expressed in the frame
+
+A frame on its own only says where the part is. The thing an operator actually
+wants to name is a **place on the part**: where a die goes, where a fibre must
+land, the centre of a footprint. Held as a machine coordinate that place is
+wrong for the next part by exactly the placement error the frame exists to
+absorb; held in **local (O1)** coordinates it is right for every part, because
+the frame moves and the coordinate does not.
+
+So a procedure carries a **named list of nominals** (`AlignProc::nominals`),
+each of them just `lx`/`ly` plus the record of how it was taught. A list rather
+than a single point because one procedure's frame typically serves several
+targets, and because a name is how anything downstream will address one.
+
+### Two marks, not one
+
+A nominal is taught as the **midpoint of two marks**. The reason is the same one
+that makes a centre hard to teach at all: the interesting point is usually the
+*middle* of something, and a middle has no feature under it to put a crosshair
+on. Marking two opposite corners puts the crosshair on something real both
+times and leaves the centre to arithmetic.
+
+This is deliberately *not* the frame's two-point rule. E1/E2 fix an origin **and
+a direction**, so `SolveAlignFrame` refuses a short span — below `kAlignMinSpanMM`
+the angle is noise. A nominal is a point: two coincident marks give a valid (if
+pointless) answer, so `SolveAlignNominal` imposes no minimum and records the
+span as a diagnostic instead.
+
+What it *does* refuse is an **invalid frame**. `AlignMachineToLocal` is an
+identity when the frame is not valid, so a nominal taught through one would be a
+machine coordinate wearing a local coordinate's name — and the next frame would
+faithfully re-project it to somewhere no part has ever been.
+
+### The teach page
+
+`Page::AlignNominal` (`ui/pages/PageAlignNominal.cpp`) is a takeover reached
+only from the frame panel's *Teach nominal…*, on exactly the argument
+`PageVisionTeach` makes: marking a feature needs a big live image, and the
+Alignment page's columns are strips. It shares `CameraView` with the crosshair
+pick window and the vision teach page, so a pixel means the same thing in all
+three.
+
+Three things about it are worth stating outright:
+
+* **Nothing moves.** It reads the live image and the device's pose and writes a
+  document field, so there is no arming checkbox — the pick window's argument.
+* **Each mark latches its own pose.** `wx = gx + (px - w/2) * pixel_to_mm_x`, the
+  same arithmetic §3 describes, evaluated at the moment the operator presses
+  *Set*. Jogging between the two marks is therefore expected, not a hazard, and
+  the two may come from opposite ends of the travel. Captured marks are drawn by
+  projecting back through the **current** pose, so they stay on their features
+  as the stage moves — the Aux window's E marks again.
+* **It needs a LIVE frame** (§5b), not the record. A nominal is *stored* in
+  local coordinates, so the conversion that produces them has to come from a
+  frame describing the part under the camera right now. Teaching against an old
+  record would produce numbers that describe nothing on this part — and, unlike
+  a bad move, would then be inherited by every part after it.
+
+Saving persists immediately (`SaveAligns`), like a taught frame and for the same
+reason: two hand-placed marks are expensive to lose. Re-teach keeps the uid so
+existing references survive; a duplicate name inside one procedure is refused,
+because the name is how a nominal is addressed and two of them would make that
+lookup a coin toss.
+
+Duplicating a procedure **keeps** its nominals while clearing its `result`. That
+asymmetry is the whole idea in one line: the frame is per-part, the nominals are
+per-design.
+
+### What consumes one
+
+The frame panel's *Use* button loads a nominal into the local→machine probe
+fields, so *Move here* drives the **procedure's own device** to it — still
+behind the live-frame gate and the arm checkbox.
+
+## 6c. Placement — putting a gripped object on a nominal
+
+The interesting case is the other one: the object is held by **hex-left**, and
+the nominal is a point the **gantry's** camera measured. That is not a different
+coordinate, it is a different *kind of move*.
+
+**Only a delta can cross between the two devices.** A hexapod's origin has never
+been measured against the gantry's, and `AxisTransform`
+(`hardware/HardwareConfig.h`) is a signed permutation with **no offset** — it can
+carry a direction between frames but never a position. An absolute machine XY
+therefore cannot be commanded to hex-left at all. What can:
+
+```
+object   = midpoint of two marks           (machine mm, through the camera)
+nominal  = LocalToMachine(live frame, n)   (machine mm, at THIS part's pose)
+delta    = nominal - object                (machine mm — a vector)
+per-axis = transform * delta               (the mover's own axes)  -> relative move
+```
+
+The frame's **origin cancels** in that subtraction, which is exactly what makes
+the result meaningful to a device that knows nothing about it. The **rotation
+does not cancel**, and must not: both points go through the *same* live frame,
+so the vector already carries the part's actual orientation.
+
+Two things that would be easy to get wrong:
+
+* **`JogGlobal` is not the mapping to reuse.** It collapses a direction to its
+  single dominant axis — right for a jog button, and it would silently drop half
+  of a diagonal correction here. `Workflow::GlobalDeltaToAxes` keeps every
+  component; it is layer 2 owning the kinematics, so the page that *prints* the
+  correction and the move that will eventually *command* it cannot drift apart.
+* **The object must be measured, not assumed.** Where a gripper picked the part
+  up is exactly the error being corrected, so a placement that skips the
+  measurement is an open-loop move wearing a closed loop's name.
+
+`Page::AlignPlace` (`ui/pages/PageAlignPlace.cpp`, reached from a nominal's
+*Place…*) is that arithmetic with every intermediate value on screen: object
+machine and local, delta local and machine, the distance, the per-axis relative
+move, and the mover's resulting absolute pose so travel limits can be eyeballed.
+
+*Move object to nominal* issues it through `Workflow::MoveRelativeGlobal`, which
+re-derives the per-axis deltas from the same transform, adds them to the live
+pose and sends one coordinated command — so what the page prints and what the
+machine is told cannot drift apart. The page hands over the machine-frame vector
+and nothing else; layer 2 owns the kinematics, as it does for every other move.
+
+Three guards, because the destination is **computed** — the same risk class as
+click-to-move, and unlike a station's *Go* there is no human-taught pose behind
+it:
+
+1. **The shared arming flag** (`jogArmed_`, the one the Jog window arms), plus
+   the usual `orch_.Busy()` gate.
+2. **A visible ceiling** on the correction (default 2 mm, editable on the page).
+   A mis-taught frame does not produce an implausible number — it produces an
+   ordinary one that happens to be huge — so the limit is on screen where it can
+   be judged and raised deliberately, not a constant only a rebuild can change.
+3. **A move clears the marks.** They describe where the object was *before* it,
+   so leaving them would display a correction already spent, and a second press
+   would apply it twice. Clearing forces the re-measure, which is what makes this
+   a closed loop at all: the residual delta is the accuracy number, and nothing
+   about the transform can promise it in advance. The last issued move stays on
+   screen to compare against.
+
+Both mark pickers are the same widget (`DrawMarkPicker`, `ui/Widgets.h`),
+hoisted out of the nominal page the moment this one needed it: two copies of the
+machine-mm↔pixel projection would drift, and the point of the shared
+`CameraView` is that a pixel means the same thing everywhere.
+
 ## 7. Commands and the script
 
 | Command | Role |
@@ -331,6 +473,21 @@ rendered as a picker in the recipe editor. It is **not** device-scoped like
    with an alignment so `move_to_position` auto-retargets is the obvious next
    phase; it touches the positions schema, the validator and every move path,
    so it was kept out of this one.
+6. **A nominal has no command yet.** It is document data plus two pages and the
+   frame panel's *Use*; no recipe step reads one.
+7. **Placement is a UI action only** (§6c). There is no `place_local` command,
+   so a recipe cannot do it: measuring the object needs an operator marking two
+   features, which is the same reason an `auto` alignment station had to wait
+   for a detector. The move itself is already layer 2
+   (`Workflow::MoveRelativeGlobal`), so a command would be the marking, not the
+   motion.
+8. **Placement corrects translation only.** A nominal is a point, so the
+   correction is a 2-D shift: if the gripper picked the object up rotated, the
+   page cannot see it and the shift will not fix it. The information is
+   *available* — the object's two marks have a direction, and storing the
+   nominal's mark direction alongside its midpoint would give a Δθ to command on
+   the holder's W — but a nominal deliberately stores a point today, so that is
+   a schema change, not a calculation.
 
 Related: `docs/state-and-config.md` (the collection and its fallback rules),
 `docs/command-layer.md` (registry → editor → Lua bindings),

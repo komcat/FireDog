@@ -151,7 +151,8 @@ void App::DrawMainWindow()
         if (currentPage_ == Page::WatchEdit || currentPage_ == Page::TransformEdit ||
             currentPage_ == Page::RecipeEdit || currentPage_ == Page::Scripts ||
             currentPage_ == Page::DutView || currentPage_ == Page::Run ||
-            currentPage_ == Page::Align || currentPage_ == Page::VisionTeach) {
+            currentPage_ == Page::Align || currentPage_ == Page::VisionTeach ||
+            currentPage_ == Page::AlignNominal || currentPage_ == Page::AlignPlace) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
@@ -159,13 +160,18 @@ void App::DrawMainWindow()
                                 : currentPage_ == Page::DutView       ? "DUT Records"
                                 : currentPage_ == Page::Align         ? "Alignment"
                                 : currentPage_ == Page::VisionTeach   ? "Vision detection"
+                                : currentPage_ == Page::AlignNominal  ? "Nominal target"
+                                : currentPage_ == Page::AlignPlace    ? "Place on nominal"
                                                                       : "Run";
-            // Vision teach is only ever reached FROM the Alignment page, and a
-            // takeover -> takeover switch does not update prevPage_, so Close
-            // has to name Align explicitly or it would jump to whatever hardware
-            // page happened to be open before the Alignment page was.
-            const Page closeTo = (currentPage_ == Page::VisionTeach) ? Page::Align
-                                                                     : prevPage_;
+            // Vision teach and the two alignment teach pages are only ever
+            // reached FROM the Alignment page, and a takeover -> takeover switch
+            // does not update prevPage_, so Close has to name Align explicitly
+            // or it would jump to whatever hardware page happened to be open
+            // before the Alignment page was.
+            const Page closeTo = (currentPage_ == Page::VisionTeach ||
+                                  currentPage_ == Page::AlignNominal ||
+                                  currentPage_ == Page::AlignPlace) ? Page::Align
+                                                                    : prevPage_;
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
             ImGui::TextUnformatted(title);
@@ -183,6 +189,8 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::DutView)       DrawDutViewPanel();
             else if (currentPage_ == Page::Align)         DrawAlignPanel();
             else if (currentPage_ == Page::VisionTeach)   DrawVisionTeachPanel();
+            else if (currentPage_ == Page::AlignNominal)  DrawAlignNominalPanel();
+            else if (currentPage_ == Page::AlignPlace)    DrawAlignPlacePanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();

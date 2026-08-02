@@ -35,7 +35,8 @@ bool IsTakeoverPage(Page p)
     return p == Page::WatchEdit || p == Page::TransformEdit ||
            p == Page::RecipeEdit || p == Page::Scripts ||
            p == Page::DutView || p == Page::Run || p == Page::Align ||
-           p == Page::VisionTeach;
+           p == Page::VisionTeach || p == Page::AlignNominal ||
+           p == Page::AlignPlace;
 }
 } // namespace
 
@@ -268,6 +269,21 @@ void App::ResetDocumentSelections()
     // selection is stale — leave the page rather than showing a uid that
     // belongs to the previous product. Cached detectors go with it.
     if (currentPage_ == Page::VisionTeach) SwitchPage(Page::Align);
+    // Same for the nominal teach page: its procedure belonged to the previous
+    // product, and its two marks were measured against a frame this load has
+    // just cleared.
+    if (currentPage_ == Page::AlignNominal) SwitchPage(Page::Align);
+    nomProcUid_.clear();
+    nomEditUid_.clear();
+    nomHave_[0] = nomHave_[1] = false;
+    nomErr_.clear();
+    // The placement page likewise: its measurement was of an object that was on
+    // the machine for the previous product.
+    if (currentPage_ == Page::AlignPlace) SwitchPage(Page::Align);
+    plcProcUid_.clear();
+    plcNomUid_.clear();
+    plcHave_[0] = plcHave_[1] = false;
+    plcLastMove_.clear();
     visionSelUid_.clear();
     visionOwnerLabel_.clear();
     visionTmplKey_.clear();

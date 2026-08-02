@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -1218,6 +1219,74 @@ bool Workflow::JogGlobal(std::size_t devIdx, float gx, float gy, float gz, doubl
     if (ax >= static_cast<int>(axes.size())) return false;
     const double delta = stepMM * (loc[ax] >= 0.0 ? 1.0 : -1.0);
     return JogLocalAxis(devIdx, axes[ax], delta);
+}
+
+bool Workflow::GlobalDeltaToAxes(std::size_t devIdx, double gxMM, double gyMM,
+                                 double gzMM,
+                                 std::vector<std::pair<std::string, double>>* out) const
+{
+    if (out) out->clear();
+    if (devIdx >= hw_.MotionCount()) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m) return false;
+
+    AxisTransform t;   // identity if none configured
+    const auto it = transforms_.find(m->Name());
+    if (it != transforms_.end()) t = it->second;
+
+    const double g[3] = {gxMM, gyMM, gzMM};
+    const std::vector<std::string> axes = m->Axes();
+    for (int i = 0; i < 3; ++i) {
+        if (i >= static_cast<int>(axes.size())) break;
+        const double d = t.m[i][0] * g[0] + t.m[i][1] * g[1] + t.m[i][2] * g[2];
+        if (out) out->emplace_back(axes[static_cast<std::size_t>(i)], d);
+    }
+    return true;
+}
+
+bool Workflow::MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM,
+                                  double gzMM)
+{
+    if (SafetyBlocked()) {
+        FD_WARN("safety", "move blocked - acknowledge the safety alert first");
+        return false;
+    }
+    if (devIdx >= hw_.MotionCount()) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m) return false;
+    if (!m->IsConnected()) {
+        FD_WARN("workflow", "relative move: '%s' not connected", m->Name().c_str());
+        return false;
+    }
+
+    std::vector<std::pair<std::string, double>> deltas;
+    if (!GlobalDeltaToAxes(devIdx, gxMM, gyMM, gzMM, &deltas)) return false;
+
+    // Relative = live pose + the mapped delta, all axes in one command. An axis
+    // the device does not report is skipped rather than assumed to be at zero:
+    // a target built from a missing feedback value is a move to somewhere
+    // nobody asked for.
+    const std::map<std::string, double> pos = m->Positions();
+    std::vector<std::pair<std::string, double>> targets;
+    std::string detail;
+    for (const auto& [axis, d] : deltas) {
+        const auto it = pos.find(axis);
+        if (it == pos.end()) continue;
+        targets.emplace_back(axis, it->second + d);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%s%s %+.4f -> %.4f", detail.empty() ? "" : "  ",
+                      axis.c_str(), d, it->second + d);
+        detail += buf;
+    }
+    if (targets.empty()) {
+        FD_WARN("workflow", "%s: global delta maps to no axis the device reports",
+                m->Name().c_str());
+        return false;
+    }
+
+    FD_INFO("workflow", "%s relative move dGlobal=(%+.4f, %+.4f, %+.4f) mm | %s",
+            m->Name().c_str(), gxMM, gyMM, gzMM, detail.c_str());
+    return m->MoveAbsolute(targets);
 }
 
 bool Workflow::JogGlobalRot(std::size_t devIdx, float gu, float gv, float gw, double step)

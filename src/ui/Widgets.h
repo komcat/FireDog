@@ -122,6 +122,46 @@ struct CameraView {
 CameraView MakeCameraView(const ImVec2& origin, const ImVec2& size,
                           int imgW, int imgH, float focusX, float focusY, float zoom);
 
+// ---- Marking features on the live image ------------------------------------
+// The image + overlay + input half of a "mark a feature" surface: one movable
+// crosshair and any number of already-latched marks. Hoisted out of the nominal
+// teach page the moment the placement page needed the same thing — two copies
+// of this projection arithmetic would drift, and the whole point is that a
+// pixel means the same thing on every surface.
+//
+// A latched mark is held in MACHINE mm, so drawing it means projecting it back
+// through the CURRENT pose: that is what keeps it on its feature after the
+// stage has moved. With no pose there is nothing to project through, so marks
+// are simply not drawn.
+struct CameraMark {
+    double      wx = 0.0, wy = 0.0;   // machine mm
+    bool        have  = false;
+    const char* label = nullptr;
+};
+
+// Inputs, plus pointers to the caller's crosshair/zoom state (App members —
+// this helper keeps none of its own, per the no-state rule above).
+struct MarkPicker {
+    unsigned int tex  = 0;               // camera texture (0 = no feed)
+    int    imgW = 0, imgH = 0;
+    float  pixelToMmX = 0.0f, pixelToMmY = 0.0f;
+    bool   havePose = false;
+    double gx = 0.0, gy = 0.0;           // the pose marks are projected through
+    const CameraMark* marks = nullptr;
+    int    markCount = 0;
+    // Non-null draws the midpoint of marks 0 and 1 (both latched) under this
+    // label — the point those two marks exist to define.
+    const char* midpointLabel = nullptr;
+    float* px   = nullptr;               // crosshair, camera px   (in/out)
+    float* py   = nullptr;
+    float* zoom = nullptr;               // magnification >= 1     (in/out)
+};
+
+// Fill `box` with the image, the overlay and the input handling, then a footer
+// row (hint + zoom slider + Fit). Arrow keys nudge the crosshair only while the
+// mouse is over the hosting window, so they never steal from a field beside it.
+void DrawMarkPicker(const char* id, const ImVec2& box, const MarkPicker& mp);
+
 // Connection-state presentation, used by every device page.
 ImVec4      StateColor(ConnState s);
 const char* StateGlyph(ConnState s);

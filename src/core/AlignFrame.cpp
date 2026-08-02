@@ -109,6 +109,42 @@ AlignResult ResultFromJson(const nlohmann::json& j)
     return r;
 }
 
+nlohmann::json NominalToJson(const AlignNominal& n)
+{
+    nlohmann::json j;
+    j["uid"]      = n.uid;
+    j["name"]     = n.name;
+    j["lx"]       = n.lx;
+    j["ly"]       = n.ly;
+    j["p1"]       = PointToJson(n.p1);
+    j["p2"]       = PointToJson(n.p2);
+    j["mx"]       = n.mx;
+    j["my"]       = n.my;
+    j["span_mm"]  = n.spanMm;
+    j["taught_at"] = n.taughtAt;
+    j["frame_at"]  = n.frameAt;
+    return j;
+}
+
+AlignNominal NominalFromJson(const nlohmann::json& j)
+{
+    AlignNominal n;
+    if (!j.is_object()) return n;
+    n.uid  = j.value("uid", "");
+    if (n.uid.empty()) n.uid = GenerateUid();   // hand-written row — assign once
+    n.name = j.value("name", "nominal");
+    n.lx   = j.value("lx", 0.0);
+    n.ly   = j.value("ly", 0.0);
+    if (j.contains("p1")) n.p1 = PointFromJson(j["p1"]);
+    if (j.contains("p2")) n.p2 = PointFromJson(j["p2"]);
+    n.mx       = j.value("mx", 0.0);
+    n.my       = j.value("my", 0.0);
+    n.spanMm   = j.value("span_mm", 0.0);
+    n.taughtAt = j.value("taught_at", "");
+    n.frameAt  = j.value("frame_at", "");
+    return n;
+}
+
 std::vector<AlignProc> ParseAlignProcs(std::ifstream& f, const std::string& path,
                                        std::string* uidOut)
 {
@@ -184,6 +220,28 @@ void AlignMachineToLocal(const AlignResult& r, double mx, double my,
     if (ly) *ly = -dx * s + dy * c;
 }
 
+bool SolveAlignNominal(const AlignResult& frame, const AlignPoint& p1,
+                       const AlignPoint& p2, AlignNominal* out, std::string* err)
+{
+    if (!frame.valid) {
+        if (err) *err = "no valid local frame - teach the alignment first";
+        return false;
+    }
+    if (!out) return true;
+
+    const double dx = p2.wx - p1.wx;
+    const double dy = p2.wy - p1.wy;
+    out->p1 = p1;
+    out->p2 = p2;
+    out->mx = (p1.wx + p2.wx) * 0.5;
+    out->my = (p1.wy + p2.wy) * 0.5;
+    out->spanMm = std::sqrt(dx * dx + dy * dy);
+    AlignMachineToLocal(frame, out->mx, out->my, &out->lx, &out->ly);
+    out->taughtAt = NowStamp();
+    out->frameAt  = frame.capturedAt;
+    return true;
+}
+
 // ---- lookup --------------------------------------------------------------
 
 const AlignProc* FindAlignProc(const std::vector<AlignProc>& list,
@@ -201,6 +259,20 @@ AlignProc* FindAlignProc(std::vector<AlignProc>& list, const std::string& uidOrN
     return const_cast<AlignProc*>(FindAlignProc(c, uidOrName));
 }
 
+const AlignNominal* FindAlignNominal(const AlignProc& p, const std::string& uidOrName)
+{
+    if (uidOrName.empty()) return nullptr;
+    for (const AlignNominal& n : p.nominals) if (n.uid == uidOrName) return &n;
+    for (const AlignNominal& n : p.nominals) if (n.name == uidOrName) return &n;
+    return nullptr;
+}
+
+AlignNominal* FindAlignNominal(AlignProc& p, const std::string& uidOrName)
+{
+    const AlignProc& c = p;
+    return const_cast<AlignNominal*>(FindAlignNominal(c, uidOrName));
+}
+
 // ---- persistence ---------------------------------------------------------
 
 nlohmann::json AlignProcToJson(const AlignProc& p)
@@ -212,6 +284,9 @@ nlohmann::json AlignProcToJson(const AlignProc& p)
     j["station1"] = StationToJson(p.s1);
     j["station2"] = StationToJson(p.s2);
     j["result"]   = ResultToJson(p.result);
+    nlohmann::json noms = nlohmann::json::array();
+    for (const AlignNominal& n : p.nominals) noms.push_back(NominalToJson(n));
+    j["nominals"] = std::move(noms);
     return j;
 }
 
@@ -226,6 +301,14 @@ AlignProc AlignProcFromJson(const nlohmann::json& j)
     if (j.contains("station1")) p.s1 = StationFromJson(j["station1"]);
     if (j.contains("station2")) p.s2 = StationFromJson(j["station2"]);
     if (j.contains("result"))   p.result = ResultFromJson(j["result"]);
+    // Absent in every procedure authored before nominals existed — an empty
+    // list is the right answer there, so no migration is needed.
+    if (j.contains("nominals") && j["nominals"].is_array()) {
+        for (const auto& row : j["nominals"]) {
+            if (!row.is_object()) continue;
+            p.nominals.push_back(NominalFromJson(row));
+        }
+    }
     return p;
 }
 

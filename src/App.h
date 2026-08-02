@@ -30,13 +30,14 @@ namespace firedog {
 // Which content the Main window shows. Hardware pages are selected via the
 // Hardware menu; the editor pages (View menu) REPLACE the whole panel layout
 // until closed via their top-right Close button (back to the previous page).
-// VisionTeach is a takeover like the rest, but deliberately NOT in the View
-// menu: it always belongs to one alignment station, so the only way in is that
-// station's button, and its Close always returns to Align rather than to
-// prevPage_ (a takeover->takeover switch does not update prevPage_).
+// VisionTeach, AlignNominal and AlignPlace are takeovers like the rest, but
+// deliberately NOT in the View menu: each always belongs to one alignment
+// procedure, so the only way in is that procedure's button, and their Close
+// always returns to Align rather than to prevPage_ (a takeover->takeover switch
+// does not update prevPage_).
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
-                  Align, VisionTeach };
+                  Align, VisionTeach, AlignNominal, AlignPlace };
 
 // One XCAN launch preset (a button on the Run page's Scan band): the step
 // ladder + the hexapod_align.lua tunables injected at launch. Five slots;
@@ -168,6 +169,18 @@ private:
     // linger somewhere nobody looks.
     void TeachAlignStation(AlignProc& a, int station);
     void DropAlignStationPositions(const AlignProc& a);
+    // Nominal teach page (a takeover, reached only from the Alignment page's
+    // frame panel). Two crosshair marks on the live image; their MIDPOINT is
+    // converted through the LIVE frame into local (O1) and stored on the
+    // procedure, so it follows the part instead of the machine.
+    void DrawAlignNominalList(AlignProc& a);       // the list, on the frame panel
+    void DrawAlignNominalPanel();                  // page body (takeover frame)
+    void OpenAlignNominalTeach(const AlignProc& a, const std::string& nomUid);
+    // Placement page: measure where a gripped object actually is (the same two
+    // marks), and work out the correction that would put it on a nominal.
+    // COMPUTE ONLY — nothing is wired to move yet.
+    void DrawAlignPlacePanel();                    // page body (takeover frame)
+    void OpenAlignPlace(const AlignProc& a, const std::string& nomUid);
     // Vision detection teach window (GLOBAL, non-modal — a big live image does
     // not fit the Alignment page's middle column). Opened from a station card;
     // tunes that station's detection model until it finds the feature reliably.
@@ -457,6 +470,40 @@ private:
     double alignProbeX_ = 0.0;   // right panel's local->machine check inputs
     double alignProbeY_ = 0.0;
     std::string alignStartErr_;  // why the last Run refused to start
+
+    // Nominal teach page state — the nominals themselves live in session_.
+    // Page::AlignNominal IS the "open" flag; nomProcUid_ says which procedure.
+    std::string nomProcUid_;              // procedure being taught against
+    std::string nomEditUid_;              // nominal being re-taught ("" = a new one)
+    char        nomNameBuf_[48] = "";
+    // The two marks, in MACHINE mm, each latched with the gantry pose it was
+    // taken at — so the operator may jog between them and a mark still means
+    // the same physical place. Drawn by projecting back through the live pose.
+    AlignPoint  nomPt_[2];
+    bool        nomHave_[2] = {false, false};
+    int         nomActive_  = 0;          // which mark "Set" will write (0 or 1)
+    float       nomPx_ = 0.0f, nomPy_ = 0.0f;   // crosshair, camera px
+    float       nomZoom_ = 1.5f;          // same default as the pick window
+    std::string nomErr_;                  // why the last Save refused
+
+    // Placement page state. Nothing here is persisted: a measurement of where
+    // one object happens to sit right now is not document data, and keeping it
+    // would invite somebody to move against a correction computed yesterday.
+    std::string plcProcUid_;              // procedure whose frame is in play
+    std::string plcNomUid_;               // the nominal being aimed at
+    std::string plcDevice_;               // device HOLDING the object (the mover)
+    AlignPoint  plcPt_[2];                // the object's two marks, machine mm
+    bool        plcHave_[2] = {false, false};
+    int         plcActive_  = 0;
+    float       plcPx_ = 0.0f, plcPy_ = 0.0f;
+    float       plcZoom_ = 1.5f;
+    // Largest correction the page will issue. A computed destination built on a
+    // mis-taught frame or a mis-marked object is not implausible-looking — it is
+    // an ordinary number that happens to be huge — so the ceiling is on screen
+    // and editable rather than a constant nobody can see. Beyond it, Move is
+    // refused and the operator has to raise it deliberately.
+    float       plcMaxMM_ = 2.0f;
+    std::string plcLastMove_;   // what was last issued, to compare the re-measure against
 
     // Vision teach page state — the models themselves live in session_.
     // Page::VisionTeach IS the "open" flag; visionSelUid_ says which model.
