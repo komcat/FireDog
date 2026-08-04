@@ -239,6 +239,11 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
         ExecutionContext::PickRequest req;
         req.alignName = proc->name;
         req.station   = station;
+        // Only set on the FALLBACK path (autoErr non-empty): a station that was
+        // manual by design has no taught point to show, and showing one would
+        // claim a precision the procedure never asked for.
+        req.autoError   = autoErr;
+        if (!autoErr.empty() && model) req.detectorUid = model->uid;
         req.message   = ctx.Substitute(p.GetString("message"));
         if (req.message.empty()) {
             char buf[96];
@@ -448,12 +453,19 @@ CommandResult ExecPlaceMark(ExecutionContext& ctx, const ParamValues& p)
     const VisionModel*  model = nullptr;
     std::string autoErr;
     if (nom) {
-        const std::string det = (index == 1) ? nom->det1 : nom->det2;
-        if (!det.empty()) {
-            model = ctx.FindVisionModel(det);
+        // The point's MODE decides, not whether a model happens to exist: a
+        // nominal may keep a taught model while the operator marks this part by
+        // hand, exactly as a manual station keeps its detector.
+        const std::string mode = (index == 1) ? nom->mode1 : nom->mode2;
+        if (mode == "auto") {
+            const std::string det = (index == 1) ? nom->det1 : nom->det2;
+            model = det.empty() ? nullptr : ctx.FindVisionModel(det);
             if (!model)
-                autoErr = "point " + std::to_string(index) + " names no detection "
-                          "model '" + det + "'";
+                autoErr = det.empty()
+                    ? "point " + std::to_string(index) + " is set to detect but names "
+                      "no detection model"
+                    : "point " + std::to_string(index) + " names no detection "
+                      "model '" + det + "'";
             else if (std::string why; !HalconDetector::Available(&why))
                 autoErr = "cannot run detection model '" + model->name + "': " + why;
         }
@@ -517,6 +529,11 @@ CommandResult ExecPlaceMark(ExecutionContext& ctx, const ParamValues& p)
     ExecutionContext::PickRequest req;
     req.alignName = proc->name;
     req.station   = index;
+    // The fallback's evidence, exactly as align_station sets it: the taught
+    // patch and the reason, so the operator marks the point the model wanted
+    // rather than their own reading of "the corner".
+    req.autoError   = autoErr;
+    if (!autoErr.empty() && model) req.detectorUid = model->uid;
     // The window TITLE. A caller that repeats the pair (a verify pass) can say
     // so here — without it, the second round is indistinguishable from the
     // first and reads as a second object being placed.
@@ -582,6 +599,68 @@ CommandResult ExecPlaceMark(ExecutionContext& ctx, const ParamValues& p)
                      "(%.4f, %.4f) mm",
             index, manual ? "manual" : "auto", proc->device.c_str(), e.gx, e.gy,
             pick.dxMM, pick.dyMM, e.wx, e.wy);
+    return CommandResult::Success();
+}
+
+// ---- place_view ------------------------------------------------------------
+//
+// Drive the CAMERA to the pose a nominal was taught to be looked at from. It is
+// the nominal's own position (`algn_<procUid>_<nomUid>_v`, hidden), so this
+// command needs no position parameter and cannot be pointed at an unrelated
+// pose — which is exactly what kept a viewing move out of this family until the
+// nominal owned one.
+//
+// An untaught view is NOT an error: every procedure written before the field
+// existed drove there with a move_to_position step, and those must keep working.
+CommandResult ExecPlaceView(ExecutionContext& ctx, const ParamValues& p)
+{
+    const AlignProc* proc = ctx.FindAlign(p.GetString("alignment"));
+    if (!proc) return CommandResult::Fail("alignment procedure not found: '" +
+                                          p.GetString("alignment") + "'");
+    const AlignNominal* nom = FindAlignNominal(*proc, p.GetString("nominal"));
+    if (!nom)
+        return CommandResult::Fail("alignment '" + proc->name + "' has no nominal '" +
+                                   p.GetString("nominal") + "'");
+
+    if (nom->viewUid.empty()) {
+        if (p.GetBool("required"))
+            return CommandResult::Fail("nominal '" + nom->name + "' has no camera view "
+                                       "taught (Alignment page: Teach view)");
+        FD_INFO("align", "'%s': nominal '%s' has no camera view - leaving %s where it is",
+                proc->name.c_str(), nom->name.c_str(), proc->device.c_str());
+        return CommandResult::Success();
+    }
+
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, proc->device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    const SavedPos* pos = ctx.FindPosition(proc->device, nom->viewUid);
+    if (!pos)
+        return CommandResult::Fail("nominal '" + nom->name + "' names a camera view "
+                                   "position that no longer exists - re-teach it");
+    const auto targets = StationTargets(*pos, m);
+    if (targets.empty())
+        return CommandResult::Fail("camera view shares no axes with '" + proc->device + "'");
+
+    if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
+        return CommandResult::Fail("move to the camera view rejected");
+    const auto arrived = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
+                                    p.GetInt("timeout_ms"));
+    if (arrived != ExecutionContext::WaitResult::Ok) {
+        ctx.Wf().StopMotion(static_cast<std::size_t>(idx));   // defined state on any abort
+        return CommandResult::Fail(arrived == ExecutionContext::WaitResult::Stopped
+                                       ? "stopped"
+                                       : "timeout driving to the camera view");
+    }
+    // Settle before anything looks through the lens: a mark taken while the
+    // stage is still ringing carries that ring into the placement.
+    const CommandResult settled = WaitSettle(ctx, m, idx);
+    if (!settled.ok) return settled;
+
+    FD_INFO("align", "'%s': %s at the camera view for '%s'",
+            proc->name.c_str(), proc->device.c_str(), nom->name.c_str());
     return CommandResult::Success();
 }
 
@@ -804,6 +883,23 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                   CommandSpec::Needs::None, ExecMoveLocal});
 
     // ---- placement ------------------------------------------------------
+    reg.Register({"place_view", "Align",
+                  "Drive the camera to a nominal's taught viewing pose",
+                  {
+                      {"alignment", PT::AlignUid, true, {}, 0, 0, {},
+                       "alignment procedure - its device is the one carrying the camera"},
+                      {"nominal", PT::NominalUid, true, {}, 0, 0, {},
+                       "nominal whose camera view to drive to"},
+                      {"required", PT::Bool, false, false, 0, 0, {},
+                       "fail when the nominal has no view taught; off = leave the "
+                       "camera where it is (a run that moves it some other way)"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {},
+                       "arrival tolerance"},
+                      PreDelayParam(), PostDelayParam(),
+                  },
+                  CommandSpec::Needs::None, ExecPlaceView});
+
     reg.Register({"place_mark", "Align",
                   "Ask the operator to mark one point on a gripped object",
                   {
@@ -875,7 +971,9 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                        "ctx prefix the script captures and solves under"},
                       {"file", PT::ScriptFile, false,
                        "config/scripts/alignment_procedure.lua", 0, 0, {},
-                       "script override; the product's own copy of this filename wins"},
+                       "script override; this name is a STANDARD procedure and always "
+                       "resolves to the shipped file - point it at a different name "
+                       "to run something else"},
                   },
                   CommandSpec::Needs::None,
                   [rp](ExecutionContext& c, const ParamValues& p) {
@@ -896,11 +994,13 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
     // residual is inside tolerance — and a loop with an operator in it belongs
     // somewhere editable, not compiled into a step.
     //
-    // It does NOT drive to a viewing position. Getting the object in front of
-    // the camera is `move_to_position` in the recipe above it, where the editor
-    // offers a real device-scoped picker; a `position` parameter here would have
-    // to be a raw uid in a text box, and would be the second command in this
-    // family pretending to be a mover.
+    // It DOES drive to a viewing position now, when the nominal owns one: that
+    // is `place_view` inside the script, and it needs no parameter here because
+    // the pose belongs to the nominal. What is still refused is a free-floating
+    // `position` parameter — a raw uid in a text box, and the second command in
+    // this family pretending to be a mover. A nominal with no view taught keeps
+    // the old contract: get the object in front of the camera with a
+    // `move_to_position` step above this one.
     reg.Register({"place_run", "Align",
                   "Run a whole placement (placement_procedure.lua)",
                   {
@@ -913,6 +1013,9 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                       {"align_first", PT::Bool, false, true, 0, 0, {},
                        "re-teach the frame before placing; off when the program "
                        "already aligned this part and is placing several objects"},
+                      {"go_to_view", PT::Bool, false, true, 0, 0, {},
+                       "drive the camera to the nominal's taught view first; a "
+                       "nominal without one never moves it either way"},
                       {"tries", PT::Int, false, 2, 1, 5, {},
                        "measure/correct attempts before the residual must be inside tol"},
                       {"tol_mm", PT::Double, false, 0.02, 0.0001, 5.0, {},
@@ -923,7 +1026,9 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                        "ctx prefix the script marks and solves under"},
                       {"file", PT::ScriptFile, false,
                        "config/scripts/placement_procedure.lua", 0, 0, {},
-                       "script override; the product's own copy of this filename wins"},
+                       "script override; this name is a STANDARD procedure and always "
+                       "resolves to the shipped file - point it at a different name "
+                       "to run something else"},
                   },
                   CommandSpec::Needs::None,
                   [rp](ExecutionContext& c, const ParamValues& p) {
@@ -931,6 +1036,7 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                       c.CtxSet("place_nominal",   p.GetString("nominal"));
                       c.CtxSet("place_device",    p.GetString("device"));
                       c.CtxSet("place_align_first", p.GetBool("align_first"));
+                      c.CtxSet("place_go_to_view",  p.GetBool("go_to_view"));
                       c.CtxSet("place_tries",     static_cast<double>(p.GetInt("tries")));
                       c.CtxSet("place_tol_mm",    p.GetDouble("tol_mm"));
                       c.CtxSet("place_max_mm",    p.GetDouble("max_mm"));

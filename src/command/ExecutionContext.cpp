@@ -41,14 +41,44 @@ ExecutionContext::ExecutionContext(Workflow& wf, HardwareManager& hw,
 {
 }
 
+bool IsSystemScript(const std::string& pathOrFile)
+{
+    const std::string file = std::filesystem::path(pathOrFile).filename().string();
+    return file == "alignment_procedure.lua" || file == "placement_procedure.lua";
+}
+
+std::string SystemScriptPath(const std::string& pathOrFile)
+{
+    if (!IsSystemScript(pathOrFile)) return std::string();
+    return "config/scripts/" + std::filesystem::path(pathOrFile).filename().string();
+}
+
 std::string ExecutionContext::ResolveScript(const std::string& path) const
 {
-    if (path.empty() || scriptsDir_.empty()) return path;
+    if (path.empty()) return path;
     // Match on the FILENAME, not the whole path: the caller's default names the
     // shipped copy, and what we are asking is "does this product have its own
     // version of that script".
     const std::string file = std::filesystem::path(path).filename().string();
     if (file.empty()) return path;
+
+    // A SYSTEM procedure is never taken from a product, and never from wherever
+    // the caller pointed either: these two files are edited in lockstep with the
+    // commands they call, so "the placement procedure" has to mean one file on
+    // every machine. The warning names the copy being ignored — silently
+    // redirecting would be the same trap in the other direction.
+    if (const std::string sys = SystemScriptPath(file); !sys.empty()) {
+        std::error_code ec;
+        // The string check first: a MISSING shipped file makes equivalent() say
+        // "different", and warning that the default is being ignored in favour
+        // of itself would send the reader looking for a copy nobody made.
+        if (path != sys && !std::filesystem::equivalent(path, sys, ec))
+            FD_WARN("script", "'%s' is a standard procedure - running the shipped %s "
+                              "and ignoring %s", file.c_str(), sys.c_str(), path.c_str());
+        return sys;
+    }
+
+    if (scriptsDir_.empty()) return path;
     const std::string candidate = scriptsDir_ + "/" + file;
 
     std::error_code sameEc;

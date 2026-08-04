@@ -49,6 +49,7 @@
 
 #include "imgui.h"
 
+#include "command/ExecutionContext.h"   // SystemScriptPath — the standard procedures
 #include "core/Log.h"
 #include "ui/Widgets.h"
 #include "vision/HalconDetector.h"   // Available() — object detection needs a licence
@@ -107,14 +108,11 @@ void App::OpenAlignPlace(const AlignProc& a, const std::string& nomUid)
 void App::StartPlacementRun(const AlignProc& a, const AlignNominal& n,
                             const std::string& device)
 {
-    // The product's own copy of the script wins over the shipped one — the same
-    // rule ExecutionContext::ResolveScript applies for the command. Expressed
-    // over the already-scanned list here because this launch does not go
-    // through a command. If one changes, change both.
-    std::string script = "config/scripts/placement_procedure.lua";
-    for (const ScriptInfo& si : session_.Scripts()) {
-        if (si.name == "placement_procedure") { script = si.path; break; }
-    }
+    // The SHIPPED file, always — the same rule ExecutionContext::ResolveScript
+    // applies for place_run. A product that forked this file would go on
+    // skipping whatever step the app added last (place_view was exactly that),
+    // and the symptom would be a camera that simply did not move.
+    const std::string script = SystemScriptPath("placement_procedure.lua");
     LuaEngine::Env env = session_.MakeLuaEnv();
     env.initialCtx = {
         {"place_alignment", a.uid},        // uid, not name: a rename mid-run is harmless
@@ -312,21 +310,94 @@ void App::DrawAlignPlacePanel()
         // with it. Fallback stays available and is logged when it fires, so a
         // procedure can never quietly claim to be automatic.
         AlignNominal& mn = *FindAlignNominal(*a, nom->uid);
+
+        // Where the CAMERA has to stand to see the object being placed here.
+        // It belongs to the nominal because it is a property of this placement —
+        // the object is gripped somewhere else and focuses at another height —
+        // and because owning it is what lets the guided run drive there itself
+        // instead of an operator jogging first or a recipe carrying an extra
+        // move_to_position step.
+        {
+            // NOTE: `vp` points into the positions vector — teaching pushes into
+            // that same vector, so it is re-resolved after the button below.
+            const SavedPos* vp = AlignNominalView(*a, mn);
+            const bool camLive = cam && cam->IsConnected();
+            ImGui::BeginDisabled(orch_.Busy() || !camLive || !vp);
+            if (ImGui::Button("Go to view")) GoToAlignNominalView(*a, mn);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(orch_.Busy() || !camLive);
+            if (ImGui::Button(vp ? "Re-teach view" : "Teach view here"))
+                TeachAlignNominalView(*a, mn);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Save the CURRENT %s pose as this nominal's camera\n"
+                                  "view. The guided run drives here before it marks\n"
+                                  "the object.", a->device.c_str());
+            vp = AlignNominalView(*a, mn);   // the teach above may have reallocated
+            if (vp) {
+                std::string line;
+                for (const auto& [axis, v] : vp->vals) {
+                    char buf[48];
+                    std::snprintf(buf, sizeof(buf), "%s%s %.3f", line.empty() ? "" : "  ",
+                                  axis.c_str(), v);
+                    line += buf;
+                }
+                ImGui::TextDisabled("view  %s", line.c_str());
+            } else {
+                ImGui::TextDisabled("no camera view - drive there yourself first");
+            }
+        }
+
         std::string why;
         const bool halcon = HalconDetector::Available(&why);
         for (int k = 1; k <= 2; ++k) {
             ImGui::PushID(k);
-            const VisionModel* dm = NominalDetector(*a, mn, k);
-            char btn[40];
-            std::snprintf(btn, sizeof(btn), dm ? "Teach pt%d detect..."
-                                               : "Set up pt%d detect...", k);
-            ImGui::BeginDisabled(orch_.Busy());
-            if (ImGui::Button(btn)) OpenVisionTeachForNominal(*a, mn, k);
-            ImGui::EndDisabled();
+            std::string& mode  = (k == 1) ? mn.mode1 : mn.mode2;
+            const bool   isAuto = (mode == "auto");
+            // The mode is a CHOICE the operator can take back, not a consequence
+            // of a model existing — which is what teaching one used to be. The
+            // radio pair is the station's, one level down; manual leaves the
+            // taught patch on the shelf instead of destroying it.
+            ImGui::Text("point %d", k);
             ImGui::SameLine();
-            if (!dm)          ImGui::TextDisabled("manual");
-            else if (!halcon) ImGui::TextColored(kBad, "%s", why.c_str());
-            else              ImGui::TextDisabled("%s", dm->method.c_str());
+            if (ImGui::RadioButton("manual", !isAuto) && isAuto) {
+                mode = "manual";
+                session_.SaveAligns();   // this page has no Save button
+            }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("detect", isAuto) && !isAuto) {
+                mode = "auto";
+                session_.SaveAligns();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Locate this mark with a taught detection model.\n"
+                                  "Needs HALCON; manual is a crosshair pick and\n"
+                                  "never does.");
+            if (mode == "auto") {
+                ImGui::Indent();
+                const VisionModel* dm = NominalDetector(*a, mn, k);
+                ImGui::BeginDisabled(orch_.Busy());
+                if (ImGui::Button(dm ? "Teach detection..." : "Set up detection..."))
+                    OpenVisionTeachForNominal(*a, mn, k);
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (!halcon)     ImGui::TextColored(kBad, "%s", why.c_str());
+                else if (!dm)    ImGui::TextColored(kWarn, "nothing taught");
+                else             ImGui::TextDisabled("%s", dm->method.c_str());
+                // What this mark looks for, with a cross on the point it
+                // reports — the same picture the fallback shows when detection
+                // fails and the operator is asked for that mark by hand.
+                if (dm) {
+                    PatchTex& pt = alignTmpl_[(k == 2) ? 1 : 0];
+                    if (EnsurePatchTex(pt, *dm)) {
+                        DrawPatchThumb(pt, 96.0f, 96.0f);
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("the cross is the point reported");
+                    }
+                }
+                ImGui::Unindent();
+            }
             ImGui::PopID();
         }
         ImGui::Checkbox("ask the operator when detection fails", &mn.autoFallbackManual);
@@ -432,9 +503,16 @@ void App::DrawAlignPlacePanel()
         else if (!mover || !mover->IsConnected())ImGui::TextDisabled("mover not connected");
         else if (!jogArmed_)                     ImGui::TextDisabled("arm first");
         else if (orch_.Busy() && !running)       ImGui::TextDisabled("another run is active");
-        else if (plcAlignFirst_)
-            ImGui::TextDisabled("teaches the frame, then prompts for both marks");
-        else ImGui::TextDisabled("prompts for both marks, corrects, re-measures");
+        else {
+            // Say whether the camera will move: with a view taught the run is
+            // self-contained, without one the object has to be in front of the
+            // lens already, and those are very different instructions.
+            const char* view = AlignNominalView(*a, *nom) ? ", drives to the view" : "";
+            if (plcAlignFirst_)
+                ImGui::TextDisabled("teaches the frame%s, then marks the object", view);
+            else
+                ImGui::TextDisabled("marks the object%s, corrects, re-measures", view);
+        }
         if (!plcStartErr_.empty())
             ImGui::TextColored(kBad, "%s", plcStartErr_.c_str());
         if (running) {

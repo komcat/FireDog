@@ -27,6 +27,28 @@ void App::DrawMainWindow()
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
                      ImGuiWindowFlags_MenuBar)) {
+        // Placement opens on whatever procedure the Alignment page has
+        // selected, so all three ways in — the View menu, F6, the quick strip —
+        // want the same two lines. It is NOT a plain page switch: OpenAlignPlace
+        // resets the marks, so a page already open is left alone. The F-keys
+        // activate rather than toggle anyway, and here that also protects a
+        // measurement in progress from a stray key.
+        //
+        // The list is fetched on use, not captured: the File menu above can
+        // replace the session's procedures wholesale.
+        const auto openPlacement = [&]() {
+            if (currentPage_ == Page::AlignPlace) return;
+            std::vector<AlignProc>& list = session_.Aligns();
+            if (alignSel_ < 0 || alignSel_ >= static_cast<int>(list.size())) {
+                FD_WARN("ui", "Placement needs an alignment procedure selected "
+                              "(Alignment, F5)");
+                return;
+            }
+            AlignProc& a = list[static_cast<std::size_t>(alignSel_)];
+            OpenAlignPlace(a, a.nominals.empty() ? std::string()
+                                                 : a.nominals.front().uid);
+        };
+
         // ---- Menu bar (top strip) ----
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("File")) {
@@ -98,15 +120,12 @@ void App::DrawMainWindow()
                 // nothing: unlike the two teach pages, it carries no state that
                 // only the caller could supply.
                 {
-                    std::vector<AlignProc>& al = session_.Aligns();
-                    const bool haveProc = alignSel_ >= 0 &&
-                                          alignSel_ < static_cast<int>(al.size());
-                    if (ImGui::MenuItem("Placement", nullptr,
-                                        currentPage_ == Page::AlignPlace, haveProc)) {
-                        AlignProc& a = al[static_cast<std::size_t>(alignSel_)];
-                        OpenAlignPlace(a, a.nominals.empty() ? std::string()
-                                                             : a.nominals.front().uid);
-                    }
+                    const bool haveProc =
+                        alignSel_ >= 0 &&
+                        alignSel_ < static_cast<int>(session_.Aligns().size());
+                    if (ImGui::MenuItem("Placement", "F6",
+                                        currentPage_ == Page::AlignPlace, haveProc))
+                        openPlacement();
                     if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                         ImGui::SetTooltip("Select an alignment procedure first (View > Alignment)");
                 }
@@ -129,8 +148,8 @@ void App::DrawMainWindow()
         }
 
         // Global page shortcuts: F1 Run, F2 Recipe Editor, F3 Motion, F4
-        // Scripts, F5 Alignment. Activate (not toggle) — pressing the key on
-        // its own page is a no-op.
+        // Scripts, F5 Alignment, F6 Placement. Activate (not toggle) — pressing
+        // the key on its own page is a no-op.
         if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && currentPage_ != Page::Run)
             ToggleEditorPage(Page::Run);
         if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && currentPage_ != Page::RecipeEdit)
@@ -143,6 +162,10 @@ void App::DrawMainWindow()
             ToggleEditorPage(Page::Scripts);
         if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && currentPage_ != Page::Align)
             ToggleEditorPage(Page::Align);
+        // F6 says so in the log when no procedure is selected: a key press has
+        // no disabled state to look at, so a silent nothing reads as broken.
+        if (ImGui::IsKeyPressed(ImGuiKey_F6, false))
+            openPlacement();
 
         // Quick-access strip (all pages): one-click jump to the operator pages.
         // Same guarded routing as the F-keys (activate, not toggle — clicking
@@ -167,6 +190,25 @@ void App::DrawMainWindow()
             pageBtn("Scripts (F4)", Page::Scripts, true);
             ImGui::SameLine();
             pageBtn("Alignment (F5)", Page::Align, true);
+            ImGui::SameLine();
+            // Not pageBtn: opening Placement is not a page switch but a switch
+            // WITH a subject (the selected procedure), and with no procedure
+            // there is nothing to open — hence the disabled state the other
+            // buttons never need.
+            {
+                const bool active = (currentPage_ == Page::AlignPlace);
+                const bool haveProc =
+                    alignSel_ >= 0 &&
+                    alignSel_ < static_cast<int>(session_.Aligns().size());
+                if (active)
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.85f, 1.0f));
+                ImGui::BeginDisabled(!haveProc);
+                if (ImGui::Button("Placement (F6)")) openPlacement();
+                ImGui::EndDisabled();
+                if (active) ImGui::PopStyleColor();
+                if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Select an alignment procedure first (Alignment, F5)");
+            }
             ImGui::Separator();
         }
 

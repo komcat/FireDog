@@ -12,10 +12,12 @@
 #include "imgui.h"
 
 #include "ui/Widgets.h"
+#include "command/ExecutionContext.h"   // IsSystemScript / SystemScriptPath
 #include "core/Log.h"
 #include "core/DutSession.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <set>
 #include <string>
@@ -80,6 +82,22 @@ void App::DrawScriptsPanel()
             }
         }
         if (!si.description.empty()) ImGui::TextWrapped("%s", si.description.c_str());
+        // A standard procedure is run from the shipped copy wherever it is
+        // launched from. Say so on the file being read, because a product copy
+        // opened here looks exactly like the one that runs, and editing it
+        // would change nothing at all.
+        if (IsSystemScript(si.path)) {
+            const std::string shipped = SystemScriptPath(si.path);
+            std::error_code   ec;
+            if (!std::filesystem::equivalent(si.path, shipped, ec))
+                ImGui::TextColored(ImVec4(0.98f, 0.72f, 0.32f, 1.0f),
+                                   "STANDARD procedure - align_run/place_run and the "
+                                   "page buttons are served from %s, never this copy",
+                                   shipped.c_str());
+            else
+                ImGui::TextDisabled("standard procedure - kept in step with the "
+                                    "align_/place_ commands; a product cannot fork it");
+        }
         ImGui::TextDisabled("click: toggle breakpoint  |  shift+click: range from last click");
         ImGui::Separator();
         ImGui::BeginChild("##srclines");

@@ -123,9 +123,12 @@ nlohmann::json NominalToJson(const AlignNominal& n)
     j["span_mm"]  = n.spanMm;
     j["taught_at"] = n.taughtAt;
     j["frame_at"]  = n.frameAt;
+    j["mode1"]     = n.mode1;
+    j["mode2"]     = n.mode2;
     j["det1"]      = n.det1;
     j["det2"]      = n.det2;
     j["auto_fallback_manual"] = n.autoFallbackManual;
+    j["view_uid"]  = n.viewUid;
     return j;
 }
 
@@ -147,7 +150,12 @@ AlignNominal NominalFromJson(const nlohmann::json& j)
     n.frameAt  = j.value("frame_at", "");
     n.det1     = j.value("det1", "");
     n.det2     = j.value("det2", "");
+    // Written before the mode existed, a named model WAS the mode — so a row
+    // with a detector and no mode key loads as auto, which is what it did.
+    n.mode1    = j.value("mode1", n.det1.empty() ? "manual" : "auto");
+    n.mode2    = j.value("mode2", n.det2.empty() ? "manual" : "auto");
     n.autoFallbackManual = j.value("auto_fallback_manual", true);
+    n.viewUid  = j.value("view_uid", "");
     return n;
 }
 

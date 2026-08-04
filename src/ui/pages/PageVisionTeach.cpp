@@ -305,7 +305,7 @@ void App::OpenVisionTeach(AlignProc& a, int station)
     // Centre the view on the frame; the ROI takes over once one is set.
     visionFocusX_ = static_cast<float>(cameraW_) * 0.5f;
     visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
-    visionTmplKey_.clear();   // force a thumbnail reload for the new model
+    visionTmpl_.key.clear();   // force a thumbnail reload for the new model
 
     // Set every time, not just once: the page is shared with the nominals'
     // object detectors, and a station teach must not inherit their exit.
@@ -432,8 +432,9 @@ void App::OpenVisionTeachForNominal(AlignProc& a, AlignNominal& n, int index)
     }
     visionSelUid_ = m->uid;
 
-    (index == 1 ? n.det1 : n.det2) = m->uid;   // place_mark resolves by uid
-    session_.SaveAligns();                     // taught by hand; persist like the rest
+    (index == 1 ? n.det1 : n.det2)   = m->uid;   // place_mark resolves by uid
+    (index == 1 ? n.mode1 : n.mode2) = "auto";   // teaching one is asking to use it
+    session_.SaveAligns();                       // taught by hand; persist like the rest
 
     char buf[160];
     std::snprintf(buf, sizeof(buf), "%s  -  nominal '%s'  -  object point %d",
@@ -442,7 +443,7 @@ void App::OpenVisionTeachForNominal(AlignProc& a, AlignNominal& n, int index)
 
     visionFocusX_ = static_cast<float>(cameraW_) * 0.5f;
     visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
-    visionTmplKey_.clear();
+    visionTmpl_.key.clear();
 
     visionReturnPage_ = Page::AlignPlace;
     SwitchPage(Page::VisionTeach);
@@ -468,30 +469,34 @@ void App::DropNominalDetectors(const AlignProc& a, const AlignNominal& n)
     }
 }
 
-void App::RefreshVisionTemplateTex(const VisionModel& m)
+// The key carries everything the picture and the reported point depend on, so a
+// re-teach (which keeps the filename but changes the content), an anchor drag or
+// a corner change all reload — and a Draw that runs every frame uploads nothing.
+bool App::EnsurePatchTex(PatchTex& pt, const VisionModel& m)
 {
-    // Key on uid + filename + size so a re-teach (which keeps the filename but
-    // changes the content) still reloads: the size is what changes with it.
-    const std::string key = m.uid + "|" + m.templateFile + "|" +
-                            std::to_string(m.ncc.tmplW) + "x" + std::to_string(m.ncc.tmplH);
-    if (key == visionTmplKey_) return;
-    visionTmplKey_ = key;
-    visionTmplW_ = visionTmplH_ = 0;
-    if (m.templateFile.empty()) return;
+    const std::string key = VisionModelPatchKey(m);
+    if (key != pt.key) {
+        pt.key = key;
+        pt.w = pt.h = 0;
 
-    std::vector<unsigned char> gray;
-    int w = 0, h = 0;
-    if (!LoadGrayPgm(session_.VisionDir() + "/" + m.templateFile, &gray, &w, &h)) return;
-
-    // The GL upload path is RGB8, so expand the grey plane. A taught patch is
-    // small (tens of kB), and this runs only when the model changes.
-    std::vector<unsigned char> rgb(static_cast<std::size_t>(w) * h * 3);
-    for (std::size_t i = 0; i < gray.size(); ++i) {
-        rgb[i * 3 + 0] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = gray[i];
+        std::vector<unsigned char> gray;
+        int w = 0, h = 0;
+        float rx = 0.0f, ry = 0.0f;
+        if (VisionModelPatch(m, session_.VisionDir(), &gray, &w, &h, &rx, &ry)) {
+            // The GL upload path is RGB8, so expand the grey plane. A patch is
+            // small (tens of kB), and this runs only when the key changes.
+            std::vector<unsigned char> rgb(static_cast<std::size_t>(w) * h * 3);
+            for (std::size_t i = 0; i < gray.size(); ++i) {
+                rgb[i * 3 + 0] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = gray[i];
+            }
+            pt.tex = host_.EnsureTextureRGB(pt.tex, w, h, rgb.data());
+            pt.w   = w;
+            pt.h   = h;
+            pt.rx  = rx;
+            pt.ry  = ry;
+        }
     }
-    visionTmplTex_ = host_.EnsureTextureRGB(visionTmplTex_, w, h, rgb.data());
-    visionTmplW_   = w;
-    visionTmplH_   = h;
+    return pt.tex != 0 && pt.w > 0 && pt.h > 0;
 }
 
 void App::OpenVisionAnchorPicker()
@@ -515,15 +520,15 @@ void App::DrawVisionAnchorWindow(VisionModel& m)
     if (!visionAnchorOpen_) return;
     if (m.method != "ncc" || m.templateFile.empty()) { visionAnchorOpen_ = false; return; }
 
-    RefreshVisionTemplateTex(m);   // keyed on uid|file|size, so this is a no-op once loaded
-    if (!visionTmplTex_ || visionTmplW_ <= 0 || visionTmplH_ <= 0) {
+    // Keyed, so this is a no-op once loaded.
+    if (!EnsurePatchTex(visionTmpl_, m)) {
         visionAnchorOpen_ = false;
         return;
     }
 
     NccParams& n  = m.ncc;
-    const float tw = static_cast<float>(visionTmplW_);
-    const float th = static_cast<float>(visionTmplH_);
+    const float tw = static_cast<float>(visionTmpl_.w);
+    const float th = static_cast<float>(visionTmpl_.h);
 
     if (visionAnchorZoom_ <= 0.0f) {
         const float fit = 420.0f / (tw > th ? tw : th);
@@ -558,7 +563,7 @@ void App::DrawVisionAnchorWindow(VisionModel& m)
         ImGui::BeginChild("anchimg", box, ImGuiChildFlags_Borders,
                           ImGuiWindowFlags_HorizontalScrollbar);
         const ImVec2 o = ImGui::GetCursorScreenPos();
-        ImGui::Image((ImTextureID)(intptr_t)visionTmplTex_, ImVec2(dispW, dispH));
+        ImGui::Image((ImTextureID)(intptr_t)visionTmpl_.tex, ImVec2(dispW, dispH));
         ImGui::SetCursorScreenPos(o);
         ImGui::InvisibleButton("##anchorpick", ImVec2(dispW, dispH),
                                ImGuiButtonFlags_MouseButtonLeft);
@@ -596,7 +601,7 @@ void App::DrawVisionAnchorWindow(VisionModel& m)
 
         ImGui::Text("anchor %+.2f, %+.2f px%s", n.anchorOffsetX, n.anchorOffsetY,
                     n.useAnchor ? "" : "   (centre)");
-        ImGui::TextDisabled("template %d x %d px", visionTmplW_, visionTmplH_);
+        ImGui::TextDisabled("template %d x %d px", visionTmpl_.w, visionTmpl_.h);
 
         ImGui::SetNextItemWidth(160.0f);
         ImGui::SliderFloat("zoom", &visionAnchorZoom_, 1.0f, 32.0f, "x%.1f",
@@ -774,7 +779,15 @@ void App::DrawVisionTeachImage(VisionModel& m)
                         // would point at nothing in particular.
                         m.ncc.anchorOffsetX = m.ncc.anchorOffsetY = 0.0;
                         m.ncc.useAnchor     = false;
-                        visionTmplKey_.clear();
+                        // The file name and the size can both come back
+                        // unchanged from a re-teach, so the key alone would not
+                        // notice. Drop every thumbnail keyed on this patch —
+                        // the Alignment page's and the pick window's included,
+                        // or they keep showing the patch that was just replaced.
+                        visionTmpl_.key.clear();
+                        alignTmpl_[0].key.clear();
+                        alignTmpl_[1].key.clear();
+                        pickTmpl_.key.clear();
                         visionErr_.clear();
                         visionHaveDet_ = false;
                         // Straight into the anchor pick: the anchor is the
@@ -1016,20 +1029,19 @@ void App::DrawVisionTeachParams(VisionModel& m)
                                       : (std::to_string(n.tmplW) + " x " +
                                          std::to_string(n.tmplH) + " px").c_str());
 
-        RefreshVisionTemplateTex(m);
-        if (visionTmplTex_ && visionTmplW_ > 0 && visionTmplH_ > 0) {
+        if (EnsurePatchTex(visionTmpl_, m)) {
             // A PREVIEW of the patch and where the anchor sits on it. Picking
             // happens in DrawVisionAnchorWindow, not here: at this scale one
             // screen pixel is several template pixels, so a click was a coarse
             // guess dressed up as a measurement — and a stray one silently
             // moved the point the model reports.
             const float maxW = ImGui::GetContentRegionAvail().x;
-            const float sc   = fminf(fminf(maxW / static_cast<float>(visionTmplW_), 4.0f),
-                                     160.0f / static_cast<float>(visionTmplH_));
-            const ImVec2 sz(static_cast<float>(visionTmplW_) * sc,
-                            static_cast<float>(visionTmplH_) * sc);
+            const float sc   = fminf(fminf(maxW / static_cast<float>(visionTmpl_.w), 4.0f),
+                                     160.0f / static_cast<float>(visionTmpl_.h));
+            const ImVec2 sz(static_cast<float>(visionTmpl_.w) * sc,
+                            static_cast<float>(visionTmpl_.h) * sc);
             const ImVec2 tOrigin = ImGui::GetCursorScreenPos();
-            ImGui::Image((ImTextureID)(intptr_t)visionTmplTex_, sz);
+            ImGui::Image((ImTextureID)(intptr_t)visionTmpl_.tex, sz);
             ImGui::SetCursorScreenPos(tOrigin);
             if (ImGui::InvisibleButton("##anchorPick", sz)) OpenVisionAnchorPicker();
             if (ImGui::IsItemHovered())

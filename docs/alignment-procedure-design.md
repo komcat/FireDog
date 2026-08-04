@@ -139,6 +139,13 @@ miss all resolve to one message, and the step **fails** with it unless
 operator. A silent fallback would let a procedure claim to be automatic while a
 human placed every point.
 
+When it does ask, the request carries the failed detector's uid and the reason
+(`PickRequest::detectorUid` / `autoError`), and the pick window shows that
+model's taught patch with the point it reports crossed on it. Asking a human for
+"E1" without showing which point of the feature the detector was taught on gets a
+plausible mark on the wrong corner, and that is a frame wrong by the size of the
+feature — see `docs/vision-detection-design.md` §8.
+
 **The manual pick still never depends on HALCON** — it is ImGui over a Pylon
 frame, so a licence problem cannot stop an operator teaching a frame. Detection
 is deliberately outside that rule; see `docs/vision-detection-design.md` §3.
@@ -525,11 +532,20 @@ the same `PickResult` the crosshair fills, so the midpoint, the correction, the
 move and the verify loop are byte-identical whether a detector or an operator
 produced the point.
 
+Each mark carries its own **mode**, `AlignNominal::mode1/mode2`, exactly as a
+station carries `AlignStation::mode`: *manual* is the crosshair pick, *detect*
+runs the model. The mode is a field rather than "does `detN` name something",
+because the first version read it that way and teaching a model was therefore
+irreversible — there was no way back to manual short of deleting a patch that
+cost real time at the microscope. Manual now leaves the model on the shelf, and
+`place_mark` branches on the mode, not on the uid. A row written before the
+field existed loads as `auto` when it names a detector, which is what it did.
+
 They are taught on the **same page the station detectors use** — the Placement
-page's *Set up pt1/pt2 detect…* opens `PageVisionTeach` with the nominal as the
-owner. One difference was needed: that page used to `Close` to Alignment
-unconditionally, so it now carries `visionReturnPage_` and goes back to whoever
-opened it.
+page's *Set up detection…*, under the point set to *detect*, opens
+`PageVisionTeach` with the nominal as the owner. One difference was needed: that
+page used to `Close` to Alignment unconditionally, so it now carries
+`visionReturnPage_` and goes back to whoever opened it.
 
 Ownership is per **nominal**, not per procedure, on the rule the whole vision
 layer already follows: an ROI, a threshold and a taught patch only mean anything
@@ -553,15 +569,15 @@ Four things the commands do that the page's habits made obvious:
 * **The prompt is the existing pick window.** `PickRequest` grew a `label`, so
   the same window and the same `AwaitPick` handshake say "point 1 of 2 on the
   object" instead of "mark E1". One window, two vocabularies.
-* **Nothing in the family drives the camera.** Getting the object in view is a
-  `move_to_position` step above `place_run`, where the recipe editor offers a
-  real device-scoped picker. `place_run` briefly had a `position` parameter of
-  its own; it was removed on discovering what it would actually be — a raw
-  position **uid** typed into a text box, because `ExecutionContext::FindPosition`
-  resolves by uid only and the editor's picker is scoped to the step's `device`,
-  which here is the *holder*, not the camera. Keeping the move out is also what
-  lets the two marks come from two different views without `place_mark` growing
-  a station concept.
+* **No command in the family takes a viewing position as a parameter.**
+  `place_run` briefly had one; it was removed on discovering what it would
+  actually be — a raw position **uid** typed into a text box, because
+  `ExecutionContext::FindPosition` resolves by uid only and the editor's picker
+  is scoped to the step's `device`, which here is the *holder*, not the camera.
+  The camera does get driven now, but by `place_view`, off a pose the **nominal
+  owns** (below) — which is the same thing `align_station` does and needs no
+  parameter at all. `place_mark` still never moves anything, so the two marks
+  may still come from two different views.
 * **`max_mm` is a hard failure, not a clamp.** The page shows its ceiling to a
   human who can judge it; a recipe has nobody watching, and a correction bigger
   than the ceiling is a broken input rather than a big correction.
@@ -569,6 +585,44 @@ Four things the commands do that the page's habits made obvious:
   so the next `place_apply` must be given fresh ones. Without that, a second
   pass would re-derive and re-apply a correction that has already been made —
   the ctx equivalent of the page's cleared marks.
+
+### The nominal's camera view
+
+A nominal says where the object must **end up**. It says nothing about where the
+camera has to stand to **watch it get there** — and those are never the same
+pose: the object is gripped somewhere else, and the height that focuses on a
+part held above the substrate is not the height that focuses on the substrate.
+Until this existed, every placement paid for that gap twice: an operator jogged
+the gantry by hand before pressing *Run guided placement*, and a recipe carried a
+`move_to_position` step in front of `place_run` that had to be re-taught whenever
+the view changed.
+
+So the nominal owns one: `AlignNominal::viewUid`, a saved position on the
+**procedure's** device, named `algn_<procUid>_<nomUid>_v` and `hidden` — the
+same private-ownership rule the station positions follow, one level down.
+`CapturePrivatePose` is the single writer of such a row (factored out of
+`TeachAlignStation` when this became its second caller), so an update-in-place
+keeps the uid and a re-teach cannot orphan a reference.
+
+`place_view` drives there, and it is the reason a viewing move was finally
+allowed into this family: it takes no position, only the alignment and the
+nominal, so it cannot be pointed at an unrelated pose. The script calls it once,
+**after** `align_run` (which parks the camera at station 2, so an earlier view
+would be thrown away) and **outside** the measure/correct loop — nothing moves
+the camera between passes, and re-driving would only add settle time to a
+re-measure.
+
+An untaught view is **not** an error. `place_view` logs that it is leaving the
+camera alone and succeeds, so every procedure written before the field keeps the
+old contract: get the object in view with a `move_to_position` step above the
+run. `required = true` flips that for a recipe that wants the omission caught.
+
+Lifecycle is the rest of the pattern, and all three parts are needed: deleting a
+nominal drops its view (`DropAlignNominalView`), deleting a procedure drops
+every one it owns (`DropAlignStationPositions` now sweeps by the
+`algn_<procUid>_` prefix rather than enumerating the two stations, so a nominal
+deleted earlier cannot have left a hidden row behind), and duplicating copies
+them under the new owner.
 
 `CaptureWorldPoint` is shared with `align_station`: pose-after-pick, then
 `w = pose + offset`. One copy, because a second one that read the pose in a
@@ -597,6 +651,7 @@ to a pose a human taught, while this destination is *computed*, so a mis-taught
 frame sends the stage somewhere unexpected — the same risk class as
 click-to-move.
 | `align_run` | typed one-step wrapper over `alignment_procedure.lua` |
+| `place_view` | drive the camera to a nominal's taught viewing pose (no-op when it has none, unless `required`) |
 | `place_mark` | ask the operator to mark one point on a gripped object (index 1 or 2) |
 | `place_apply` | marks + nominal → the correction, into ctx. **No motion** |
 | `place_move` | `place_apply` + one relative move on the holding device, `max_mm` guarded |
@@ -608,18 +663,28 @@ re-runnable from the Scripts page, from a recipe step, from Lua
 (`fd.align_run{...}`, since every registered command gets an `fd.` binding), and
 from the Alignment page's Run button, all through the same code path.
 
-**Which file it runs**: `ExecutionContext::ResolveScript` prefers the product's
-own copy of that filename (under `ScriptsDir()`, the dir the session actually
-scanned) over the shipped `config/scripts/` one. The Alignment page's Run button
-already did this; without the same rule in the command, "run the alignment
-procedure" would mean a *different file* depending on which surface launched it —
-a recipe would silently run the shipped script while the page ran the edited one.
-The page expresses the rule over its already-scanned list because it launches the
-script directly rather than through a command; the two must stay in step.
+**Which file it runs**: `alignment_procedure.lua` and `placement_procedure.lua`
+are **standard procedures** — `IsSystemScript` names them, and both
+`ExecutionContext::ResolveScript` and the two page buttons resolve them to the
+shipped `config/scripts/` copy, always. A file of that name in a product's
+scripts folder is ignored and logged, and the Scripts page says so on the copy
+being read.
 
-`run_script`, `xcan` and `raster_scan` still take their `file` literally. That is
-a known inconsistency, left alone deliberately: changing it would re-point any
-existing product that happens to carry a stale copy of `hexapod_align.lua`.
+The reason is `place_view`. These two scripts are edited in step with the
+commands they call, so a product that forked one goes on running the version it
+forked: the day the placement procedure grew its camera-view step, every forked
+product would have kept skipping it, and the symptom — a camera that simply does
+not move — points at the machine, not at a stale file nobody remembers copying.
+"The placement procedure" has to mean one file on every machine.
+
+They briefly worked the other way (product copy wins, the rule the page's
+scanned-list launcher already used). What that solved — one surface running a
+different file from another — is solved better by there being only one file.
+
+Product-specific scripts keep the override, and `run_script`, `xcan` and
+`raster_scan` still take their `file` literally: a scan's parameters are a
+product's business, and re-pointing an existing product that carries its own
+`hexapod_align.lua` would break it for no gain.
 
 That last point is the design's centre of gravity: **the page does not capture
 points itself.** Run launches the script; the pick window surfaces; the frame

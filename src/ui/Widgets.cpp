@@ -9,6 +9,8 @@
 
 #include "ui/Widgets.h"
 
+#include "vision/VisionModel.h"   // the patch helpers: LoadGrayPgm + MakeCornerTemplate
+
 // The PNG decoder, implemented here because this TU already owns the "talks to
 // the outside world" jobs (ShellExecute, the filesystem). stb_image_write's
 // implementation lives in CommandsDut.cpp; the two headers are independent.
@@ -363,6 +365,85 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
     if (ImGui::SmallButton("Fit")) *mp.zoom = 1.0f;
     ImGui::PopID();
     return out;
+}
+
+// ---- What a detection model is looking for ---------------------------------
+
+std::string VisionModelPatchKey(const VisionModel& m)
+{
+    char buf[224];
+    if (m.method == "ncc") {
+        // The anchor is IN the key: it decides where the cross goes, and an
+        // operator dragging it wants to watch the thumbnail follow.
+        std::snprintf(buf, sizeof(buf), "|ncc|%s|%dx%d|%d|%.3f,%.3f",
+                      m.templateFile.c_str(), m.ncc.tmplW, m.ncc.tmplH,
+                      m.ncc.useAnchor ? 1 : 0, m.ncc.anchorOffsetX, m.ncc.anchorOffsetY);
+    } else if (m.method == "corner" && m.corner.mode == 1) {
+        std::snprintf(buf, sizeof(buf), "|corner|%d|%d|%.2f|%.2f", m.corner.corner,
+                      m.corner.polarity, m.corner.sizePx, m.corner.smoothPx);
+    } else {
+        std::snprintf(buf, sizeof(buf), "|none|%s", m.method.c_str());
+    }
+    return m.uid + buf;
+}
+
+bool VisionModelPatch(const VisionModel& m, const std::string& visionDir,
+                      std::vector<unsigned char>* gray, int* w, int* h,
+                      float* rx, float* ry)
+{
+    if (!gray || !w || !h) return false;
+    gray->clear();
+    *w = *h = 0;
+
+    if (m.method == "ncc") {
+        if (m.templateFile.empty()) return false;
+        if (!LoadGrayPgm(visionDir + "/" + m.templateFile, gray, w, h)) return false;
+        // The anchor is an offset from the patch CENTRE, so the reported point
+        // is the centre plus it — and the centre itself when there is none.
+        if (rx) *rx = static_cast<float>(*w) * 0.5f +
+                      (m.ncc.useAnchor ? static_cast<float>(m.ncc.anchorOffsetX) : 0.0f);
+        if (ry) *ry = static_cast<float>(*h) * 0.5f +
+                      (m.ncc.useAnchor ? static_cast<float>(m.ncc.anchorOffsetY) : 0.0f);
+        return true;
+    }
+    if (m.method == "corner" && m.corner.mode == 1) {
+        int n = 0;
+        *gray = MakeCornerTemplate(m.corner, &n);
+        if (n <= 0 || gray->size() < static_cast<std::size_t>(n) * static_cast<std::size_t>(n)) {
+            gray->clear();
+            return false;
+        }
+        *w = *h = n;
+        // The side is forced even so the vertex lands exactly on the centre;
+        // that IS the reported point, which is why this method needs no anchor.
+        if (rx) *rx = static_cast<float>(n) * 0.5f;
+        if (ry) *ry = static_cast<float>(n) * 0.5f;
+        return true;
+    }
+    return false;
+}
+
+ImVec2 DrawPatchThumb(const PatchTex& pt, float maxW, float maxH)
+{
+    if (!pt.tex || pt.w <= 0 || pt.h <= 0 || maxW <= 0.0f || maxH <= 0.0f)
+        return ImVec2(0.0f, 0.0f);
+
+    const float sc = fminf(maxW / static_cast<float>(pt.w),
+                           maxH / static_cast<float>(pt.h));
+    const ImVec2 sz(static_cast<float>(pt.w) * sc, static_cast<float>(pt.h) * sc);
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    ImGui::Image((ImTextureID)(intptr_t)pt.tex, sz);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRect(o, ImVec2(o.x + sz.x, o.y + sz.y), IM_COL32(120, 120, 130, 255));
+    // Same amber as the live crosshair in the pick window, on purpose: the
+    // operator is being asked to put THAT cross on THIS point.
+    const ImU32 col = IM_COL32(255, 200, 60, 255);
+    const ImVec2 c(o.x + pt.rx * sc, o.y + pt.ry * sc);
+    dl->AddLine(ImVec2(c.x - 9.0f, c.y), ImVec2(c.x + 9.0f, c.y), col, 1.5f);
+    dl->AddLine(ImVec2(c.x, c.y - 9.0f), ImVec2(c.x, c.y + 9.0f), col, 1.5f);
+    dl->AddCircle(c, 3.5f, col, 0, 1.5f);
+    return sz;
 }
 
 ImVec4 StateColor(ConnState s) {

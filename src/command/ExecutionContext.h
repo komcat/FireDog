@@ -37,6 +37,25 @@ using CtxValue = std::variant<bool, double, std::string>;
 
 std::string CtxValueToString(const CtxValue& v);
 
+// ---- System procedure scripts ----------------------------------------------
+//
+// The two procedures the app launches from its own buttons and keeps in step
+// with the command family: alignment_procedure.lua and placement_procedure.lua.
+// They are STANDARD — every product runs the shipped copy, and a file of the
+// same name in a product's scripts folder is ignored (with a warning).
+//
+// A forked copy is how a product silently loses a step the app added later: the
+// day placement_procedure.lua grew its place_view call, every product carrying
+// its own copy would have gone on skipping it, and the symptom would have been
+// a camera that simply did not move. Product-specific scripts — a scan, a
+// bring-up sequence — keep the override; these two are not that.
+bool IsSystemScript(const std::string& pathOrFile);
+
+// "config/scripts/<file>" for a system script, "" for anything else. The one
+// place the shipped location is spelled, so a UI launcher and ResolveScript
+// cannot disagree about which file "the procedure" means.
+std::string SystemScriptPath(const std::string& pathOrFile);
+
 class ExecutionContext {
 public:
     // Manual position adjustment (bobcat's ManualAdjust): the run pauses while
@@ -76,6 +95,19 @@ public:
         // and the same handshake. The window identity is unchanged either way.
         std::string label;
         std::vector<PickHint> hints;
+        // The auto->manual FALLBACK, when the pick exists because detection
+        // failed: which model was supposed to find this point, and why it did
+        // not. Both empty on a station (or a mark) that was manual by design.
+        //
+        // They are here because the operator standing at the machine is rarely
+        // the person who tuned the detector, and nothing else on the live image
+        // says WHICH point of the feature the run wanted. A mark placed on the
+        // wrong corner of the same feature is not a visible mistake — it is a
+        // frame that is wrong by the size of the feature, and every move made
+        // through it is wrong by the same amount. The UI resolves the uid to a
+        // model and shows its taught patch with the reported point crossed on it.
+        std::string detectorUid;
+        std::string autoError;
     };
     // The UI answers in camera pixels AND in millimetres: only the UI knows the
     // live pixel_to_mm calibration, so the conversion stays there and the worker
@@ -144,13 +176,12 @@ public:
     const std::string& ScriptsDir() const { return scriptsDir_; }
 
     // A product's own copy of a script wins over the shipped one. Given a
-    // default like "config/scripts/alignment_procedure.lua", return
-    // "<ScriptsDir()>/alignment_procedure.lua" when that file exists, else the
-    // path unchanged.
+    // default like "config/scripts/raster_scan.lua", return
+    // "<ScriptsDir()>/raster_scan.lua" when that file exists, else the path
+    // unchanged. SYSTEM scripts are the exception — see IsSystemScript.
     //
     // This exists because a command that hard-codes the shipped path silently
-    // ignores the copy an operator edited for THIS product — the Alignment
-    // page's Run button already prefers the product copy, and a recipe step
+    // ignores the copy an operator edited for THIS product, and a recipe step
     // running "the same" procedure must not quietly run a different file.
     std::string ResolveScript(const std::string& path) const;
 

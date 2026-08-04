@@ -171,7 +171,20 @@ private:
     // place (uid stable); deleting the procedure drops them, or they would
     // linger somewhere nobody looks.
     void TeachAlignStation(AlignProc& a, int station);
-    void DropAlignStationPositions(const AlignProc& a);
+    void DropAlignStationPositions(const AlignProc& a);   // stations AND nominal views
+    // Write `device`'s live pose into the hidden position named `name`,
+    // creating it if new; "" when the device cannot be read. The uid is stable
+    // across a re-teach, which is what keeps references alive.
+    std::string CapturePrivatePose(const std::string& device, const std::string& name);
+    // A nominal's CAMERA VIEW: where the procedure's device has to stand to see
+    // the object being placed there — named `algn_<procUid>_<nomUid>_v` and
+    // hidden, on the same ownership rule as a station's position. It is what
+    // lets place_view drive there instead of every placement needing a
+    // move_to_position step in front of it.
+    const SavedPos* AlignNominalView(const AlignProc& a, const AlignNominal& n) const;
+    void TeachAlignNominalView(AlignProc& a, AlignNominal& n);
+    void GoToAlignNominalView(const AlignProc& a, const AlignNominal& n);
+    void DropAlignNominalView(const AlignProc& a, AlignNominal& n);
     // Nominal teach page (a takeover, reached only from the Alignment page's
     // frame panel). Two crosshair marks on the live image; their MIDPOINT is
     // converted through the LIVE frame into local (O1) and stored on the
@@ -219,7 +232,12 @@ private:
     std::string CopyVisionModelAs(const VisionModel& src, const std::string& newName);
     void DrawVisionTeachImage(VisionModel& m);           // live image + ROI/box drag
     void DrawVisionTeachParams(VisionModel& m);          // method + parameter form
-    void RefreshVisionTemplateTex(const VisionModel& m); // taught-patch thumbnail
+    // Load (or synthesise) a model's template patch into `pt`, once per key.
+    // False = this method has no picture to show (a blob chain matches a shape).
+    // Shared by the teach page, the Alignment page and the manual-pick window:
+    // one loader, so the picture an operator is shown at run time is the same
+    // one the procedure was authored against.
+    bool EnsurePatchTex(PatchTex& pt, const VisionModel& m);
     // The anchor pick, in its own window rather than on the parameter column's
     // thumbnail: there one screen pixel covers several template pixels, so a
     // click was a coarse guess dressed up as a measurement. Opens by itself
@@ -617,11 +635,12 @@ private:
     AlignPoint alignMarkE_[2];
     bool       alignMarkHave_[2] = {false, false};
     bool       showVisionMarks_ = true;   // Aux checkbox, persisted
-    // Taught-patch thumbnail. Keyed by the model uid it was loaded for, so a
-    // model switch or a re-teach reloads it and nothing else does.
-    unsigned int visionTmplTex_ = 0;
-    int          visionTmplW_ = 0, visionTmplH_ = 0;
-    std::string  visionTmplKey_;
+    // Taught-patch thumbnails, one slot per surface that shows one. Each is
+    // keyed by what it was built from (VisionModelPatchKey), so a model switch,
+    // a re-teach or an anchor drag reloads it and nothing else does.
+    PatchTex visionTmpl_;       // vision teach page: the NCC patch + its anchor
+    PatchTex alignTmpl_[2];     // Alignment page: station 1/2, or object point 1/2
+    PatchTex pickTmpl_;         // the manual-pick window, on the fallback path
 
     // Scripts page UI state — the scanned list itself lives in session_.
     int                      scriptSel_ = -1;

@@ -311,7 +311,11 @@ void App::ResetDocumentSelections()
     plcSamples_.clear();
     visionSelUid_.clear();
     visionOwnerLabel_.clear();
-    visionTmplKey_.clear();
+    // Every patch thumbnail belongs to the models that just went away.
+    visionTmpl_.key.clear();
+    alignTmpl_[0].key.clear();
+    alignTmpl_[1].key.clear();
+    pickTmpl_.key.clear();
     visionHaveDet_ = false;
     visionRelHave_ = false;
     visionRelUid_.clear();

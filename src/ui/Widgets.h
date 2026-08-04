@@ -19,6 +19,8 @@
 
 namespace firedog {
 
+struct VisionModel;   // vision/VisionModel.h — only the patch helpers below need it
+
 // User-adjustable UI prefs persist here (gitignored .local.json per convention),
 // written next to the exe alongside the copied config/ folder.
 inline constexpr const char* kUiSettingsPath = "config/ui.local.json";
@@ -231,6 +233,42 @@ struct MarkPickerResult {
 // while the mouse is over the hosting window, so they never steal from a field
 // beside it. LEFT click places the crosshair; RIGHT click asks to drive there.
 MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPicker& mp);
+
+// ---- What a detection model is looking for ---------------------------------
+// The picture a model matches against, plus the point it REPORTS. Three
+// surfaces want it and they must not disagree: the Alignment page (so the point
+// a station will use is visible while the procedure is authored), the vision
+// teach page's own thumbnail, and — the reason this exists — the manual pick
+// window on the auto->manual fallback. An operator asked to mark a feature by
+// hand because detection failed otherwise has nothing telling them WHICH point
+// of it the run wanted, and a mark 30 um off the taught one produces a frame
+// that is wrong in a way nothing on screen shows.
+struct PatchTex {
+    unsigned int tex = 0;
+    int          w = 0, h = 0;
+    float        rx = 0.0f, ry = 0.0f;   // the reported point, in PATCH pixels
+    std::string  key;                    // what it was built from (see below)
+};
+
+// Identity of the patch `m` would produce right now. Everything the picture or
+// the reported point depends on goes in, so a re-teach (same filename, new
+// content), an anchor drag or a corner change all reload — and nothing else does.
+std::string VisionModelPatchKey(const VisionModel& m);
+
+// The patch itself: 8-bit grey, row-major, w*h bytes. The taught `.pgm` for a
+// pattern match, the SYNTHESISED quadrant patch for a two-edge corner (built by
+// the same MakeCornerTemplate the detector matches with, so the picture cannot
+// disagree with the search), and nothing at all for the blob methods — a circle
+// or a solid square is found as a SHAPE, there is no image to show and the
+// reported point is the shape's own centre. False = nothing to draw.
+bool VisionModelPatch(const VisionModel& m, const std::string& visionDir,
+                      std::vector<unsigned char>* gray, int* w, int* h,
+                      float* rx, float* ry);
+
+// Draw a loaded patch, scaled to fit maxW x maxH, with a cross on the reported
+// point. Advances the cursor like any widget; returns the size drawn ((0,0) if
+// there was nothing to draw, so a caller can skip its caption).
+ImVec2 DrawPatchThumb(const PatchTex& pt, float maxW, float maxH);
 
 // Connection-state presentation, used by every device page.
 ImVec4      StateColor(ConnState s);

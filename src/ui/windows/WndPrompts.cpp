@@ -14,6 +14,7 @@
 
 #include "ui/Widgets.h"
 #include "core/Log.h"
+#include "vision/VisionModel.h"   // FindVisionModel — the fallback's taught patch
 
 #include <cmath>
 #include <cstdio>
@@ -277,6 +278,43 @@ void App::DrawAlignPickWindow()
     ImGui::TextDisabled("%s  -  %s  -  left click places, RIGHT click drives there "
                         "(arm first), arrows nudge 1 px (Shift = 10), wheel zooms",
                         req.alignName.c_str(), what);
+
+    // The FALLBACK banner. This window is also the ordinary manual pick, so it
+    // only appears when detection was tried and failed — and then it is the
+    // most important thing on screen. The operator at the machine is rarely the
+    // person who tuned the model: without its taught patch they are marking
+    // their own reading of "the corner", and the wrong corner of the same
+    // feature is a frame wrong by the whole feature, with nothing on screen
+    // saying so.
+    if (!req.autoError.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                           "detection failed - mark %s by hand:", what);
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", req.autoError.c_str());
+
+        const VisionModel* fbModel =
+            req.detectorUid.empty()
+                ? nullptr
+                : FindVisionModel(session_.VisionModels(), req.detectorUid);
+        if (fbModel && EnsurePatchTex(pickTmpl_, *fbModel)) {
+            ImGui::BeginGroup();
+            DrawPatchThumb(pickTmpl_, 110.0f, 110.0f);
+            ImGui::EndGroup();
+            ImGui::SameLine();
+            ImGui::BeginGroup();
+            ImGui::TextUnformatted("This is what the detector was looking for.");
+            ImGui::TextDisabled("Put the crosshair where the cross sits on the patch -");
+            ImGui::TextDisabled("that is the point this procedure was taught with.");
+            ImGui::EndGroup();
+        } else if (fbModel) {
+            // A blob method matches a SHAPE, so there is no picture to show;
+            // saying which point it reports still beats saying nothing.
+            ImGui::TextDisabled("'%s' (%s) reports the %s - mark that point.",
+                                fbModel->name.c_str(), fbModel->method.c_str(),
+                                fbModel->method == "circle" ? "centre of the circle"
+                                                            : "corner of the square");
+        }
+    }
     ImGui::Separator();
 
     // Footer height reserved so the image never pushes the buttons off-window.

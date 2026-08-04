@@ -20,8 +20,13 @@
 -- program has already aligned this part and is placing several objects on it:
 -- the frame belongs to the part, not to each placement.
 --
--- ONE THING MUST STILL BE TRUE: the object is IN VIEW. Drive there with a
--- move_to_position step above this one; this script never moves the camera.
+-- IT DRIVES THE CAMERA to the nominal's own taught view (place_view), after the
+-- alignment and before the first mark. A nominal is looked at from somewhere
+-- else than it sits -- the object is gripped elsewhere and focuses at another
+-- height -- so that pose belongs to the nominal, and owning it is what removes
+-- the move_to_position step every placement used to need in front of it.
+-- A nominal with no view taught is not an error: nothing moves, and the old
+-- contract holds -- get the object in view yourself, above this script.
 --
 -- Parameters (fd.param -> ctx keys). Two surfaces inject them: a `place_run`
 -- recipe step, and the Placement page's "Run guided placement" button. Running
@@ -31,6 +36,7 @@
 --   place_nominal      the nominal on it, uid or name         (required)
 --   place_device       the device HOLDING the object          (required)
 --   place_align_first  re-teach the frame before placing      (default true)
+--   place_go_to_view   drive to the nominal's camera view     (default true)
 --   place_tries        measure/correct attempts               (default 2)
 --   place_tol_mm       residual that counts as placed         (default 0.02)
 --   place_max_mm       largest single correction allowed      (default 2.0)
@@ -40,6 +46,7 @@ local ALIGN  = fd.param("place_alignment", "")
 local NOM    = fd.param("place_nominal", "")
 local DEV    = fd.param("place_device", "")
 local FIRST  = fd.param("place_align_first", true)
+local GOVIEW = fd.param("place_go_to_view", true)
 local TRIES  = fd.param("place_tries", 2)
 local TOL    = fd.param("place_tol_mm", 0.02)
 local MAXMM  = fd.param("place_max_mm", 2.0)
@@ -67,6 +74,16 @@ if FIRST then
     fd.align_run{ alignment = ALIGN }
 else
     fd.logf("placement: using the frame already taught this program")
+end
+
+-- Then look at the object. AFTER the alignment on purpose: align_run leaves the
+-- camera at station 2, so a view taken before it would be thrown away. Once,
+-- outside the loop -- nothing moves the camera between passes, and re-driving
+-- would only add settle time to a re-measure.
+if GOVIEW then
+    fd.place_view{ alignment = ALIGN, nominal = NOM }
+else
+    fd.logf("placement: leaving the camera where it is (place_go_to_view off)")
 end
 
 local placed      = false

@@ -16,6 +16,7 @@
 
 #include "imgui.h"
 
+#include "command/ExecutionContext.h"   // SystemScriptPath — the standard procedures
 #include "core/Log.h"
 #include "vision/HalconDetector.h"   // Available() — auto stations need a licence
 
@@ -43,6 +44,25 @@ std::string StationPosName(const std::string& procUid, int station)
 bool IsOwnedStationPos(const SavedPos& sp, const std::string& procUid)
 {
     return sp.name == StationPosName(procUid, 1) || sp.name == StationPosName(procUid, 2);
+}
+
+// The same convention one level down: where the CAMERA stands to see the object
+// being placed on one nominal. Private to the nominal, for the reason the field
+// itself gives — it is a viewing pose for a gripped part, not the target.
+//
+// "algn_" + 8 + "_" + 8 + "_v" = 24 chars, inside SavedPos::name's 32.
+std::string NominalViewPosName(const std::string& procUid, const std::string& nomUid)
+{
+    return "algn_" + procUid + "_" + nomUid + "_v";
+}
+
+// Everything a procedure owns, by name — stations AND every nominal's view.
+// Prefix rather than an enumeration, because the sweep runs at DELETE time and
+// a nominal that was removed earlier must not leave a hidden row behind.
+bool IsOwnedAlignPos(const SavedPos& sp, const std::string& procUid)
+{
+    const std::string prefix = "algn_" + procUid + "_";
+    return std::string(sp.name).rfind(prefix, 0) == 0;
 }
 
 // Look a position up by uid on one device (hidden rows included).
@@ -95,14 +115,11 @@ bool StationPositionCombo(const char* label, const SavedPosMap& positions,
 // them. Gated on the WHOLE orchestration, never a subset of the engines.
 void App::StartAlignmentRun(const AlignProc& a)
 {
-    // The product's copy of the script wins over the shipped one. Same rule as
-    // ExecutionContext::ResolveScript (which is what the align_run command
-    // uses) — expressed over the already-scanned list here because this launch
-    // does not go through a command. If one changes, change both.
-    std::string script = "config/scripts/alignment_procedure.lua";
-    for (const ScriptInfo& si : session_.Scripts()) {
-        if (si.name == "alignment_procedure") { script = si.path; break; }
-    }
+    // The SHIPPED file, always: this is a standard procedure, edited in step
+    // with the commands it calls, so a product's copy of the name is ignored
+    // here exactly as ExecutionContext::ResolveScript ignores it for align_run.
+    // One name, one file, on every machine.
+    const std::string script = SystemScriptPath("alignment_procedure.lua");
     LuaEngine::Env env = session_.MakeLuaEnv();
     env.initialCtx = {
         {"align_name", a.uid},        // uid, not name: a rename mid-run is harmless
@@ -118,14 +135,27 @@ void App::StartAlignmentRun(const AlignProc& a)
 // therefore anything referencing it — survives a re-teach.
 void App::TeachAlignStation(AlignProc& a, int station)
 {
+    const std::string name = StationPosName(a.uid, station);
+    const std::string uid  = CapturePrivatePose(a.device, name);
+    if (uid.empty()) return;
+    (station == 1 ? a.s1 : a.s2).posUid = uid;
+    session_.SavePositions();
+    FD_INFO("align", "'%s' station %d taught as '%s'", a.name.c_str(), station, name.c_str());
+}
+
+// The one place a hidden, owner-named position is written. Two callers now
+// (a station and a nominal's camera view) and they must not drift: an
+// update-in-place that assigned a fresh uid would silently orphan whatever
+// already pointed at the old one. "" when the device cannot be read.
+std::string App::CapturePrivatePose(const std::string& device, const std::string& name)
+{
     IMotionController* dev = nullptr;
     for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
-        if (hardware_.MotionName(i) == a.device) { dev = hardware_.MotionDevice(i); break; }
+        if (hardware_.MotionName(i) == device) { dev = hardware_.MotionDevice(i); break; }
     }
-    if (!dev || !dev->IsConnected()) return;
+    if (!dev || !dev->IsConnected()) return std::string();
 
-    const std::string name = StationPosName(a.uid, station);
-    std::vector<SavedPos>& list = session_.Positions()[a.device];
+    std::vector<SavedPos>& list = session_.Positions()[device];
     SavedPos* tgt = nullptr;
     for (SavedPos& sp : list)
         if (name == sp.name) { tgt = &sp; break; }
@@ -144,14 +174,77 @@ void App::TeachAlignStation(AlignProc& a, int station)
         const auto it = live.find(ax);
         tgt->vals[ax] = (it != live.end()) ? it->second : 0.0;
     }
-    (station == 1 ? a.s1 : a.s2).posUid = tgt->uid;
-    session_.SavePositions();
-    FD_INFO("align", "'%s' station %d taught as '%s'", a.name.c_str(), station, name.c_str());
+    return tgt->uid;
 }
 
-// Erase the private positions a procedure owns. Without this they would linger
-// invisibly: hidden rows are off the Motion table by default, so an orphan is
-// something nobody would ever go looking for.
+// ---- a nominal's camera view ----------------------------------------------
+// Where the camera stands to SEE the object being placed on this nominal —
+// a different XY from the nominal, and usually a different Z, because a gripped
+// part is not at the substrate's focus. Owned by the nominal so the placement
+// can drive there by itself instead of needing a move_to_position in front of
+// every run.
+
+const SavedPos* App::AlignNominalView(const AlignProc& a, const AlignNominal& n) const
+{
+    return FindPos(session_.Positions(), a.device, n.viewUid);
+}
+
+void App::TeachAlignNominalView(AlignProc& a, AlignNominal& n)
+{
+    const std::string name = NominalViewPosName(a.uid, n.uid);
+    const std::string uid  = CapturePrivatePose(a.device, name);
+    if (uid.empty()) return;
+    n.viewUid = uid;
+    session_.SavePositions();
+    session_.SaveAligns();   // the reference is the taught thing; persist it too
+    FD_INFO("align", "'%s' nominal '%s': camera view taught as '%s'",
+            a.name.c_str(), n.name.c_str(), name.c_str());
+}
+
+// A plain UI move to a pose a human taught, like a station's Go — not the
+// armed class, which is for COMPUTED destinations.
+void App::GoToAlignNominalView(const AlignProc& a, const AlignNominal& n)
+{
+    const SavedPos* pos = AlignNominalView(a, n);
+    if (!pos) return;
+    for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+        if (hardware_.MotionName(i) != a.device) continue;
+        IMotionController* dev = hardware_.MotionDevice(i);
+        if (!dev || !dev->IsConnected()) return;
+        std::vector<std::pair<std::string, double>> targets;
+        for (const std::string& ax : dev->Axes()) {
+            const auto it = pos->vals.find(ax);
+            if (it != pos->vals.end()) targets.emplace_back(ax, it->second);
+        }
+        if (!targets.empty()) workflow_.MoveToPosition(i, targets);
+        return;
+    }
+}
+
+// Deleting a nominal takes its view position with it, exactly as it takes its
+// detection models — a hidden orphan is something nobody goes looking for.
+void App::DropAlignNominalView(const AlignProc& a, AlignNominal& n)
+{
+    n.viewUid.clear();          // whether or not the row is there to erase
+    session_.SaveAligns();      // the reference is document state
+    const auto it = session_.Positions().find(a.device);
+    if (it == session_.Positions().end()) return;
+    std::vector<SavedPos>& list = it->second;
+    const std::string name = NominalViewPosName(a.uid, n.uid);
+    for (std::size_t i = list.size(); i-- > 0;) {
+        if (list[i].name != name) continue;
+        list.erase(list.begin() + static_cast<long>(i));
+        session_.SavePositions();
+        FD_INFO("align", "'%s' nominal '%s': dropped its camera view position",
+                a.name.c_str(), n.name.c_str());
+        return;
+    }
+}
+
+// Erase the private positions a procedure owns — its two stations and every
+// nominal's camera view. Without this they would linger invisibly: hidden rows
+// are off the Motion table by default, so an orphan is something nobody would
+// ever go looking for.
 void App::DropAlignStationPositions(const AlignProc& a)
 {
     const auto it = session_.Positions().find(a.device);
@@ -159,11 +252,11 @@ void App::DropAlignStationPositions(const AlignProc& a)
     std::vector<SavedPos>& list = it->second;
     const std::size_t before = list.size();
     for (std::size_t i = list.size(); i-- > 0;) {
-        if (IsOwnedStationPos(list[i], a.uid)) list.erase(list.begin() + static_cast<long>(i));
+        if (IsOwnedAlignPos(list[i], a.uid)) list.erase(list.begin() + static_cast<long>(i));
     }
     if (list.size() != before) {
         session_.SavePositions();
-        FD_INFO("align", "'%s': dropped %zu private station position(s)",
+        FD_INFO("align", "'%s': dropped %zu private position(s)",
                 a.name.c_str(), before - list.size());
     }
 }
@@ -235,6 +328,20 @@ void App::DrawAlignListPanel()
             std::snprintf(np.name, sizeof(np.name), "%s", StationPosName(a.uid, s).c_str());
             np.uid = GenerateUid();
             (s == 1 ? a.s1 : a.s2).posUid = np.uid;
+            pl.push_back(std::move(np));
+        }
+        // ...and so does every nominal's CAMERA VIEW, for the same reason: the
+        // nominals came along with the plain copy, and a view they share with
+        // the original would vanish the day the original is deleted.
+        for (std::size_t i = 0; i < a.nominals.size() && i < src.nominals.size(); ++i) {
+            const SavedPos* vp = FindPos(session_.Positions(), src.device,
+                                         src.nominals[i].viewUid);
+            if (!vp) continue;
+            SavedPos np = *vp;   // copy BEFORE the push_back that may reallocate
+            std::snprintf(np.name, sizeof(np.name), "%s",
+                          NominalViewPosName(a.uid, a.nominals[i].uid).c_str());
+            np.uid = GenerateUid();
+            a.nominals[i].viewUid = np.uid;
             pl.push_back(std::move(np));
         }
         // Private DETECTION MODELS copy the same way and for the same reason —
@@ -432,6 +539,23 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
                 ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
                                    "never reliability-tested");
             }
+
+            // The picture the detector matches, with a cross on the point it
+            // REPORTS. It is the only thing on this page that says WHICH point
+            // of the feature a run will use — and it is the same picture the
+            // fallback shows when detection fails and an operator, who did not
+            // tune this model, is asked to mark that point by hand.
+            PatchTex& pt = alignTmpl_[(station == 2) ? 1 : 0];
+            if (EnsurePatchTex(pt, *model)) {
+                ImGui::BeginGroup();
+                DrawPatchThumb(pt, 120.0f, 120.0f);
+                ImGui::EndGroup();
+                ImGui::SameLine();
+                ImGui::BeginGroup();
+                ImGui::TextDisabled("what this station looks for");
+                ImGui::TextDisabled("the cross is the point it reports");
+                ImGui::EndGroup();
+            }
         }
 
         ImGui::Checkbox("fall back to a manual pick", &st.autoFallbackManual);
@@ -530,12 +654,66 @@ void App::DrawAlignNominalList(AlignProc& a)
         ImGui::TextDisabled("none taught yet");
         return;
     }
+    // The camera's own device, for the view buttons below: teaching one captures
+    // its live pose, so an unconnected device can only be told about, not asked.
+    IMotionController* cam = nullptr;
+    for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+        if (hardware_.MotionName(i) == a.device) { cam = hardware_.MotionDevice(i); break; }
+    }
+    const bool camLive = cam && cam->IsConnected();
+
     for (std::size_t i = 0; i < a.nominals.size(); ++i) {
-        const AlignNominal& n = a.nominals[i];
+        AlignNominal& n = a.nominals[i];
         ImGui::PushID(static_cast<int>(i));
         ImGui::Text("%s", n.name.c_str());
         ImGui::TextDisabled("  X %.4f  Y %.4f mm   taught %s", n.lx, n.ly,
                             n.taughtAt.c_str());
+
+        // The CAMERA VIEW for this nominal — where the gantry stands to see the
+        // object being placed here, which is neither the nominal's own XY nor
+        // its focus height. Taught from wherever the camera is now; a placement
+        // drives here itself, so nothing in front of it has to.
+        // NOTE: `vp` points into the positions vector; it is re-resolved below,
+        // after the buttons that can reallocate or erase from it.
+        const SavedPos* vp = AlignNominalView(a, n);
+        ImGui::BeginDisabled(busy || !camLive);
+        if (ImGui::SmallButton(vp ? "Re-teach view" : "Teach view"))
+            TeachAlignNominalView(a, n);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save the CURRENT %s pose as this nominal's camera view.\n"
+                              "A placement drives here before it marks the object, so\n"
+                              "the object no longer has to be in view already (and no\n"
+                              "move_to_position step in front of the run).",
+                              a.device.c_str());
+        ImGui::SameLine();
+        // Go: a plain UI move to a pose a human taught, like a station's — not
+        // the armed class, which is for COMPUTED destinations.
+        ImGui::BeginDisabled(busy || !camLive || !vp);
+        if (ImGui::SmallButton("Go view")) GoToAlignNominalView(a, n);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(busy || !vp);
+        if (ImGui::SmallButton("Clear view")) DropAlignNominalView(a, n);
+        ImGui::EndDisabled();
+        // Re-resolve: `vp` points INTO the positions vector, and both buttons
+        // above can push into it or erase from it.
+        vp = AlignNominalView(a, n);
+        if (vp) {
+            // A private position is not on the Motion page, so its numbers only
+            // exist here.
+            std::string line;
+            for (const auto& [axis, v] : vp->vals) {
+                char buf[48];
+                std::snprintf(buf, sizeof(buf), "%s%s %.3f", line.empty() ? "" : "  ",
+                              axis.c_str(), v);
+                line += buf;
+            }
+            ImGui::TextDisabled("  view  %s", line.c_str());
+        } else {
+            ImGui::TextDisabled("  view  none - a placement will not move the camera");
+        }
+
         ImGui::BeginDisabled(busy);
         // Use: copy into the local->machine probe above. The probe is what
         // "Move here" reads, so this is the only wiring a nominal needs to
@@ -554,6 +732,7 @@ void App::DrawAlignNominalList(AlignProc& a)
         if (ImGui::SmallButton("Delete")) {
             FD_INFO("align", "'%s': dropped nominal '%s'", a.name.c_str(), n.name.c_str());
             DropNominalDetectors(a, n);   // its private object models go with it
+            DropAlignNominalView(a, n);   // and its private camera view
             a.nominals.erase(a.nominals.begin() + static_cast<long>(i));
             session_.SaveAligns();   // taught by hand — persisted like the frame
             ImGui::EndDisabled();

@@ -461,6 +461,30 @@ back to the crosshair is opt-in (`auto_fallback_manual`) **because** a silent
 fallback would let a procedure claim to be automatic while a human placed every
 point.
 
+### The fallback carries the taught picture with it
+
+A fallback pick sets two more fields on the `PickRequest`: `detectorUid` (the
+model that was supposed to find the point) and `autoError` (why it did not).
+Both are empty on a station that was manual by design — this is evidence about a
+*failure*, not decoration on the ordinary pick.
+
+The window resolves the uid and shows the model's **patch with the reported
+point crossed on it**, beside the reason. It exists because the operator at the
+machine is rarely the person who tuned the detector, and until this the run said
+only "mark E1". Nothing on a live image distinguishes one corner of a feature
+from the corner the model was taught on — and a mark on the wrong one is not a
+visible mistake, it is a frame wrong by the size of the feature, with every move
+made through it wrong by the same amount.
+
+`Widgets`' `VisionModelPatch` is the one place a model becomes a picture: the
+taught `.pgm` for NCC (cross at the anchor, else the centre), the **synthesised**
+`MakeCornerTemplate` patch for a two-edge corner (cross at the centre, which is
+where that method reports), and nothing for the blob chains — a circle or a
+solid square is matched as a shape, so the window falls back to naming the point
+in words. The Alignment page's station panel and the Placement page's object
+points draw the same thumbnail from the same helper, so what an operator is
+shown mid-run is what the procedure was authored against.
+
 ### The pixel→mm calibration moved to layer 2
 
 `docs/alignment-procedure-design.md` §3 says the conversion happens in the UI,
