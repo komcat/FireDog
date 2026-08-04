@@ -43,6 +43,7 @@ private:
     bool CmdSet(const std::vector<std::string>& tok);
     bool CmdSave(const std::vector<std::string>& tok);
     bool CmdReload();
+    bool CmdReport(const std::vector<std::string>& tok);
     bool CmdConnect(const std::vector<std::string>& tok);
     bool CmdProbe(const std::vector<std::string>& tok);
     bool CmdLogLevel(const std::vector<std::string>& tok);

@@ -3,6 +3,7 @@
 
 #include "RigConfigEdit.h"
 #include "RigConsole.h"
+#include "RigReport.h"
 
 #include <cstddef>
 #include <exception>
@@ -137,6 +138,19 @@ void EditDevice(RigConsole& c, const std::string& deviceId)
     }
 }
 
+// ---- Config report ---------------------------------------------------------
+void WriteReport(RigConsole& c)
+{
+    std::cout << "\n  Write the whole configuration as readable text, for handover.\n"
+              << "  Enter a file name, or blank for " << kDefaultReportFile << ".\n";
+
+    std::string file;
+    if (!ReadLine("  file> ", file)) return;
+
+    bool stop = false;
+    c.Execute(file.empty() ? std::string("report") : "report " + file, stop);
+}
+
 // ---- Log level -------------------------------------------------------------
 void PickLogLevel(RigConsole& c)
 {
@@ -177,6 +191,7 @@ void PrintMainMenu(const RigConsole& c)
               << "    4) Disconnect               8) Reload config (drop edits)\n"
               << kThin << "\n"
               << "    9) Connection status       10) Log level...\n"
+              << "   11) Write config report (txt, for handover)\n"
               << "    c) Type a command           h) Command help\n"
               << "    q) Quit\n";
 }
@@ -228,6 +243,7 @@ int RunMenu(RigConsole& console)
             case 8:  console.Execute("reload", stop); break;
             case 9:  console.Execute("status", stop); break;
             case 10: PickLogLevel(console); break;
+            case 11: WriteReport(console); break;
             default: Note("unknown choice - pick a number from the menu"); break;
         }
     }

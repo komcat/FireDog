@@ -1,8 +1,9 @@
 # FireDogRig — the console bring-up rig
 
 *A second executable next to `FireDog.exe`: connect the machine's hardware and
-read it back from a terminal, and edit the connection fields of
-`config/hardware.json` without launching the GUI.*
+read it back from a terminal, edit the connection fields of
+`config/hardware.json` without launching the GUI, and write the whole
+configuration out as a readable text file to hand to another team.*
 
 ## Why it exists
 
@@ -59,6 +60,7 @@ pick a number, press Enter.
     4) Disconnect               8) Reload config (drop edits)
   --------------------------------------------------------------------------
     9) Connection status       10) Log level...
+   11) Write config report (txt, for handover)
     c) Type a command           h) Command help
     q) Quit
   select>
@@ -90,6 +92,7 @@ show <device>               editable fields and their current values
 set <device> <field> <val>  edit in memory (takes effect on the next connect)
 save [<device>|all]         write edited entries back to the config file
 reload                      re-read the config file, dropping unsaved edits
+report [<file>]             write the whole configuration as readable text
 
 connect [<device>|all]      bring up hardware the way the client does
 status                      connection state of everything brought up
@@ -170,7 +173,8 @@ a warning and skips the device), so it is rejected at the edit instead.
 
 Not editable here — they stay in the file or the GUI: pin name maps,
 `pneumatic_slides`, `io_watch`, `safety_watch`, and the Keithley's
-`enabled_channels`.
+`enabled_channels`. The **report** below prints all of them anyway: what you
+cannot edit here, you can still hand over.
 
 Edits never apply to a live session: the session keeps the config it was started
 with, so changing an IP needs `disconnect` then `connect`.
@@ -180,6 +184,45 @@ with, so changing an IP needs `disconnect` then `connect`.
 `config/` over it. Mirror durable edits into the repo file — or run the rig with
 `--config` pointed at the repo copy.
 
+## The handover report
+
+`report [<file>]` (menu item 11, `--report`) writes **one plain-text file
+describing the entire configuration** — for a team that has to set the machine
+up and has neither the GUI nor a JSON editor in front of them. Default name
+`firedog-config-report.txt`, next to the exe.
+
+It needs no hardware: it describes the loaded config, never a live device.
+
+Ten sections: a summary, a **connection map** (every IP, port and VISA resource
+in one table — the list you check against the switch), motion controllers with
+each one's axis transform written out as `X -> +Z   Y -> +Y   Z -> +X` rather
+than as a matrix, IO devices with **every pin number and its name** (including
+pins with no name, and a warning on a name past the declared pin count),
+pneumatic slides, `io_watch` bindings, `safety_watch` signals with their alert
+text, cameras with their mm-per-pixel calibration, instruments, and a closing
+page of notes on where the file lives, how to change it, which subnets the PC
+needs an adapter on, **where to download NI-VISA** and how to verify the
+instruments in NI-MAX, and the bring-up order.
+
+Two things the report is careful about:
+
+- It reports **unsaved rig edits** as edited, marks them `*`, and says so at the
+  top — a handover file must never quietly disagree with the machine.
+- The instrument notes are **derived from the resource strings**, not boilerplate.
+  Every transport goes through NI-VISA (`Keithley6482.cpp` opens the instrument
+  with `viOpen`, whatever the cable), so the download link is always there; but
+  NI-488.2 and a GPIB adapter are only called for when a `GPIB0::…` resource
+  exists, and a `TCPIP0::…` one instead gets the static-IP and NI-MAX *Add
+  Network Device* steps — and its address joins the subnet list in note 3, which
+  is the easiest one to miss because it hides inside a VISA string.
+- It reads `motion_transforms.json` **beside the hardware file**, so
+  `--config ../../config/hardware.json --report` describes the repo copy, not
+  the exe-side one. Entries there for devices absent from this config are
+  listed as ignored.
+
+`--report` is read-only, like every other rig command: it writes the report file
+and nothing else.
+
 ## One-shot flags
 
 No REPL; exits 0 only if every targeted device reached `Connected`, so it works
@@ -187,6 +230,8 @@ in a script or a bring-up checklist.
 
 ```bash
 FireDogRig --list
+FireDogRig --report                      # firedog-config-report.txt next to the exe
+FireDogRig --report D:\handover\machine-A.txt
 FireDogRig --probe all
 FireDogRig --probe hex-left
 FireDogRig --set hex-left.ip_address=192.168.0.11 --save
@@ -208,6 +253,7 @@ resolved against the caller's working directory before the rig moves to its own.
 | `tools/rig/RigConsole.{h,cpp}` | the command table — menu, REPL and one-shot flags share it |
 | `tools/rig/RigSession.{h,cpp}` | owns `HardwareManager` + `Workflow`; connect, wait, teardown |
 | `tools/rig/RigProbe.{h,cpp}` | the read-back report |
+| `tools/rig/RigReport.{h,cpp}` | the plain-text configuration report (one function) |
 | `tools/rig/RigConfigEdit.{h,cpp}` | the field table over `HardwareConfig` + save dispatch |
 
 The rig links `firedog_hw` (see `docs/build-and-sdks.md`) — `src/core`,

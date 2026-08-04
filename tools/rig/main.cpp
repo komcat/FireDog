@@ -61,12 +61,16 @@ void PrintUsage()
         "\n"
         "  One-shot actions (skip the console; exit 0 only if everything succeeded)\n"
         "    --list                        print the configured devices\n"
+        "    --report [<file>]             write the whole configuration as readable\n"
+        "                                  text for handover (no hardware needed;\n"
+        "                                  default firedog-config-report.txt)\n"
         "    --probe [<device>|all]        connect, print live read-back, exit\n"
         "    --set <device>.<field>=<val>  edit one field (repeatable)\n"
         "    --save                        write the --set edits back to the config\n"
         "    --help\n"
         "\n"
         "  Examples\n"
+        "    FireDogRig --report\n"
         "    FireDogRig --probe all\n"
         "    FireDogRig --probe hex-left\n"
         "    FireDogRig --set hex-left.ip_address=192.168.0.11 --save\n"
@@ -135,6 +139,23 @@ int main(int argc, char** argv)
             }
         }
         else if (a == "--list")  { actions.push_back("list"); }
+        else if (a == "--report") {
+            // Optional file: "--report handover.txt", or just "--report".
+            std::string file;
+            if (i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0) file = argv[++i];
+            if (file.empty()) {
+                actions.push_back("report");   // the default name, next to the exe
+            } else {
+                // Resolve against the caller's cwd, like --config: we move to the
+                // exe directory below, and a report is written where asked for.
+                try { file = std::filesystem::absolute(file).string(); }
+                catch (const std::exception& e) {
+                    std::cerr << "[rig] bad --report path: " << e.what() << "\n";
+                    return 2;
+                }
+                actions.push_back("report " + file);
+            }
+        }
         else if (a == "--save")  { save = true; }
         else if (a == "--repl")  { forceRepl = true; }
         else if (a == "--probe") {

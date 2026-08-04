@@ -2,11 +2,14 @@
 #include "RigConsole.h"
 
 #include "RigProbe.h"
+#include "RigReport.h"
 
 #include "core/Log.h"
 
 #include <algorithm>
 #include <cctype>
+#include <exception>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 
@@ -61,6 +64,8 @@ void RigConsole::PrintHelp() const
         "  set <device> <field> <val>  edit in memory (takes effect on the next connect)\n"
         "  save [<device>|all]         write edited entries back to the config file\n"
         "  reload                      re-read the config file, dropping unsaved edits\n"
+        "  report [<file>]             write the WHOLE configuration as readable text,\n"
+        "                              for handover (default: firedog-config-report.txt)\n"
         "\n"
         "  connect [<device>|all]      bring up hardware the way the client does\n"
         "  status                      connection state of everything brought up\n"
@@ -79,6 +84,8 @@ void RigConsole::PrintHelp() const
         "   - `probe <device>` re-connects to that device first; plain `probe` reports\n"
         "     on the session already up.\n"
         "   - Slide state machines only advance while a connect or probe is running.\n"
+        "   - `report` needs no hardware: it describes the config file, including the\n"
+        "     parts no rig command edits (pin names, slides, io_watch, safety_watch).\n"
         "\n";
 }
 
@@ -205,6 +212,29 @@ bool RigConsole::CmdReload()
     return ok;
 }
 
+bool RigConsole::CmdReport(const std::vector<std::string>& tok)
+{
+    // Rest() rather than tok[1]: a handover path is very often "D:\My Docs\...".
+    const std::string path = tok.size() >= 2 ? Rest(tok, 1) : std::string(kDefaultReportFile);
+
+    std::string err;
+    if (!WriteConfigReport(store_, path, err)) { Fail(err); return false; }
+
+    std::string shown = path;
+    try { shown = std::filesystem::absolute(path).string(); }
+    catch (const std::exception&) { /* show the path as typed */ }
+
+    std::cout << "   configuration report written:\n      " << shown << "\n"
+              << "   plain text, every section of " << store_.Path()
+              << " - hand it over as is.\n";
+    if (store_.AnyDirty()) {
+        std::cout << "   note: it reports the unsaved rig edits too, marked *."
+                     " `save all` first if\n         the other team should see the file's"
+                     " own values.\n";
+    }
+    return true;
+}
+
 bool RigConsole::CmdConnect(const std::vector<std::string>& tok)
 {
     const std::string target = tok.size() >= 2 ? tok[1] : std::string("all");
@@ -258,6 +288,7 @@ bool RigConsole::Execute(const std::string& line, bool& stop)
     if (cmd == "set")                   return CmdSet(tok);
     if (cmd == "save")                  return CmdSave(tok);
     if (cmd == "reload")                return CmdReload();
+    if (cmd == "report")                return CmdReport(tok);
     if (cmd == "connect")               return CmdConnect(tok);
     if (cmd == "probe")                 return CmdProbe(tok);
     if (cmd == "loglevel")              return CmdLogLevel(tok);
