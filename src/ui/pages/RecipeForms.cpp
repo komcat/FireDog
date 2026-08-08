@@ -14,8 +14,10 @@
 #include "core/Log.h"
 #include "core/Topics.h"
 
+#include <cstddef>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace firedog {
 
@@ -101,7 +103,37 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
     } else if (const CommandSpec* spec = orch_.registry.Find(s.type)) {
         ImGui::TextWrapped("%s", spec->description.c_str());
         ImGui::Spacing();
-        for (const ParamSpec& p : spec->params) DrawParamWidget(p, s.params);
+        // One row per ParamSpec, in declaration order — except that a RUN of
+        // consecutive params sharing a `group` folds under a header of that
+        // name. A cluster that means nothing until one of it is set (the
+        // approach triple on every move command) should not cost three
+        // permanent rows on a form that is already long. Consecutive-run rather
+        // than gather-by-name so the order on screen is still exactly the order
+        // in the registration.
+        const std::vector<ParamSpec>& ps = spec->params;
+        for (std::size_t i = 0; i < ps.size();) {
+            if (ps[i].group.empty()) {
+                DrawParamWidget(ps[i], s.params);
+                ++i;
+                continue;
+            }
+            std::size_t j = i;
+            bool open = false;
+            while (j < ps.size() && ps[j].group == ps[i].group) {
+                // Open by itself when the operator has set one of these, or when
+                // one is REQUIRED — a validation error must never hide behind a
+                // fold. ImGuiCond_Once, so they can still close it.
+                if (ps[j].required || s.params.contains(ps[j].name)) open = true;
+                ++j;
+            }
+            if (open) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+            if (ImGui::CollapsingHeader(ps[i].group.c_str())) {
+                ImGui::Indent();
+                for (std::size_t k = i; k < j; ++k) DrawParamWidget(ps[k], s.params);
+                ImGui::Unindent();
+            }
+            i = j;
+        }
         const std::string err = ValidateParams(*spec, s.params, nullptr);
         if (!err.empty())
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", err.c_str());

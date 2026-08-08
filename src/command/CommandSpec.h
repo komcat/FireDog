@@ -69,6 +69,13 @@ struct ParamSpec {
     std::vector<std::string> options;          // Enum choices
     std::string    help;                       // one line (editor tooltip)
     PinDir         pinDir = PinDir::Any;       // PinName params only
+    // "" = drawn inline, like every parameter always was. Otherwise the editor
+    // folds a RUN of consecutive params sharing this name under a collapsing
+    // header — for a cluster that is meaningless until one of them is set (the
+    // approach triple), and that would otherwise cost three permanent rows on
+    // every move step's form. Last field on purpose: every existing positional
+    // brace-init, PinDir included, keeps working.
+    std::string    group;
 };
 
 struct CommandResult {

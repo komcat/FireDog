@@ -89,6 +89,14 @@ public:
     // was sent rather than recomputing it from a pose that has since moved.
     bool MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM, double gzMM,
                             std::vector<std::pair<std::string, double>>* issued = nullptr);
+    // The first half of MoveRelativeGlobal on its own: the ABSOLUTE per-axis
+    // targets a global delta works out to, without issuing anything. For a
+    // caller that has to see the destination before it moves — a two-speed
+    // approach has to split the distance, and it cannot split a move that has
+    // already started. MoveRelativeGlobal is written in terms of this, so the
+    // delta-to-targets arithmetic exists exactly once.
+    bool GlobalDeltaTargets(std::size_t devIdx, double gxMM, double gyMM, double gzMM,
+                            std::vector<std::pair<std::string, double>>* targets) const;
     // Stop all motion on one device (jog panel Stop button).
     bool StopMotion(std::size_t devIdx);
 

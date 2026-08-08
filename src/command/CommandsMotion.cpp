@@ -64,6 +64,152 @@ CommandResult WaitSettle(ExecutionContext& ctx, IMotionController* m, int idx)
                                    ? "stopped" : "timeout waiting for motion settle");
 }
 
+// The two-speed move — see MotionWaits.h for the contract and why the ordering
+// below is load-bearing. Lifted out of what used to be move_to_position_approach
+// so every point-to-point command shares one implementation.
+CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int idx,
+                               const std::vector<std::pair<std::string, double>>& targets,
+                               const ParamValues& p, const std::string& what)
+{
+    if (targets.empty()) return CommandResult::Fail("nothing to move: no targets");
+
+    const double tol       = p.GetDouble("tol_mm");
+    const int    timeoutMs = p.GetInt("timeout_ms");
+    const double approachV = p.GetDouble("approach_velocity_mm_s");
+    const double approachMm  = p.GetDouble("approach_mm");
+    const double approachPct = p.GetDouble("approach_pct");
+    const bool   wantZone    = approachMm > 0.0 || approachPct > 0.0;
+
+    // Half configured is an authoring mistake with a dangerous failure mode: a
+    // zone with no slow velocity would arrive at full speed while the recipe
+    // claims a careful approach. Name the missing half instead.
+    if (approachV > 0.0 && !wantZone)
+        return CommandResult::Fail("approach_velocity_mm_s is set but no zone - "
+                                   "set approach_mm or approach_pct");
+    if (approachV <= 0.0 && wantZone)
+        return CommandResult::Fail("an approach zone is set but no approach velocity - "
+                                   "set approach_velocity_mm_s");
+
+    // The plain move, byte for byte what every one of these commands did before
+    // the approach existed. No live-position read, no extra leg, no cost.
+    if (approachV <= 0.0) {
+        if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
+            return CommandResult::Fail("move to " + what + " rejected");
+        const auto r = WaitArrive(ctx, m, targets, tol, timeoutMs);
+        if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
+        ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
+        return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
+                                       ? "stopped" : "timeout driving to " + what);
+    }
+
+    m->RequestFastPoll();
+    const std::map<std::string, double> cur = m->Positions();
+    double dist2 = 0.0;
+    for (const auto& [axis, tgt] : targets) {
+        const auto it = cur.find(axis);
+        if (it == cur.end())
+            return CommandResult::Fail("no live position for axis '" + axis + "'");
+        dist2 += (tgt - it->second) * (tgt - it->second);
+    }
+    const double dist = std::sqrt(dist2);
+    // Already there. Not an error and not worth two legs — a step that re-issues
+    // a move it has already made must still succeed, and a percentage zone of
+    // zero distance is zero.
+    if (dist < 1e-9) {
+        if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
+            return CommandResult::Fail("move to " + what + " rejected");
+        return WaitSettle(ctx, m, idx);
+    }
+    const double approach = approachMm > 0.0 ? approachMm : dist * approachPct / 100.0;
+    if (approach <= 0.0)
+        return CommandResult::Fail("the approach zone works out to zero");
+
+    // Put the device back on the velocity the STEP declared, whatever happens
+    // below. There is no read-back on IMotionController, so a step that left
+    // velocity_mm_s at 0 ("keep current") has nothing to restore to — say so
+    // rather than silently handing the next move a crawl.
+    const double travelV = p.GetDouble("velocity_mm_s");
+    bool slowed = false;
+    const auto restore = [&]() {
+        if (!slowed) return;
+        if (travelV > 0.0) {
+            ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx), travelV);
+        } else {
+            FD_WARN("motion", "%s: left at the approach velocity %.3f mm/s - set "
+                              "velocity_mm_s on this step to restore a travel speed",
+                    m->Name().c_str(), approachV);
+        }
+        slowed = false;
+    };
+
+    // Travel leg, skipped when we are already inside the approach zone. Its
+    // arrival check is deliberately looser: the intermediate point is not a
+    // place anyone cares about, it is just where the slowing down starts.
+    if (approach < dist) {
+        const double frac = (dist - approach) / dist;
+        std::vector<std::pair<std::string, double>> inter;
+        inter.reserve(targets.size());
+        for (const auto& [axis, tgt] : targets) {
+            const double c = cur.at(axis);
+            inter.emplace_back(axis, c + (tgt - c) * frac);
+        }
+        if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), inter))
+            return CommandResult::Fail("travel leg to " + what + " rejected");
+        const auto r = WaitArrive(ctx, m, inter, tol > 0.05 ? tol : 0.05, timeoutMs);
+        if (r != ExecutionContext::WaitResult::Ok) {
+            ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
+            return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
+                                           ? "stopped" : "timeout on the travel leg");
+        }
+        // The velocity change below is rejected while the controller is still
+        // finishing this leg (PI VLS -> GCS 1005), so settle before asking.
+        const CommandResult s = WaitSettle(ctx, m, idx);
+        if (!s.ok) return s;
+    }
+
+    if (!ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx), approachV))
+        return CommandResult::Fail("approach velocity change rejected");
+    slowed = true;
+
+    if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets)) {
+        restore();
+        return CommandResult::Fail("approach leg to " + what + " rejected");
+    }
+    const auto r = WaitArrive(ctx, m, targets, tol, timeoutMs);
+    if (r != ExecutionContext::WaitResult::Ok) {
+        ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
+        restore();
+        return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
+                                       ? "stopped" : "timeout driving to " + what);
+    }
+    const CommandResult settled = WaitSettle(ctx, m, idx);
+    restore();
+    return settled;
+}
+
+ParamSpec ApproachVelocityParam(bool required)
+{
+    nlohmann::json def;              // null = no default, i.e. the param is required
+    if (!required) def = 0.0;        // 0 = no approach leg at all
+    return {"approach_velocity_mm_s", ParamType::Double, required, def, 0.0, 100.0, {},
+            "velocity for the final approach leg; 0 = arrive at the travel speed",
+            PinDir::Any, "Approach"};
+}
+
+ParamSpec ApproachMmParam()
+{
+    return {"approach_mm", ParamType::Double, false, 0.0, 0, 0, {},
+            "approach zone as mm before the target (wins over approach_pct)",
+            PinDir::Any, "Approach"};
+}
+
+ParamSpec ApproachPctParam()
+{
+    return {"approach_pct", ParamType::Double, false, 0.0, 0.0, 100.0, {},
+            "approach zone as % of the total distance",
+            PinDir::Any, "Approach"};
+}
+
 // Resolve device + connected controller, or fail with a message.
 IMotionController* ResolveMotion(ExecutionContext& ctx, const std::string& device,
                                  int* idxOut, std::string* err)
@@ -140,16 +286,7 @@ CommandResult ExecMoveToPosition(ExecutionContext& ctx, const ParamValues& p)
 
     const CommandResult pre = ApplyPreMove(ctx, idx, p);
     if (!pre.ok) return pre;
-    if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
-        return CommandResult::Fail("move to '" + std::string(pos->name) + "' rejected");
-
-    const auto r = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
-                              p.GetInt("timeout_ms"));
-    if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
-    ctx.Wf().StopMotion(static_cast<std::size_t>(idx));   // defined state on any abort
-    return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
-                                   ? "stopped"
-                                   : "timeout driving to '" + std::string(pos->name) + "'");
+    return MoveWithApproach(ctx, m, idx, targets, p, "'" + std::string(pos->name) + "'");
 }
 
 CommandResult ExecMovePath(ExecutionContext& ctx, const ParamValues& p)
@@ -293,16 +430,11 @@ CommandResult ExecMoveRelative(ExecutionContext& ctx, const ParamValues& p)
 
     const CommandResult pre = ApplyPreMove(ctx, idx, p);
     if (!pre.ok) return pre;
+    // One axis, so the helper's Euclidean distance is simply |delta| — the
+    // approach zone means the same thing here as on a coordinated move.
     const std::vector<std::pair<std::string, double>> targets = {
         {axis, it->second + delta}};
-    if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
-        return CommandResult::Fail("relative move rejected");
-    const auto r = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
-                              p.GetInt("timeout_ms"));
-    if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
-    ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
-    return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
-                                   ? "stopped" : "timeout on relative move");
+    return MoveWithApproach(ctx, m, idx, targets, p, "the relative target");
 }
 
 // Move to a saved position PLUS per-axis offsets (e.g. "safe" with Z -5 mm).
@@ -343,93 +475,17 @@ CommandResult ExecMoveToPositionOffset(ExecutionContext& ctx, const ParamValues&
 
     const CommandResult pre = ApplyPreMove(ctx, idx, p);
     if (!pre.ok) return pre;
-    if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
-        return CommandResult::Fail("move to '" + std::string(pos->name) + "' + offset rejected");
-    const auto r = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
-                              p.GetInt("timeout_ms"));
-    if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
-    ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
-    return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
-                                   ? "stopped"
-                                   : "timeout driving to '" + std::string(pos->name) + "' + offset");
+    return MoveWithApproach(ctx, m, idx, targets, p,
+                            "'" + std::string(pos->name) + "' + offset");
 }
 
-// Two-speed move to a saved position: travel at the (optional) main velocity
-// to an intermediate point `approach` short of the target, then finish at the
-// slower approach velocity. Approach distance = approach_mm, or approach_pct
-// of the full distance (approach_mm wins when both are set).
+// Kept because recipes on disk name it, and because a REQUIRED approach velocity
+// still says something a set of optional parameters does not: this step exists to
+// arrive slowly. Otherwise it is now exactly move_to_position — same body, same
+// helper, no second copy of the two-leg logic to drift.
 CommandResult ExecMoveToPositionApproach(ExecutionContext& ctx, const ParamValues& p)
 {
-    const std::string device = p.GetString("device");
-    std::string err;
-    int idx = -1;
-    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
-    if (!m) return CommandResult::Fail(err);
-
-    const SavedPos* pos = ctx.FindPosition(device, p.GetString("position"));
-    if (!pos) return CommandResult::Fail("position uid not found");
-    const auto targets = TargetsOf(*pos, m);
-    if (targets.empty()) return CommandResult::Fail("position shares no axes with device");
-
-    m->RequestFastPoll();
-    const std::map<std::string, double> cur = m->Positions();
-    double dist2 = 0.0;
-    for (const auto& [axis, tgt] : targets) {
-        const auto it = cur.find(axis);
-        if (it == cur.end())
-            return CommandResult::Fail("no live position for axis '" + axis + "'");
-        dist2 += (tgt - it->second) * (tgt - it->second);
-    }
-    const double dist = std::sqrt(dist2);
-
-    const double approachMm  = p.GetDouble("approach_mm");
-    const double approachPct = p.GetDouble("approach_pct");
-    double approach = approachMm > 0.0 ? approachMm : dist * approachPct / 100.0;
-    if (approach <= 0.0)
-        return CommandResult::Fail("set approach_mm or approach_pct (> 0)");
-
-    const CommandResult pre = ApplyPreMove(ctx, idx, p);   // travel velocity + exposure
-    if (!pre.ok) return pre;
-
-    const double tol       = p.GetDouble("tol_mm");
-    const int    timeoutMs = p.GetInt("timeout_ms");
-
-    // Fast leg to the intermediate point (skipped when already within the
-    // approach zone). Intermediate arrival check is deliberately looser —
-    // its exact spot doesn't matter, only that we're near it and slow.
-    if (approach < dist) {
-        const double frac = (dist - approach) / dist;
-        std::vector<std::pair<std::string, double>> inter;
-        inter.reserve(targets.size());
-        for (const auto& [axis, tgt] : targets) {
-            const double c = cur.at(axis);
-            inter.emplace_back(axis, c + (tgt - c) * frac);
-        }
-        if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), inter))
-            return CommandResult::Fail("approach travel leg rejected");
-        const auto r = WaitArrive(ctx, m, inter, tol > 0.05 ? tol : 0.05, timeoutMs);
-        if (r != ExecutionContext::WaitResult::Ok) {
-            ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
-            return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
-                                           ? "stopped" : "timeout on travel leg");
-        }
-        // The velocity change below is rejected while the controller is still
-        // finishing the travel leg (PI VLS while moving) — settle first.
-        const CommandResult s = WaitSettle(ctx, m, idx);
-        if (!s.ok) return s;
-    }
-
-    if (!ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx),
-                                 p.GetDouble("approach_velocity_mm_s")))
-        return CommandResult::Fail("approach velocity change rejected");
-    if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
-        return CommandResult::Fail("approach leg rejected");
-    const auto r = WaitArrive(ctx, m, targets, tol, timeoutMs);
-    if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
-    ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
-    return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
-                                   ? "stopped"
-                                   : "timeout driving to '" + std::string(pos->name) + "'");
+    return ExecMoveToPosition(ctx, p);
 }
 
 CommandResult ExecStopMotion(ExecutionContext& ctx, const ParamValues& p)
@@ -541,7 +597,8 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   }});
 
     reg.Register({"move_to_position", "Motion",
-                  "Coordinated absolute move to a saved position, wait for arrival",
+                  "Coordinated absolute move to a saved position, wait for arrival "
+                  "(optionally with a slower final approach)",
                   {
                       {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
                       {"position", PT::PositionUid, true, {}, 0, 0, {}, "saved position uid"},
@@ -549,6 +606,9 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
                       VelocityParam(),
                       ExposureParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
                       PreDelayParam(),
                       PostDelayParam(),
                   },
@@ -566,22 +626,25 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
                       VelocityParam(),
                       ExposureParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
                       PreDelayParam(),
                       PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToPositionOffset});
 
+    // Now a spelling of move_to_position with the approach velocity REQUIRED.
+    // Kept registered because recipes on disk name it, and because a step that
+    // must arrive slowly is worth saying out loud in the step list.
     reg.Register({"move_to_position_approach", "Motion",
                   "Move to a saved position with a slower final approach (last N mm or % of distance)",
                   {
                       {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
                       {"position", PT::PositionUid, true, {}, 0, 0, {}, "saved position uid"},
-                      {"approach_velocity_mm_s", PT::Double, true, {}, 0.001, 100.0, {},
-                       "velocity for the final approach leg"},
-                      {"approach_mm", PT::Double, false, 0.0, 0, 0, {},
-                       "approach zone as mm before the target (wins over approach_pct)"},
-                      {"approach_pct", PT::Double, false, 0.0, 0.0, 100.0, {},
-                       "approach zone as % of the total distance"},
+                      ApproachVelocityParam(true),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
                       {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "per-leg timeout"},
                       {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "final tolerance"},
                       VelocityParam(),
@@ -609,7 +672,8 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   CommandSpec::Needs::None, ExecMovePath});
 
     reg.Register({"move_relative", "Motion",
-                  "Relative move on ONE local axis (target = current + delta), wait for arrival",
+                  "Relative move on ONE local axis (target = current + delta), wait for "
+                  "arrival (optionally with a slower final approach)",
                   {
                       {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
                       {"axis", PT::String, true, {}, 0, 0, {}, "local axis name (X, Y, Z, U...)"},
@@ -618,6 +682,9 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
                       VelocityParam(),
                       ExposureParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
                       PreDelayParam(),
                       PostDelayParam(),
                   },

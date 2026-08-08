@@ -112,8 +112,10 @@ targets)`, which refuses while a critical safety alert is unacknowledged
 ## 5. Waiting for completion — the two-stage rule
 
 `PI_MOV` returns immediately. Every blocking command (`move_to_position`,
-`move_relative`, `move_to_position_offset`, `move_path` legs, `move_to_position_approach`)
-uses the same two-stage wait, in this order:
+`move_relative`, `move_to_position_offset`, `move_path` legs, `move_to_position_approach`,
+and the Align moves `move_local` / `place_move`) uses the same two-stage wait, in this
+order — and, since the approach landed, all of them reach it through the one
+`MoveWithApproach` helper below:
 
 ### Stage 1 — `WaitArrive` (position tolerance)
 
@@ -165,6 +167,56 @@ Downstream code (the scan scripts) does not add its own mechanical settle delay 
 `ExecutionContext::WaitUntil` checks the stop flag **before** the predicate on every
 iteration and clamps the deadline to `max(timeoutMs, pollMs)` — **no wait is ever
 unbounded**, and Stop is honoured within one 50 ms poll.
+
+### The two-speed move — `MoveWithApproach`
+
+A move that arrives at full speed overshoots and rings, and stage 2 above pays for it.
+`MoveWithApproach` (declared `command/MotionWaits.h`, defined in `CommandsMotion.cpp`)
+covers the last stretch slowly instead:
+
+```
+Move  |------- velocity_mm_s, the rest of the distance -------|-- approach_velocity_mm_s --> target
+                                                     approach_mm, or approach_pct of the distance
+```
+
+It is **the one implementation**, shared by every point-to-point move command —
+`move_to_position`, `move_to_position_offset`, `move_relative`,
+`move_to_position_approach` (Motion) and `move_local`, `place_move` (Align). It used to
+be the body of `move_to_position_approach` alone, which meant a slow finish cost you
+whatever else your step's command did.
+
+Three optional parameters, grouped under a collapsing **Approach** header in the editor
+so they cost nothing on a form until they are used:
+
+| param | default | meaning |
+|---|---|---|
+| `approach_velocity_mm_s` | 0 | 0 = no approach leg at all; the move is exactly what it was before |
+| `approach_mm` | 0 | zone as mm before the target — **wins** over the % |
+| `approach_pct` | 0 | zone as % of the total distance |
+
+Four things about the ordering are load-bearing, and are why a second copy of this must
+never appear:
+
+1. **The travel leg arrives on a looser tolerance** — `max(tol_mm, 0.05)`. The
+   intermediate point is not a place anyone cares about; it is where the slowing starts.
+2. **`WaitSettle` runs before the velocity change.** `PI_VLS` is rejected while a profile
+   is still finishing (GCS 1005 CONTROLLER_BUSY) — §4's retry loop would otherwise be
+   burning its 2 s cap on every approach move.
+3. **`velocity_mm_s` is re-applied afterwards**, on the success path and the abort paths
+   alike, so the device is left at the speed the step declared. `IMotionController` has
+   no `GetVelocity`, so a step that left `velocity_mm_s` at 0 ("keep current") has
+   nothing to restore to: that case **warns**, naming the device and the crawl it is left
+   at, rather than silently handing the next move an approach velocity.
+4. **Half-configured fails at run time.** A zone with no approach velocity is a
+   full-speed arrival wearing the label of a careful one; a velocity with no zone is a
+   parameter that does nothing. Neither is a no-op. (`ValidateParams` is strictly
+   per-parameter — there is no cross-parameter hook to catch this at author time.)
+
+An approach zone at least as large as the distance skips the travel leg and does the
+whole move slowly. `place_move` reaches the helper through
+`Workflow::GlobalDeltaTargets`, which is `MoveRelativeGlobal`'s first half split out:
+the two-speed move has to see the destination before anything starts, and it cannot
+split a move already under way.
 
 ---
 

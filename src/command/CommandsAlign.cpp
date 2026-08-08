@@ -403,15 +403,7 @@ CommandResult ExecMoveLocal(ExecutionContext& ctx, const ParamValues& p)
     if (vel > 0.0 && !ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx), vel))
         return CommandResult::Fail("velocity change rejected");
 
-    if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
-        return CommandResult::Fail("move rejected");
-    const auto arrived = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
-                                    p.GetInt("timeout_ms"));
-    if (arrived == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
-    ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
-    return CommandResult::Fail(arrived == ExecutionContext::WaitResult::Stopped
-                                   ? "stopped"
-                                   : "timeout driving to the local coordinate");
+    return MoveWithApproach(ctx, m, idx, targets, p, "the local coordinate");
 }
 
 // ---- placement -----------------------------------------------------------
@@ -774,24 +766,19 @@ CommandResult ExecPlaceMove(ExecutionContext& ctx, const ParamValues& p)
     if (vel > 0.0 && !ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx), vel))
         return CommandResult::Fail("velocity change rejected");
 
-    // Layer 2 maps the machine-frame vector onto this device's own axes and
-    // adds it to the live pose. `issued` comes back so the arrival wait watches
-    // exactly what was commanded rather than recomputing from a moving pose.
-    std::vector<std::pair<std::string, double>> issued;
-    if (!ctx.Wf().MoveRelativeGlobal(static_cast<std::size_t>(idx), s.dMx, s.dMy, 0.0,
-                                     &issued))
+    // Layer 2 maps the machine-frame vector onto this device's own axes and adds
+    // it to the live pose. The targets are worked out BEFORE anything moves,
+    // because a two-speed approach has to split the distance and cannot split a
+    // move already under way — and because the arrival wait then watches exactly
+    // what was commanded rather than recomputing from a moving pose.
+    std::vector<std::pair<std::string, double>> targets;
+    if (!ctx.Wf().GlobalDeltaTargets(static_cast<std::size_t>(idx), s.dMx, s.dMy, 0.0,
+                                     &targets))
         return CommandResult::Fail("placement move rejected");
 
-    const auto arrived = WaitArrive(ctx, m, issued, p.GetDouble("tol_mm"),
-                                    p.GetInt("timeout_ms"));
-    if (arrived != ExecutionContext::WaitResult::Ok) {
-        ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
-        return CommandResult::Fail(arrived == ExecutionContext::WaitResult::Stopped
-                                       ? "stopped"
-                                       : "timeout driving the placement correction");
-    }
-    const CommandResult settled = WaitSettle(ctx, m, idx);
-    if (!settled.ok) return settled;
+    const CommandResult moved =
+        MoveWithApproach(ctx, m, idx, targets, p, "the placement correction");
+    if (!moved.ok) return moved;
 
     // The marks describe where the object WAS. Drop them so a second
     // place_apply cannot silently reuse them and report a correction that has
@@ -878,6 +865,9 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                        "arrival tolerance"},
                       {"velocity_mm_s", PT::Double, false, 0.0, 0, 0, {},
                        "optional velocity for this move; 0 = keep current"},
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
                       PreDelayParam(), PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveLocal});
@@ -955,6 +945,9 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                        "arrival tolerance"},
                       {"velocity_mm_s", PT::Double, false, 0.0, 0, 0, {},
                        "optional velocity for this move; 0 = keep current"},
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
                       PreDelayParam(), PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecPlaceMove});

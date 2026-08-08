@@ -1271,16 +1271,12 @@ bool Workflow::GlobalDeltaToAxes(std::size_t devIdx, double gxMM, double gyMM,
     return true;
 }
 
-bool Workflow::MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM,
+bool Workflow::GlobalDeltaTargets(std::size_t devIdx, double gxMM, double gyMM,
                                   double gzMM,
-                                  std::vector<std::pair<std::string, double>>* issued)
+                                  std::vector<std::pair<std::string, double>>* targets) const
 {
-    if (issued) issued->clear();
-    if (SafetyBlocked()) {
-        FD_WARN("safety", "move blocked - acknowledge the safety alert first");
-        return false;
-    }
-    if (devIdx >= hw_.MotionCount()) return false;
+    if (targets) targets->clear();
+    if (!targets || devIdx >= hw_.MotionCount()) return false;
     IMotionController* m = hw_.MotionDevice(devIdx);
     if (!m) return false;
     if (!m->IsConnected()) {
@@ -1296,18 +1292,17 @@ bool Workflow::MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM,
     // a target built from a missing feedback value is a move to somewhere
     // nobody asked for.
     const std::map<std::string, double> pos = m->Positions();
-    std::vector<std::pair<std::string, double>> targets;
     std::string detail;
     for (const auto& [axis, d] : deltas) {
         const auto it = pos.find(axis);
         if (it == pos.end()) continue;
-        targets.emplace_back(axis, it->second + d);
+        targets->emplace_back(axis, it->second + d);
         char buf[64];
         std::snprintf(buf, sizeof(buf), "%s%s %+.4f -> %.4f", detail.empty() ? "" : "  ",
                       axis.c_str(), d, it->second + d);
         detail += buf;
     }
-    if (targets.empty()) {
+    if (targets->empty()) {
         FD_WARN("workflow", "%s: global delta maps to no axis the device reports",
                 m->Name().c_str());
         return false;
@@ -1315,6 +1310,23 @@ bool Workflow::MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM,
 
     FD_INFO("workflow", "%s relative move dGlobal=(%+.4f, %+.4f, %+.4f) mm | %s",
             m->Name().c_str(), gxMM, gyMM, gzMM, detail.c_str());
+    return true;
+}
+
+bool Workflow::MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM,
+                                  double gzMM,
+                                  std::vector<std::pair<std::string, double>>* issued)
+{
+    if (issued) issued->clear();
+    if (SafetyBlocked()) {
+        FD_WARN("safety", "move blocked - acknowledge the safety alert first");
+        return false;
+    }
+    std::vector<std::pair<std::string, double>> targets;
+    if (!GlobalDeltaTargets(devIdx, gxMM, gyMM, gzMM, &targets)) return false;
+
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m) return false;
     if (issued) *issued = targets;
     return m->MoveAbsolute(targets);
 }
