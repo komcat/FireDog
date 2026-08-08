@@ -37,6 +37,17 @@ constexpr double kJogCoalesceSec = 0.4;
 constexpr double kMinVelMMs    = 0.001;
 constexpr double kMaxVelPIMMs  = 10.0;   // hexapods
 constexpr double kMaxVelACSMMs = 40.0;   // gantry
+
+// A device that has been registered with layer 1 and still needs its connect
+// thread. Shared by StartMotion and StartIO, which both build the whole fleet
+// before launching any of them — see the note in StartMotion.
+struct Pending {
+    size_t      idx;        // slot this device occupies in the fleet
+    std::string name;
+    std::string type;
+    int         interval;   // IO poll interval in ms; unused for motion
+};
+
 } // namespace
 
 Workflow::Workflow(HardwareManager& hw) : hw_(hw) {}
@@ -71,6 +82,15 @@ void Workflow::StartMotion(const HardwareConfig& hw)
 
     // Build each driver (PI hexapod or ACS gantry) and hand ownership to layer 1,
     // then connect them concurrently — each device on its own thread.
+    //
+    // TWO passes, and the split is load-bearing: EVERY device is registered
+    // before ANY connect thread starts. AddMotion pushes into a vector, and a
+    // push_back that reallocates while a worker is reading motion_[idx] hands
+    // that worker a moved-from slot — which surfaces as a null dereference deep
+    // inside HardwareManager::MotionDevice. It needs two configured devices and
+    // a lost race, so as one interleaved loop it crashed startup now and then
+    // and looked like a driver bug.
+    std::vector<Pending> pending;
     for (const MotionConfig& d : devs) {
         std::unique_ptr<IMotionController> dev;
         if (d.controllerType == "PI") {
@@ -88,9 +108,15 @@ void Workflow::StartMotion(const HardwareConfig& hw)
         hw_.SetMotionState(idx, ConnState::Connecting);
         FD_INFO("workflow", "connecting %s '%s' @ %s:%d",
                 d.controllerType.c_str(), d.name.c_str(), d.ipAddress.c_str(), d.port);
+        pending.push_back({idx, d.name, d.controllerType, 0});
+    }
 
-        const std::string name = d.name;
-        const std::string type = d.controllerType;
+    // The fleet is now fixed for the life of the process — nothing below adds
+    // to it, so indexing it off-thread is safe.
+    for (const Pending& p : pending) {
+        const size_t      idx  = p.idx;
+        const std::string name = p.name;
+        const std::string type = p.type;
         motionConnect_.push_back(std::async(std::launch::async, [this, idx, name, type] {
             IMotionController* m = hw_.MotionDevice(idx);
             const bool ok = m && m->Connect();
@@ -111,7 +137,9 @@ void Workflow::StartIO(const HardwareConfig& hw)
     }
 
     // Build each driver (Ezi-IO board or WAGO coupler) and hand ownership to
-    // layer 1, then connect + start polling concurrently, one thread each.
+    // layer 1, then connect + start polling concurrently, one thread each —
+    // in two passes, like StartMotion.
+    std::vector<Pending> pending;
     std::vector<int> eziIds;
     for (const IoDeviceConfig& d : devs) {
         std::unique_ptr<IIoDevice> dev;
@@ -154,10 +182,17 @@ void Workflow::StartIO(const HardwareConfig& hw)
         hw_.SetIoState(idx, ConnState::Connecting);
         FD_INFO("workflow", "connecting IO %s '%s' @ %s",
                 d.type.c_str(), d.name.c_str(), d.ipAddress.c_str());
+        pending.push_back({idx, d.name, d.type, d.pollIntervalMs});
+    }
 
-        const std::string name     = d.name;
-        const std::string type     = d.type;
-        const int         interval = d.pollIntervalMs;
+    // Second pass, for the same reason StartMotion has one: AddIo grows io_,
+    // and a worker indexing that vector while it reallocates reads a
+    // moved-from slot.
+    for (const Pending& p : pending) {
+        const size_t      idx      = p.idx;
+        const std::string name     = p.name;
+        const std::string type     = p.type;
+        const int         interval = p.interval;
         ioConnect_.push_back(std::async(std::launch::async, [this, idx, name, type, interval] {
             IIoDevice* io = hw_.IoDevice(idx);
             bool ok = io && io->Connect();
