@@ -1092,6 +1092,33 @@ bool Workflow::Detect(const VisionModel& m, const std::string& modelDir,
     return det->ok;
 }
 
+// The teach page's filtered-image preview. No detector is built and none is
+// cached: the chain is stateless, and the operator is usually tuning it before
+// there is a template to build a model from.
+//
+// Under detectMu_ like Detect, because both borrow detectBuf_ — a preview and a
+// detect racing for that one buffer is exactly the kind of bug that would show
+// up as an occasional wrong picture and never reproduce.
+bool Workflow::PreprocessPreview(const VisionModel& m, std::vector<unsigned char>* gray,
+                                 FocusRoi* used, std::string* err)
+{
+    if (gray) gray->clear();
+    if (used) *used = FocusRoi{};
+
+    std::lock_guard<std::mutex> lock(detectMu_);
+
+    int fw = 0, fh = 0;
+    unsigned long long seq = 0;
+    if (!hw_.Camera().GetLatestFrameSeq(detectBuf_, fw, fh, seq) || fw <= 0 || fh <= 0) {
+        if (err) *err = "no camera frame";
+        return false;
+    }
+    // `used` is the CLAMPED ROI, origin included: the caller draws this plane
+    // back over the live image, and an origin it had to guess would put the
+    // overlay somewhere the pixels never were.
+    return HalconDetector::Preprocess(m, detectBuf_.data(), fw, fh, gray, used, err);
+}
+
 bool Workflow::TeachDetector(const VisionModel& m, const std::string& modelDir,
                              const VisionRoi& patch, int* tmplW, int* tmplH,
                              std::string* err)

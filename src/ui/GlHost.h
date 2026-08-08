@@ -42,6 +42,10 @@ public:
     // streaming camera frames: call each new frame with the returned id.
     unsigned int EnsureTextureRGB(unsigned int tex, int width, int height, const void* rgb);
 
+    // Same, for RGBA8 — a streaming overlay that has to be transparent where
+    // nothing was found (the vision teach page's filter overlay).
+    unsigned int EnsureTextureRGBA(unsigned int tex, int width, int height, const void* rgba);
+
 private:
     void ApplyFont();   // apply pending size/typeface at a frame boundary
 

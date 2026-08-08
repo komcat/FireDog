@@ -25,6 +25,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("right_w"))    s.rightW    = j["right_w"].get<float>();
         if (j.contains("lower_h"))    s.lowerH    = j["lower_h"].get<float>();
         if (j.contains("vision_param_w")) s.visionParamW = j["vision_param_w"].get<float>();
+        if (j.contains("vision_result_w")) s.visionResultW = j["vision_result_w"].get<float>();
         if (j.contains("show_chart"))    s.showChart   = j["show_chart"].get<bool>();
         if (j.contains("click_to_move")) s.clickToMove = j["click_to_move"].get<bool>();
         if (j.contains("show_vision_marks")) s.showVisionMarks = j["show_vision_marks"].get<bool>();
@@ -48,7 +49,8 @@ bool UiSettings::Save(const std::string& path) const
     j["left_w"]     = leftW;
     j["right_w"]    = rightW;
     j["lower_h"]    = lowerH;
-    j["vision_param_w"] = visionParamW;
+    j["vision_param_w"]  = visionParamW;
+    j["vision_result_w"] = visionResultW;
     j["show_chart"]    = showChart;
     j["click_to_move"] = clickToMove;
     j["show_vision_marks"] = showVisionMarks;

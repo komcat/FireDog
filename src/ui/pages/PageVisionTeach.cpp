@@ -28,11 +28,14 @@
 #include "core/Log.h"
 #include "core/Product.h"          // GenerateUid
 #include "ui/Widgets.h"
+#include "vision/FocusMetric.h"    // RgbToGray8 — the matched-location crop
 #include "vision/HalconDetector.h"
 #include "vision/HalconEngine.h"
 
 #include <cfloat>
+#include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -269,6 +272,29 @@ const VisionModel* App::StationDetector(const AlignProc& a, int station) const
     return FindVisionModel(session_.VisionModels(), StationDetectorName(a.uid, station));
 }
 
+// Everything the page carries that belongs to the LAST thing it was opened for.
+// One function, called by both openers: the page is shared between alignment
+// stations and the nominals' object marks, and a field that only one of them
+// remembered to clear is a picture or a result from somebody else's model.
+void App::ResetVisionTeachState()
+{
+    visionErr_.clear();
+    visionHaveDet_    = false;
+    visionLive_       = false;
+    visionDragMode_   = 0;
+    visionDragging_   = false;
+    visionSlowWarned_ = false;
+    visionAnchorOpen_ = false;   // never inherit the last station's open picker
+    visionStatus_     = "Ready.";
+    visionFilterKey_.clear();    // the preview belongs to the model that made it
+    visionFilterErr_.clear();
+    visionFilterW_ = visionFilterH_ = 0;
+    visionCropKey_.clear();
+    visionCropW_ = visionCropH_ = 0;
+    visionOwnerDevice_.clear();
+    visionOwnerPosUid_.clear();
+}
+
 void App::OpenVisionTeach(AlignProc& a, int station)
 {
     AlignStation& st = (station == 1) ? a.s1 : a.s2;
@@ -295,13 +321,9 @@ void App::OpenVisionTeach(AlignProc& a, int station)
         }
     }
 
-    visionErr_.clear();
-    visionHaveDet_    = false;
-    visionLive_       = false;
-    visionDragMode_   = 0;
-    visionDragging_   = false;
-    visionSlowWarned_ = false;
-    visionAnchorOpen_ = false;   // never inherit the last station's open picker
+    ResetVisionTeachState();
+    visionOwnerDevice_ = a.device;
+    visionOwnerPosUid_ = st.posUid;
 
     // Address the model by its canonical private NAME, not by whatever uid the
     // station happens to hold: the name is the ownership record, so this is the
@@ -435,13 +457,12 @@ const VisionModel* App::NominalDetector(const AlignProc& a, const AlignNominal& 
 // carries (a takeover -> takeover switch does not update prevPage_).
 void App::OpenVisionTeachForNominal(AlignProc& a, AlignNominal& n, int index)
 {
-    visionErr_.clear();
-    visionHaveDet_    = false;
-    visionLive_       = false;
-    visionDragMode_   = 0;
-    visionDragging_   = false;
-    visionSlowWarned_ = false;
-    visionAnchorOpen_ = false;
+    ResetVisionTeachState();
+    // A nominal's own camera view is where the placement is WATCHED from, which
+    // is the pose this detector has to work at — the exact counterpart of a
+    // station's private position.
+    visionOwnerDevice_ = a.device;
+    visionOwnerPosUid_ = n.viewUid;
 
     const std::string name = NominalDetectorName(a.uid, n.uid, index);
     VisionModel* m = FindVisionModel(session_.VisionModels(), name);
@@ -753,6 +774,22 @@ void App::DrawVisionTeachImage(VisionModel& m)
 
     if (haveImg) {
         ImGui::Image((ImTextureID)(intptr_t)cameraTex_, avail, view.Uv0(), view.Uv1());
+
+        // The pre-processed foreground, painted over the scene it came from.
+        // Drawn at the ROI's own screen rect rather than stretched over the
+        // frame: the plane covers the SEARCH ROI, and a filtered pixel has to
+        // land on the pixel it was computed from or the picture is a lie.
+        if (visionOverlay_ && visionOverlayTex_ != 0 &&
+            visionFilterW_ > 0 && visionFilterH_ > 0) {
+            const ImVec2 p0 = view.ToScreen(static_cast<float>(visionFilterX_),
+                                            static_cast<float>(visionFilterY_));
+            const ImVec2 p1 = view.ToScreen(
+                static_cast<float>(visionFilterX_ + visionFilterW_),
+                static_cast<float>(visionFilterY_ + visionFilterH_));
+            dl->PushClipRect(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), true);
+            dl->AddImage((ImTextureID)(intptr_t)visionOverlayTex_, p0, p1);
+            dl->PopClipRect();
+        }
     } else {
         dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y),
                           IM_COL32(18, 18, 22, 255));
@@ -913,6 +950,240 @@ void App::DrawVisionTeachImage(VisionModel& m)
     dl->PopClipRect();
 }
 
+// ---- The camera strip, under the image --------------------------------------
+// Moved here from the parameter column when the page went three-column: these
+// are properties of the PICTURE on the left, and reading a luma warning two
+// columns away from the image it describes never worked.
+
+void App::DrawVisionCameraFoot(VisionModel& m)
+{
+    const ConnState cs = hardware_.CameraState();
+    ImGui::TextColored(StateColor(cs), "%s", StateGlyph(cs));
+    ImGui::SameLine();
+    ImGui::TextUnformatted(hardware_.CameraName().c_str());
+    ImGui::SameLine();
+
+    float expo = static_cast<float>(m.exposureUs);
+    ImGui::SetNextItemWidth(100.0f);
+    if (ImGui::InputFloat("exposure (us)", &expo, 0.0f, 0.0f, "%.0f"))
+        m.exposureUs = expo < 0.0f ? 0.0 : static_cast<double>(expo);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(m.exposureUs <= 0.0);
+    if (ImGui::Button("Apply##visexpo")) {
+        workflow_.SetCameraExposure(m.exposureUs);
+        visionStatus_ = "exposure applied";
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("0 = leave the camera alone. A model is tuned AT an\n"
+                          "exposure, so it carries the one it was taught with.");
+
+    ImGui::SameLine();
+    const Workflow::FocusSample fs = workflow_.LatestFocus();
+    if (fs.ok) {
+        const bool badLuma = fs.meanLuma < 5.0 || fs.meanLuma > 250.0;
+        ImGui::TextColored(badLuma ? kWarn : ImGui::GetStyle().Colors[ImGuiCol_Text],
+                           "focus %.0f  luma %.0f%s", fs.score, fs.meanLuma,
+                           badLuma ? "  (fix exposure first)" : "");
+    } else {
+        ImGui::TextDisabled("no focus reading");
+    }
+
+    // Zoom + the overlay toggle: both are about how the image is LOOKED at.
+    ImGui::TextUnformatted("zoom");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(130.0f);
+    ImGui::SliderFloat("##viszoom", &visionZoom_, 1.0f, 16.0f, "x%.2f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Fit")) visionZoom_ = 1.0f;
+    ImGui::SameLine();
+    ImGui::Checkbox("Overlay", &visionOverlay_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Paint the pre-processed foreground over the live image.\n"
+                          "The small preview panel is a poor place to judge whether\n"
+                          "a threshold caught the feature or half the background.");
+    ImGui::SameLine();
+    double mmX = 0.0, mmY = 0.0;
+    workflow_.CameraPixelToMm(mmX, mmY);
+    ImGui::TextDisabled("%.5f mm/px", mmX);
+}
+
+// ---- The pre-process chain --------------------------------------------------
+// Three slots applied in order, before any method looks at the image. The band
+// lives above the method form because that is the order the pixels travel in:
+// crop -> chain -> method. Ported from Horizon's FAAM.UI vision profile, which
+// is the same three slots and the same four kinds.
+
+void App::RefreshVisionPreview(const VisionModel& m, bool force)
+{
+    // Three reasons to recompute, and no others. A full-ROI canny is not free,
+    // so "every frame" is deliberately NOT one of them unless Live is on and the
+    // operator is therefore already paying for a detection per frame.
+    //   * force        — the Preview button
+    //   * params moved — a slot, a parameter or the ROI changed
+    //   * a new frame WHILE Live is on
+    // And never mid-travel: a picture of a scene the station will never see is
+    // worse than no picture, because it looks like a measurement.
+    if (moveWatch_.active) return;
+
+    char roiKey[64];
+    std::snprintf(roiKey, sizeof(roiKey), "|%d,%d,%d,%d,%d", m.roi.enabled ? 1 : 0,
+                  m.roi.x, m.roi.y, m.roi.w, m.roi.h);
+    const std::string        key = VisionFilterSummary(m) + roiKey;
+    const unsigned long long seq = workflow_.CameraFrameSeq();
+    const bool paramsMoved = (key != visionFilterKey_);
+    const bool liveFrame   = visionLive_ && seq != visionFilterSeq_;
+    if (!force && !paramsMoved && !liveFrame) return;
+    visionFilterKey_ = key;
+    visionFilterSeq_ = seq;
+
+    std::vector<unsigned char> gray;
+    FocusRoi used;
+    visionFilterErr_.clear();
+    // A real clock, not ImGui::GetTime(): that only advances once per frame, so
+    // it would report every chain as taking zero milliseconds.
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!workflow_.PreprocessPreview(m, &gray, &used, &visionFilterErr_) ||
+        used.w <= 0 || used.h <= 0) {
+        visionFilterW_ = visionFilterH_ = 0;
+        return;
+    }
+    visionFilterMs_ = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0).count();
+
+    // The plane's own full-frame origin, so the overlay lands on the pixels it
+    // was computed from rather than on a guess about where the ROI clamped to.
+    const int w = used.w, h = used.h;
+    visionFilterX_ = used.x;
+    visionFilterY_ = used.y;
+    visionFilterW_ = w;
+    visionFilterH_ = h;
+
+    const std::size_t n = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+    std::vector<unsigned char> rgb(n * 3);
+    for (std::size_t i = 0; i < n; ++i)
+        rgb[i * 3 + 0] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = gray[i];
+    visionFilterTex_ = host_.EnsureTextureRGB(visionFilterTex_, w, h, rgb.data());
+
+    // The overlay: foreground tinted, background fully transparent, so the scene
+    // under it stays readable. 128 is the split because every kind in the chain
+    // produces either a two-level image or an edge amplitude well clear of it.
+    std::vector<unsigned char> rgba(n * 4, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (gray[i] < 128) continue;
+        rgba[i * 4 + 0] = 255;
+        rgba[i * 4 + 1] = 210;
+        rgba[i * 4 + 2] = 60;
+        rgba[i * 4 + 3] = 150;
+    }
+    visionOverlayTex_ = host_.EnsureTextureRGBA(visionOverlayTex_, w, h, rgba.data());
+}
+
+void App::DrawVisionFilterBand(VisionModel& m)
+{
+    std::string why;
+    const bool halcon = HalconDetector::Available(&why);
+
+    ImGui::SeparatorText("Pre-process filters");
+
+    const char* kinds[] = {"None", "Binary threshold", "Gaussian", "Canny edge"};
+    const float itemW = LabelledItemWidth();
+
+    for (int i = 0; i < kVisionFilterSlots; ++i) {
+        VisionFilter& f = m.filters[i];
+        ImGui::PushID(i);
+        ImGui::Text("%d", i + 1);
+        ImGui::SameLine();
+
+        int kind = (f.kind == "binary") ? 1 : (f.kind == "gaussian") ? 2
+                 : (f.kind == "canny")  ? 3 : 0;
+        ImGui::SetNextItemWidth(-FLT_MIN);   // no label, so it may fill the row
+        if (ImGui::Combo("##kind", &kind, kinds, 4)) {
+            f.kind = (kind == 1) ? "binary" : (kind == 2) ? "gaussian"
+                   : (kind == 3) ? "canny"  : "none";
+            visionHaveDet_ = false;   // the last result was found on another image
+        }
+
+        // Only the selected kind's controls, sharing the min/max pair the way
+        // the model does — relabelled, because "Min 20 / Max 80" and "Low 20 /
+        // High 80" are different instructions to the operator.
+        if (kind == 1 || kind == 3) {
+            const bool canny = (kind == 3);
+            ImGui::Indent();
+            ImGui::SetNextItemWidth(itemW);
+            ImGui::SliderInt(canny ? "low" : "min grey", &f.thresholdMin, 0, 255);
+            ImGui::SetNextItemWidth(itemW);
+            ImGui::SliderInt(canny ? "high" : "max grey", &f.thresholdMax, 0, 255);
+            if (canny) {
+                float a = static_cast<float>(f.alpha);
+                ImGui::SetNextItemWidth(itemW);
+                if (ImGui::SliderFloat("alpha", &a, 0.2f, 5.0f, "%.1f"))
+                    f.alpha = static_cast<double>(a);
+            }
+            ImGui::Unindent();
+        } else if (kind == 2) {
+            ImGui::Indent();
+            int mask = (f.gaussMask >= 5) ? 1 : 0;
+            const char* masks[] = {"3", "5"};
+            ImGui::SetNextItemWidth(itemW);
+            if (ImGui::Combo("mask", &mask, masks, 2)) f.gaussMask = (mask == 1) ? 5 : 3;
+            ImGui::Unindent();
+        }
+        ImGui::PopID();
+    }
+
+    HelpText("Applied in order to the search ROI before the method runs; a stage's "
+             "output is the next one's input. Watch what this does to the METHOD's "
+             "own numbers: after a binary threshold the image is 0 and 255, so a "
+             "circle grey window of 0..100 now selects the background.");
+
+    // Preview sits directly above the picture it refreshes, so the button reads
+    // as "redraw this" rather than as another parameter.
+    ImGui::BeginDisabled(!halcon);
+    if (ImGui::Button("Preview")) {
+        RefreshVisionPreview(m, true);
+        visionStatus_ = visionFilterErr_.empty() ? "preview updated"
+                                                 : ("preview: " + visionFilterErr_);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (visionFilterW_ > 0)
+        ImGui::TextDisabled("%d x %d px   %.0f ms", visionFilterW_, visionFilterH_,
+                            visionFilterMs_);
+    else
+        ImGui::TextDisabled("no picture yet");
+
+    // The picture. Same chain, same pixels the detector will see — the whole
+    // point of routing the preview through HalconDetector::Preprocess rather
+    // than reimplementing three filters over here.
+    const float availW = ImGui::GetContentRegionAvail().x;
+    const float boxH   = 150.0f;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        origin, ImVec2(origin.x + availW, origin.y + boxH), IM_COL32(20, 20, 22, 255));
+    if (visionFilterTex_ != 0 && visionFilterW_ > 0 && visionFilterH_ > 0) {
+        const float sc = fminf(availW / static_cast<float>(visionFilterW_),
+                               boxH / static_cast<float>(visionFilterH_));
+        const ImVec2 sz(static_cast<float>(visionFilterW_) * sc,
+                        static_cast<float>(visionFilterH_) * sc);
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + (availW - sz.x) * 0.5f,
+                                         origin.y + (boxH - sz.y) * 0.5f));
+        ImGui::Image((ImTextureID)(intptr_t)visionFilterTex_, sz);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + boxH));
+    ImGui::Dummy(ImVec2(availW, 0.0f));
+
+    // The chain is HALCON operators, so a licence problem takes the picture with
+    // it — said here, verbatim, rather than leaving an empty box to interpret.
+    // The parameters above stay editable and still save.
+    if (!halcon || !visionFilterErr_.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+        ImGui::TextWrapped("%s", halcon ? visionFilterErr_.c_str() : why.c_str());
+        ImGui::PopStyleColor();
+    }
+}
+
 // ---- The parameter column ---------------------------------------------------
 
 void App::DrawVisionTeachParams(VisionModel& m)
@@ -921,66 +1192,31 @@ void App::DrawVisionTeachParams(VisionModel& m)
     const bool halcon = HalconDetector::Available(&why);
     const bool busy   = orch_.Busy();
     const float itemW = LabelledItemWidth();
-
-    // ---- 1. Camera ----
-    ImGui::SeparatorText("Camera");
-    float expo = static_cast<float>(m.exposureUs);
-    ImGui::SetNextItemWidth(120.0f);
-    if (ImGui::InputFloat("exposure (us)", &expo, 0.0f, 0.0f, "%.0f"))
-        m.exposureUs = expo < 0.0f ? 0.0 : static_cast<double>(expo);
-    ImGui::SameLine();
-    ImGui::BeginDisabled(m.exposureUs <= 0.0);
-    if (ImGui::Button("Apply##visexpo")) workflow_.SetCameraExposure(m.exposureUs);
-    ImGui::EndDisabled();
-    HelpText("0 = leave the camera alone. A model is tuned AT an exposure, so it "
-             "carries the one it was taught with.");
-
-    const Workflow::FocusSample fs = workflow_.LatestFocus();
-    if (fs.ok) {
-        const bool badLuma = fs.meanLuma < 5.0 || fs.meanLuma > 250.0;
-        ImGui::TextColored(badLuma ? kWarn : ImGui::GetStyle().Colors[ImGuiCol_Text],
-                           "focus %.0f   luma %.0f", fs.score, fs.meanLuma);
-        if (badLuma) {
-            ImGui::SameLine();
-            ImGui::TextColored(kWarn, "(fix exposure first)");
-        }
-    }
     double mmX = 0.0, mmY = 0.0;
     workflow_.CameraPixelToMm(mmX, mmY);
-    ImGui::TextDisabled("%.5f / %.5f mm per px (Camera page)", mmX, mmY);
 
-    // ---- 2. Search ROI ----
-    ImGui::SeparatorText("Search ROI");
-    ImGui::Checkbox("limit the search to a region", &m.roi.enabled);
-    ImGui::BeginDisabled(!m.roi.enabled);
-    int roi[4] = {m.roi.x, m.roi.y, m.roi.w, m.roi.h};
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::DragInt4("##roi", roi, 1.0f, 0, 100000, "%d")) {
-        m.roi.x = roi[0]; m.roi.y = roi[1]; m.roi.w = roi[2]; m.roi.h = roi[3];
-    }
-    if (ImGui::Button(visionDragMode_ == 1 ? "drag it on the image..." : "Set ROI by drag"))
-        visionDragMode_ = (visionDragMode_ == 1) ? 0 : 1;
-    ImGui::SameLine();
-    if (ImGui::Button("Full frame")) {
-        m.roi = VisionRoi{};
-        visionFocusX_ = static_cast<float>(cameraW_) * 0.5f;
-        visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
-    }
-    ImGui::EndDisabled();
-    HelpText("x / y / w / h in camera pixels. An ROI is the cheapest speed-up there "
-             "is, and usually the difference between a detector that can run live "
-             "and one that cannot.");
-
-    // ---- 3. Method ----
-    ImGui::SeparatorText("Method");
+    // ---- 1. Method ----
+    // At the very top, and without a separator: it decides what the rest of this
+    // column even means, so it reads as the column's subject rather than as one
+    // band among six.
     int method = (m.method == "ncc") ? 1 : (m.method == "corner") ? 2 : 0;
     const char* methods[] = {"Circle / fiducial", "Pattern (NCC)", "Square corner"};
     ImGui::SetNextItemWidth(itemW);
-    if (ImGui::Combo("method", &method, methods, 3)) {
+    if (ImGui::Combo("detection method", &method, methods, 3)) {
         m.method = (method == 1) ? "ncc" : (method == 2) ? "corner" : "circle";
         visionHaveDet_    = false;
         visionAnchorOpen_ = false;   // the picker belongs to the NCC form
     }
+
+    // ---- 2. Pre-process ----
+    // Above the method form, because that is the order the pixels travel in:
+    // crop -> chain -> method.
+    DrawVisionFilterBand(m);
+
+    // ---- 3. The method's own form ----
+    ImGui::SeparatorText(m.method == "ncc"      ? "Template (NCC)"
+                         : m.method == "corner" ? "Square corner"
+                                                : "Circle / fiducial");
 
     if (m.method == "circle") {
         CircleParams& c = m.circle;
@@ -1110,12 +1346,37 @@ void App::DrawVisionTeachParams(VisionModel& m)
                  "fastest. Raise it only if the part really turns.");
     }
 
-    // ---- 4. Detect ----
+    // ---- 4. Search ROI ----
+    // Below the method, above Detect: it is the last thing narrowed before the
+    // run, and the chain above is described in terms of it.
+    ImGui::SeparatorText("Search ROI");
+    ImGui::Checkbox("limit the search to a region", &m.roi.enabled);
+    ImGui::BeginDisabled(!m.roi.enabled);
+    int roi[4] = {m.roi.x, m.roi.y, m.roi.w, m.roi.h};
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::DragInt4("##roi", roi, 1.0f, 0, 100000, "%d")) {
+        m.roi.x = roi[0]; m.roi.y = roi[1]; m.roi.w = roi[2]; m.roi.h = roi[3];
+    }
+    if (ImGui::Button(visionDragMode_ == 1 ? "drag it on the image..." : "Set ROI by drag"))
+        visionDragMode_ = (visionDragMode_ == 1) ? 0 : 1;
+    ImGui::SameLine();
+    if (ImGui::Button("Full frame")) {
+        m.roi = VisionRoi{};
+        visionFocusX_ = static_cast<float>(cameraW_) * 0.5f;
+        visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
+    }
+    ImGui::EndDisabled();
+    HelpText("x / y / w / h in camera pixels. An ROI is the cheapest speed-up there "
+             "is, and usually the difference between a detector that can run live "
+             "and one that cannot.");
+
+    // ---- 5. Detect ----
     ImGui::SeparatorText("Detect");
     ImGui::BeginDisabled(!halcon);
     if (ImGui::Button("Detect once", ImVec2(120.0f, 0.0f))) {
         workflow_.Detect(m, session_.VisionDir(), &visionDet_);
         visionHaveDet_ = true;
+        visionStatus_  = visionDet_.ok ? "detected" : ("no match: " + visionDet_.error);
     }
     ImGui::SameLine();
     ImGui::Checkbox("Live", &visionLive_);
@@ -1131,29 +1392,13 @@ void App::DrawVisionTeachParams(VisionModel& m)
         ImGui::TextDisabled("(drop a licence .dat in and re-check - no restart)");
     }
 
-    if (visionHaveDet_) {
-        if (visionDet_.ok) {
-            ImGui::TextColored(kGood, "found %d  score %.3f  %.1f ms",
-                               visionDet_.count, visionDet_.score, visionDet_.elapsedMs);
-            ImGui::Text("x %.2f  y %.2f px", visionDet_.xPx, visionDet_.yPx);
-            ImGui::Text("dX %+.4f  dY %+.4f mm", visionDet_.dxMM, visionDet_.dyMM);
-            if (m.method == "ncc")
-                ImGui::Text("angle %.3f deg", visionDet_.angleDeg);
-            else if (m.method == "corner")
-                ImGui::Text("sides %.1f x %.1f px  (%.4f mm)  corner->centre %.1f deg",
-                            visionDet_.widthPx, visionDet_.heightPx,
-                            visionDet_.lengthPx * mmX, visionDet_.angleDeg);
-            else
-                ImGui::Text("radius %.2f px  (%.4f mm)", visionDet_.radiusPx,
-                            visionDet_.radiusPx * mmX);
-            if (visionDet_.elapsedMs > kSlowDetectMs)
-                ImGui::TextColored(kWarn, "slow - tighten the ROI or drop a pyramid level");
-        } else {
-            ImGui::TextColored(kBad, "%s", visionDet_.error.c_str());
-        }
-    }
+    // The numbers themselves live in the RESULTS column: a detection is a
+    // result, and putting it here as well would give an operator two places to
+    // read one thing, which is how they end up disagreeing.
+    if (visionHaveDet_ && visionDet_.ok && visionDet_.elapsedMs > kSlowDetectMs)
+        ImGui::TextColored(kWarn, "slow - tighten the ROI or drop a pyramid level");
 
-    // ---- 5. Reliability ----
+    // ---- 6. Reliability ----
     ImGui::SeparatorText("Reliability");
     ImGui::SetNextItemWidth(90.0f);
     ImGui::DragInt("runs", &visionTestRuns_, 1.0f, 2, 500);
@@ -1227,12 +1472,154 @@ void App::DrawVisionTeachParams(VisionModel& m)
     }
 }
 
+// ---- The result column ------------------------------------------------------
+// What the detector just said, kept out of the parameter column so tuning and
+// reading a result are not competing for the same strip of screen.
+//
+// Two pictures rather than one: the scene AT the reported point, cropped from
+// the RAW frame, beside the patch the model is looking for. "Found" and "asked
+// for" side by side is the comparison an operator actually makes, and it is the
+// one a single number (score 0.83) never quite answers.
+
+void App::DrawVisionResultPanel(const VisionModel& m)
+{
+    ImGui::SeparatorText("Matched location");
+
+    const float half = (ImGui::GetContentRegionAvail().x - 8.0f) * 0.5f;
+    const float tileH = 130.0f;
+
+    // Left tile: the raw scene around the last detection. Rebuilt only when the
+    // detection itself moved on — this runs every frame.
+    if (visionHaveDet_ && visionDet_.ok && cameraW_ > 0 && cameraH_ > 0) {
+        int side = 80;
+        if (m.method == "ncc")
+            side = (m.ncc.tmplW > m.ncc.tmplH ? m.ncc.tmplW : m.ncc.tmplH) + 20;
+        else if (m.method == "circle")
+            side = static_cast<int>(visionDet_.radiusPx * 2.0 + 20.0);
+        else
+            side = static_cast<int>(m.corner.sizePx * 2.0);
+        if (side < 24)  side = 24;
+        if (side > 512) side = 512;
+
+        char key[96];
+        std::snprintf(key, sizeof(key), "%llu|%.1f|%.1f|%d",
+                      static_cast<unsigned long long>(visionDet_.frameSeq),
+                      visionDet_.xPx, visionDet_.yPx, side);
+        if (visionCropKey_ != key) {
+            visionCropKey_ = key;
+            visionCropW_ = visionCropH_ = 0;
+            FocusRoi want;
+            want.x = static_cast<int>(visionDet_.xPx - side * 0.5);
+            want.y = static_cast<int>(visionDet_.yPx - side * 0.5);
+            want.w = side;
+            want.h = side;
+            std::vector<unsigned char> gray;
+            const FocusRoi got = RgbToGray8(frameBuf_.data(), cameraW_, cameraH_, want, gray);
+            if (got.w > 0 && got.h > 0) {
+                std::vector<unsigned char> rgb(gray.size() * 3);
+                for (std::size_t i = 0; i < gray.size(); ++i)
+                    rgb[i * 3 + 0] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = gray[i];
+                visionCropTex_ = host_.EnsureTextureRGB(visionCropTex_, got.w, got.h,
+                                                        rgb.data());
+                visionCropW_ = got.w;
+                visionCropH_ = got.h;
+            }
+        }
+    }
+
+    const auto tile = [&](unsigned int tex, int tw, int th, const char* empty) {
+        const ImVec2 o = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddRectFilled(o, ImVec2(o.x + half, o.y + tileH),
+                                                  IM_COL32(20, 20, 22, 255));
+        if (tex != 0 && tw > 0 && th > 0) {
+            const float sc = fminf(half / static_cast<float>(tw),
+                                   tileH / static_cast<float>(th));
+            const ImVec2 sz(static_cast<float>(tw) * sc, static_cast<float>(th) * sc);
+            ImGui::SetCursorScreenPos(ImVec2(o.x + (half - sz.x) * 0.5f,
+                                             o.y + (tileH - sz.y) * 0.5f));
+            ImGui::Image((ImTextureID)(intptr_t)tex, sz);
+        } else {
+            const ImVec2 ts = ImGui::CalcTextSize(empty);
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(o.x + (half - ts.x) * 0.5f, o.y + (tileH - ts.y) * 0.5f),
+                IM_COL32(120, 120, 125, 255), empty);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + tileH));
+        ImGui::Dummy(ImVec2(half, 0.0f));
+    };
+
+    ImGui::BeginGroup();
+    tile(visionCropTex_, visionCropW_, visionCropH_, "no match");
+    ImGui::TextDisabled("found");
+    ImGui::EndGroup();
+    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::BeginGroup();
+    const bool havePatch = EnsurePatchTex(visionTmpl_, m);
+    tile(havePatch ? visionTmpl_.tex : 0u, visionTmpl_.w, visionTmpl_.h, "no template");
+    ImGui::TextDisabled("looking for");
+    ImGui::EndGroup();
+
+    // ---- the numbers ----
+    ImGui::SeparatorText("Results");
+    if (!visionHaveDet_) {
+        ImGui::TextDisabled("nothing detected yet");
+    } else if (!visionDet_.ok) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+        ImGui::TextWrapped("%s", visionDet_.error.c_str());
+        ImGui::PopStyleColor();
+    } else if (ImGui::BeginTable("visresulttbl", 2,
+                                 ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        const auto row = [](const char* k, const char* fmt, ...) {
+            char v[64];
+            va_list ap;
+            va_start(ap, fmt);
+            std::vsnprintf(v, sizeof(v), fmt, ap);
+            va_end(ap);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", k);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(v);
+        };
+        double mmX = 0.0, mmY = 0.0;
+        workflow_.CameraPixelToMm(mmX, mmY);
+
+        row("x",     "%.2f px", visionDet_.xPx);
+        row("y",     "%.2f px", visionDet_.yPx);
+        row("dx",    "%+.4f mm", visionDet_.dxMM);
+        row("dy",    "%+.4f mm", visionDet_.dyMM);
+        row("angle", "%.3f deg", visionDet_.angleDeg);
+        row("score", "%.3f", visionDet_.score);
+        row("count", "%d", visionDet_.count);
+        if (m.method == "circle")
+            row("radius", "%.2f px  (%.4f mm)", visionDet_.radiusPx,
+                visionDet_.radiusPx * mmX);
+        else if (m.method == "corner")
+            row("sides", "%.1f x %.1f px", visionDet_.widthPx, visionDet_.heightPx);
+        row("frame", "%llu", static_cast<unsigned long long>(visionDet_.frameSeq));
+        row("time",  "%.1f ms", visionDet_.elapsedMs);
+        ImGui::EndTable();
+    }
+
+    // ---- the status line, pinned to the foot ----
+    const float lineH = ImGui::GetTextLineHeightWithSpacing();
+    const float space = ImGui::GetContentRegionAvail().y - lineH;
+    if (space > 0.0f) ImGui::Dummy(ImVec2(1.0f, space));
+    ImGui::Separator();
+    ImGui::TextDisabled("%s", visionStatus_.c_str());
+}
+
 // ---- The page --------------------------------------------------------------
 // A full-page takeover like the other editors, not a floating window: teaching
 // a detector is a task you do FOR a station and then leave, and the operator is
 // not meant to be jogging or watching another page underneath. The shared
 // editor frame in MainWindow.cpp draws the title and the Close button (which
 // returns to the Alignment page); everything below is the body.
+//
+// Three columns — image | method + chain | results — ported from the sibling
+// Horizon project's FAAM.UI vision profile page. The old two-pane layout queued
+// camera, ROI, method, detect and reliability into one narrow strip; the work
+// has three parts, and they are now three columns.
 
 void App::DrawVisionTeachPanel()
 {
@@ -1244,16 +1631,46 @@ void App::DrawVisionTeachPanel()
         return;
     }
 
-    // ---- Owner bar ----
+    // ---- Top strip ----
     // No model list, no New/Duplicate/Delete, no name field: a model belongs to
     // exactly one station and is created, named and destroyed with it. What the
-    // bar has to answer is "which station am I tuning?", not "which model".
+    // strip has to answer is "which station am I tuning, and am I standing at
+    // it?", not "which model". (Horizon's page has a profile picker and
+    // New/Load/Save/History because a profile there is a free-standing document;
+    // here there is nothing to pick.)
     ImGui::TextUnformatted(visionOwnerLabel_.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+
+    // Drive back to where this model belongs. Opening the page already did it
+    // once; this is for after an operator has jogged away to look at something.
+    const bool canMove = !visionOwnerDevice_.empty() && !visionOwnerPosUid_.empty() &&
+                         !orch_.Busy();
+    ImGui::BeginDisabled(!canMove);
+    if (ImGui::Button("Move to")) {
+        if (!StartWatchedMove(visionOwnerDevice_, visionOwnerPosUid_, visionOwnerLabel_))
+            visionStatus_ = "the move was refused - is " + visionOwnerDevice_ + " connected?";
+        else
+            visionStatus_ = "driving to " + visionOwnerLabel_;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (visionOwnerPosUid_.empty())
+            ImGui::SetTooltip("This model's owner has no position taught, so there\n"
+                              "is nowhere to drive to.");
+        else
+            ImGui::SetTooltip("Drive %s back to the pose this model is tuned at.\n"
+                              "A model only means anything at its own pose.",
+                              visionOwnerDevice_.c_str());
+    }
+
     ImGui::SameLine();
     const bool dirty = session_.VisionDirty();
     if (ImGui::Button(dirty ? "Save *" : "Save")) {
         session_.SaveVision();
         workflow_.InvalidateDetector(m->uid);   // next detect rebuilds from the saved model
+        visionStatus_ = "saved";
     }
     ImGui::SameLine();
     // The one-button exit, because leaving is what you do when you are done
@@ -1276,25 +1693,53 @@ void App::DrawVisionTeachPanel()
                                : "drag a rectangle around the feature to cut the template");
     ImGui::Separator();
 
-    // ---- Body: big live image | draggable splitter | parameter column ----
-    // The column is resizable because its natural width is not a constant: a
-    // circle model's form is short and narrow, an NCC model's carries a
-    // thumbnail and a longer label set, and the operator's font size moves both.
-    constexpr float kSplitW    = 6.0f;
-    constexpr float kMinImageW = 240.0f;
-    constexpr float kMinParamW = 200.0f;
+    // ---- Body: image | chain + method | results, two draggable splitters ----
+    // Both side columns are resizable because neither natural width is a
+    // constant: a circle model's form is short, an NCC model's carries a
+    // thumbnail and longer labels, and the operator's font size moves both.
+    constexpr float kSplitW     = 6.0f;
+    constexpr float kMinImageW  = 240.0f;
+    constexpr float kMinParamW  = 200.0f;
+    constexpr float kMinResultW = 160.0f;
 
-    const float bodyH  = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing();
+    const float bodyH  = ImGui::GetContentRegionAvail().y;
     const float totalW = ImGui::GetContentRegionAvail().x;
     // Clamp every frame, not just on drag: the main window is resizable too, and
-    // a width saved on a wide monitor must not push the image off a narrow one.
-    const float maxParamW = totalW - kSplitW - kMinImageW;
-    if (visionParamW_ > maxParamW) visionParamW_ = maxParamW;
-    if (visionParamW_ < kMinParamW) visionParamW_ = kMinParamW;
+    // widths saved on a wide monitor must not push the image off a narrow one.
+    if (visionResultW_ < kMinResultW) visionResultW_ = kMinResultW;
+    if (visionParamW_  < kMinParamW)  visionParamW_  = kMinParamW;
+    const float maxSides = totalW - 2.0f * kSplitW - kMinImageW;
+    if (visionParamW_ + visionResultW_ > maxSides) {
+        // Give back proportionally, so a narrow window shrinks both rather than
+        // collapsing whichever happens to be clamped second.
+        const float scale = maxSides / (visionParamW_ + visionResultW_);
+        visionParamW_  *= scale > 0.0f ? scale : 1.0f;
+        visionResultW_ *= scale > 0.0f ? scale : 1.0f;
+        if (visionResultW_ < kMinResultW) visionResultW_ = kMinResultW;
+        if (visionParamW_  < kMinParamW)  visionParamW_  = kMinParamW;
+    }
 
-    ImGui::BeginChild("visimg", ImVec2(totalW - visionParamW_ - kSplitW, bodyH),
+    // Floored: the two minimums above can together exceed a very narrow window,
+    // and ImGui reads a negative width as "available minus this", which would
+    // turn a cramped layout into a scrambled one.
+    const float imageW = fmaxf(40.0f,
+                               totalW - visionParamW_ - visionResultW_ - 2.0f * kSplitW);
+
+    ImGui::BeginChild("visimg", ImVec2(imageW, bodyH),
                       ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollWithMouse);
-    DrawVisionTeachImage(*m);
+    {
+        // The camera strip is pinned to the foot of this column (two rows), so
+        // the image gets everything above it. Floored rather than allowed to go
+        // negative: ImGui reads a negative height as "available minus this",
+        // which would silently invert the layout on a very short window.
+        const float footH = ImGui::GetFrameHeightWithSpacing() * 2.0f;
+        const float viewH = fmaxf(60.0f, ImGui::GetContentRegionAvail().y - footH);
+        ImGui::BeginChild("visimgview", ImVec2(0.0f, viewH),
+                          ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollWithMouse);
+        DrawVisionTeachImage(*m);
+        ImGui::EndChild();
+        DrawVisionCameraFoot(*m);
+    }
     ImGui::EndChild();
 
     ImGui::SameLine(0.0f, 0.0f);
@@ -1311,20 +1756,23 @@ void App::DrawVisionTeachPanel()
     DrawVisionTeachParams(*m);
     ImGui::EndChild();
 
-    // Floating, so it is drawn outside the two body children — a window begun
+    ImGui::SameLine(0.0f, 0.0f);
+    if (Splitter("##visressplit", true, kSplitW, bodyH)) {
+        visionResultW_ -= ImGui::GetIO().MouseDelta.x;
+        visionResultSplitting_ = true;
+    } else if (visionResultSplitting_) {
+        visionResultSplitting_ = false;
+        SaveUiSettings();
+    }
+    ImGui::SameLine(0.0f, 0.0f);
+
+    ImGui::BeginChild("visresults", ImVec2(visionResultW_, bodyH), ImGuiChildFlags_Borders);
+    DrawVisionResultPanel(*m);
+    ImGui::EndChild();
+
+    // Floating, so it is drawn outside the body children — a window begun
     // inside a child would inherit its clip rect.
     DrawVisionAnchorWindow(*m);
-
-    // ---- Footer ----
-    ImGui::TextUnformatted("zoom");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(140.0f);
-    ImGui::SliderFloat("##viszoom", &visionZoom_, 1.0f, 16.0f, "x%.2f",
-                       ImGuiSliderFlags_Logarithmic);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Fit")) visionZoom_ = 1.0f;
-    ImGui::SameLine();
-    ImGui::TextDisabled("wheel over the image zooms  |  models are saved with the product");
 
     // Live re-detect, gated on a NEW frame so a still feed costs nothing. Done
     // after the draw so the overlay above and this detection stay one frame
@@ -1347,6 +1795,12 @@ void App::DrawVisionTeachPanel()
             }
         }
     }
+
+    // The filtered picture, on the same after-the-draw footing as the detect
+    // above: it decides for itself whether anything moved, so an edit made in
+    // the form this frame is on screen the next one. Textures are not the
+    // document, so this is not a Draw mutating one.
+    RefreshVisionPreview(*m, false);
 }
 
 } // namespace firedog

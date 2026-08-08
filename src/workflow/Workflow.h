@@ -179,8 +179,18 @@ public:
     bool Detect(const VisionModel& m, const std::string& modelDir,
                 VisionDetection* out);
 
+    // Run ONLY `m`'s pre-process chain over the newest frame and hand back the
+    // filtered 8-bit plane (`w`/`h` are the search ROI that survived clamping).
+    // What the teach page's preview panel shows — the SAME chain Detect applies
+    // one line before it dispatches to a method, so the picture cannot drift
+    // from what the detector actually sees.
+    bool PreprocessPreview(const VisionModel& m, std::vector<unsigned char>* gray,
+                           FocusRoi* used, std::string* err);
+
     // Teach `m`'s template from the newest frame. Writes the .pgm under
     // `modelDir` and reports the patch size the caller stores in the model.
+    // With a pre-process chain set, the patch is cut from the FILTERED plane —
+    // a raw template would score nothing against a filtered live image.
     bool TeachDetector(const VisionModel& m, const std::string& modelDir,
                        const VisionRoi& patch, int* tmplW, int* tmplH,
                        std::string* err);

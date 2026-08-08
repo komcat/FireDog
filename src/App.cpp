@@ -60,7 +60,8 @@ int App::Run()
         if (ui.leftW  > 0.0f) leftW_  = ui.leftW;
         if (ui.rightW > 0.0f) rightW_ = ui.rightW;
         if (ui.lowerH > 0.0f) lowerH_ = ui.lowerH;
-        if (ui.visionParamW > 0.0f) visionParamW_ = ui.visionParamW;
+        if (ui.visionParamW  > 0.0f) visionParamW_  = ui.visionParamW;
+        if (ui.visionResultW > 0.0f) visionResultW_ = ui.visionResultW;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
         showVisionMarks_ = ui.showVisionMarks;
@@ -268,7 +269,8 @@ void App::SaveUiSettings()
     s.leftW     = leftW_;
     s.rightW    = rightW_;
     s.lowerH    = lowerH_;
-    s.visionParamW = visionParamW_;
+    s.visionParamW  = visionParamW_;
+    s.visionResultW = visionResultW_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.showVisionMarks = showVisionMarks_;

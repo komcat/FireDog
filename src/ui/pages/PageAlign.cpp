@@ -529,6 +529,11 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
             ImGui::TextDisabled("%s%s", model->method.c_str(),
                                 (model->method == "ncc" && model->templateFile.empty())
                                     ? "  (no template taught)" : "");
+            // A pre-processed model behaves nothing like a raw one, and the
+            // chain is invisible from here otherwise — an operator reading a
+            // card would have no idea the image was thresholded first.
+            const std::string chain = VisionFilterSummary(*model);
+            if (!chain.empty()) ImGui::TextDisabled("pre-process: %s", chain.c_str());
             if (model->rel.runs > 0) {
                 ImGui::TextDisabled("%d/%d ok, sigma %.2f px, tested %s",
                                     model->rel.ok, model->rel.runs,

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <vector>
 
 #ifdef HAS_HALCON
@@ -109,12 +110,145 @@ bool HalconDetector::Detect(const unsigned char*, int, int, VisionDetection* out
     return Miss(out, why);
 }
 
+// The chain is HALCON operators, so without the SDK there is no preview to
+// give. The filter PARAMETERS are still editable and still persist (this whole
+// file's absence changes nothing in VisionModel.cpp) — only the picture and the
+// detection are gone, each saying so with the engine's own reason.
+bool HalconDetector::Preprocess(const VisionModel&, const unsigned char*, int, int,
+                                std::vector<unsigned char>* gray, FocusRoi* used,
+                                std::string* err)
+{
+    if (gray) gray->clear();
+    if (used) *used = FocusRoi{};
+    Available(err);
+    return false;
+}
+
 // ===========================================================================
 //  Build WITH the SDK
 // ===========================================================================
 #else
 
 using namespace HalconCpp;
+
+namespace {
+
+// ---- the pre-process chain -------------------------------------------------
+// Three slots, applied in order to the ROI plane BEFORE any method looks at it.
+// Ported operator-for-operator from Horizon's VisionFacet.ApplyOneFilter, so a
+// chain tuned on the sibling machine behaves the same here.
+//
+// It is a plain fold: stage N's output IS stage N+1's input. A "none" slot is
+// skipped rather than collapsing the list, so slots 1 and 3 with 2 empty is the
+// two-stage chain [1,3] and the numbers on screen keep meaning what they say.
+
+bool AnyFilter(const VisionModel& m)
+{
+    for (const VisionFilter& f : m.filters)
+        if (f.kind != "none" && !f.kind.empty()) return true;
+    return false;
+}
+
+HImage ApplyOneFilter(const HImage& g, const VisionFilter& f, int w, int h)
+{
+    if (f.kind == "gaussian")
+        return g.GaussImage(static_cast<Hlong>(f.gaussMask >= 5 ? 5 : 3));
+
+    if (f.kind == "binary") {
+        // Foreground 255 / background 0, so what the next stage (and the
+        // method's own threshold) sees is a clean two-level image.
+        const HRegion region = g.Threshold(static_cast<double>(f.thresholdMin),
+                                           static_cast<double>(f.thresholdMax));
+        return region.RegionToBin(255, 0, static_cast<Hlong>(w), static_cast<Hlong>(h));
+    }
+
+    if (f.kind == "canny") {
+        // The direction image is discarded: the chain carries one plane, and an
+        // edge ANGLE is not something a downstream threshold or match can use.
+        const double alpha = (f.alpha > 0.0) ? f.alpha : 1.0;
+        HImage dir;
+        const HImage amp = g.EdgesImage(&dir, HString("canny"), alpha, HString("nms"),
+                                        static_cast<Hlong>(f.thresholdMin),
+                                        static_cast<Hlong>(f.thresholdMax));
+        return amp.ConvertImageType(HString("byte"));
+    }
+
+    return g;   // "none", or a kind written by a newer build than this one
+}
+
+// Fold the chain over `gray` IN PLACE. False + `err` on a HALCON failure; the
+// buffer is left untouched, so a caller that ignores the failure detects on raw
+// pixels rather than on half a chain.
+//
+// The empty chain returns before a HImage is even built: the common case must
+// cost nothing, or an ROI-sized copy would be charged to every frame of every
+// unfiltered model in the machine.
+bool ApplyFilterChain(const VisionModel& m, std::vector<unsigned char>& gray,
+                      int w, int h, std::string* err)
+{
+    if (!AnyFilter(m) || w <= 0 || h <= 0) return true;
+    if (gray.size() < static_cast<std::size_t>(w) * static_cast<std::size_t>(h)) {
+        if (err) *err = "pre-process: the grey plane is smaller than its own size";
+        return false;
+    }
+    try {
+        // gen_image1 COPIES the pixels (gen_image1_extern is the one that
+        // borrows), so `gray` may be overwritten from the result below.
+        HImage cur;
+        cur.GenImage1("byte", static_cast<Hlong>(w), static_cast<Hlong>(h),
+                      static_cast<void*>(gray.data()));
+        for (const VisionFilter& f : m.filters) {
+            if (f.kind == "none" || f.kind.empty()) continue;
+            cur = ApplyOneFilter(cur, f, w, h);
+        }
+
+        HString type;
+        Hlong   ow = 0, oh = 0;
+        const void* p = cur.GetImagePointer1(&type, &ow, &oh);
+        if (!p || ow != static_cast<Hlong>(w) || oh != static_cast<Hlong>(h)) {
+            if (err) *err = "pre-process: a filter changed the image size";
+            return false;
+        }
+        const unsigned char* src = static_cast<const unsigned char*>(p);
+        gray.assign(src, src + static_cast<std::size_t>(w) * static_cast<std::size_t>(h));
+        return true;
+    } catch (const HException& e) {
+        if (err) *err = std::string("pre-process failed: ") + e.ErrorMessage().Text();
+        return false;
+    }
+}
+
+// Cut `box` (full-frame px) out of an ALREADY-converted plane whose own origin
+// and size are `plane` (also full-frame px). Returns the rect actually taken,
+// clamped to the plane — the same contract RgbToGray8 has, so a caller cannot
+// tell which route produced its patch.
+FocusRoi CropPlane(const std::vector<unsigned char>& src, const FocusRoi& plane,
+                   const FocusRoi& box, std::vector<unsigned char>& out)
+{
+    out.clear();
+    int x0 = box.x, y0 = box.y;
+    int x1 = box.x + box.w, y1 = box.y + box.h;
+    if (x0 < plane.x) x0 = plane.x;
+    if (y0 < plane.y) y0 = plane.y;
+    if (x1 > plane.x + plane.w) x1 = plane.x + plane.w;
+    if (y1 > plane.y + plane.h) y1 = plane.y + plane.h;
+    if (x1 <= x0 || y1 <= y0) return FocusRoi{};
+
+    FocusRoi got;
+    got.x = x0; got.y = y0; got.w = x1 - x0; got.h = y1 - y0;
+    out.resize(static_cast<std::size_t>(got.w) * static_cast<std::size_t>(got.h));
+    for (int y = 0; y < got.h; ++y) {
+        const unsigned char* s =
+            src.data() + static_cast<std::size_t>(y + got.y - plane.y) *
+                             static_cast<std::size_t>(plane.w) +
+            static_cast<std::size_t>(got.x - plane.x);
+        std::memcpy(out.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(got.w),
+                    s, static_cast<std::size_t>(got.w));
+    }
+    return got;
+}
+
+} // namespace
 
 struct HalconDetector::Impl {
     VisionModel model;
@@ -515,7 +649,37 @@ bool HalconDetector::Teach(const VisionModel& m, const unsigned char* rgb, int w
     FocusRoi want;
     want.x = patch.x; want.y = patch.y; want.w = patch.w; want.h = patch.h;
     std::vector<unsigned char> gray;
-    const FocusRoi got = RgbToGray8(rgb, w, h, want, gray);
+    FocusRoi got;
+
+    if (!AnyFilter(m)) {
+        // No chain: crop and convert in the one pass, as it always did.
+        got = RgbToGray8(rgb, w, h, want, gray);
+    } else {
+        // A chain: the template MUST be cut from the filtered plane. Matching a
+        // raw patch against a filtered live image scores nothing, and the
+        // failure looks like a badly taught template rather than a wrong order.
+        //
+        // Filter the same plane a detect will filter — the search ROI — so the
+        // patch carries the same border behaviour the match will see. A box that
+        // reaches outside the ROI cannot be cut from it, so that case filters the
+        // whole frame instead and says so; silently cropping to the ROI would
+        // teach a template of the wrong size.
+        std::vector<unsigned char> plane;
+        FocusRoi used = RgbToGray8(rgb, w, h, SearchRoi(m.roi), plane);
+        const bool inside = want.w > 0 && want.h > 0 &&
+                            want.x >= used.x && want.y >= used.y &&
+                            want.x + want.w <= used.x + used.w &&
+                            want.y + want.h <= used.y + used.h;
+        if (!inside) {
+            used = RgbToGray8(rgb, w, h, FocusRoi{}, plane);
+            FD_WARN("vision", "'%s': the template box reaches outside the search ROI - "
+                              "pre-processing the whole frame to cut it",
+                    m.name.c_str());
+        }
+        if (!ApplyFilterChain(m, plane, used.w, used.h, err)) return false;
+        got = CropPlane(plane, used, want, gray);
+    }
+
     if (got.w < 4 || got.h < 4) {
         if (err) *err = "the template box is too small (need at least 4x4 px)";
         return false;
@@ -562,6 +726,22 @@ bool HalconDetector::Detect(const unsigned char* rgb, int w, int h, VisionDetect
         return Miss(out, "the search ROI does not overlap the frame");
     }
 
+    // Pre-processing, between the crop and the method — the ONE place it is
+    // applied at run time. Every caller (align_station, place_mark,
+    // vision_detect, vision_test, the teach page's Detect) funnels through
+    // Workflow::Detect to here, so a chain cannot be honoured on one path and
+    // forgotten on another.
+    //
+    // Note the difference from Horizon, which reduces the HALCON DOMAIN and
+    // keeps the surrounding pixels: RgbToGray8 has already CROPPED, so a
+    // gaussian or a canny sees the ROI edge as an image edge. That costs a
+    // mask/2 rim and buys the coordinate handling below, which is already right.
+    std::string ferr;
+    if (!ApplyFilterChain(impl_->model, gray, used.w, used.h, &ferr)) {
+        out->elapsedMs = NowMs() - t0;
+        return Miss(out, ferr);
+    }
+
     const bool found =
         (impl_->model.method == "ncc")      ? impl_->DetectNcc(gray.data(), used.w, used.h, out)
       : (impl_->model.method == "corner")   ? impl_->DetectCorner(gray.data(), used.w, used.h, out)
@@ -575,6 +755,33 @@ bool HalconDetector::Detect(const unsigned char* rgb, int w, int h, VisionDetect
     }
     out->elapsedMs = NowMs() - t0;
     return found;
+}
+
+// The preview's half of Detect: the same crop, the same chain, and then stop.
+// Everything a method would go on to do is left out, so this runs before there
+// is a template to build a model from — which is exactly when the chain is
+// being tuned.
+bool HalconDetector::Preprocess(const VisionModel& m, const unsigned char* rgb,
+                                int w, int h, std::vector<unsigned char>* gray,
+                                FocusRoi* used, std::string* err)
+{
+    if (gray) gray->clear();
+    if (used) *used = FocusRoi{};
+    if (!gray) return false;
+    if (!Available(err)) return false;
+    if (!rgb || w <= 0 || h <= 0) {
+        if (err) *err = "no camera frame";
+        return false;
+    }
+
+    const FocusRoi got = RgbToGray8(rgb, w, h, SearchRoi(m.roi), *gray);
+    if (got.w <= 0 || got.h <= 0) {
+        if (err) *err = "the search ROI does not overlap the frame";
+        return false;
+    }
+    if (!ApplyFilterChain(m, *gray, got.w, got.h, err)) return false;
+    if (used) *used = got;
+    return true;
 }
 
 #endif   // HAS_HALCON

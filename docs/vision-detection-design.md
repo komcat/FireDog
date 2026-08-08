@@ -302,20 +302,114 @@ logged and the page still opens — the parameter form is worth reading with no
 gantry — but it is said out loud, because a page that silently did not move
 looks exactly like one that did.
 
-Bands, in the order the work happens: camera (exposure + the focus/luma guard
-rail) → search ROI → method + parameters → **Detect once / Live** → reliability
-→ Save.
+### Three columns
 
-The two panes are split by a **draggable `Splitter`**, with the width persisted
-as `UiSettings::visionParamW` (its own field, not the main window's `rightW`:
-a takeover page replaces that five-region layout entirely, and this column has
-to hold a whole parameter form). The column's natural width is genuinely not a constant —
-a circle model's form is short, an NCC model's carries a thumbnail and longer
-labels, and the operator's font size moves both. Two consequences in the code:
-labelled widgets take a **negative** item width so ImGui still has room to draw
-the label to their right (`-FLT_MIN` would push every label off the panel), and
-the explanatory paragraphs go through `TextWrapped`, since hand-broken lines
-would spill out of the very column the operator is allowed to narrow.
+Ported from the sibling **Horizon** project's `FAAM.UI` *Vision Profile* page
+(`src/FAAM.UI/Views/VisionProfileView.xaml`), which is the same job on the same
+kind of machine. The old two-pane layout queued camera, ROI, method, detect and
+reliability into one narrow strip; the work has three parts, so it now has three
+columns:
+
+| Column | Contents |
+|---|---|
+| **image** | the live frame with the ROI/template drags and the filter overlay, and a two-row camera foot (state, the model's exposure + Apply, focus/luma, zoom + Fit, **Overlay**, mm/px) |
+| **method + chain** | `detection method` → **pre-process filters** + the filtered picture → the method's own form → search ROI → Detect once / Live → reliability |
+| **results** | the matched scene beside the taught patch, the detection as a key/value table, and a one-line status |
+
+Above them a top strip: which station this model belongs to, **Move to** (drives
+the owner's position through `StartWatchedMove` — the same watched move opening
+the page performs), `Save`, `Save & close`.
+
+Deliberately **not** ported: Horizon's `Vision profile` combo and its
+`New / Load / Save / History` buttons. A profile there is a free-standing
+document; here a model is private to one station and auto-named, so there is
+nothing to pick, name or duplicate. Lighting is left out for the same class of
+reason — it has no device behind it and it belongs to `AlignStation`, not to the
+model.
+
+The camera foot moved out of the parameter column because those controls are
+properties of the *picture*: reading a luma warning two columns away from the
+image it describes never worked. The detection numbers moved *into* the result
+column for the mirror reason — a detection is a result, and printing it in both
+places gives an operator two readings of one thing.
+
+The three columns are separated by two **draggable `Splitter`s**, persisted as
+`UiSettings::visionParamW` and `visionResultW` (their own fields, not the main
+window's `leftW`/`rightW`: a takeover page replaces that five-region layout
+entirely). Both are clamped every frame, and when the window is too narrow for
+both they shrink **proportionally** rather than one collapsing whichever happens
+to be clamped second. Neither natural width is a constant — a circle model's form
+is short, an NCC model's carries a thumbnail and longer labels, and the
+operator's font size moves both. Two consequences in the code: labelled widgets
+take a **negative** item width so ImGui still has room to draw the label to their
+right (`-FLT_MIN` would push every label off the panel), and the explanatory
+paragraphs go through `TextWrapped`, since hand-broken lines would spill out of
+the very column the operator is allowed to narrow.
+
+### Pre-processing: three stacked filters
+
+Some features only separate after a threshold, a smooth or an edge transform, and
+no amount of method tuning substitutes for that. `VisionModel::filters` is a
+fixed array of **three `VisionFilter` slots**, each
+`none | binary | gaussian | canny`, applied **in slot order** to the ROI plane
+before any method looks at it. A stage's output is the next stage's input; a
+`none` slot is skipped rather than collapsing the list, so slots 1 and 3 with 2
+empty is the chain `[1,3]` and the numbers on screen keep meaning what they say.
+
+The parameter fields are shared across kinds, exactly as Horizon shares them:
+`thresholdMin`/`thresholdMax` are the grey band for `binary` and the hysteresis
+pair for `canny` (the UI relabels them Min/Max ↔ Low/High), `gaussMask` is 3 or 5,
+`alpha` is Canny's smoothing.
+
+| kind | HALCON, in `HalconDetector.cpp` |
+|---|---|
+| `binary` | `threshold(min,max)` → `region_to_bin(255, 0, w, h)` |
+| `gaussian` | `gauss_image(3\|5)` |
+| `canny` | `edges_image(…,"canny",alpha,"nms",low,high)`, direction discarded → `convert_image_type("byte")` |
+
+**One seam, two call sites.** The chain is applied in `HalconDetector::Detect`,
+between `RgbToGray8`'s crop and the `DetectNcc`/`DetectCorner`/`DetectCircle`
+dispatch — and every run-time caller (`align_station`, `place_mark`,
+`vision_detect`, `vision_test`) plus the teach page's Detect funnels through
+`Workflow::Detect` to exactly there, so a chain cannot be honoured on one path
+and forgotten on another. The second site is `HalconDetector::Teach`: **the
+template is cut from the filtered plane**, because matching a raw patch against a
+filtered live image scores nothing and the failure looks like a badly taught
+template rather than a wrong order. Teach filters the same plane a detect will —
+the search ROI — and falls back to the whole frame, saying so, when the template
+box reaches outside it; silently cropping to the ROI would teach a template of
+the wrong size.
+
+**Accepted difference from Horizon:** it reduces the HALCON *domain*
+(`reduce_domain`) and keeps the surrounding pixels; FireDog *crops* in
+`RgbToGray8`, so a gaussian or a canny sees the ROI edge as an image edge. That
+costs a `mask/2` rim and buys the coordinate handling, which is already right.
+
+**The preview is the same code.** `HalconDetector::Preprocess` (static — the
+chain is stateless and is usually tuned before there is a template to build a
+model from) runs the identical crop and fold and hands the plane back;
+`Workflow::PreprocessPreview` wraps it under `detectMu_`. It feeds both the
+picture in the filter band and the translucent overlay on the live image (pixels
+≥ 128 tinted, drawn at the ROI's own screen rect so a filtered pixel lands on the
+pixel it came from). It recomputes on exactly three triggers — the `Preview`
+button, a change to the chain or the ROI, or a new frame **while Live is on** —
+and never mid-travel.
+
+Two consequences elsewhere: `VisionModelPatchKey` includes the chain summary
+(a re-teach writes the same filename at the same size, so without it the
+thumbnail would keep showing the patch it replaced), and the Alignment page's
+station card prints `VisionFilterSummary` — a pre-processed model behaves nothing
+like a raw one and the chain is otherwise invisible from there. `Workflow::Detect`
+needs no change: it already stamps the whole model JSON, so a filter edit forces
+a detector rebuild.
+
+Without HALCON the filter parameters still edit and still persist —
+`VisionModel.cpp` carries no SDK — but the preview and the detection are gone,
+each saying so with `HalconEngine`'s reason verbatim.
+
+One thing the help text has to say out loud: **the method's own thresholds now
+see the filtered image.** After a binary filter the plane is 0 and 255, so the
+circle method's default grey window of 0..100 selects the background.
 
 A few decisions worth keeping:
 

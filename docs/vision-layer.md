@@ -266,6 +266,16 @@ Full design in **`docs/vision-detection-design.md`**; the operational summary:
   (gray normalised cross-correlation over a taught patch, plus an
   operator-placed anchor that rotates with the match). Both ported from
   `bobcat_engine`'s HALCON plugins, minus OpenCV.
+* A model also carries **three pre-process filter slots**
+  (`none | binary | gaussian | canny`), applied in order to the ROI plane before
+  the method runs — HALCON `threshold`+`region_to_bin`, `gauss_image`,
+  `edges_image("canny")`. Applied in exactly two places, both in
+  `HalconDetector.cpp`: `Detect` (so every run-time caller inherits it) and
+  `Teach` (so the template is cut from the *filtered* plane). The teach page's
+  preview and its live-image overlay run the same fold through the static
+  `HalconDetector::Preprocess` / `Workflow::PreprocessPreview`, so the picture
+  can never drift from what the detector sees. Parameters stay editable and
+  persist without the SDK; the picture and the detection do not.
 * `Workflow::Detect(model, dir, &out)` grabs the newest frame, runs the cached
   detector, converts to millimetres with the camera calibration it now owns
   (`CameraPixelToMm`), caches the result and publishes `vision/x_px`,

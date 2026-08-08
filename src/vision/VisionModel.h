@@ -35,6 +35,31 @@ struct VisionRoi {
     int  x = 0, y = 0, w = 0, h = 0;
 };
 
+// ---- pre-processing ------------------------------------------------------
+// One stage of the pre-process chain: a transform applied to the search ROI
+// BEFORE any method looks at it. Some features only separate after a threshold,
+// a smooth or an edge transform, and no amount of method tuning substitutes for
+// that. Ported from Horizon's FAAM.UI vision profile, which is the same idea in
+// production on the sibling machine.
+//
+// `kind` is a string like every other discriminator in this file ("method",
+// "metric"), so an unknown value from a newer build reads as a no-op rather
+// than a crash. The parameter fields are SHARED across kinds — min/max is the
+// grey band for "binary" and the hysteresis pair for "canny" — which is why the
+// UI relabels them rather than showing five dead boxes.
+struct VisionFilter {
+    std::string kind = "none";   // "none" | "binary" | "gaussian" | "canny"
+    int    thresholdMin = 0;     // binary: min grey   | canny: hysteresis low
+    int    thresholdMax = 128;   // binary: max grey   | canny: hysteresis high
+    int    gaussMask    = 3;     // gaussian only: 3 or 5
+    double alpha        = 1.0;   // canny only: smoothing, 0.2 .. 5.0
+};
+
+// Three slots, fixed. The count IS the feature — enough to threshold, smooth
+// and take edges in one pass, few enough that the whole chain is on screen —
+// and a fixed slot gives each row a stable identity across a re-order.
+inline constexpr int kVisionFilterSlots = 3;
+
 // Circle / fiducial, the blob-then-robust-fit chain. Ported from
 // bobcat_engine's HalconCircleDetectionRobustPlugin, which is the variant in
 // production use there (the sub-pixel-edge variant does not filter on
@@ -147,6 +172,13 @@ struct VisionModel {
     VisionRoi roi;
     double    exposureUs = 0.0;        // 0 = leave the camera exposure alone
 
+    // Applied in slot order to the ROI before the method runs; "none" slots are
+    // skipped, so 1 and 3 set with 2 empty is the two-stage chain [1,3]. Part of
+    // the MODEL, not of the page that edits it: the same chain has to be in
+    // force when a recipe's align_station detects, or a model taught through a
+    // threshold would find nothing at run time.
+    VisionFilter filters[kVisionFilterSlots];
+
     // All three sets are carried whatever the method is, so switching method to
     // compare two approaches does not throw the other one's tuning away.
     CircleParams circle;
@@ -160,6 +192,12 @@ struct VisionModel {
 
     VisionReliability rel;
 };
+
+// The active chain as one short line: "gauss[3] > canny[20/80 a1.0]", or "" when
+// no slot is enabled. One formatter, three consumers — the log, the Alignment
+// page's station card, and the thumbnail cache key — so what an operator reads
+// on the card is exactly what the detector will run.
+std::string VisionFilterSummary(const VisionModel& m);
 
 // ---- the taught patch ----------------------------------------------------
 // 8-bit binary PGM (P5). Plain C++, ~20 lines: FireDog carries no image codec,

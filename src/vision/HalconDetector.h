@@ -27,7 +27,9 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "vision/FocusMetric.h"     // FocusRoi — the ROI Preprocess actually used
 #include "vision/VisionModel.h"
 #include "vision/VisionResult.h"
 
@@ -69,6 +71,19 @@ public:
     // "the feature is not there" is a legitimate answer that a reliability run
     // has to be able to count. Returns out->ok for call-site convenience.
     bool Detect(const unsigned char* rgb, int w, int h, VisionDetection* out);
+
+    // Run ONLY the pre-process chain over the model's search ROI and hand the
+    // resulting 8-bit plane back (`used` reports the ROI that survived
+    // clamping). This is what the teach page's preview panel shows, and it is
+    // deliberately the SAME chain Detect runs one line before it dispatches to a
+    // method — a preview computed any other way would eventually disagree with
+    // what the detector sees, which is the one thing a preview must never do.
+    //
+    // Static because pre-processing needs no built model: an operator tunes the
+    // chain before there is a template to build one from.
+    static bool Preprocess(const VisionModel& m, const unsigned char* rgb, int w, int h,
+                           std::vector<unsigned char>* gray, FocusRoi* used,
+                           std::string* err);
 
 private:
     struct Impl;

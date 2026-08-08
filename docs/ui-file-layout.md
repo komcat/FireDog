@@ -151,7 +151,7 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/pages/RecipeForms.cpp` | `DrawRecipeInspector` / `DrawParamWidget` / `DrawConditionEditor` | 495 |
 | `src/ui/pages/PageRun.cpp` | deck, execution view, Scan band (Raster \| XCAN), both launchers, preset modals | 1144 |
 | `src/ui/pages/PageAlign.cpp` | Alignment page: procedures \| stations + Run \| the taught frame + its nominals | 400 |
-| `src/ui/pages/PageVisionTeach.cpp` | Vision detection teach page (takeover, reached only from a station card): live image + ROI/template drag, method form, Detect/Live, reliability | 600 |
+| `src/ui/pages/PageVisionTeach.cpp` | Vision detection teach page (takeover, reached only from a station card): three columns — image + camera foot \| pre-process chain + method form + Detect/Live + reliability \| matched crop + results table + status | 1000 |
 | `src/ui/pages/PageAlignNominal.cpp` | Nominal teach page (takeover, reached only from the frame panel): two crosshair marks, their midpoint converted through the live frame into local (O1) | 250 |
 | `src/ui/pages/PageAlignPlace.cpp` | Placement page (takeover; **View menu** or a nominal's *Place…*): measures a gripped object the same way, computes the relative correction onto its holding device's axes and issues it behind the arming flag + a visible ceiling | 340 |
 | `src/ui/pages/PageScripts.cpp` | Scripts page + Lua debugger controls | 215 |

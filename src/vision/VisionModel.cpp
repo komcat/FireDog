@@ -5,6 +5,7 @@
 #include "core/Product.h"   // GenerateUid
 
 #include <cctype>
+#include <cstdio>
 #include <exception>
 #include <fstream>
 
@@ -30,6 +31,29 @@ VisionRoi RoiFromJson(const nlohmann::json& j)
     r.x = j.value("x", 0); r.y = j.value("y", 0);
     r.w = j.value("w", 0); r.h = j.value("h", 0);
     return r;
+}
+
+nlohmann::json FilterToJson(const VisionFilter& f)
+{
+    nlohmann::json j;
+    j["kind"]          = f.kind;
+    j["threshold_min"] = f.thresholdMin;
+    j["threshold_max"] = f.thresholdMax;
+    j["gauss_mask"]    = f.gaussMask;
+    j["alpha"]         = f.alpha;
+    return j;
+}
+
+VisionFilter FilterFromJson(const nlohmann::json& j)
+{
+    VisionFilter f;
+    if (!j.is_object()) return f;
+    f.kind         = j.value("kind", "none");
+    f.thresholdMin = j.value("threshold_min", 0);
+    f.thresholdMax = j.value("threshold_max", 128);
+    f.gaussMask    = j.value("gauss_mask", 3);
+    f.alpha        = j.value("alpha", 1.0);
+    return f;
 }
 
 nlohmann::json CircleToJson(const CircleParams& c)
@@ -325,6 +349,29 @@ std::vector<unsigned char> MakeCornerTemplate(const CornerParams& c, int* nOut)
     return p;
 }
 
+// ---- the pre-process chain, as one line ------------------------------------
+
+std::string VisionFilterSummary(const VisionModel& m)
+{
+    std::string s;
+    for (const VisionFilter& f : m.filters) {
+        char buf[64];
+        if (f.kind == "binary") {
+            std::snprintf(buf, sizeof(buf), "binary[%d..%d]", f.thresholdMin, f.thresholdMax);
+        } else if (f.kind == "gaussian") {
+            std::snprintf(buf, sizeof(buf), "gauss[%d]", f.gaussMask);
+        } else if (f.kind == "canny") {
+            std::snprintf(buf, sizeof(buf), "canny[%d/%d a%.1f]",
+                          f.thresholdMin, f.thresholdMax, f.alpha);
+        } else {
+            continue;   // "none", or a kind a newer build knows and we do not
+        }
+        if (!s.empty()) s += " > ";
+        s += buf;
+    }
+    return s;
+}
+
 // ---- lookup --------------------------------------------------------------
 
 const VisionModel* FindVisionModel(const std::vector<VisionModel>& list,
@@ -352,6 +399,11 @@ nlohmann::json VisionModelToJson(const VisionModel& m)
     j["method"]        = m.method;
     j["roi"]           = RoiToJson(m.roi);
     j["exposure_us"]   = m.exposureUs;
+    // Always all three slots, in order — the position IS the stage number, so a
+    // chain written with slot 2 empty must not come back as a two-element list.
+    nlohmann::json filters = nlohmann::json::array();
+    for (const VisionFilter& f : m.filters) filters.push_back(FilterToJson(f));
+    j["filters"]       = std::move(filters);
     j["circle"]        = CircleToJson(m.circle);
     j["ncc"]           = NccToJson(m.ncc);
     j["corner"]        = CornerToJson(m.corner);
@@ -371,6 +423,15 @@ VisionModel VisionModelFromJson(const nlohmann::json& j)
     m.exposureUs   = j.value("exposure_us", 0.0);
     m.templateFile = j.value("template_file", "");
     if (j.contains("roi"))         m.roi    = RoiFromJson(j["roi"]);
+    // Tolerant both ways: a model written before the chain existed has no
+    // "filters" at all (every slot stays "none"), and a file from a build with
+    // more slots is read up to ours rather than rejected.
+    if (j.contains("filters") && j["filters"].is_array()) {
+        const nlohmann::json& arr = j["filters"];
+        const std::size_t n = static_cast<std::size_t>(kVisionFilterSlots);
+        for (std::size_t i = 0; i < arr.size() && i < n; ++i)
+            m.filters[i] = FilterFromJson(arr[i]);
+    }
     if (j.contains("circle"))      m.circle = CircleFromJson(j["circle"]);
     if (j.contains("ncc"))         m.ncc    = NccFromJson(j["ncc"]);
     if (j.contains("corner"))      m.corner = CornerFromJson(j["corner"]);

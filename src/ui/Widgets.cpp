@@ -384,7 +384,11 @@ std::string VisionModelPatchKey(const VisionModel& m)
     } else {
         std::snprintf(buf, sizeof(buf), "|none|%s", m.method.c_str());
     }
-    return m.uid + buf;
+    // The pre-process chain too: a re-teach writes the SAME filename at the same
+    // size, so without this a patch cut through a new threshold would keep
+    // showing the picture it replaced — on this page, on the station card and in
+    // the manual-pick window at the same time.
+    return m.uid + buf + "|" + VisionFilterSummary(m);
 }
 
 bool VisionModelPatch(const VisionModel& m, const std::string& visionDir,

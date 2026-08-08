@@ -228,6 +228,7 @@ private:
     // and that name IS the ownership record — hence the two maintenance calls.
     void DrawVisionTeachPanel();                         // page body (takeover frame)
     void OpenVisionTeach(AlignProc& a, int station);     // creates the model, switches page
+    void ResetVisionTeachState();                        // both openers start here
     const VisionModel* StationDetector(const AlignProc& a, int station) const;
     void DropAlignStationDetectors(const AlignProc& a);  // with the procedure
     void CopyAlignStationDetectors(const AlignProc& src, AlignProc& dst);
@@ -242,7 +243,18 @@ private:
     // Copy a model under a new private name, patch file included; "" on failure.
     std::string CopyVisionModelAs(const VisionModel& src, const std::string& newName);
     void DrawVisionTeachImage(VisionModel& m);           // live image + ROI/box drag
+    void DrawVisionCameraFoot(VisionModel& m);           // under the image: camera + zoom
     void DrawVisionTeachParams(VisionModel& m);          // method + parameter form
+    // The three pre-process slots and the picture they produce. Its own function
+    // because it is the one band that is not about a method: the chain runs
+    // before any of them and belongs to the model, not to the form below it.
+    void DrawVisionFilterBand(VisionModel& m);
+    // Right column: the matched scene beside the taught patch, the detection as
+    // a key/value table, and the status line.
+    void DrawVisionResultPanel(const VisionModel& m);
+    // Recompute the filtered plane (and the overlay built from it) when the
+    // chain, the ROI or the frame has moved on. `force` is the Preview button.
+    void RefreshVisionPreview(const VisionModel& m, bool force);
     // Load (or synthesise) a model's template patch into `pt`, once per key.
     // False = this method has no picture to show (a blob chain matches a shape).
     // Shared by the teach page, the Alignment page and the manual-pick window:
@@ -607,12 +619,29 @@ private:
     // Align, an object mark on Placement), and a takeover->takeover switch does
     // not update prevPage_.
     Page        visionReturnPage_ = Page::Align;
-    // Width of the parameter column, dragged by the splitter between the two
-    // panes and persisted in UiSettings. Its own field rather than the main
-    // window's rightW_: this window is not part of that five-region layout and
-    // its column has to hold a whole parameter form.
+    // Where the OWNER of this model stands, so the page can drive back there
+    // without knowing what an alignment station is. Set by whichever Open*
+    // brought us here (a station's private position, or a nominal's camera
+    // view); empty when that owner has none taught, which only disables the
+    // button.
+    std::string visionOwnerDevice_;
+    std::string visionOwnerPosUid_;
+    // One line of "what just happened", bottom-right. Every action writes it —
+    // preview, detect, teach, save, reliability — so the page always answers
+    // "did that do anything?" without a trip to the log.
+    std::string visionStatus_ = "Ready.";
+    // Paint the filtered foreground over the live image. Off, the preview panel
+    // is the only view of the chain, and a small panel is a poor place to judge
+    // whether a threshold caught the FEATURE or the whole background.
+    bool        visionOverlay_ = true;
+    // Widths of the middle (parameters) and right (results) columns, dragged by
+    // the two splitters and persisted in UiSettings. Their own fields rather
+    // than the main window's rightW_: this page is a takeover that replaces
+    // that five-region layout entirely. The image column takes the remainder.
     float       visionParamW_ = 380.0f;
+    float       visionResultW_ = 300.0f;
     bool        visionParamSplitting_ = false;   // edge-detect the drag END
+    bool        visionResultSplitting_ = false;
     float       visionZoom_  = 1.0f;    // magnification over the cover fit
     float       visionFocusX_ = 0.0f;   // camera px the view is centred on
     float       visionFocusY_ = 0.0f;
@@ -644,6 +673,26 @@ private:
     // which is what a freshly taught patch of unknown size needs.
     bool               visionAnchorOpen_ = false;
     float              visionAnchorZoom_ = 0.0f;
+
+    // ---- the pre-process preview -------------------------------------------
+    // The filtered plane, as a texture, plus the overlay built from it. Keyed by
+    // the chain signature + the ROI + the frame it was computed on, so a draw
+    // that runs every frame uploads nothing until something actually changed —
+    // the same discipline PatchTex uses. `visionFilterX_/Y_` is the plane's
+    // full-frame origin, which is what lets the overlay land on the live image.
+    unsigned int visionFilterTex_ = 0;
+    unsigned int visionOverlayTex_ = 0;
+    int          visionFilterW_ = 0, visionFilterH_ = 0;
+    int          visionFilterX_ = 0, visionFilterY_ = 0;
+    std::string  visionFilterKey_;   // chain + ROI; "" = nothing computed yet
+    unsigned long long visionFilterSeq_ = 0;   // frame the picture was made from
+    std::string  visionFilterErr_;   // why the last preview produced nothing
+    double       visionFilterMs_ = 0.0;
+    // The scene at the last detection, cropped from the RAW frame — what the
+    // detector claims to have found, beside the patch it was looking for.
+    unsigned int visionCropTex_ = 0;
+    int          visionCropW_ = 0, visionCropH_ = 0;
+    std::string  visionCropKey_;
 
     // ---- Aux window vision overlay -----------------------------------------
     // The last detection, aged in Update rather than timed in a Draw: a marker
