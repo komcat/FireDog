@@ -87,26 +87,33 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
 
 ```
 +--------------------------------------------------------------------------+
-| [Start/Stop]  scope label  [Save]  DUT serial                            |
+| [Execute/Stop] scope  [Save] [Load] Siphog888 [x]Edit   DUT serial       |
 +------------------+--------------------------------------+----------------+
-| [program combo]  |  RUNNING: Align > XCAN fine          | DUT            |
+| [slot combo]     |  RUNNING: Align > XCAN fine          | DUT            |
 | Deck             |  step 3.2 move_to_position ...       |  serial 2087   |
-|  > Load     [>]  |  [########----------] 12/28          |  14 entries    |
-|  v Align    [>]  |  program: slot 2/4, recipe 1/3       |  [Pass][Fail]  |
-|      coarse  OK  |                                      |----------------|
-|      xcan    ... |  (idle: slot/recipe summary,         | last results   |
-|  > Cure     [>]  |   validation issues)                 |  align_best... |
-|  > Inspect  [>]  |                                      |                |
+|  v 2  Align      |  [########----------] 12/28          |  14 entries    |
+|      coarse  OK  |  slot: recipe 1/3                    |  [Pass][Fail]  |
+|      xcan    ... |                                      |----------------|
+|                  |  (idle: slot/recipe summary,         | last results   |
+|                  |   validation issues)                 |  align_best... |
 +------------------+--------------------------------------+----------------+
 ```
 
-- **Left — the deck**: program selector, then the slot list; each slot
-  expandable to its recipes (names resolved from uids; missing uid in red).
-  **Slots AND individual recipes are click-selectable** — the selection drives
-  both the run buttons' scope and the middle panel's idle view. Per-slot
-  **run button** (station-by-station operation); a selected recipe runs alone
-  via Run Recipe. Live per-recipe status marks during any run (done /
-  running / pending / failed), whichever granularity started it.
+- **Left — the deck**: the **active-slot combo**, then that ONE slot expanded
+  to its recipes (names resolved from uids; missing uid in red). The deck
+  deliberately shows a single slot rather than the whole program: an operator
+  is at one station, and a long program's other slots are noise they can
+  mis-click. The slot row and individual recipes are click-selectable — the
+  selection drives both Execute's scope and the middle panel's idle view.
+  Live per-recipe status marks during a run (done / running / pending /
+  failed), whichever granularity started it.
+- **The (program, slot) pair persists** (`UiSettings run_prog_uid` /
+  `run_slot`, program by UID so a rename keeps it) and is re-applied on every
+  product load that still contains that uid. An operator working one station
+  across a shift comes back to that station after a restart, not to the top of
+  the program. `App::SelectDeckProgram` / `SelectDeckSlot` /
+  `RememberDeckSelection` / `RestoreDeckSelection` are the only writers —
+  nothing else assigns `progSel_`/`deckSlot_`.
 - **Middle — execution**: the running recipe's name, current step, recipe
   progress bar (engine status, as the recipe editor shows), plus program-level
   progress (slot i/N, recipe j/M). Idle: selected slot's recipe list +
@@ -125,16 +132,24 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
   Overview block (shared drawing code), because the operator flow is
   scan serial → run → pass/fail. Below it, a small ctx snapshot of the last
   finished recipe (align results etc.).
-- **Top strip** (originally at the bottom): ONE **Start** button whose scope
-  follows the deck
-  selection — selected recipe runs alone, selected slot runs that slot,
-  no selection runs the whole program (a disabled label beside the button
-  names the scope; originally three separate Run Program/Slot/Recipe
-  buttons, collapsed post-R1). While running it toggles to **Stop**, which
-  propagates through the whole chain (queue → recipe engine → command
-  waits → Lua sub-runs). Progress (recipe bar + program slot i/N, recipe
-  j/M) displays identically for all three granularities — same runner,
-  same status. Prompts surface via the existing global modal.
+- **Top strip** (originally at the bottom): ONE **Execute** button whose scope
+  follows the deck selection — selected recipe runs alone, otherwise the shown
+  slot runs (a disabled label beside the button names the scope; originally
+  three separate Run Program/Slot/Recipe buttons, collapsed post-R1). While
+  running it toggles to **Stop**, which propagates through the whole chain
+  (queue → recipe engine → command waits → Lua sub-runs). Progress (recipe bar
+  + recipe j/M) displays identically for both granularities — same runner, same
+  status. Prompts surface via the existing global modal. Beside it live
+  **Save**, a **Load** button opening the program list as a modal, the loaded
+  program's name, and the **Edit** toggle: which program is up and whether it
+  can be edited are questions about the whole page, so they belong in the strip
+  the operator already reads, not buried in the deck column.
+- **There is NO whole-program scope** (`RunScope` is `Slot | Recipe`, enforced
+  in `BuildRunQueue`, not just hidden in the UI). A multi-slot program is a
+  station sequence an operator walks — part in, run this slot, part moves on —
+  so one press launching every slot back-to-back would drive the machine
+  through stations whose parts have not arrived. Removing the scope from the
+  resolver rather than the button is what keeps a later UI from re-offering it.
 - **Light program editing on the page** (Phase R1, gated behind an "Edit"
   toggle so the operator view stays clean): new/rename/delete program, add/
   rename/remove/reorder slot, add (recipe combo)/remove/reorder recipes in a

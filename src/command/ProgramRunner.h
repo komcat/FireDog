@@ -75,19 +75,24 @@ private:
 };
 
 // ---- Run-request resolution ------------------------------------------------
-// The three granularities the Run deck offers. They differ ONLY in how much of
+// The two granularities the Run deck offers. They differ ONLY in how much of
 // the program ends up in the queue — one code path from here on.
-enum class RunScope { Program, Slot, Recipe };
+//
+// There is deliberately NO whole-program scope. A multi-slot program is a
+// station sequence an operator walks — part in, run this slot, part moves on —
+// so launching every slot back-to-back from one press would drive the machine
+// through stations whose parts are not there yet.
+enum class RunScope { Slot, Recipe };
 
 // A resolved request, ready for ProgramRunner::Start.
 struct RunQueue {
-    std::string kind;    // "program" | "slot" | "recipe" — drives the $run event
+    std::string kind;    // "slot" | "recipe" — drives the $run event
     std::string label;   // human-readable, e.g. "prog / slot / recipe"
     std::vector<ProgramRunner::Item> items;
 };
 
-// Resolve a deck selection into a queue. `slotIdx`/`recipeIdx` are only read
-// for the scopes that need them (-1 is fine otherwise).
+// Resolve a deck selection into a queue. `slotIdx` is always required;
+// `recipeIdx` is read only by RunScope::Recipe (-1 is fine otherwise).
 //
 // Fails (empty `items`, reason in *err) on an out-of-range selection or a
 // recipe uid the library does not contain. A missing uid is a HARD stop, not a

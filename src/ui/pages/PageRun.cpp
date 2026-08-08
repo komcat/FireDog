@@ -4,9 +4,9 @@
 // Definitions of App members — see App.h. Design: docs/run-page-design.md.
 //
 // Execution adds NO engine: StartDeckRun resolves one queue from the deck
-// selection (program / slot / recipe) and ProgramRunner sequences ordinary
-// RecipeEngine runs from it, so each recipe keeps its own validation,
-// progress, prompts and $run DUT event. Ctx does NOT flow between recipes.
+// selection (slot / recipe) and ProgramRunner sequences ordinary RecipeEngine
+// runs from it, so each recipe keeps its own validation, progress, prompts and
+// $run DUT event. Ctx does NOT flow between recipes.
 //
 // The three scan launchers inject their form values as the scripts' ctx keys
 // via LuaEngine::Env::initialCtx — the same channel recipe ctx_set steps use.
@@ -29,10 +29,10 @@
 
 namespace firedog {
 
-// mode: 0 = whole program, 1 = selected slot, 2 = selected recipe.
 // ---- Run page (View menu, full page) — programs = slots of recipes ----------
-// Operator surface: deck on the left (slots + recipes, selectable), execution
-// in the middle (queue with marks + progress), DUT on the right. Three run
+// Operator surface: the run strip on top (Execute, Save, the loaded program +
+// Edit), the deck on the left (ONE slot and its recipes, selectable), execution
+// in the middle (queue with marks + progress), DUT on the right. Both run
 // granularities fill the SAME runner queue; one Stop kills the whole chain.
 // Design: docs/run-page-design.md.
 
@@ -253,7 +253,67 @@ static std::string FormatSI(double v)
     return buf;
 }
 
-// The deck's Start button. The UI contributes the SELECTION; resolving it into
+// ---- Deck selection: one program, one slot ---------------------------------
+// The deck shows exactly ONE slot, and the pair (program, slot) is what the
+// operator comes back to after a restart — so every place that moves it goes
+// through these three, and nowhere assigns progSel_/deckSlot_ on its own.
+
+// Persist the current pair by UID (a rename must not lose it). Called from the
+// pick sites rather than from Draw generally: this writes a file.
+void App::RememberDeckSelection()
+{
+    const bool have = progSel_ >= 0 &&
+                      progSel_ < static_cast<int>(session_.Programs().size());
+    runLastProgUid_ = have ? session_.Programs()[progSel_].uid : std::string();
+    runLastSlot_    = deckSlot_ > 0 ? deckSlot_ : 0;
+    SaveUiSettings();
+}
+
+// Show one slot of the current program. -1 (or an empty program) is the only
+// no-slot state; a slot change always drops the recipe selection, because the
+// index means nothing under a different slot.
+void App::SelectDeckSlot(int slot)
+{
+    const bool have = progSel_ >= 0 &&
+                      progSel_ < static_cast<int>(session_.Programs().size());
+    const int n = have ? static_cast<int>(session_.Programs()[progSel_].slots.size()) : 0;
+    if (n == 0)            deckSlot_ = -1;
+    else if (slot < 0)     deckSlot_ = 0;
+    else if (slot >= n)    deckSlot_ = n - 1;
+    else                   deckSlot_ = slot;
+    deckRecipe_ = -1;
+    RememberDeckSelection();
+}
+
+// Load a program into the deck (the Load Program modal, New, Delete). Opening a
+// program lands on its first slot — the remembered slot belongs to whichever
+// program was showing, not to this one.
+void App::SelectDeckProgram(int idx)
+{
+    progSel_ = (idx >= 0 && idx < static_cast<int>(session_.Programs().size())) ? idx : -1;
+    SelectDeckSlot(0);
+}
+
+// After a document load: re-point at the remembered pair if this set still has
+// it, else the first program's first slot. Does NOT re-save — a product that
+// simply lacks the remembered program must not erase it.
+void App::RestoreDeckSelection()
+{
+    progSel_ = session_.Programs().empty() ? -1 : 0;
+    if (!runLastProgUid_.empty()) {
+        for (int i = 0; i < static_cast<int>(session_.Programs().size()); ++i) {
+            if (session_.Programs()[i].uid == runLastProgUid_) { progSel_ = i; break; }
+        }
+    }
+    deckSlot_ = -1;
+    if (progSel_ >= 0) {
+        const int n = static_cast<int>(session_.Programs()[progSel_].slots.size());
+        if (n > 0) deckSlot_ = (runLastSlot_ >= 0 && runLastSlot_ < n) ? runLastSlot_ : 0;
+    }
+    deckRecipe_ = -1;
+}
+
+// The deck's Execute button. The UI contributes the SELECTION; resolving it into
 // a queue is BuildRunQueue's job (command/ProgramRunner), and executing that
 // queue is the runner's.
 void App::StartDeckRun(RunScope scope)
@@ -312,34 +372,44 @@ void App::DrawRunPanel()
 
     const bool haveProg = progSel_ >= 0 && progSel_ < static_cast<int>(session_.Programs().size());
 
-    // ---- Top strip: run controls ----
+    // ---- Top strip: run controls + which program is loaded ----
     ImGui::BeginChild("runStrip", ImVec2(0.0f, stripH), ImGuiChildFlags_Borders);
-    const bool canRun = !orch_.Busy() && haveProg;
-    // One Start button; granularity follows the deck selection
-    // (recipe if one is selected, else slot, else the whole program).
-    // While a run is active it becomes the Stop button.
+    const bool canRun = !orch_.Busy() && haveProg && deckSlot_ >= 0;
+    // One Execute button, two granularities: the selected recipe, or every
+    // recipe in the ONE slot the deck is showing. There is deliberately no
+    // whole-program scope — a multi-slot program is a station sequence an
+    // operator walks, not something to launch in one press.
+    // While a run is active the button becomes Stop.
     const bool onRecipe = deckSlot_ >= 0 && deckRecipe_ >= 0;
-    const bool onSlot   = deckSlot_ >= 0 && deckRecipe_ < 0;
     if (running) {
         if (ImGui::Button("Stop", ImVec2(110.0f, 0.0f))) orch_.programs.Stop();
     } else {
         ImGui::BeginDisabled(!canRun);
-        if (ImGui::Button("Start", ImVec2(110.0f, 0.0f)))
-            StartDeckRun(onRecipe ? RunScope::Recipe
-                         : onSlot ? RunScope::Slot
-                                  : RunScope::Program);
+        if (ImGui::Button("Execute", ImVec2(110.0f, 0.0f)))
+            StartDeckRun(onRecipe ? RunScope::Recipe : RunScope::Slot);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(onRecipe ? "Run the selected recipe"
-                              : onSlot ? "Run the selected slot"
-                                       : "Run the whole program");
+                                       : "Run every recipe in this slot");
         ImGui::EndDisabled();
     }
     ImGui::SameLine();
-    ImGui::TextDisabled(onRecipe ? "recipe" : onSlot ? "slot" : "program");
+    ImGui::TextDisabled(onRecipe ? "recipe" : "slot");
     ImGui::SameLine();
     ImGui::BeginDisabled(running);
     if (ImGui::Button(session_.ProgramsDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
         session_.SavePrograms();
+    // The program is LOADED here, not picked from a combo: which program is up
+    // is a deliberate operator act, and the name beside the button is the
+    // answer to "what am I running?" — the reason it sits in the run strip and
+    // not down in the deck. Edit mode joins it for the same reason.
+    ImGui::SameLine();
+    if (ImGui::Button("Load", ImVec2(80.0f, 0.0f))) runOpenLoad_ = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Load a program into the deck");
+    ImGui::SameLine();
+    if (haveProg) ImGui::Text("%s", session_.Programs()[progSel_].name.c_str());
+    else          ImGui::TextDisabled("(no program)");
+    ImGui::SameLine();
+    ImGui::Checkbox("Edit", &runEdit_);
     ImGui::EndDisabled();
     {
         const DutSession::Info di = DutSession::Instance().GetInfo();
@@ -355,51 +425,34 @@ void App::DrawRunPanel()
     // ---- Left: the deck ----
     ImGui::BeginChild("runDeck", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
     ImGui::BeginDisabled(running);
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::BeginCombo("##prog", haveProg ? session_.Programs()[progSel_].name.c_str()
-                                             : "(program)")) {
-        for (int i = 0; i < static_cast<int>(session_.Programs().size()); ++i) {
-            ImGui::PushID(i);
-            if (ImGui::Selectable(session_.Programs()[i].name.c_str(), progSel_ == i)) {
-                progSel_    = i;
-                deckSlot_   = -1;
-                deckRecipe_ = -1;
-            }
-            ImGui::PopID();
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    ImGui::Checkbox("Edit", &runEdit_);
-    // Active slot: mirrors the tree selection (deckSlot_, also the Start
-    // granularity); in Edit mode the deck shows ONLY the active slot, so a
-    // big program edits one slot at a time. "(all slots)" = whole program.
+    // Active slot: the deck shows exactly ONE slot, so this combo IS the view,
+    // and it is also what Execute runs. It survives a restart (UiSettings
+    // run_prog_uid / run_slot) — an operator working one station comes back to
+    // that station, not to the top of the program.
     {
         Program* prog = haveProg ? &session_.Programs()[progSel_] : nullptr;
-        if (prog && deckSlot_ >= static_cast<int>(prog->slots.size()))
-            deckSlot_ = -1;   // stale index (slot deleted) — back to all
+        const int nSlots = prog ? static_cast<int>(prog->slots.size()) : 0;
+        // Clamp both ways every frame: -1 is legal ONLY while the program has
+        // no slots, so a stale index (slot deleted) or a fresh slot on an empty
+        // program can never leave the deck showing nothing it could show.
+        if (nSlots == 0)              deckSlot_ = -1;
+        else if (deckSlot_ < 0)       deckSlot_ = 0;
+        else if (deckSlot_ >= nSlots) deckSlot_ = nSlots - 1;
         char prev[64];
         if (prog && deckSlot_ >= 0)
             std::snprintf(prev, sizeof(prev), "%d  %s", deckSlot_ + 1,
                           prog->slots[deckSlot_].name.c_str());
         else
-            std::snprintf(prev, sizeof(prev), "(all slots)");
+            std::snprintf(prev, sizeof(prev), "(no slots)");
         ImGui::BeginDisabled(!haveProg);
         ImGui::SetNextItemWidth(160.0f);
         if (ImGui::BeginCombo("##actslot", prev)) {
-            if (ImGui::Selectable("(all slots)", deckSlot_ < 0)) {
-                deckSlot_   = -1;
-                deckRecipe_ = -1;
-            }
-            for (int i = 0; prog && i < static_cast<int>(prog->slots.size()); ++i) {
+            for (int i = 0; i < nSlots; ++i) {
                 ImGui::PushID(i);
                 char lbl[64];
                 std::snprintf(lbl, sizeof(lbl), "%d  %s", i + 1,
                               prog->slots[i].name.c_str());
-                if (ImGui::Selectable(lbl, deckSlot_ == i)) {
-                    deckSlot_   = i;
-                    deckRecipe_ = -1;
-                }
+                if (ImGui::Selectable(lbl, deckSlot_ == i)) SelectDeckSlot(i);
                 ImGui::PopID();
             }
             ImGui::EndCombo();
@@ -413,9 +466,7 @@ void App::DrawRunPanel()
             Program p;
             p.uid = GenerateUid();   // the traceability identity, minted once
             session_.Programs().push_back(std::move(p));
-            progSel_    = static_cast<int>(session_.Programs().size()) - 1;
-            deckSlot_   = -1;
-            deckRecipe_ = -1;
+            SelectDeckProgram(static_cast<int>(session_.Programs().size()) - 1);
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(!haveProg);
@@ -423,9 +474,8 @@ void App::DrawRunPanel()
         ImGui::SameLine();
         if (ImGui::SmallButton("+ Slot")) {
             session_.Programs()[progSel_].slots.push_back({});
-            // The new slot becomes active so Edit's filtered view shows it.
-            deckSlot_   = static_cast<int>(session_.Programs()[progSel_].slots.size()) - 1;
-            deckRecipe_ = -1;
+            // The new slot becomes active so the deck's filtered view shows it.
+            SelectDeckSlot(static_cast<int>(session_.Programs()[progSel_].slots.size()) - 1);
         }
         ImGui::EndDisabled();
         if (haveProg) {
@@ -443,13 +493,13 @@ void App::DrawRunPanel()
     if (!haveProg) {
         ImGui::TextWrapped(session_.Programs().empty()
                                ? "No programs yet - Edit > New creates one."
-                               : "Pick a program above.");
+                               : "Load a program above.");
     } else {
         Program& prog = session_.Programs()[progSel_];
         for (int si = 0; si < static_cast<int>(prog.slots.size()); ++si) {
-            // An active slot filters the tree to just that slot (Edit or
-            // not); "(all slots)" in the combo shows the whole program.
-            if (deckSlot_ >= 0 && si != deckSlot_) continue;
+            // The deck shows the active slot and nothing else (Edit or not) —
+            // the combo above IS the view selector.
+            if (si != deckSlot_) continue;
             ProgramSlot& slot = prog.slots[si];
             ImGui::PushID(si);
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
@@ -458,10 +508,10 @@ void App::DrawRunPanel()
             if (deckSlot_ == si && deckRecipe_ < 0) flags |= ImGuiTreeNodeFlags_Selected;
             const bool open = ImGui::TreeNodeEx("##slot", flags, "%d  %s", si + 1,
                                                 slot.name.c_str());
-            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-                deckSlot_   = si;
+            // Clicking the slot row is how you get BACK to slot scope after
+            // picking a recipe — the slot itself is already the active one.
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
                 deckRecipe_ = -1;
-            }
             if (open) {
                 if (runEdit_ && !running) {
                     char sbuf[48];
@@ -472,25 +522,23 @@ void App::DrawRunPanel()
                     ImGui::BeginDisabled(si == 0);
                     if (ImGui::SmallButton("^")) {
                         std::swap(prog.slots[si - 1], prog.slots[si]);
-                        // The active slot follows the moved item (the Edit
-                        // view filters on it — don't let the view jump).
-                        if (deckSlot_ == si) deckSlot_ = si - 1;
-                        else if (deckSlot_ == si - 1) deckSlot_ = si;
+                        // The active slot follows the moved item — the deck
+                        // filters on it, so don't let the view jump. Only the
+                        // active slot is drawn, so si IS deckSlot_ here.
+                        SelectDeckSlot(si - 1);
                     }
                     ImGui::EndDisabled();
                     ImGui::SameLine();
                     ImGui::BeginDisabled(si + 1 >= static_cast<int>(prog.slots.size()));
                     if (ImGui::SmallButton("v")) {
                         std::swap(prog.slots[si], prog.slots[si + 1]);
-                        if (deckSlot_ == si) deckSlot_ = si + 1;
-                        else if (deckSlot_ == si + 1) deckSlot_ = si;
+                        SelectDeckSlot(si + 1);
                     }
                     ImGui::EndDisabled();
                     ImGui::SameLine();
                     if (ImGui::SmallButton("x slot")) {
                         prog.slots.erase(prog.slots.begin() + si);
-                        deckSlot_ = -1;
-                        deckRecipe_ = -1;
+                        SelectDeckSlot(si);   // clamps onto the next one (or -1)
                         ImGui::TreePop();
                         ImGui::PopID();
                         break;   // container changed; redraw next frame
@@ -516,13 +564,12 @@ void App::DrawRunPanel()
                     // AllowOverlap: the selectable's hit rect spans the full
                     // row, UNDER the trailing ^/v/x buttons — without this
                     // flag it claims hover first and the buttons never click.
-                    if (ImGui::Selectable(row, sel, ImGuiSelectableFlags_AllowOverlap)) {
-                        deckSlot_   = si;
+                    // Only the active slot is drawn, so picking a row narrows
+                    // Execute to that recipe — the slot never changes here.
+                    if (ImGui::Selectable(row, sel, ImGuiSelectableFlags_AllowOverlap))
                         deckRecipe_ = ri;
-                    }
                     // Right-click shortcut: open this recipe in the Recipe Editor.
                     if (!missing && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-                        deckSlot_   = si;
                         deckRecipe_ = ri;
                         for (int k = 0; k < static_cast<int>(session_.Recipes().size()); ++k)
                             if (session_.Recipes()[k].uid == slot.recipes[ri]) { recipeSel_ = k; break; }
@@ -639,7 +686,7 @@ void App::DrawRunPanel()
                                it.recipeName.c_str());
         }
     } else {
-        ImGui::TextDisabled("Select a slot or recipe on the left, then Run.");
+        ImGui::TextDisabled("Pick the slot above (or a recipe in it), then Execute.");
         if (haveProg && !session_.Programs()[progSel_].description.empty()) {
             ImGui::Separator();
             ImGui::TextWrapped("%s", session_.Programs()[progSel_].description.c_str());
@@ -685,6 +732,38 @@ void App::DrawRunPanel()
     if (runSplitting_ && !splitting) SaveUiSettings();
     runSplitting_ = splitting;
 
+    // ---- Load Program ----
+    // A modal list rather than a combo in the deck: loading a program is a
+    // deliberate act (it re-points the whole page), and the list has room to
+    // show the slot count, which is what tells two similar programs apart.
+    if (runOpenLoad_) {
+        ImGui::OpenPopup("Load Program");
+        runOpenLoad_ = false;
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Load Program", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (session_.Programs().empty())
+            ImGui::TextDisabled("No programs yet - Edit > New creates one.");
+        for (int i = 0; i < static_cast<int>(session_.Programs().size()); ++i) {
+            const Program& p = session_.Programs()[i];
+            ImGui::PushID(i);
+            char lbl[128];
+            std::snprintf(lbl, sizeof(lbl), "%s   (%d slots)", p.name.c_str(),
+                          static_cast<int>(p.slots.size()));
+            if (ImGui::Selectable(lbl, progSel_ == i, 0, ImVec2(280.0f, 0.0f))) {
+                SelectDeckProgram(i);
+                runStartErr_.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::PopID();
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
     // ---- Delete-program confirm ----
     if (runOpenDelete_) {
         ImGui::OpenPopup("Delete Program");
@@ -698,9 +777,7 @@ void App::DrawRunPanel()
             ImGui::Text("Delete program '%s'?", session_.Programs()[progSel_].name.c_str());
         if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveProg) {
             session_.Programs().erase(session_.Programs().begin() + progSel_);
-            progSel_    = session_.Programs().empty() ? -1 : 0;
-            deckSlot_   = -1;
-            deckRecipe_ = -1;
+            SelectDeckProgram(session_.Programs().empty() ? -1 : 0);
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();

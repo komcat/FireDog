@@ -53,6 +53,13 @@ struct UiSettings {
     // live value), false = classic axes/ticks plot.
     bool chartScope  = true;
 
+    // Run page deck: the last-used program (by UID, so a rename keeps it) and
+    // which of its slots was showing. The deck shows exactly ONE slot, so this
+    // is what the operator comes back to — re-applied on every product load
+    // that still contains the uid, otherwise the first program / first slot.
+    std::string runProgUid;
+    int         runSlot = 0;
+
     // Last-loaded product name (folder under products/); empty = none.
     // Auto-reloaded at startup.
     std::string lastProduct;

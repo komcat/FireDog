@@ -322,6 +322,10 @@ private:
     // Run page (View menu, full-page) — programs = slots of recipes. R1.
     void DrawRunPanel();              // deck | execution + Scan band + log | DUT
     void StartDeckRun(RunScope scope);   // granularity follows the deck selection
+    void SelectDeckProgram(int idx);     // load a program into the deck (slot 0)
+    void SelectDeckSlot(int slot);       // show one slot; drops the recipe selection
+    void RememberDeckSelection();        // persist program uid + slot to UiSettings
+    void RestoreDeckSelection();         // re-point the deck after a document load
     void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|Climb|XCAN tabs
     void DrawRunXcanBlock();          // XCAN tab: hex-left/right launch presets
     void StartXcanPreset(const std::string& device, int presetIdx);
@@ -832,12 +836,22 @@ private:
     // Run page UI state: the deck selection (recipe -1 = slot-level), light
     // edit mode, and the runner's last start rejection. The programs
     // themselves live in session_.
+    //
+    // deckSlot_ names the ONE slot the deck shows, and is -1 only while the
+    // program has no slots at all — there is no "(all slots)" selection and no
+    // whole-program run: Execute runs the selected recipe, or that one slot.
     int  progSel_       = -1;
     int  deckSlot_      = -1;
     int  deckRecipe_    = -1;
     bool runEdit_       = false;
     bool runOpenDelete_ = false;
+    bool runOpenLoad_   = false;   // request to open the Load Program modal
     std::string runStartErr_;
+    // The deck selection remembered across restarts (UiSettings run_prog_uid /
+    // run_slot). By UID because a rename must not lose it; re-applied by
+    // ResetDocumentSelections after every product load that still has it.
+    std::string runLastProgUid_;
+    int         runLastSlot_ = 0;
     // Widths of the deck and DUT columns, dragged by the two splitters beside
     // the execution view and persisted in UiSettings. Their own fields, not the
     // main window's leftW_/rightW_: Run is a takeover that replaces that

@@ -131,7 +131,7 @@ RunQueue BuildRunQueue(const Program& prog, RunScope scope,
     };
 
     RunQueue out;
-    out.kind  = "program";
+    out.kind  = "slot";
     out.label = prog.name;
 
     // Resolve one uid into the queue; a miss is fatal for the whole request.
@@ -147,27 +147,20 @@ RunQueue BuildRunQueue(const Program& prog, RunScope scope,
         out.items.push_back({slotName, *r});
     };
 
-    if (scope == RunScope::Program) {
-        for (const ProgramSlot& s : prog.slots)
-            for (const std::string& uid : s.recipes)
-                add(s.name, uid);
+    if (slotIdx < 0 || slotIdx >= static_cast<int>(prog.slots.size()))
+        return fail("no slot selected");
+    const ProgramSlot& s = prog.slots[static_cast<std::size_t>(slotIdx)];
+    if (scope == RunScope::Slot) {
+        out.label = prog.name + " / " + s.name;
+        for (const std::string& uid : s.recipes)
+            add(s.name, uid);
     } else {
-        if (slotIdx < 0 || slotIdx >= static_cast<int>(prog.slots.size()))
-            return fail("no slot selected");
-        const ProgramSlot& s = prog.slots[static_cast<std::size_t>(slotIdx)];
-        if (scope == RunScope::Slot) {
-            out.kind  = "slot";
-            out.label = prog.name + " / " + s.name;
-            for (const std::string& uid : s.recipes)
-                add(s.name, uid);
-        } else {
-            if (recipeIdx < 0 || recipeIdx >= static_cast<int>(s.recipes.size()))
-                return fail("no recipe selected");
-            out.kind = "recipe";
-            add(s.name, s.recipes[static_cast<std::size_t>(recipeIdx)]);
-            if (ok)
-                out.label = prog.name + " / " + s.name + " / " + out.items.front().recipe.name;
-        }
+        if (recipeIdx < 0 || recipeIdx >= static_cast<int>(s.recipes.size()))
+            return fail("no recipe selected");
+        out.kind = "recipe";
+        add(s.name, s.recipes[static_cast<std::size_t>(recipeIdx)]);
+        if (ok)
+            out.label = prog.name + " / " + s.name + " / " + out.items.front().recipe.name;
     }
     if (!ok) return RunQueue{};
     return out;

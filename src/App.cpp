@@ -70,6 +70,8 @@ int App::Run()
         enableClickMove_ = ui.clickToMove;
         showVisionMarks_ = ui.showVisionMarks;
         chartScope_      = ui.chartScope;
+        runLastProgUid_  = ui.runProgUid;
+        runLastSlot_     = ui.runSlot > 0 ? ui.runSlot : 0;
         lastProduct      = ui.lastProduct;
     }
     Theme::Apply(themeIndex_);
@@ -283,6 +285,8 @@ void App::SaveUiSettings()
     s.clickToMove = enableClickMove_;
     s.showVisionMarks = showVisionMarks_;
     s.chartScope  = chartScope_;
+    s.runProgUid  = runLastProgUid_;
+    s.runSlot     = runLastSlot_;
     s.lastProduct = session_.Product().name;
     s.Save(kUiSettingsPath);
 }
@@ -293,9 +297,7 @@ void App::ResetDocumentSelections()
 {
     recipeSel_ = -1;
     recipeStartErr_.clear();
-    progSel_    = session_.Programs().empty() ? -1 : 0;
-    deckSlot_   = -1;
-    deckRecipe_ = -1;
+    RestoreDeckSelection();
     runStartErr_.clear();
     alignSel_ = session_.Aligns().empty() ? -1 : 0;
     alignNameBuf_[0] = '\0';
@@ -371,14 +373,12 @@ void App::LoadRecipesFromDisk()
     recipeStartErr_.clear();
 }
 
-// Thin wrapper (like LoadRecipesFromDisk): session loads, App resets the deck
-// selection — a freshly loaded set selects its first program.
+// Thin wrapper (like LoadRecipesFromDisk): session loads, App re-points the
+// deck at the remembered program/slot (or the first, if this set has neither).
 void App::LoadProgramsFromDisk()
 {
     session_.LoadProgramsFromDisk();
-    progSel_    = session_.Programs().empty() ? -1 : 0;
-    deckSlot_   = -1;
-    deckRecipe_ = -1;
+    RestoreDeckSelection();
     runStartErr_.clear();
 }
 
