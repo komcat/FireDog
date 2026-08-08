@@ -191,6 +191,37 @@ bool LoadPngRGBA(const char* path, std::vector<unsigned char>* rgba,
 // cursor on the same line — call SameLine-free and just keep adding widgets.
 void DrawMarkIconsInline(const MarkIcon icons[2], int active, float height);
 
+// ---- Recipe row icons ------------------------------------------------------
+// Which picture a step type draws, as a file stem under `assets/recipe_icons/`
+// (nullptr = this type has no icon). A pure name->name lookup so the same
+// answer serves the palette and the step tree: an operator who learns a glyph
+// while picking a command must meet the same glyph in the recipe it lands in.
+//
+// The mapping is by command NAME, not category — Align and Motion both contain
+// moves, and what the row DOES to the machine is what the reader is scanning
+// for. Several commands deliberately share one file.
+const char* StepIconFile(const char* type);
+
+// Draw one row icon at text height and stay on the current line. A null or
+// unloaded icon still RESERVES the column: the point of the icon is that the
+// eye can run down a fixed column, and a ragged left edge costs more than the
+// blank square does.
+void DrawStepIconInline(const MarkIcon* icon);
+
+// A button with an icon before its label, the pair centred in the frame the way
+// a plain Button centres its text. Same icon set, drawn at text height.
+//
+// A null or unloaded icon degrades to exactly ImGui::Button / SmallButton — the
+// opposite of the row rule above, and deliberately: a row is scanned down a
+// column, a button is read where it sits, so a reserved blank square would buy
+// nothing and only make the control wider.
+//
+// `label` must be a PLAIN label (no `##` id suffix): it is both the button's id
+// and the text drawn on it.
+bool IconButton(const MarkIcon* icon, const char* label,
+                const ImVec2& size = ImVec2(0.0f, 0.0f));
+bool IconSmallButton(const MarkIcon* icon, const char* label);
+
 // Inputs, plus pointers to the caller's crosshair/zoom state (App members —
 // this helper keeps none of its own, per the no-state rule above).
 struct MarkPicker {

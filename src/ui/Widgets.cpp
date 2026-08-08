@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 
 namespace firedog {
@@ -187,6 +188,108 @@ void DrawMarkIconsInline(const MarkIcon icons[2], int active, float height)
         ImGui::Dummy(ImVec2(w, height));
         ImGui::SameLine();
     }
+}
+
+const char* StepIconFile(const char* type)
+{
+    if (!type || !*type) return nullptr;
+
+    // Exact matches first, prefix families below.
+    struct Row { const char* type; const char* file; };
+    static constexpr Row kExact[] = {
+        // A relative move and a move to a taught place are different acts —
+        // one is "from wherever we are", the other "to a known point" — and
+        // telling those two apart at a glance is the whole reason a step list
+        // gets icons at all.
+        {"move_relative",        "move_relative"},
+        {"move_relative_global", "move_relative"},
+        {"place_move",           "move_default"},
+        // A block of steps rather than one step. Only `group` — giving `loop`
+        // and `if` the same glyph would say "these rows are the same kind of
+        // thing", which is the opposite of what the column is for.
+        {"group",                "GROUP"},
+        // The machine has stopped and is waiting for a person.
+        {"prompt",               "prompt"},
+        {"prompt_input",         "prompt"},
+        // A pneumatic slide has its own two glyphs. It IS a synthetic device
+        // over the IO fleet (one output pin, two sensor pins), but which WAY it
+        // is about to travel is the thing an operator scanning the list wants,
+        // and the shared IO glyph cannot say it.
+        {"extend_slide",         "Extend"},
+        {"retract_slide",        "Retract"},
+        {"set_output",           "IO"},
+        {"pulse_output",         "IO"},
+        {"wait_input",           "IO"},
+        {"clear_latch",          "IO"},
+    };
+    for (const Row& r : kExact)
+        if (std::strcmp(r.type, type) == 0) return r.file;
+
+    // Prefix families: everything that drives an axis, and everything that
+    // writes the part's record. Matched by PREFIX so a command added later to
+    // either family is covered without an edit here — and without silently
+    // naming a picture nobody drew.
+    if (std::strncmp(type, "move_", 5) == 0) return "move_default";
+    if (std::strncmp(type, "dut_",  4) == 0) return "data";
+    return nullptr;
+}
+
+void DrawStepIconInline(const MarkIcon* icon)
+{
+    const float  h = ImGui::GetTextLineHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(h, h));   // reserves the column whether or not it draws
+    if (icon && icon->tex)
+        ImGui::GetWindowDrawList()->AddImage((ImTextureID)(intptr_t)icon->tex, p,
+                                             ImVec2(p.x + h, p.y + h));
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+}
+
+bool IconButton(const MarkIcon* icon, const char* label, const ImVec2& size)
+{
+    if (!icon || !icon->tex) return ImGui::Button(label, size);
+
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const float  ih = ImGui::GetTextLineHeight();
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    const float  contentW = ih + st.ItemInnerSpacing.x + ts.x;
+
+    ImVec2 sz = size;
+    if (sz.x <= 0.0f) sz.x = contentW + st.FramePadding.x * 2.0f;
+    if (sz.y <= 0.0f) sz.y = ImGui::GetFrameHeight();
+
+    // An EMPTY-labelled button with both pieces drawn over it: Button() centres
+    // ONE label and has no two-part form. The id still comes from `label`, so a
+    // caller that flips "Save" to "Save*" behaves exactly as it did before.
+    char id[128];
+    std::snprintf(id, sizeof(id), "##%s", label);
+    const ImVec2 p       = ImGui::GetCursorScreenPos();
+    const bool   clicked = ImGui::Button(id, sz);
+
+    // GetColorU32 folds in the style alpha, so both pieces dim together inside
+    // a BeginDisabled block — an icon that stayed bright there would read as
+    // the one live control on a dead row.
+    ImDrawList* dl   = ImGui::GetWindowDrawList();
+    const ImU32 tint = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    const float x    = p.x + (sz.x - contentW) * 0.5f;
+    const float iy   = p.y + (sz.y - ih) * 0.5f;
+    dl->AddImage((ImTextureID)(intptr_t)icon->tex, ImVec2(x, iy),
+                 ImVec2(x + ih, iy + ih), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), tint);
+    dl->AddText(ImVec2(x + ih + st.ItemInnerSpacing.x, p.y + (sz.y - ts.y) * 0.5f),
+                ImGui::GetColorU32(ImGuiCol_Text), label);
+    return clicked;
+}
+
+bool IconSmallButton(const MarkIcon* icon, const char* label)
+{
+    if (!icon || !icon->tex) return ImGui::SmallButton(label);
+    // What SmallButton itself does: the ordinary button with its vertical
+    // frame padding taken away.
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(ImGui::GetStyle().FramePadding.x, 0.0f));
+    const bool clicked = IconButton(icon, label);
+    ImGui::PopStyleVar();
+    return clicked;
 }
 
 MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPicker& mp)

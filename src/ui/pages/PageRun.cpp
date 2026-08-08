@@ -382,10 +382,11 @@ void App::DrawRunPanel()
     // While a run is active the button becomes Stop.
     const bool onRecipe = deckSlot_ >= 0 && deckRecipe_ >= 0;
     if (running) {
-        if (ImGui::Button("Stop", ImVec2(110.0f, 0.0f))) orch_.programs.Stop();
+        if (IconButton(UiIcon("Stop"), "Stop", ImVec2(130.0f, 0.0f)))
+            orch_.programs.Stop();
     } else {
         ImGui::BeginDisabled(!canRun);
-        if (ImGui::Button("Execute", ImVec2(110.0f, 0.0f)))
+        if (IconButton(UiIcon("run_execute"), "Execute", ImVec2(130.0f, 0.0f)))
             StartDeckRun(onRecipe ? RunScope::Recipe : RunScope::Slot);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(onRecipe ? "Run the selected recipe"
@@ -396,7 +397,8 @@ void App::DrawRunPanel()
     ImGui::TextDisabled(onRecipe ? "recipe" : "slot");
     ImGui::SameLine();
     ImGui::BeginDisabled(running);
-    if (ImGui::Button(session_.ProgramsDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
+    if (IconButton(UiIcon("Save"), session_.ProgramsDirty() ? "Save*" : "Save",
+                   ImVec2(110.0f, 0.0f)))
         session_.SavePrograms();
     // The program is LOADED here, not picked from a combo: which program is up
     // is a deliberate operator act, and the name beside the button is the
@@ -462,7 +464,7 @@ void App::DrawRunPanel()
         ImGui::EndDisabled();
     }
     if (runEdit_) {
-        if (ImGui::SmallButton("New")) {
+        if (IconSmallButton(UiIcon("New"), "New")) {
             Program p;
             p.uid = GenerateUid();   // the traceability identity, minted once
             session_.Programs().push_back(std::move(p));
@@ -1092,7 +1094,8 @@ void App::DrawRunXcanBlock()
     presets("hex-right");
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
+    if (IconButton(UiIcon("Stop"), "Stop", ImVec2(92.0f, 0.0f)))
+        orch_.lua.RequestStop();
     ImGui::EndDisabled();
     if (!anyPreset) {   // escape hatch — no button left to right-click
         ImGui::SameLine();
@@ -1173,7 +1176,7 @@ void App::DrawXcanTargetModal()
     ImGui::TextDisabled("zone low should sit at the raster handoff level");
 
     ImGui::Separator();
-    if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) {
+    if (IconButton(UiIcon("Save"), "Save", ImVec2(92.0f, 0.0f))) {
         SaveScanPresets();
         ImGui::CloseCurrentPopup();
     }
@@ -1271,7 +1274,7 @@ void App::DrawXcanPresetModal()
     ImGui::Checkbox("reuse_sample", &p.reuseSample);
 
     ImGui::Separator();
-    if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) {
+    if (IconButton(UiIcon("Save"), "Save", ImVec2(92.0f, 0.0f))) {
         SaveScanPresets();
         ImGui::CloseCurrentPopup();
     }
@@ -1384,7 +1387,8 @@ void App::DrawRunRasterBlock()
     scanBtn("hex-right");
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
+    if (IconButton(UiIcon("Stop"), "Stop", ImVec2(92.0f, 0.0f)))
+        orch_.lua.RequestStop();
     ImGui::EndDisabled();
 
     // Status line: the running/last raster_scan result (shared engine ctx).
@@ -1550,7 +1554,8 @@ void App::DrawRunClimbBlock()
     presets("hex-right");
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
+    if (IconButton(UiIcon("Stop"), "Stop", ImVec2(92.0f, 0.0f)))
+        orch_.lua.RequestStop();
     ImGui::EndDisabled();
     if (!anyPreset) {   // escape hatch — no button left to right-click
         ImGui::SameLine();
@@ -1707,7 +1712,7 @@ void App::DrawClimbPresetModal()
     ImGui::InputDouble("move_timeout_ms", &p.moveTimeoutMs, 0.0, 0.0, "%g");
 
     ImGui::Separator();
-    if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) {
+    if (IconButton(UiIcon("Save"), "Save", ImVec2(92.0f, 0.0f))) {
         SaveScanPresets();
         ImGui::CloseCurrentPopup();
     }

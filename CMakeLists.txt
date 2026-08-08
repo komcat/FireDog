@@ -366,9 +366,10 @@ function(firedog_stage_runtime tgt)
                 "${CMAKE_CURRENT_SOURCE_DIR}/config" "$<TARGET_FILE_DIR:${tgt}>/config"
         COMMENT "Copying config to output directory")
 
-    # UI artwork (the pt1/pt2 mark icons). Separate from config/ because it is
-    # NOT runtime-writable: nothing edits these, so they never get the
-    # xxx.local.json treatment and a rebuild simply refreshes them.
+    # UI artwork (the pt1/pt2 mark icons, the recipe row icons). Separate from
+    # config/ because it is NOT runtime-writable: nothing edits these, so they
+    # never get the xxx.local.json treatment and a rebuild simply refreshes
+    # them. The whole tree is copied, so a new icon needs no CMake edit.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory

@@ -177,7 +177,7 @@ void App::DrawRecipeEditPanel()
     }
     ImGui::EndDisabled();
     ImGui::BeginDisabled(running);
-    if (ImGui::SmallButton("New")) {
+    if (IconSmallButton(UiIcon("New"), "New")) {
         Recipe r;
         r.uid  = GenerateUid();
         r.name = "new recipe";
@@ -568,10 +568,15 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
         const bool selected   = (path == edStepSel_);
         const bool executing  = running && path == runPath;
 
+        // Every row is three pieces — number, icon, text — so the icon can sit
+        // between the first two. The number gets a fixed column so the icons
+        // line up vertically; a column the eye cannot run down is decoration.
         const std::string shown = s.nickname.empty() ? AutoNickname(s) : s.nickname;
-        char label[160];
-        std::snprintf(label, sizeof(label), "%zu  %s%s", i + 1, shown.c_str(),
+        char text[160];
+        std::snprintf(text, sizeof(text), "%s%s", shown.c_str(),
                       s.enabled ? "" : "  [off]");
+        const float numW = ImGui::CalcTextSize("00").x +
+                           ImGui::GetStyle().ItemInnerSpacing.x;
 
         const bool dim = !s.enabled && !executing;
         if (executing)
@@ -586,7 +591,13 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
                                        ImGuiTreeNodeFlags_SpanAvailWidth |
                                        ImGuiTreeNodeFlags_DefaultOpen;
             if (selected) flags |= ImGuiTreeNodeFlags_Selected;
-            const bool open = ImGui::TreeNodeEx("##node", flags, "%s", label);
+            // The NUMBER is the node's own label — it has to sit after the
+            // arrow, and only ImGui knows how wide that is. The icon and the
+            // text are laid back over the row afterwards, same rewind as the
+            // leaf branch, so `group` carries the glyph the palette gave it.
+            const float lblX = ImGui::GetCursorPosX() +
+                               ImGui::GetTreeNodeToLabelSpacing();
+            const bool open = ImGui::TreeNodeEx("##node", flags, "%zu", i + 1);
             edTreeRows_.push_back(path);
             if (selected && edScrollToSel_) {
                 ImGui::SetScrollHereY(0.35f);
@@ -594,6 +605,10 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
             }
             if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
                 edStepSel_ = path;
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::SetCursorPosX(lblX + numW);
+            DrawStepIconInline(StepIcon(s.type.c_str()));
+            ImGui::TextUnformatted(text);
             if (open) {
                 DrawRecipeTreeNodes(s.children, path, false, runPath, running);
                 if (!s.elseChildren.empty()) {
@@ -603,12 +618,27 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
                 ImGui::TreePop();
             }
         } else {
-            if (ImGui::Selectable(label, selected)) edStepSel_ = path;
+            // One full-width Selectable carrying the whole row's click target,
+            // with the number, the icon and the text laid back over it.
+            const float x0 = ImGui::GetCursorPosX();
+            if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowOverlap))
+                edStepSel_ = path;
             edTreeRows_.push_back(path);
             if (selected && edScrollToSel_) {
                 ImGui::SetScrollHereY(0.35f);
                 edScrollToSel_ = false;
             }
+            // Back onto the row via SameLine, NOT SetCursorScreenPos: the line
+            // has to stay open so the last piece closes it. A hand-restored
+            // cursor at the end of the last row trips ImGui's
+            // "SetCursorPos used to extend parent boundaries" assert.
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::SetCursorPosX(x0);
+            ImGui::Text("%zu", i + 1);
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::SetCursorPosX(x0 + numW);
+            DrawStepIconInline(StepIcon(s.type.c_str()));
+            ImGui::TextUnformatted(text);
         }
         ImGui::PopID();
 
@@ -744,12 +774,30 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
 
     // Insert on DOUBLE-click only — a stray single click must not add steps
     // (same convention as the product list's double-click-to-load).
+    //
+    // The row is an EMPTY-labelled Selectable with the icon and the name laid
+    // over it: an icon cannot go inside a Selectable's label, and the whole row
+    // has to stay the double-click target. AllowOverlap so the overlaid text
+    // does not steal the row's hover (the tooltip hangs off it).
     const auto drawEntry = [&](const char* name, const char* desc) {
-        if (ImGui::Selectable(name, false, ImGuiSelectableFlags_AllowDoubleClick) &&
+        char id[96];
+        std::snprintf(id, sizeof(id), "##%s", name);
+        const float x0 = ImGui::GetCursorPosX();
+        if (ImGui::Selectable(id, false, ImGuiSelectableFlags_AllowDoubleClick |
+                                             ImGuiSelectableFlags_AllowOverlap) &&
             ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
             insert(name);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s\n(double-click to insert)", desc);
+        // Back onto the row just drawn, via SameLine so the LINE STAYS OPEN and
+        // the last piece closes it normally. Rewinding with SetCursorScreenPos
+        // instead leaves ImGui holding a hand-set cursor past the content
+        // extents, and the final row of the child trips its
+        // "SetCursorPos used to extend parent boundaries" assert.
+        ImGui::SameLine(0.0f, 0.0f);
+        ImGui::SetCursorPosX(x0);
+        DrawStepIconInline(StepIcon(name));
+        ImGui::TextUnformatted(name);
     };
     // One collapsible node per category (open by default; collapse state
     // persists for the session). While searching, matching categories are
@@ -812,8 +860,10 @@ void App::DrawRecipeRunStrip(float height)
 
     // One row: state on the left, the run controls right-aligned. Errors get
     // their own line below so a long message never collides with the buttons.
+    // Wider than the old 90 px: Run / Stop / Save carry an icon beside the
+    // label now, and a fixed width that fitted the text alone would clip it.
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float btnW  = 90.0f;
+    const float btnW  = 110.0f;
     const float chkW  = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x +
                         ImGui::CalcTextSize("Step").x;
     const float ctrlW = btnW * 5.0f + chkW + style.ItemSpacing.x * 5.0f;
@@ -850,7 +900,7 @@ void App::DrawRecipeRunStrip(float height)
     const bool canRun = !orch_.Busy() && recipeSel_ >= 0 &&
                         recipeSel_ < static_cast<int>(session_.Recipes().size());
     ImGui::BeginDisabled(!canRun);
-    if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
+    if (IconButton(UiIcon("run_execute"), "Run", ImVec2(btnW, 0.0f))) {
         RecipeEngine::Env env = session_.MakeRecipeEnv();
         RecipeEngine::StartOpts opts;
         opts.stepMode = edStepMode_;
@@ -869,7 +919,7 @@ void App::DrawRecipeRunStrip(float height)
             ? FindStepByPath(&session_.Recipes()[recipeSel_].steps, edStepSel_)
             : nullptr;
     ImGui::BeginDisabled(!selStep);
-    if (ImGui::Button("Run Step", ImVec2(90.0f, 0.0f)) && selStep) {
+    if (ImGui::Button("Run Step", ImVec2(btnW, 0.0f)) && selStep) {
         Recipe one;
         one.uid  = "step-run";
         one.name = "step: " + (selStep->nickname.empty() ? AutoNickname(*selStep)
@@ -887,17 +937,19 @@ void App::DrawRecipeRunStrip(float height)
         ImGui::SetTooltip("Run only the selected step (its children included)");
     ImGui::SameLine();
     ImGui::BeginDisabled(!st.stepPaused);
-    if (ImGui::Button("Next", ImVec2(90.0f, 0.0f))) orch_.recipe.StepAdvance();
+    if (ImGui::Button("Next", ImVec2(btnW, 0.0f))) orch_.recipe.StepAdvance();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Execute the paused step, then pause again");
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) orch_.recipe.RequestStop();
+    if (IconButton(UiIcon("Stop"), "Stop", ImVec2(btnW, 0.0f)))
+        orch_.recipe.RequestStop();
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(running);
-    if (ImGui::Button(session_.RecipesDirty() ? "Save*" : "Save", ImVec2(90.0f, 0.0f)))
+    if (IconButton(UiIcon("Save"), session_.RecipesDirty() ? "Save*" : "Save",
+                   ImVec2(btnW, 0.0f)))
         session_.SaveRecipes();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered() && session_.RecipesDirty())

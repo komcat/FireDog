@@ -214,10 +214,6 @@ void App::Update(float dt)
     }
 }
 
-// ALL page switches route here. Leaving the Recipe Editor with unsaved edits
-// blocks: the editor stays up and its Unsaved Changes modal (Save / Discard /
-// Cancel) completes the switch to edLeaveTarget_. Entering a takeover page
-// from a hardware page remembers it so the editor's Close returns there.
 // The pt1/pt2 diagrams shown over the live image while an object is being
 // marked. Loaded lazily and ONCE (success or failure): the first surface that
 // wants them runs long after GL is up, and a missing assets/ folder must cost a
@@ -242,6 +238,36 @@ void App::EnsureMarkIcons()
     }
 }
 
+// One icon from assets/recipe_icons, by FILE stem. Same lazy-once rule as the
+// mark icons, but keyed per file rather than per surface: several commands
+// share a glyph, and loading it twice would be two textures of the same 32x32.
+const MarkIcon* App::UiIcon(const char* file)
+{
+    if (!file || !*file) return nullptr;
+
+    auto it = stepIcons_.find(file);
+    if (it == stepIcons_.end()) {
+        MarkIcon ic;
+        const std::string path = std::string("assets/recipe_icons/") + file + ".png";
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+        if (LoadPngRGBA(path.c_str(), &rgba, &w, &h)) {
+            ic.tex = host_.MakeTextureRGBA(w, h, rgba.data());
+            ic.w   = w;
+            ic.h   = h;
+        } else {
+            FD_WARN("ui", "recipe icon '%s' not loaded - drawn without it",
+                    path.c_str());
+        }
+        it = stepIcons_.emplace(file, ic).first;   // cache the miss as well
+    }
+    return it->second.tex ? &it->second : nullptr;
+}
+
+// ALL page switches route here. Leaving the Recipe Editor with unsaved edits
+// blocks: the editor stays up and its Unsaved Changes modal (Save / Discard /
+// Cancel) completes the switch to edLeaveTarget_. Entering a takeover page
+// from a hardware page remembers it so the editor's Close returns there.
 void App::SwitchPage(Page p)
 {
     if (currentPage_ == p) return;

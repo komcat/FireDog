@@ -63,6 +63,28 @@ Inside the page, the familiar three-panel split (shared splitter sizes):
   Add sibling, Add child (structural only), Move up/down (within siblings),
   Delete. **Add step** opens the palette: registry commands grouped by
   category (`CommandRegistry::List()`) plus the five structural types.
+- **Row icons.** A small picture sits after the step number in the tree and
+  before the name in the palette — the SAME picture in both, from one lookup
+  (`StepIconFile`, `ui/Widgets`), because the glyph learned while picking a
+  command has to be the glyph met in the recipe it lands in. It answers "what
+  does this row do to the machine?" before the text is read, which is what a
+  twenty-step recipe needs: `move_relative` and `move_to_position` differ by
+  four characters mid-name and by everything in what they do. The families are
+  *move* (`move_*`, `place_move`, with relative moves on their own glyph),
+  *IO* (the four IO commands), *extend* / *retract* (the pneumatic slides get
+  their own pair rather than the shared IO glyph — a slide IS an output pin and
+  two sensor pins, but which WAY it is about to travel is what the reader wants
+  and IO cannot say it), *data* (`dut_*`), *prompt* (the machine has stopped
+  and is waiting for a person) and *group* (a block of steps). The mapping is by
+  command name, not category — Align and Motion both contain moves — and `loop`
+  and `if` deliberately do NOT share the group glyph, since saying "these rows
+  are the same kind of thing" is the opposite of what the column is for. Rows
+  with no icon still reserve the column, so the names stay in one vertical line.
+  Icons are cosmetic by construction: a missing PNG leaves a gap and logs once.
+  The same set also fronts the page's **buttons** — New, Save, Run, Stop — via
+  `IconButton`, which does NOT reserve space when an icon is missing (see
+  `docs/ui-file-layout.md`). The Run page uses the identical four, so Execute
+  and Stop mean the same thing on both surfaces.
 - **Right — inspector.** The selected step's form: nickname, enabled,
   `on_error` (abort / continue / retry N), then one widget per `ParamSpec`
   (see §3). Structural steps get their structural form: loop → count-or-while

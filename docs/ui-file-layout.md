@@ -112,6 +112,30 @@ lifetime is state, so the decode is a leaf helper and the GL texture belongs to
 `App` (`EnsureMarkIcons`, `App.cpp`) — loaded once on first use, since a missing
 `assets/` must cost a diagram rather than a retry every frame.
 
+The **recipe icons** (`assets/recipe_icons/`) follow the same split.
+`App::UiIcon` caches one texture per FILE stem — per file, not per caller,
+because several commands share a glyph — and caches the failures too.
+`StepIconFile` (Widgets) maps a command NAME to a stem, and `App::StepIcon` is
+just those two composed. Adding an icon is a PNG plus one line in
+`StepIconFile`: CMake copies the whole `assets/` tree, and `move_*` / `dut_*`
+already fall through to their family glyph.
+
+The set serves two shapes, and they differ on purpose:
+
+- **Rows** — `DrawStepIconInline`, used by the palette and the step tree. It
+  always RESERVES the column, so a type with no icon leaves a gap rather than
+  shifting its neighbours out of line: a column the eye cannot run down is
+  decoration. Both surfaces call the same lookup, which is the point — the
+  glyph an operator learns while picking a command is the glyph they meet in
+  the recipe it lands in.
+- **Buttons** — `IconButton` / `IconSmallButton` (New, Save, run_execute, Stop
+  on the Recipe Editor and the Run page). These degrade to a plain
+  `ImGui::Button` when the icon is missing: a button is read where it sits, not
+  scanned down a column, so a reserved blank square would only make it wider.
+  Both draw an empty-labelled button and lay the icon + text over it centred —
+  `Button()` centres ONE label and has no two-part form — and tint through
+  `GetColorU32` so the icon dims with the text inside `BeginDisabled`.
+
 `DrawMarkPicker` (`CameraMark` / `MarkPicker`) is the rule applied a second
 time, one level up: the whole *mark a feature* surface — crosshair, click, wheel
 zoom, arrow nudge, and latched marks projected from machine mm back through the

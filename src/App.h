@@ -391,6 +391,17 @@ private:
     void      EnsureMarkIcons();
     MarkIcon  markIcons_[2];
     bool      markIconsTried_ = false;
+    // The assets/recipe_icons set, keyed by FILE stem because several commands
+    // share a picture. Loaded on first use like the mark icons, and the
+    // failures are cached too: a missing PNG costs one warning, not one per
+    // frame. nullptr = there is nothing to draw.
+    //
+    // UiIcon takes the stem (the New/Save/run_execute/Stop button glyphs);
+    // StepIcon takes a step TYPE and routes through StepIconFile (ui/Widgets),
+    // which owns the command -> picture mapping.
+    const MarkIcon* UiIcon(const char* file);
+    const MarkIcon* StepIcon(const char* type) { return UiIcon(StepIconFile(type)); }
+    std::map<std::string, MarkIcon> stepIcons_;
 
     unsigned int               cameraTex_ = 0;
     int                        cameraW_ = 0, cameraH_ = 0;
