@@ -63,6 +63,9 @@ int App::Run()
         if (ui.visionParamW  > 0.0f) visionParamW_  = ui.visionParamW;
         if (ui.visionResultW > 0.0f) visionResultW_ = ui.visionResultW;
         if (ui.edInspectW    > 0.0f) edInspectW_    = ui.edInspectW;
+        if (ui.runDeckW      > 0.0f) runDeckW_      = ui.runDeckW;
+        if (ui.runDutW       > 0.0f) runDutW_       = ui.runDutW;
+        if (ui.runScanH      > 0.0f) runScanH_      = ui.runScanH;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
         showVisionMarks_ = ui.showVisionMarks;
@@ -273,6 +276,9 @@ void App::SaveUiSettings()
     s.visionParamW  = visionParamW_;
     s.visionResultW = visionResultW_;
     s.edInspectW    = edInspectW_;
+    s.runDeckW      = runDeckW_;
+    s.runDutW       = runDutW_;
+    s.runScanH      = runScanH_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.showVisionMarks = showVisionMarks_;

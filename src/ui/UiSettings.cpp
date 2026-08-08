@@ -27,6 +27,9 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("vision_param_w")) s.visionParamW = j["vision_param_w"].get<float>();
         if (j.contains("vision_result_w")) s.visionResultW = j["vision_result_w"].get<float>();
         if (j.contains("ed_inspect_w")) s.edInspectW = j["ed_inspect_w"].get<float>();
+        if (j.contains("run_deck_w")) s.runDeckW = j["run_deck_w"].get<float>();
+        if (j.contains("run_dut_w"))  s.runDutW  = j["run_dut_w"].get<float>();
+        if (j.contains("run_scan_h")) s.runScanH = j["run_scan_h"].get<float>();
         if (j.contains("show_chart"))    s.showChart   = j["show_chart"].get<bool>();
         if (j.contains("click_to_move")) s.clickToMove = j["click_to_move"].get<bool>();
         if (j.contains("show_vision_marks")) s.showVisionMarks = j["show_vision_marks"].get<bool>();
@@ -53,6 +56,9 @@ bool UiSettings::Save(const std::string& path) const
     j["vision_param_w"]  = visionParamW;
     j["vision_result_w"] = visionResultW;
     j["ed_inspect_w"]    = edInspectW;
+    j["run_deck_w"]      = runDeckW;
+    j["run_dut_w"]       = runDutW;
+    j["run_scan_h"]      = runScanH;
     j["show_chart"]    = showChart;
     j["click_to_move"] = clickToMove;
     j["show_vision_marks"] = showVisionMarks;

@@ -84,6 +84,42 @@ struct XcanTarget {
     double zoneHighUa = 400.0;   // align_zone_high (adaptive ladder upper limit)
 };
 
+// One climb-raster launch preset (a button on the Scan band's Climb tab): the
+// climb_raster.lua tunables injected at launch. Same five-slot, right-click-to-
+// edit shape as XcanPreset, persisted alongside it in scan_presets.local.json.
+// Device / feedback topic / trace are NOT here (button column + band header),
+// and neither is the TARGET: the climb reads the same active XcanTarget the
+// XCAN tab does, because the target is a property of the product's power class,
+// not of the search that drives at it. Only the exit FRACTION lives here.
+struct ClimbPreset {
+    std::string label   = "Preset";
+    bool        enabled = false;      // show as a launch button
+    double targetPct      = 85.0;     // fraction of the target that ends the run
+    double zStepUm        = 1.0;      // climb travel per step
+    double maxZUm         = 20.0;     // total climb travel budget
+    double zProbePct      = 5.0;      // gain that means "Z alone is still paying" (0 = off)
+    int    maxSkips       = 5;        // forced plane search after N skips (0 = unlimited)
+    bool   spiral         = false;    // plane scan: false = cross, true = spiral
+    double xyStepUm       = 0.5;      // plane grid pitch
+    int    xySteps        = 6;        // grid half-width in cells (6 = 13 x 13)
+    int    peakDrop       = 2;        // cross: non-improvements that mean "past the peak"
+    int    ringsStop      = 2;        // spiral: rings without improvement (0 = full grid)
+    double improvePct     = 2.0;      // noise margin on "is this better?"
+    double contactDropPct = 10.0;     // plane best this far under the peak = contact (0 = off)
+    int    stallPlanes    = 0;        // planes without a new peak before stopping (0 = off)
+    std::string zAxis     = "Z";      // the climb axis
+    std::string planeAxes = "X,Y";    // the two searched axes
+    double settleMs       = 150.0;    // fresh-sample ceiling
+    double settleMinMs    = 0.0;      // floor for slow receivers
+    double zSettleMs      = 200.0;    // extra wait after a Z step
+    int    freshSamples   = 2;        // new publishes per measure
+    int    avgCount       = 3;        // baseline averaging samples
+    double tolMm          = 0.001;    // move arrival tolerance
+    double moveTimeoutMs  = 10000.0;
+    double velocityMmS    = 1.0;      // scan velocity, set once
+};
+inline constexpr int kClimbPresetCount = 5;
+
 class App {
 public:
     int Run();
@@ -284,9 +320,9 @@ private:
     void DrawDutViewPanel();          // serial list | entries table | summary
     void LoadDutList();               // scan the product's data/ for records
     // Run page (View menu, full-page) — programs = slots of recipes. R1.
-    void DrawRunPanel();              // deck | execution + XCAN + log | DUT
+    void DrawRunPanel();              // deck | execution + Scan band + log | DUT
     void StartDeckRun(RunScope scope);   // granularity follows the deck selection
-    void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|XCAN tabs
+    void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|Climb|XCAN tabs
     void DrawRunXcanBlock();          // XCAN tab: hex-left/right launch presets
     void StartXcanPreset(const std::string& device, int presetIdx);
     void DrawXcanPresetModal();       // right-click settings for a launch preset
@@ -295,6 +331,9 @@ private:
     void SaveScanPresets() const;
     void DrawRunRasterBlock();        // Raster tab: area-scan launcher (raster_scan.lua)
     void StartRasterScan(const std::string& device);
+    void DrawRunClimbBlock();         // Climb tab: hex-left/right launch presets
+    void StartClimbPreset(const std::string& device, int presetIdx);
+    void DrawClimbPresetModal();      // right-click settings for a climb preset
     void LoadProgramsFromDisk();      // session load + deck selection reset
     void LoadRecipesFromDisk();       // session load + UI selection reset
     void DrawSafetyAlertModal();      // blocking safety alert (E-Stop etc.)
@@ -799,6 +838,14 @@ private:
     bool runEdit_       = false;
     bool runOpenDelete_ = false;
     std::string runStartErr_;
+    // Widths of the deck and DUT columns, dragged by the two splitters beside
+    // the execution view and persisted in UiSettings. Their own fields, not the
+    // main window's leftW_/rightW_: Run is a takeover that replaces that
+    // five-region layout, and a program deck is a different kind of thing from
+    // a hardware device list.
+    float runDeckW_ = 300.0f;
+    float runDutW_  = 280.0f;
+    bool  runSplitting_ = false;   // edge-detect the drag END (either splitter)
     // Run page XCAN block: feedback channel for the preset scans + live value.
     char runXcanTopic_[64] = "keithley/ch1";
     // XCAN launch presets (up to 5 buttons per hexapod row): defaults seeded
@@ -811,6 +858,17 @@ private:
     XcanTarget xcanTargets_[kXcanPresetCount];
     int  xcanTgtCfgSel_  = 0;
     bool xcanTgtCfgOpen_ = false;
+    // Climb launch presets (Climb tab, same five-slot shape). The exit TARGET
+    // is not here: the Climb tab drives at the same active xcanTargets_ slot
+    // the XCAN tab does — one product power class, two searches aiming at it.
+    ClimbPreset climbPresets_[kClimbPresetCount];
+    int  climbCfgSel_  = 0;
+    bool climbCfgOpen_ = false;
+    // Height of the Scan band, dragged by the splitter above it and persisted
+    // in UiSettings. 0 = seed from the frame metrics on the first frame — the
+    // band holds three tabs of parameter knobs now, so its old fixed six-row
+    // height cropped the tab content instead of scrolling it.
+    float runScanH_ = 0.0f;
 
     // DUT Records viewer state: scanned serials + the loaded record.
     std::vector<std::string> dutList_;

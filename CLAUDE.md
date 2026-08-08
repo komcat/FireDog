@@ -49,7 +49,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 `architecture.md` (layering + ownership) · `build-and-sdks.md` (**targets + SDK gating**) · `hardware-layer.md` (per-device drivers) · `vision-layer.md` (focus metric, auto-focus, HALCON) · `state-and-config.md` (config files, persistence, DataBus) · `command-layer.md` (registry, recipes, Lua) · `run-and-dut.md` (programs, Run page, traceability) · `ui-layer.md` · `ui-file-layout.md` (**where UI code goes**) · `rig-console.md` (the FireDogRig console)
 
 **Design rationale — why it is that way:**
-`recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `alignment-procedure-design.md` (the taught local frame O1) · `vision-detection-design.md` (detection models, the teach wizard, auto stations) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
+`recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `climb-raster-design.md` (the gap-closing Z + XY raster) · `alignment-procedure-design.md` (the taught local frame O1) · `vision-detection-design.md` (detection models, the teach wizard, auto stations) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
 
 ## Rules
 

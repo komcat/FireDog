@@ -1,7 +1,8 @@
 // CommandsSystem.cpp : system/data commands — delay, log, ctx ops, DataBus
 // bridge (read_topic), the generic wait_until, the operator prompt, the
 // Lua escape hatch (run_script), and the typed scan wrappers (xcan,
-// raster_scan) that front the algorithm scripts with real param forms.
+// raster_scan, climb_raster) that front the algorithm scripts with real
+// param forms.
 #include "command/Commands.h"
 
 #include "command/CommandRegistry.h"
@@ -325,6 +326,80 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                                static_cast<double>(p.GetInt("settle_min_ms")));
                       c.CtxSet("raster_velocity_mm_s", p.GetDouble("velocity_mm_s"));
                       c.CtxSet("raster_trace", p.GetBool("trace"));
+                      const std::string err =
+                          RunLuaFile(p.GetString("file"), *rp, c, {}, false, nullptr);
+                      return err.empty() ? CommandResult::Success()
+                                         : CommandResult::Fail(err);
+                  }});
+
+    // Climb Z + XY raster: the gap-closing search that runs BETWEEN raster
+    // (first light) and xcan (peak polish) — step the climb axis toward the
+    // part, probe, and search the plane only when the step alone stops paying.
+    // The target is mandatory here in a way it is not for the other two: this
+    // search has no area or ladder budget, so the target is what ends it.
+    reg.Register({"climb_raster", "Motion",
+                  "Climb Z + XY raster (climb_raster.lua): step in, search the plane, repeat",
+                  {
+                      {"device", PT::DeviceHexapod, true, {}, 0, 0, {}, "hexapod to climb"},
+                      {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
+                       "feedback signal"},
+                      {"target_ua", PT::Double, true, {}, 0.0001, 1e9, {},
+                       "signal the climb is driving at (uA) — its only exit criterion"},
+                      {"target_pct", PT::Double, false, 85.0, 1.0, 100.0, {},
+                       "fraction of the target that counts as reached"},
+                      {"z_step_um", PT::Double, false, 1.0, 0.01, 100.0, {},
+                       "climb-axis travel per step"},
+                      {"max_z_um", PT::Double, false, 20.0, 0.5, 500.0, {},
+                       "total climb travel budget before giving up"},
+                      {"z_probe_pct", PT::Double, false, 5.0, 0.0, 99.0, {},
+                       "skip the XY search while one Z step alone gains more than this "
+                       "(0 = search every plane)"},
+                      {"max_skips", PT::Int, false, 5, 0, 1000, {},
+                       "force a plane search after this many skipped in a row (0 = unlimited)"},
+                      {"plane_scan", PT::Enum, false, "cross", 0, 0, {"cross", "spiral"},
+                       "cross: a line scan per axis, stops past the peak (few points). "
+                       "spiral: the full grid from the middle, stops expanding when rings stop improving"},
+                      {"xy_step_um", PT::Double, false, 0.5, 0.01, 100.0, {},
+                       "plane grid pitch"},
+                      {"xy_steps", PT::Int, false, 6, 1, 100, {},
+                       "grid half-width in steps (6 = a 13 x 13 plane)"},
+                      {"contact_drop_pct", PT::Double, false, 10.0, 0.0, 99.0, {},
+                       "stop and retreat when a plane best falls this far below the peak — "
+                       "read as the part having been touched (0 = off)"},
+                      {"z_axis", PT::String, false, "Z", 0, 0, {}, "the climb axis"},
+                      {"plane_axes", PT::String, false, "X,Y", 0, 0, {},
+                       "the two axes searched in each plane"},
+                      {"settle_min_ms", PT::Int, false, 0, 0, 5000, {},
+                       "extra mechanical-settle floor before each sample (ms)"},
+                      {"velocity_mm_s", PT::Double, false, 1.0, 0.0, 100.0, {},
+                       "scan velocity applied before starting (deterministic settle); 0 = keep current"},
+                      {"trace", PT::Bool, false, false, 0, 0, {},
+                       "one 'clmb,' CSV line per sample"},
+                      {"file", PT::ScriptFile, false,
+                       "config/scripts/climb_raster.lua", 0, 0, {}, "script override"},
+                  },
+                  CommandSpec::Needs::None,
+                  [rp](ExecutionContext& c, const ParamValues& p) {
+                      c.CtxSet("climb_device", p.GetString("device"));
+                      c.CtxSet("climb_topic", p.GetString("topic"));
+                      c.CtxSet("climb_target", p.GetDouble("target_ua") * 1e-6);
+                      c.CtxSet("climb_target_pct", p.GetDouble("target_pct"));
+                      c.CtxSet("climb_z_step_um", p.GetDouble("z_step_um"));
+                      c.CtxSet("climb_max_z_um", p.GetDouble("max_z_um"));
+                      c.CtxSet("climb_z_probe_pct", p.GetDouble("z_probe_pct"));
+                      c.CtxSet("climb_max_skips",
+                               static_cast<double>(p.GetInt("max_skips")));
+                      c.CtxSet("climb_plane_scan", p.GetString("plane_scan"));
+                      c.CtxSet("climb_xy_step_um", p.GetDouble("xy_step_um"));
+                      c.CtxSet("climb_xy_steps",
+                               static_cast<double>(p.GetInt("xy_steps")));
+                      c.CtxSet("climb_contact_drop_pct", p.GetDouble("contact_drop_pct"));
+                      c.CtxSet("climb_z_axis", p.GetString("z_axis"));
+                      c.CtxSet("climb_plane_axes", p.GetString("plane_axes"));
+                      c.CtxSet("climb_settle_min_ms",
+                               static_cast<double>(p.GetInt("settle_min_ms")));
+                      c.CtxSet("climb_velocity_mm_s", p.GetDouble("velocity_mm_s"));
+                      c.CtxSet("climb_trace", p.GetBool("trace"));
                       const std::string err =
                           RunLuaFile(p.GetString("file"), *rp, c, {}, false, nullptr);
                       return err.empty() ? CommandResult::Success()

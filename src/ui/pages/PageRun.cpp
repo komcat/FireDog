@@ -1,5 +1,6 @@
 // PageRun.cpp : the Run page (View menu, full-page) — the program deck, the
-// execution view, the Scan band (Raster | XCAN) and the scan-preset modals.
+// execution view, the Scan band (Raster | Climb | XCAN) and the scan-preset
+// modals.
 // Definitions of App members — see App.h. Design: docs/run-page-design.md.
 //
 // Execution adds NO engine: StartDeckRun resolves one queue from the deck
@@ -7,9 +8,10 @@
 // RecipeEngine runs from it, so each recipe keeps its own validation,
 // progress, prompts and $run DUT event. Ctx does NOT flow between recipes.
 //
-// The two scan launchers inject their form values as the scripts' ctx keys via
-// LuaEngine::Env::initialCtx — the same channel recipe ctx_set steps use. Exit
-// targets are entered in uA and multiplied by 1e-6 into feedback units here.
+// The three scan launchers inject their form values as the scripts' ctx keys
+// via LuaEngine::Env::initialCtx — the same channel recipe ctx_set steps use.
+// Exit targets are entered in uA and multiplied by 1e-6 into feedback units
+// here.
 #include "App.h"
 
 #include "imgui.h"
@@ -127,6 +129,99 @@ static void XcanPresetFromJson(const nlohmann::json& j, XcanPreset& p)
     p.reuseSample   = j.value("reuse_sample", p.reuseSample);
 }
 
+// Built-in climb-raster launch presets, coarse -> fine like the XCAN ladders
+// beside them — same word, same meaning: how big a bite each pass takes.
+//   Coarse - closing a real gap. 2 um Z steps over the full 20 um budget, a
+//            1 um plane grid, and the Z probe on so planes are skipped while
+//            stepping alone is still paying.
+//   Fine   - the last approach. 0.5 um Z steps over 5 um, a 0.25 um plane
+//            grid, and NO probe: every plane is searched, because this pass
+//            runs where XY misalignment (not the gap) is what is left.
+// The plane-scan shape (cross vs spiral) is deliberately NOT what separates
+// them — it answers "is this peak axis-separable?", not "how close am I?", so
+// it stays a checkbox on both. 3-5 are blank spares the operator can switch on
+// in the settings modal (right-click any preset button).
+static ClimbPreset DefaultClimbPreset(int i)
+{
+    ClimbPreset p;
+    switch (i) {
+    case 0:
+        p.label = "Coarse"; p.enabled = true;
+        p.zStepUm = 2.0;  p.maxZUm   = 20.0;
+        p.xyStepUm = 1.0; p.zProbePct = 5.0;
+        break;
+    case 1:
+        p.label = "Fine"; p.enabled = true;
+        p.zStepUm = 0.5;  p.maxZUm   = 5.0;
+        p.xyStepUm = 0.25; p.zProbePct = 0.0;   // search every plane
+        break;
+    default:
+        p.label = "C" + std::to_string(i + 1); p.enabled = false; break;
+    }
+    return p;
+}
+
+static nlohmann::json ClimbPresetToJson(const ClimbPreset& p)
+{
+    return nlohmann::json{
+        {"label", p.label},
+        {"enabled", p.enabled},
+        {"target_pct", p.targetPct},
+        {"z_step_um", p.zStepUm},
+        {"max_z_um", p.maxZUm},
+        {"z_probe_pct", p.zProbePct},
+        {"max_skips", p.maxSkips},
+        {"spiral", p.spiral},
+        {"xy_step_um", p.xyStepUm},
+        {"xy_steps", p.xySteps},
+        {"peak_drop", p.peakDrop},
+        {"rings_stop", p.ringsStop},
+        {"improve_pct", p.improvePct},
+        {"contact_drop_pct", p.contactDropPct},
+        {"stall_planes", p.stallPlanes},
+        {"z_axis", p.zAxis},
+        {"plane_axes", p.planeAxes},
+        {"settle_ms", p.settleMs},
+        {"settle_min_ms", p.settleMinMs},
+        {"z_settle_ms", p.zSettleMs},
+        {"fresh_samples", p.freshSamples},
+        {"avg_count", p.avgCount},
+        {"tol_mm", p.tolMm},
+        {"move_timeout_ms", p.moveTimeoutMs},
+        {"velocity_mm_s", p.velocityMmS},
+    };
+}
+
+// Tolerant overlay: missing keys keep the preset's current (default) value.
+static void ClimbPresetFromJson(const nlohmann::json& j, ClimbPreset& p)
+{
+    p.label          = j.value("label", p.label);
+    p.enabled        = j.value("enabled", p.enabled);
+    p.targetPct      = j.value("target_pct", p.targetPct);
+    p.zStepUm        = j.value("z_step_um", p.zStepUm);
+    p.maxZUm         = j.value("max_z_um", p.maxZUm);
+    p.zProbePct      = j.value("z_probe_pct", p.zProbePct);
+    p.maxSkips       = j.value("max_skips", p.maxSkips);
+    p.spiral         = j.value("spiral", p.spiral);
+    p.xyStepUm       = j.value("xy_step_um", p.xyStepUm);
+    p.xySteps        = j.value("xy_steps", p.xySteps);
+    p.peakDrop       = j.value("peak_drop", p.peakDrop);
+    p.ringsStop      = j.value("rings_stop", p.ringsStop);
+    p.improvePct     = j.value("improve_pct", p.improvePct);
+    p.contactDropPct = j.value("contact_drop_pct", p.contactDropPct);
+    p.stallPlanes    = j.value("stall_planes", p.stallPlanes);
+    p.zAxis          = j.value("z_axis", p.zAxis);
+    p.planeAxes      = j.value("plane_axes", p.planeAxes);
+    p.settleMs       = j.value("settle_ms", p.settleMs);
+    p.settleMinMs    = j.value("settle_min_ms", p.settleMinMs);
+    p.zSettleMs      = j.value("z_settle_ms", p.zSettleMs);
+    p.freshSamples   = j.value("fresh_samples", p.freshSamples);
+    p.avgCount       = j.value("avg_count", p.avgCount);
+    p.tolMm          = j.value("tol_mm", p.tolMm);
+    p.moveTimeoutMs  = j.value("move_timeout_ms", p.moveTimeoutMs);
+    p.velocityMmS    = j.value("velocity_mm_s", p.velocityMmS);
+}
+
 // Activatable preset button: theme color normally, yellow when active.
 static bool PresetButton(const char* label, bool active, const ImVec2& size)
 {
@@ -198,8 +293,22 @@ void App::DrawRunPanel()
                           style.ChildBorderSize * 2.0f;
     const ImVec2 avail  = ImGui::GetContentRegionAvail();
     const float  paneH  = avail.y - stripH - style.ItemSpacing.y;
-    const float  leftW  = 300.0f;
-    const float  rightW = 280.0f;
+    // Deck | execution | DUT, the two side columns dragged by the splitters
+    // below and persisted (runDeckW_/runDutW_). Clamped every frame so a window
+    // resize can never leave the execution view narrower than it can use.
+    constexpr float kSplitW  = 6.0f;
+    constexpr float kMinSide = 180.0f;
+    constexpr float kMinMidW = 260.0f;
+    const auto clampf = [](float v, float lo, float hi) {
+        if (hi < lo) hi = lo;
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    runDeckW_ = clampf(runDeckW_, kMinSide,
+                       avail.x - runDutW_ - 2.0f * kSplitW - kMinMidW);
+    runDutW_  = clampf(runDutW_,  kMinSide,
+                       avail.x - runDeckW_ - 2.0f * kSplitW - kMinMidW);
+    const float  leftW  = runDeckW_;
+    const float  rightW = runDutW_;
 
     const bool haveProg = progSel_ >= 0 && progSel_ < static_cast<int>(session_.Programs().size());
 
@@ -464,17 +573,39 @@ void App::DrawRunPanel()
         }
     }
     ImGui::EndChild();
-    ImGui::SameLine();
 
-    // ---- Middle column: execution view / XCAN presets / log ----
-    const float midW = avail.x - leftW - rightW - ImGui::GetStyle().ItemSpacing.x * 2.0f;
+    // Drag either splitter to re-proportion the row; both persist on the drag
+    // END, like every other splitter in the app.
+    bool splitting = false;
+    ImGui::SameLine(0.0f, 0.0f);
+    if (Splitter("##runsplitL", true, kSplitW, paneH)) {
+        runDeckW_ += ImGui::GetIO().MouseDelta.x;
+        splitting = true;
+    }
+    ImGui::SameLine(0.0f, 0.0f);
+
+    // ---- Middle column: execution view / Scan band / log ----
+    const float midW = avail.x - leftW - rightW - 2.0f * kSplitW;
     ImGui::BeginChild("runMid", ImVec2(midW, paneH));
-    const float scanH = ImGui::GetFrameHeightWithSpacing() * 6.0f +   // channel/target/tabs/3 content rows
-                        ImGui::GetStyle().WindowPadding.y * 2.0f;
+    // The Scan band holds three tabs of parameter forms now, so its height is
+    // the operator's to set (dragged by the splitter above it, persisted in
+    // runScanH_) rather than a fixed row count that silently crops a tab. The
+    // default is generous for the same reason; the band scrolls if it is ever
+    // dragged smaller than its content.
+    const float rowH = ImGui::GetFrameHeightWithSpacing();
+    const float scanDefaultH = rowH * 8.0f + style.WindowPadding.y * 2.0f;
+    if (runScanH_ <= 0.0f) runScanH_ = scanDefaultH;
+    constexpr float kSplitH  = 6.0f;
+    constexpr float kMinExec = 60.0f;
     const float logH  = 190.0f;
-    float execH = ImGui::GetContentRegionAvail().y - scanH - logH -
-                  ImGui::GetStyle().ItemSpacing.y * 2.0f;
-    if (execH < 60.0f) execH = 60.0f;
+    const float midAvailH = ImGui::GetContentRegionAvail().y;
+    // runExec + splitter + runScan + runLog, three item spacings between them.
+    const float fixedH = logH + kSplitH + style.ItemSpacing.y * 3.0f;
+    const float scanH  = clampf(runScanH_, rowH * 3.0f,
+                                midAvailH - fixedH - kMinExec);
+    runScanH_ = scanH;
+    float execH = midAvailH - scanH - fixedH;
+    if (execH < kMinExec) execH = kMinExec;
     ImGui::BeginChild("runExec", ImVec2(0.0f, execH), ImGuiChildFlags_Borders);
     if (running || !rs.result.empty()) {
         ImGui::Text("%s: %s", rs.kind.c_str(), rs.label.c_str());
@@ -516,7 +647,14 @@ void App::DrawRunPanel()
     }
     ImGui::EndChild();
 
-    // Scan band: shared channel/Target/Trace header over Raster | XCAN tabs.
+    // Drag to give the scan forms more (or less) room; persists on the drag END
+    // with the two column splitters.
+    if (Splitter("##runsplitS", false, kSplitH, ImGui::GetContentRegionAvail().x)) {
+        runScanH_ -= ImGui::GetIO().MouseDelta.y;
+        splitting = true;
+    }
+
+    // Scan band: shared channel/Trace header over Raster | Climb | XCAN tabs.
     ImGui::BeginChild("runScan", ImVec2(0.0f, scanH), ImGuiChildFlags_Borders);
     DrawRunScanBlock();
     ImGui::EndChild();
@@ -527,7 +665,13 @@ void App::DrawRunPanel()
     ImGui::EndChild();
 
     ImGui::EndChild();   // runMid
-    ImGui::SameLine();
+
+    ImGui::SameLine(0.0f, 0.0f);
+    if (Splitter("##runsplitR", true, kSplitW, paneH)) {
+        runDutW_ -= ImGui::GetIO().MouseDelta.x;
+        splitting = true;
+    }
+    ImGui::SameLine(0.0f, 0.0f);
 
     // ---- Right: DUT (the operator flow is scan -> run -> pass/fail) ----
     ImGui::BeginChild("runDut", ImVec2(rightW, paneH), ImGuiChildFlags_Borders);
@@ -537,6 +681,9 @@ void App::DrawRunPanel()
     if (!es.error.empty() && es.state != RecipeEngine::State::Running)
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", es.error.c_str());
     ImGui::EndChild();
+
+    if (runSplitting_ && !splitting) SaveUiSettings();
+    runSplitting_ = splitting;
 
     // ---- Delete-program confirm ----
     if (runOpenDelete_) {
@@ -568,6 +715,8 @@ void App::LoadScanPresets()
         xcanPresets_[i] = DefaultXcanPreset(i);
         xcanTargets_[i] = DefaultXcanTarget(i);
     }
+    for (int i = 0; i < kClimbPresetCount; ++i)
+        climbPresets_[i] = DefaultClimbPreset(i);
     std::ifstream f("config/scan_presets.local.json");
     if (!f.is_open()) f.open("config/scan_presets.json");
     if (!f.is_open()) return;   // first run — defaults stand
@@ -593,6 +742,14 @@ void App::LoadScanPresets()
             t.zoneHighUa = arr[i].value("zone_high_ua", t.zoneHighUa);
         }
     }
+    if (j.contains("climb_presets") && j["climb_presets"].is_array()) {
+        const nlohmann::json& arr = j["climb_presets"];
+        for (std::size_t i = 0;
+             i < arr.size() && i < static_cast<std::size_t>(kClimbPresetCount); ++i) {
+            if (arr[i].is_object())
+                ClimbPresetFromJson(arr[i], climbPresets_[static_cast<int>(i)]);
+        }
+    }
 }
 
 void App::SaveScanPresets() const
@@ -608,9 +765,12 @@ void App::SaveScanPresets() const
             {"zone_high_ua", t.zoneHighUa},
         });
     }
+    nlohmann::json carr = nlohmann::json::array();
+    for (const ClimbPreset& p : climbPresets_) carr.push_back(ClimbPresetToJson(p));
     nlohmann::json j;
-    j["xcan_presets"] = std::move(arr);
-    j["xcan_targets"] = std::move(tarr);
+    j["xcan_presets"]  = std::move(arr);
+    j["xcan_targets"]  = std::move(tarr);
+    j["climb_presets"] = std::move(carr);
     std::ofstream f("config/scan_presets.local.json");
     if (f.is_open()) {
         f << j.dump(2) << "\n";
@@ -665,9 +825,58 @@ void App::StartXcanPreset(const std::string& device, int presetIdx)
                 scriptStartErr_.c_str());
 }
 
+// Climb preset launcher: climb_raster.lua with the pressed launch preset (step
+// sizes + plane shape + guards, right-click to edit) and the ACTIVE XCAN target
+// slot — the climb drives at the same product power class the XCAN pass does,
+// so the target lives in one place; only the exit FRACTION is the preset's.
+void App::StartClimbPreset(const std::string& device, int presetIdx)
+{
+    std::string script = "config/scripts/climb_raster.lua";
+    for (const ScriptInfo& si : session_.Scripts()) {
+        if (si.name == "climb_raster") { script = si.path; break; }
+    }
+    const ClimbPreset& p  = climbPresets_[presetIdx];
+    const XcanTarget&  tp = xcanTargets_[xcanPresetSel_];
+    LuaEngine::Env env = session_.MakeLuaEnv();
+    env.initialCtx = {
+        {"climb_device", device},
+        {"climb_topic", std::string(runXcanTopic_)},
+        {"climb_target", tp.targetUa * 1e-6},
+        {"climb_target_pct", p.targetPct},
+        {"climb_z_axis", p.zAxis},
+        {"climb_plane_axes", p.planeAxes},
+        {"climb_z_step_um", p.zStepUm},
+        {"climb_max_z_um", p.maxZUm},
+        {"climb_z_probe_pct", p.zProbePct},
+        {"climb_max_skips", static_cast<double>(p.maxSkips)},
+        {"climb_plane_scan", std::string(p.spiral ? "spiral" : "cross")},
+        {"climb_xy_step_um", p.xyStepUm},
+        {"climb_xy_steps", static_cast<double>(p.xySteps)},
+        {"climb_peak_drop", static_cast<double>(p.peakDrop)},
+        {"climb_rings_stop", static_cast<double>(p.ringsStop)},
+        {"climb_improve_pct", p.improvePct},
+        {"climb_contact_drop_pct", p.contactDropPct},
+        {"climb_stall_planes", static_cast<double>(p.stallPlanes)},
+        {"climb_settle_ms", p.settleMs},
+        {"climb_settle_min_ms", p.settleMinMs},
+        {"climb_z_settle_ms", p.zSettleMs},
+        {"climb_fresh_samples", static_cast<double>(p.freshSamples)},
+        {"climb_avg_count", static_cast<double>(p.avgCount)},
+        {"climb_tol_mm", p.tolMm},
+        {"climb_move_timeout_ms", p.moveTimeoutMs},
+        {"climb_velocity_mm_s", p.velocityMmS},
+        {"climb_trace", xcanTrace_ ? 1.0 : 0.0},
+    };
+    scriptStartErr_.clear();
+    if (!orch_.lua.Start(script, std::move(env), &scriptStartErr_))
+        FD_WARN("script", "climb preset '%s' rejected: %s", p.label.c_str(),
+                scriptStartErr_.c_str());
+}
+
 // The Run page's Scan band: ONE shared header — feedback-channel picker +
-// live value + Trace — over two tabs: Raster (first-light area scan) and
-// XCAN (align hill climb). Each tab owns its target preset buttons.
+// live value + Trace — over three tabs: Raster (first-light area scan), Climb
+// (gap-closing Z + XY raster) and XCAN (align hill climb). Each tab owns its
+// target preset buttons.
 void App::DrawRunScanBlock()
 {
     // Shared header row: channel picker (live DataBus topics) + current value.
@@ -706,11 +915,15 @@ void App::DrawRunScanBlock()
         ImGui::SetTooltip("Log every scan sample as 'xcan,'/'rast,' CSV lines\n"
                           "(also in the daily log file).");
 
-    // One tab per scan method (Raster first: the physical workflow is
-    // raster to first light, then XCAN to the peak).
+    // One tab per scan method, in the order the machine uses them: raster to
+    // first light, climb the gap, then XCAN to the peak.
     if (ImGui::BeginTabBar("##scantabs")) {
         if (ImGui::BeginTabItem("Raster")) {
             DrawRunRasterBlock();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Climb")) {
+            DrawRunClimbBlock();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("XCAN")) {
@@ -1034,18 +1247,18 @@ void App::DrawRunRasterBlock()
     // Knob row: X- span/step, Y span/step (um).
     ImGui::TextDisabled("X- span/step");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(60.0f);
+    ImGui::SetNextItemWidth(72.0f);
     ImGui::InputDouble("##rss", &rasterSlowSpanUm_, 0.0, 0.0, "%.0f");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(50.0f);
+    ImGui::SetNextItemWidth(64.0f);
     ImGui::InputDouble("##rsp", &rasterSlowStepUm_, 0.0, 0.0, "%.1f");
     ImGui::SameLine();
     ImGui::TextDisabled("  Y+/- span/step");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(60.0f);
+    ImGui::SetNextItemWidth(72.0f);
     ImGui::InputDouble("##rfs", &rasterFastSpanUm_, 0.0, 0.0, "%.0f");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(50.0f);
+    ImGui::SetNextItemWidth(64.0f);
     ImGui::InputDouble("##rfp", &rasterFastStepUm_, 0.0, 0.0, "%.1f");
     ImGui::SameLine();
     ImGui::TextDisabled("um");
@@ -1116,6 +1329,321 @@ void App::DrawRunRasterBlock()
     } else {
         ImGui::TextDisabled("Serpentine area scan: X steps down from start, Y sweeps +/- half span.");
     }
+}
+
+// Climb tab of the Scan band: the Target row (SHARED with the XCAN tab — one
+// product power class), an inline row of the knobs that actually get retuned
+// between parts, and the per-hexapod launch buttons. Everything else is behind
+// the right-click settings modal, as with XCAN.
+//
+// The inline knobs edit climbPresets_[climbCfgSel_], and a left-click on a
+// launch button both starts that preset and makes it the one the knobs edit —
+// so the operator's loop is "press Climb, watch, nudge the Z step, press again"
+// without a modal in the way. Persisting still goes through the modal's Save.
+void App::DrawRunClimbBlock()
+{
+    const LuaEngine::Status st = orch_.lua.GetStatus();
+    const bool running = orch_.lua.Running();
+
+    // Target row: the SAME slots the XCAN tab drives at, and the same active
+    // selection. The climb's own exit criterion is the fraction of it below.
+    ImGui::TextDisabled("Target");
+    bool anyTarget = false;
+    for (int i = 0; i < kXcanPresetCount; ++i) {
+        const XcanTarget& t = xcanTargets_[i];
+        if (!t.enabled) continue;
+        anyTarget = true;
+        ImGui::SameLine();
+        ImGui::PushID(i);
+        if (PresetButton(XcanTargetLabel(t).c_str(), xcanPresetSel_ == i,
+                         ImVec2(76.0f, 0.0f)))
+            xcanPresetSel_ = i;
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Climb until a plane's best reaches %g%% of %g uA\n"
+                              "(shared with the XCAN tab; right-click: settings)",
+                              climbPresets_[climbCfgSel_].targetPct, t.targetUa);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                xcanTgtCfgSel_  = i;
+                xcanTgtCfgOpen_ = true;
+            }
+        }
+        ImGui::PopID();
+    }
+    if (!anyTarget) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("targets...")) xcanTgtCfgOpen_ = true;
+    }
+    ImGui::SameLine();
+    {
+        const XcanTarget& t = xcanTargets_[xcanPresetSel_];
+        ImGui::TextDisabled("  exit at %.1f uA",
+                            t.targetUa * climbPresets_[climbCfgSel_].targetPct / 100.0);
+    }
+
+    // Inline knob row: the four numbers that get retuned on a real part.
+    ClimbPreset& p = climbPresets_[climbCfgSel_];
+    ImGui::TextDisabled("%s:", p.label.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("Z step/budget");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(56.0f);
+    ImGui::InputDouble("##czs", &p.zStepUm, 0.0, 0.0, "%.2f");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(56.0f);
+    ImGui::InputDouble("##czb", &p.maxZUm, 0.0, 0.0, "%.0f");
+    ImGui::SameLine();
+    ImGui::TextDisabled("um   XY step/half");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(56.0f);
+    ImGui::InputDouble("##cxy", &p.xyStepUm, 0.0, 0.0, "%.2f");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(46.0f);
+    ImGui::InputInt("##cxn", &p.xySteps, 0, 0);
+    ImGui::SameLine();
+    ImGui::TextDisabled("   probe");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(46.0f);
+    ImGui::InputDouble("##cpp", &p.zProbePct, 0.0, 0.0, "%.0f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Skip the XY search while one Z step alone gains more\n"
+                          "than this %%. 0 = search every plane.");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%%");
+    ImGui::SameLine();
+    ImGui::Checkbox("spiral", &p.spiral);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Off: cross scan — a line per axis, stops past the peak (few points).\n"
+                          "On:  spiral — the full grid from the middle; assumes nothing\n"
+                          "     about the peak's shape, at the cost of every point.");
+    // Same clamps the script asserts on, applied here so a typo is corrected in
+    // the form rather than failing the run.
+    if (p.zStepUm  < 0.01) p.zStepUm  = 0.01;
+    if (p.xyStepUm < 0.01) p.xyStepUm = 0.01;
+    if (p.maxZUm   < p.zStepUm) p.maxZUm = p.zStepUm;
+    if (p.xySteps  < 1) p.xySteps = 1;
+    if (p.zProbePct < 0.0)  p.zProbePct = 0.0;
+    if (p.zProbePct > 99.0) p.zProbePct = 99.0;
+
+    // Launch row: hex-left [presets...]   hex-right [presets...]   Stop.
+    // Left-click launches (and selects for editing); RIGHT-click opens the
+    // settings modal, which works even while the button is disabled.
+    const bool busy = orch_.Busy();
+    bool anyPreset = false;
+    for (const ClimbPreset& cp : climbPresets_) anyPreset |= cp.enabled;
+    const bool haveTarget = xcanTargets_[xcanPresetSel_].targetUa > 0.0;
+    const auto presets = [&](const char* dev) {
+        int idx = -1;
+        for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+            if (hardware_.MotionName(i) == dev) { idx = static_cast<int>(i); break; }
+        }
+        IMotionController* m =
+            idx >= 0 ? hardware_.MotionDevice(static_cast<std::size_t>(idx)) : nullptr;
+        ImGui::TextDisabled("%s", dev);
+        ImGui::PushID(dev);
+        ImGui::BeginDisabled(busy || !haveTarget || !m || !m->IsConnected());
+        for (int i = 0; i < kClimbPresetCount; ++i) {
+            if (!climbPresets_[i].enabled) continue;
+            ImGui::SameLine();
+            ImGui::PushID(i);
+            // Wider than the XCAN row's 70, which clips a six-letter label.
+            if (ImGui::Button(climbPresets_[i].label.c_str(), ImVec2(84.0f, 0.0f))) {
+                climbCfgSel_ = i;          // the knob row follows what was launched
+                StartClimbPreset(dev, i);
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("Z %g um up to %g um, %s plane %g um +/-%d\n"
+                                  "right-click: settings",
+                                  climbPresets_[i].zStepUm, climbPresets_[i].maxZUm,
+                                  climbPresets_[i].spiral ? "spiral" : "cross",
+                                  climbPresets_[i].xyStepUm, climbPresets_[i].xySteps);
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                    climbCfgSel_  = i;
+                    climbCfgOpen_ = true;
+                }
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    };
+    presets("hex-left");
+    ImGui::SameLine();
+    ImGui::TextDisabled(" | ");
+    ImGui::SameLine();
+    presets("hex-right");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!running);
+    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
+    ImGui::EndDisabled();
+    if (!anyPreset) {   // escape hatch — no button left to right-click
+        ImGui::SameLine();
+        if (ImGui::SmallButton("presets...")) climbCfgOpen_ = true;
+    }
+
+    // Status line: the running/last climb_raster result (shared engine ctx).
+    // climb_stop is the one to read — "contact" is a stop the operator has to
+    // see, not a tidy finish, so it is colored like a failure.
+    if (st.scriptName == "climb_raster") {
+        ImGui::Text("%s", LuaEngine::StateName(st.state));
+        for (const auto& [key, val] : st.ctx) {
+            if (key == "climb_best" || key == "climb_final" ||
+                key == "climb_target_frac" || key == "climb_best_z_um" ||
+                key == "climb_planes" || key == "climb_skipped" ||
+                key == "climb_stop") {
+                ImGui::SameLine();
+                const bool contact = key == "climb_stop" &&
+                                     CtxValueToString(val) == "contact";
+                if (contact)
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+                                       "stop=contact (retreated to the peak)");
+                else
+                    ImGui::TextDisabled("%s=%s", key.c_str() + 6,   // strip "climb_"
+                                        CtxValueToString(val).c_str());
+            }
+        }
+        if (!st.error.empty() && st.state != LuaEngine::State::Running) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
+        }
+    } else if (!haveTarget) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+                           "no target selected - the climb has no other exit criterion");
+    } else {
+        ImGui::TextDisabled("Step Z in, probe, search the XY plane when the step stops paying; "
+                            "retreats to the peak on a suspected contact.");
+    }
+
+    DrawClimbPresetModal();
+}
+
+// Right-click settings for a climb launch preset — the same schema-form idea as
+// the XCAN preset modal, over the climb_raster.lua tunables. Save persists all
+// presets to config/scan_presets.local.json; Close keeps the edits for this
+// session only.
+void App::DrawClimbPresetModal()
+{
+    if (climbCfgOpen_) {
+        ImGui::OpenPopup("Climb Preset");
+        climbCfgOpen_ = false;
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("Climb Preset", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    // Slot selector: all five presets, the edited one yellow.
+    for (int i = 0; i < kClimbPresetCount; ++i) {
+        if (i > 0) ImGui::SameLine();
+        ImGui::PushID(i);
+        if (PresetButton(climbPresets_[i].label.c_str(), climbCfgSel_ == i,
+                         ImVec2(84.0f, 0.0f)))   // same width as the launch row
+            climbCfgSel_ = i;
+        ImGui::PopID();
+    }
+    ClimbPreset& p = climbPresets_[climbCfgSel_];
+    ImGui::Separator();
+
+    ImGui::Checkbox("show button", &p.enabled);
+    const float w = 150.0f;
+    char lb[32];
+    std::snprintf(lb, sizeof(lb), "%s", p.label.c_str());
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::InputText("label", lb, sizeof(lb))) p.label = lb;
+
+    ImGui::SeparatorText("climb");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("z_step_um", &p.zStepUm, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("max_z_um (travel budget)", &p.maxZUm, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("target_pct (exit)", &p.targetPct, 0.0, 0.0, "%g");
+    ImGui::TextDisabled("of the ACTIVE Target slot (%g uA)",
+                        xcanTargets_[xcanPresetSel_].targetUa);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("z_probe_pct (0 = raster every plane)", &p.zProbePct, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("max_skips (0 = unlimited)", &p.maxSkips);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Force a plane search after this many skipped in a row.\n"
+                          "A Z move is not perfectly decoupled from the plane, so an\n"
+                          "unwatched run of skips lets XY error accumulate behind a\n"
+                          "gain test that cannot see it.");
+
+    ImGui::SeparatorText("plane");
+    ImGui::Checkbox("spiral (off = cross scan)", &p.spiral);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("xy_step_um", &p.xyStepUm, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("xy_steps (half-width, cells)", &p.xySteps);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("peak_drop (cross: past-peak)", &p.peakDrop);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("rings_stop (spiral: 0 = full grid)", &p.ringsStop);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("improve_pct (noise margin)", &p.improvePct, 0.0, 0.0, "%g");
+    {
+        const int pts = p.spiral ? (2 * p.xySteps + 1) * (2 * p.xySteps + 1)
+                                 : 1 + 8 * p.xySteps;
+        ImGui::TextDisabled("<= %d points/plane, +/-%g um", pts,
+                            p.xySteps * p.xyStepUm);
+    }
+
+    ImGui::SeparatorText("guards");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("contact_drop_pct (0 = off)", &p.contactDropPct, 0.0, 0.0, "%g");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Stop and retreat to the peak when a plane's best falls\n"
+                          "this far below it — read as the part having been touched.");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("stall_planes (0 = off)", &p.stallPlanes);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Stop after this many planes with no new peak, instead of\n"
+                          "spending the whole Z budget past a peak already found.");
+
+    ImGui::SeparatorText("measure");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("settle_ms (fresh-sample ceiling)", &p.settleMs, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("settle_min_ms", &p.settleMinMs, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("z_settle_ms (after a Z step)", &p.zSettleMs, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("fresh_samples", &p.freshSamples);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputInt("avg_count (baseline only)", &p.avgCount);
+
+    ImGui::SeparatorText("motion");
+    char zb[16];
+    std::snprintf(zb, sizeof(zb), "%s", p.zAxis.c_str());
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::InputText("z_axis", zb, sizeof(zb))) p.zAxis = zb;
+    char pb[32];
+    std::snprintf(pb, sizeof(pb), "%s", p.planeAxes.c_str());
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::InputText("plane_axes", pb, sizeof(pb))) p.planeAxes = pb;
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("velocity_mm_s", &p.velocityMmS, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("tol_mm", &p.tolMm, 0.0, 0.0, "%g");
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputDouble("move_timeout_ms", &p.moveTimeoutMs, 0.0, 0.0, "%g");
+
+    ImGui::Separator();
+    if (ImGui::Button("Save", ImVec2(90.0f, 0.0f))) {
+        SaveScanPresets();
+        ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Persist ALL presets to config/scan_presets.local.json");
+    ImGui::SameLine();
+    if (ImGui::Button("Close", ImVec2(90.0f, 0.0f))) ImGui::CloseCurrentPopup();
+    ImGui::SameLine();
+    if (ImGui::Button("Defaults", ImVec2(90.0f, 0.0f)))
+        p = DefaultClimbPreset(climbCfgSel_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Reset THIS preset to its built-in values");
+    ImGui::EndPopup();
 }
 
 } // namespace firedog

@@ -111,10 +111,15 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
   progress bar (engine status, as the recipe editor shows), plus program-level
   progress (slot i/N, recipe j/M). Idle: selected slot's recipe list +
   validation summary (every referenced recipe validated with the editor's
-  author-time validation). Below it (post-R1): an **XCAN band** — bobcat's
-  Run-page scan controls (hex-left / hex-right × Coarse 10,5,2,1 µm /
-  Fine 2,1,0.5 µm presets over hexapod_align.lua, feedback-channel picker
-  with live value, Stop, inline results) — and a **log band** (the shared
+  author-time validation). Below it (post-R1): the **Scan band** — one shared
+  header (feedback-channel picker with live value, Trace) over a tab per scan
+  method, in the order the machine uses them: **Raster** (first light,
+  raster_scan.lua), **Climb** (close the gap, climb_raster.lua — see
+  `docs/climb-raster-design.md`) and **XCAN** (the peak, hexapod_align.lua).
+  Each tab is hex-left / hex-right × launch presets, right-click to edit, with
+  inline results. Its height is dragged by the splitter above it and persisted
+  (`runScanH`), because the tabs carry parameter forms and a fixed row count
+  crops whichever tab needs the most. Below that, a **log band** (the shared
   Overview log viewer).
 - **Right — DUT**: the same DutSession info + open/close controls as the
   Overview block (shared drawing code), because the operator flow is

@@ -31,6 +31,15 @@ struct UiSettings {
     // reasoning — a takeover page with its own layout.
     float edInspectW = 0.0f;
 
+    // Run page: widths of its deck (left) and DUT (right) columns in px
+    // (0 = default). Same reasoning again — a takeover page with its own layout.
+    float runDeckW = 0.0f;
+    float runDutW  = 0.0f;
+    // Run page: height of the Scan band in px (0 = default). Its own field
+    // rather than lowerH: the band carries the scan parameter forms, and how
+    // much room those need has nothing to do with the log strip's height.
+    float runScanH = 0.0f;
+
     // Aux window toggles. NOTE: clickToMove restored true means a click drives
     // the real gantry immediately on startup.
     bool showChart   = true;
