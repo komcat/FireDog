@@ -145,6 +145,7 @@ void App::Update(float dt)
     workflow_.Update(dt);        // layer 2 (kept for future orchestration)
     orch_.programs.Tick();       // sequences program/slot runs between frames
     UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)
+    UpdateMoveWatch(dt);         // a UI move in flight (the frame's MOVING banner)
 
     // Teach hand-backs from save_position steps: engine worker threads queue
     // them on Workflow, and THIS is the worker->UI hand-off point — the

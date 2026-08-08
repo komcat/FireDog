@@ -279,6 +279,29 @@ canonical private **name**, creates it on first use, and writes the uid back
 into the station; that is the one lookup that cannot end up pointing at another
 station's model.
 
+### Opening the page drives to the station
+
+`OpenVisionTeach` **commands the move to the station's position before it
+switches page**. A model is tuned at one pose — that is the whole reason it is
+private to the station — so a page opened wherever the gantry happened to be
+standing invites an ROI, a threshold and a template cut out of the wrong scene.
+
+The move is *watched*, never waited on: `App::StartWatchedMove`
+(`ui/pages/MainWindow.cpp`) issues `Workflow::MoveToPosition` and parks the
+targets in `moveWatch_`; `UpdateMoveWatch` polls arrival from `App::Update`
+using the same two signals a move command waits for (every axis within 0.01 mm,
+then `IsSettled() && IsOnTarget()`), and `DrawMoveStatusBar` draws a **MOVING**
+line with a Stop button under the quick-access strip — above the page dispatch,
+so it follows the operator onto this page. Nothing blocks the UI thread, and the
+teach page's **Live** re-detect is suppressed while the watch is active: a
+detection on a mid-travel frame reports a point on a scene the station will
+never see, and the overlay makes it look measured.
+
+A refused move (no position assigned, device not connected, a safety alert) is
+logged and the page still opens — the parameter form is worth reading with no
+gantry — but it is said out loud, because a page that silently did not move
+looks exactly like one that did.
+
 Bands, in the order the work happens: camera (exposure + the focus/luma guard
 rail) → search ROI → method + parameters → **Detect once / Live** → reliability
 → Save.

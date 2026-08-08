@@ -14,9 +14,128 @@
 #include "ui/Widgets.h"
 #include "core/Log.h"
 
+#include <cmath>
 #include <cstdio>
 
 namespace firedog {
+
+namespace {
+
+// Arrival rule for a watched UI move, the same two things a move command waits
+// for: every targeted axis inside tolerance, AND the controller reporting the
+// profile finished and on target. The tolerance matches kMoveTolMM
+// (command/MotionWaits.h) — this is a UI progress indicator, not a measurement
+// gate, so it reads the same numbers rather than sharing the engine's blocking
+// helper (which may only be called from a worker).
+constexpr double kWatchTolMM   = 0.01;
+constexpr float  kWatchTimeout = 60.0f;   // seconds before the banner gives up
+
+bool WatchArrived(IMotionController* m,
+                  const std::vector<std::pair<std::string, double>>& targets)
+{
+    const std::map<std::string, double> pos = m->Positions();
+    for (const auto& [axis, tgt] : targets) {
+        const auto it = pos.find(axis);
+        if (it == pos.end() || std::fabs(it->second - tgt) > kWatchTolMM) return false;
+    }
+    return m->IsSettled() && m->IsOnTarget();
+}
+
+} // namespace
+
+// Command a move to a saved position and start watching it. Addressed by uid
+// (hidden rows included — a private station position is exactly what this is
+// for); `what` is the phrase the banner shows ("station 1 of 'calibrate
+// plate'"), so it reads as a place rather than a device index.
+//
+// False = nothing was commanded. The caller says why: the reasons (no position
+// taught, device not connected, no shared axes) are all things its own button
+// already knows about, and a banner is the wrong place to explain them.
+bool App::StartWatchedMove(const std::string& device, const std::string& posUid,
+                           const std::string& what)
+{
+    if (posUid.empty()) return false;
+    const auto pit = session_.Positions().find(device);
+    if (pit == session_.Positions().end()) return false;
+    const SavedPos* pos = nullptr;
+    for (const SavedPos& sp : pit->second)
+        if (sp.uid == posUid) { pos = &sp; break; }
+    if (!pos) return false;
+
+    for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+        if (hardware_.MotionName(i) != device) continue;
+        IMotionController* dev = hardware_.MotionDevice(i);
+        if (!dev || !dev->IsConnected()) return false;
+
+        std::vector<std::pair<std::string, double>> targets;
+        for (const std::string& ax : dev->Axes()) {
+            const auto it = pos->vals.find(ax);
+            if (it != pos->vals.end()) targets.emplace_back(ax, it->second);
+        }
+        if (targets.empty()) return false;
+        if (!workflow_.MoveToPosition(i, targets)) return false;
+
+        moveWatch_.active  = true;
+        moveWatch_.devIdx  = i;
+        moveWatch_.device  = device;
+        moveWatch_.what    = what;
+        moveWatch_.targets = std::move(targets);
+        moveWatch_.elapsed = 0.0f;
+        FD_INFO("ui", "%s: driving to %s", device.c_str(), what.c_str());
+        return true;
+    }
+    return false;
+}
+
+// Poll the watched move to completion. From Update(), never from a Draw: the
+// banner and the arrival check must not disagree within a frame, and this is
+// the only place the watch is cleared.
+void App::UpdateMoveWatch(float dt)
+{
+    if (!moveWatch_.active) return;
+
+    IMotionController* m = hardware_.MotionDevice(moveWatch_.devIdx);
+    if (!m || !m->IsConnected()) {   // unplugged mid-move: the watch means nothing
+        moveWatch_.active = false;
+        return;
+    }
+    m->RequestFastPoll();            // check on fresh positions, like WaitArrive
+    if (WatchArrived(m, moveWatch_.targets)) {
+        moveWatch_.active = false;
+        FD_INFO("ui", "%s: arrived at %s (%.1f s)", moveWatch_.device.c_str(),
+                moveWatch_.what.c_str(), static_cast<double>(moveWatch_.elapsed));
+        return;
+    }
+    // The move is NOT stopped on timeout: the axes may simply be slow, and a UI
+    // progress banner has no business aborting motion an operator asked for.
+    // It stops CLAIMING to know, which is the honest failure.
+    moveWatch_.elapsed += dt;
+    if (moveWatch_.elapsed > kWatchTimeout) {
+        moveWatch_.active = false;
+        FD_WARN("ui", "%s: still not at %s after %.0f s - no longer watching",
+                moveWatch_.device.c_str(), moveWatch_.what.c_str(),
+                static_cast<double>(kWatchTimeout));
+    }
+}
+
+// One line under the quick-access strip, on EVERY page — including the takeover
+// pages, which is the point: the teach page is opened by a move, and the
+// operator lands on it while the gantry is still travelling.
+void App::DrawMoveStatusBar()
+{
+    if (!moveWatch_.active) return;
+
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.30f, 1.0f));
+    ImGui::Text("MOVING  %s -> %s   %.1f s", moveWatch_.device.c_str(),
+                moveWatch_.what.c_str(), static_cast<double>(moveWatch_.elapsed));
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Stop##movewatch")) {
+        workflow_.StopMotion(moveWatch_.devIdx);
+        moveWatch_.active = false;
+    }
+    ImGui::Separator();
+}
 
 void App::DrawMainWindow()
 {
@@ -211,6 +330,10 @@ void App::DrawMainWindow()
             }
             ImGui::Separator();
         }
+
+        // Above the page dispatch, so it is on screen whichever page the move
+        // took the operator to — the whole reason it exists.
+        DrawMoveStatusBar();
 
         DrawProductPopups();   // modals opened via the File-menu flags above
         DrawExitConfirmModal();   // confirm before closing the application

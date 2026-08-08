@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "imgui.h"
@@ -92,6 +93,16 @@ private:
     void DrawMainWindow();
     void ToggleEditorPage(Page p);   // enter/leave a full-page takeover (View menu + F-keys)
     void SwitchPage(Page p);         // ALL page switches route here (dirty-editor guard)
+    // A UI-commanded move, watched to completion. The UI must never block on a
+    // move, but a surface that DRIVES somewhere before it can be used (the
+    // vision teach page, opened from a station card) has to be able to say "not
+    // there yet" — otherwise the operator tunes a detector against whatever the
+    // camera happened to see mid-travel. Start it, and the frame reports it on
+    // every page until the axes arrive. Definitions in MainWindow.cpp.
+    bool StartWatchedMove(const std::string& device, const std::string& posUid,
+                          const std::string& what);
+    void UpdateMoveWatch(float dt);   // arrival poll; called from Update()
+    void DrawMoveStatusBar();   // the banner, drawn by the main frame
     void DrawLeftPanel();      // 20% column: hardware status + DUT + display
     void DrawDutBlock();       // active-DUT status + open/close (Overview left)
     void DrawMiddlePanel();    // main content: vision image + overlay
@@ -393,6 +404,20 @@ private:
     float rightW_ = 0.0f;
     float lowerH_ = 0.0f;
     bool  splitterWasActive_ = false;   // to save panel sizes once a drag ends
+
+    // The UI move being watched to completion (see StartWatchedMove). One slot:
+    // a second watched move replaces the first, because the operator can only be
+    // waiting for the place they asked for LAST. Frame state, not document
+    // state — nothing here is persisted.
+    struct MoveWatch {
+        bool        active = false;
+        std::size_t devIdx = 0;
+        std::string device;   // display name, for the banner
+        std::string what;     // "station 1 of 'calibrate plate'"
+        std::vector<std::pair<std::string, double>> targets;
+        float       elapsed = 0.0f;   // seconds since the move was commanded
+    };
+    MoveWatch moveWatch_;
 
     // Main-window page + which motion device is selected on the Motion page.
     // prevPage_ = the hardware page to return to when an editor page closes.

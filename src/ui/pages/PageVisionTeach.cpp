@@ -271,6 +271,30 @@ const VisionModel* App::StationDetector(const AlignProc& a, int station) const
 
 void App::OpenVisionTeach(AlignProc& a, int station)
 {
+    AlignStation& st = (station == 1) ? a.s1 : a.s2;
+
+    // Drive to the station FIRST. A detection model is tuned at one pose — that
+    // is the whole reason it is private to this station — so opening the teach
+    // page wherever the gantry happens to be standing invites an ROI, a
+    // threshold and a template cut out of the wrong scene. The move is watched,
+    // not waited on (no blocking call on the UI thread): the frame's MOVING
+    // banner follows the operator onto this page and says when it has arrived.
+    //
+    // A refusal is not fatal — the parameter form is still worth reading with no
+    // gantry connected — but it is said out loud, because a page that silently
+    // did not move looks exactly like one that did.
+    {
+        char what[96];
+        std::snprintf(what, sizeof(what), "station %d of '%s'", station, a.name.c_str());
+        if (!StartWatchedMove(a.device, st.posUid, what)) {
+            FD_WARN("vision", "%s: not driving to %s - %s", a.device.c_str(), what,
+                    st.posUid.empty()
+                        ? "the station has no position assigned"
+                        : "the move was refused (device not connected, a safety "
+                          "alert, or the position shares no axes with it)");
+        }
+    }
+
     visionErr_.clear();
     visionHaveDet_    = false;
     visionLive_       = false;
@@ -294,7 +318,6 @@ void App::OpenVisionTeach(AlignProc& a, int station)
     }
     visionSelUid_ = m->uid;
 
-    AlignStation& st = (station == 1) ? a.s1 : a.s2;
     st.detector = m->uid;   // recipes and align_station resolve by uid
 
     char buf[128];
@@ -1307,7 +1330,10 @@ void App::DrawVisionTeachPanel()
     // after the draw so the overlay above and this detection stay one frame
     // apart at most — and never inside the parameter form, where a mid-edit
     // detect would use half-applied values.
-    if (visionLive_ && HalconDetector::Available(nullptr)) {
+    // Not while the gantry is still travelling to the station: a live detect on
+    // a mid-travel frame reports a point on a scene the station will never see,
+    // and the overlay makes it look measured. Resumes by itself on arrival.
+    if (visionLive_ && !moveWatch_.active && HalconDetector::Available(nullptr)) {
         const unsigned long long seq = workflow_.CameraFrameSeq();
         if (seq != visionSeqSeen_) {
             visionSeqSeen_ = seq;

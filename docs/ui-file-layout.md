@@ -139,7 +139,7 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 |---|---|---|
 | `src/App.cpp` | **composition root**: `Run()` (startup + frame loop), `Update()`, `SwitchPage`/`ToggleEditorPage`, the ProductSession UI wrappers | 237 |
 | `src/ui/Widgets.{h,cpp}` | shared leaf helpers + tables; sole `windows.h` user | 110 |
-| `src/ui/pages/MainWindow.cpp` | menu bar, three-panel layout + splitters, page dispatch, safety-alert + exit modals | 351 |
+| `src/ui/pages/MainWindow.cpp` | menu bar, three-panel layout + splitters, page dispatch, safety-alert + exit modals, the watched-move banner (`StartWatchedMove` / `UpdateMoveWatch` / `DrawMoveStatusBar`) | 351 |
 | `src/ui/pages/PageOverview.cpp` | left panel (status + DUT block + Display), vision middle, right panel, product popups, shared `DrawLogPanel` | 245 |
 | `src/ui/pages/PageCamera.cpp` | Camera page + `UpdateCameraTexture` | 171 |
 | `src/ui/pages/PageKeithley.cpp` | Keithley page + the whole chart pipeline (two consumers: page and Aux) | 364 |
