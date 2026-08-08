@@ -546,6 +546,13 @@ private:
     int  edAddMode_           = 0;       // palette insert: 0 after, 1 into, 2 else
     int  edConfirmAction_     = 0;       // unsaved-changes guard: 1 leave page, 2 reload
     Page edLeaveTarget_ = Page::Overview;   // where action 1 goes after Save/Discard
+    // Width of the editor's inspector column, dragged by the splitter between
+    // the step tree and the step form and persisted in UiSettings. Its own
+    // field, not the main window's rightW_: the editor is a takeover that
+    // replaces that five-region layout, and a step form is a different kind of
+    // thing from a hardware info panel.
+    float edInspectW_ = 320.0f;
+    bool  edInspectSplitting_ = false;   // edge-detect the drag END
     bool edOpenRenameRecipe_  = false;
     bool edOpenDeleteRecipe_  = false;
     bool edOpenDeleteStep_    = false;

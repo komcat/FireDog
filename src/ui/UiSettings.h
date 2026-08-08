@@ -27,6 +27,10 @@ struct UiSettings {
     float visionParamW  = 0.0f;
     float visionResultW = 0.0f;
 
+    // Recipe editor: width of its inspector column in px (0 = default). Same
+    // reasoning — a takeover page with its own layout.
+    float edInspectW = 0.0f;
+
     // Aux window toggles. NOTE: clickToMove restored true means a click drives
     // the real gantry immediately on startup.
     bool showChart   = true;

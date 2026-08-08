@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -145,7 +146,18 @@ void App::DrawRecipeEditPanel()
     const float  paneH   = avail.y - stripH - issuesH -
                            spacing * (issues.empty() ? 1.0f : 2.0f);
     const float  leftW  = 230.0f;
-    const float  rightW = 320.0f;
+    // The inspector is the one column whose natural width is not a constant: a
+    // move_relative form is eight labelled fields, an XCAN step's is thirty, and
+    // the operator's font size moves both. Dragged by the splitter below and
+    // persisted, like the main window's panes.
+    constexpr float kSplitW    = 6.0f;
+    constexpr float kMinMidW   = 260.0f;
+    constexpr float kMinRightW = 220.0f;
+    if (edInspectW_ < kMinRightW) edInspectW_ = kMinRightW;
+    const float maxRightW = avail.x - leftW - ImGui::GetStyle().ItemSpacing.x -
+                            kSplitW - kMinMidW;
+    if (edInspectW_ > maxRightW) edInspectW_ = maxRightW > kMinRightW ? maxRightW : kMinRightW;
+    const float  rightW = edInspectW_;
 
     // ---- Top: run controls + state + progress (panes fill the rest) ----
     DrawRecipeRunStrip(stripH);
@@ -249,7 +261,12 @@ void App::DrawRecipeEditPanel()
     ImGui::SameLine();
 
     // ---- Middle: searchable palette column + step tree ----
-    const float midW = avail.x - leftW - rightW - ImGui::GetStyle().ItemSpacing.x * 2.0f;
+    // One ItemSpacing gap on the left (the recipe list's SameLine), then the
+    // splitter, which is flush on both sides so the drag bar IS the border.
+    // Floored: on a window too narrow for all three minimums ImGui would read a
+    // negative width as "available minus this" and scramble the layout.
+    const float midW = fmaxf(80.0f, avail.x - leftW - rightW -
+                                        ImGui::GetStyle().ItemSpacing.x - kSplitW);
     const float palW = 200.0f;
     ImGui::BeginChild("edMiddle", ImVec2(midW, paneH));
     if (haveSel) {
@@ -301,7 +318,16 @@ void App::DrawRecipeEditPanel()
         ImGui::TextDisabled("Select a recipe on the left.");
     }
     ImGui::EndChild();
-    ImGui::SameLine();
+
+    ImGui::SameLine(0.0f, 0.0f);
+    if (Splitter("##edsplit", true, kSplitW, paneH)) {
+        edInspectW_ -= ImGui::GetIO().MouseDelta.x;
+        edInspectSplitting_ = true;
+    } else if (edInspectSplitting_) {
+        edInspectSplitting_ = false;
+        SaveUiSettings();   // persist on drag END, like every other splitter here
+    }
+    ImGui::SameLine(0.0f, 0.0f);
 
     // ---- Right: inspector (step form, or recipe fields when no step) ----
     ImGui::BeginChild("edInspect", ImVec2(rightW, paneH), ImGuiChildFlags_Borders);
