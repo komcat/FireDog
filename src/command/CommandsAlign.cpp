@@ -535,6 +535,9 @@ CommandResult ExecPlaceMark(ExecutionContext& ctx, const ParamValues& p)
         std::snprintf(lbl, sizeof(lbl), "point %d of 2 on the object", index);
         req.label = lbl;
     }
+    // Two opposite corners of a part is exactly what this command asks for, so
+    // this is the one caller the diagrams belong to.
+    req.stepIcons = true;
 
     // What to show the operator alongside the crosshair. Both are computed
     // here, because only the worker has the live frame and the run context.
@@ -591,6 +594,75 @@ CommandResult ExecPlaceMark(ExecutionContext& ctx, const ParamValues& p)
                      "(%.4f, %.4f) mm",
             index, manual ? "manual" : "auto", proc->device.c_str(), e.gx, e.gy,
             pick.dxMM, pick.dyMM, e.wx, e.wy);
+    return CommandResult::Success();
+}
+
+// ---- pick_point ------------------------------------------------------------
+//
+// The crosshair pick, with no alignment procedure behind it: show the operator
+// the live image, take the mark, and report where that mark IS in machine mm.
+//
+// It lives in this file rather than in a new one for a single reason —
+// CaptureWorldPoint. That function's comment says a second copy reading the pose
+// in a different order would be wrong in a way only a part placed 20 um out
+// would show, and a needle offset measured through a second copy would be wrong
+// the same way. Same maths, same file, one implementation.
+//
+// Nothing moves here, exactly as in align_station and place_mark. The feature has
+// to be in view already; the pick window's own right-click-drive is how an
+// operator brings a stray one in.
+CommandResult ExecPickPoint(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    ExecutionContext::PickRequest req;
+    req.label     = ctx.Substitute(p.GetString("label"));
+    if (req.label.empty()) req.label = "the point";
+    req.alignName = ctx.Substitute(p.GetString("title"));
+    if (req.alignName.empty()) req.alignName = device;
+    req.message   = ctx.Substitute(p.GetString("message"));
+    if (req.message.empty())
+        req.message = "Put the crosshair on " + req.label + ", then OK";
+    // stepIcons stays false: this is one mark, not two corners of a part.
+
+    // An optional aim point, drawn as the pick window's target — and, when it is
+    // outside the field of view, as an edge arrow with its distance. For a needle
+    // imprint that is the difference between "the dot is 4 mm to the left" and a
+    // blank grey picture the operator has to hunt across.
+    if (p.GetBool("hint")) {
+        ExecutionContext::PickHint h;
+        h.wx    = p.GetDouble("hint_x_mm");
+        h.wy    = p.GetDouble("hint_y_mm");
+        h.label = req.label;
+        req.hints.push_back(std::move(h));
+    }
+
+    ExecutionContext::PickResult pick;
+    if (!ctx.AwaitPick(req, &pick)) return CommandResult::Fail("cancelled by operator");
+
+    AlignPoint e;
+    const CommandResult captured = CaptureWorldPoint(ctx, m, pick, &e);
+    if (!captured.ok) return captured;
+
+    // Underscore keys, not the dots CommandsVision uses: this is the align
+    // family's handshake and its siblings all spell a captured point this way.
+    const std::string prefix = p.GetString("ctx_prefix");
+    ctx.CtxSet(prefix + "_gx", e.gx);
+    ctx.CtxSet(prefix + "_gy", e.gy);
+    ctx.CtxSet(prefix + "_px", e.px);
+    ctx.CtxSet(prefix + "_py", e.py);
+    ctx.CtxSet(prefix + "_dx_mm", pick.dxMM);
+    ctx.CtxSet(prefix + "_dy_mm", pick.dyMM);
+    ctx.CtxSet(prefix + "_wx", e.wx);
+    ctx.CtxSet(prefix + "_wy", e.wy);
+
+    FD_INFO("align", "picked %s: %s (%.4f, %.4f) + mark (%+.4f, %+.4f) = (%.4f, %.4f) mm",
+            req.label.c_str(), device.c_str(), e.gx, e.gy, pick.dxMM, pick.dyMM,
+            e.wx, e.wy);
     return CommandResult::Success();
 }
 
@@ -951,6 +1023,31 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                       PreDelayParam(), PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecPlaceMove});
+
+    // Registered under Vision rather than Align: it belongs to no procedure, and
+    // grouping it with the frame commands would suggest it teaches one.
+    reg.Register({"pick_point", "Vision",
+                  "Ask the operator to mark a point on the live image; report it in "
+                  "machine mm as <prefix>_wx/_wy",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {},
+                       "the device the camera rides on - its pose is what the mark is "
+                       "measured against"},
+                      {"label", PT::String, false, "", 0, 0, {},
+                       "what the operator is marking, e.g. \"the needle imprint\""},
+                      {"message", PT::String, false, "", 0, 0, {},
+                       "instruction line; empty builds one from the label"},
+                      {"title", PT::String, false, "", 0, 0, {},
+                       "window subtitle; empty uses the device name"},
+                      {"hint", PT::Bool, false, false, 0, 0, {},
+                       "draw an aim point at hint_x_mm/hint_y_mm - shown as an edge "
+                       "arrow with its distance when it is outside the field of view"},
+                      {"hint_x_mm", PT::Double, false, 0.0, 0, 0, {}, "aim point X, machine mm"},
+                      {"hint_y_mm", PT::Double, false, 0.0, 0, 0, {}, "aim point Y, machine mm"},
+                      {"ctx_prefix", PT::String, false, "pick", 0, 0, {},
+                       "ctx prefix for the captured point"},
+                  },
+                  CommandSpec::Needs::Camera, ExecPickPoint});
 
     // Typed one-step wrapper over the procedure script — the `xcan` pattern, so
     // the procedure stays an editable .lua while a recipe runs it as one step.

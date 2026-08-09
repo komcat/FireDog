@@ -13,6 +13,7 @@
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
@@ -437,6 +438,89 @@ CommandResult ExecMoveRelative(ExecutionContext& ctx, const ParamValues& p)
     return MoveWithApproach(ctx, m, idx, targets, p, "the relative target");
 }
 
+// Read the device's live pose into ctx as <prefix>_<axis>, lowercase — the same
+// spelling manual_adjust already uses, so a script that jogs and a script that
+// merely looks name the pose identically.
+//
+// This exists because until now the ONLY way a script could see a coordinate was
+// as a side effect of asking the operator to jog: save_position writes the pose
+// to the document but hands nothing back, and the needle procedures need to do
+// arithmetic on a pose nobody touched.
+CommandResult ExecReadPosition(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    // Same freshness rule as save_position: the idle poll cache can be a second
+    // old, and a pose read one second after a move is a pose from before it.
+    m->RequestFastPoll();
+    if (!ctx.Sleep(120)) return CommandResult::Fail("stopped");
+    const std::map<std::string, double> pos = m->Positions();
+    if (pos.empty())
+        return CommandResult::Fail("no live positions for '" + device + "'");
+
+    const std::string prefix = p.GetString("ctx_prefix");
+    for (const auto& [axis, val] : pos) {
+        std::string key = prefix + "_";
+        for (const char c : axis)
+            key += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        ctx.CtxSet(key, val);
+    }
+    return CommandResult::Success();
+}
+
+// Coordinated absolute move to explicit AXIS coordinates — the frameless twin of
+// move_local, for a caller that computed the numbers itself.
+//
+// `axes` is REQUIRED and has no default on purpose. Every other coordinate here
+// could sensibly default to 0, and a step that meant "descend Z" but silently
+// also commanded X=0 and Y=0 would drive the head across the machine at speed.
+// Naming the axes is one word, and it is the word that makes the omission
+// impossible.
+CommandResult ExecMoveAxisTo(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    const std::string axes = p.GetString("axes");
+    if (axes.empty()) return CommandResult::Fail("axes is empty - name the axes to command");
+
+    // Axes(), not Positions(): the question is whether this device HAS the axis,
+    // which is a fact about the device, not about whether it has polled a value
+    // for it yet.
+    const std::vector<std::string> have = m->Axes();
+    std::vector<std::pair<std::string, double>> targets;
+    for (const char raw : axes) {
+        const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(raw)));
+        const std::string axis(1, c);
+        double val = 0.0;
+        if (c == 'X')      val = p.GetDouble("x_mm");
+        else if (c == 'Y') val = p.GetDouble("y_mm");
+        else if (c == 'Z') val = p.GetDouble("z_mm");
+        else return CommandResult::Fail(std::string("axes: '") + c +
+                                        "' is not one of X, Y, Z");
+        bool known = false;
+        for (const std::string& a : have)
+            if (a == axis) { known = true; break; }
+        if (!known)
+            return CommandResult::Fail("device '" + device + "' has no axis " + axis);
+        for (const auto& t : targets)
+            if (t.first == axis)
+                return CommandResult::Fail("axes names " + axis + " twice");
+        targets.emplace_back(axis, val);
+    }
+
+    const CommandResult pre = ApplyPreMove(ctx, idx, p);
+    if (!pre.ok) return pre;
+    return MoveWithApproach(ctx, m, idx, targets, p, "the axis target");
+}
+
 // Move to a saved position PLUS per-axis offsets (e.g. "safe" with Z -5 mm).
 // Offsets apply only to axes the position defines — a nonzero offset on an
 // undefined axis is an authoring error, not a silent skip.
@@ -595,6 +679,39 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       ctx.RecordPosition(p.GetString("device"), p.GetString("name"), pos);
                       return CommandResult::Success();
                   }});
+
+    reg.Register({"read_position", "Motion",
+                  "Read the device's CURRENT pose into ctx as <prefix>_x/_y/_z "
+                  "(every axis it reports, lowercase)",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
+                      {"ctx_prefix", PT::String, false, "pos", 0, 0, {},
+                       "ctx prefix for the axis values"},
+                  },
+                  CommandSpec::Needs::None, ExecReadPosition});
+
+    reg.Register({"move_axis_to", "Motion",
+                  "Coordinated absolute move to explicit axis coordinates; axes not "
+                  "named in 'axes' are left where they are",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
+                      {"axes", PT::String, true, {}, 0, 0, {},
+                       "which axes to command, e.g. \"XYZ\", \"XY\", \"Z\" - required, "
+                       "so a Z-only move can never also command X and Y to zero"},
+                      {"x_mm", PT::Double, false, 0.0, 0, 0, {}, "X target (used when axes names X)"},
+                      {"y_mm", PT::Double, false, 0.0, 0, 0, {}, "Y target (used when axes names Y)"},
+                      {"z_mm", PT::Double, false, 0.0, 0, 0, {}, "Z target (used when axes names Z)"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
+                      VelocityParam(),
+                      ExposureParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
+                  },
+                  CommandSpec::Needs::None, ExecMoveAxisTo});
 
     reg.Register({"move_to_position", "Motion",
                   "Coordinated absolute move to a saved position, wait for arrival "

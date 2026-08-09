@@ -4,6 +4,7 @@
 #pragma once
 
 #include "core/AlignFrame.h"           // AlignResult (taught-frame hand-back queue)
+#include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
 #include "hardware/HardwareConfig.h"   // AxisTransform, HardwareConfig
 #include "vision/HalconDetector.h"     // the cached detectors (PIMPL, no SDK leak)
@@ -326,6 +327,26 @@ public:
     void QueueAlignPoint(const std::string& uid, int station, const AlignPoint& p);
     std::vector<AlignPointMark> TakeAlignPoints();
 
+    // ---- The dispense needle's lever arm ------------------------------------
+    // Machine state, not a document — see core/NeedleCal.h for why it is
+    // machine-level and why it is held in axis space. Loaded at Start, read by
+    // worker threads (needle_offset, and every dispense move derived from it),
+    // written by the UI thread after a calibration run hands one back.
+    //
+    // Unlike a taught FRAME there is no live-vs-saved distinction here, and the
+    // difference is worth stating because the two look alike. A frame describes
+    // one physical part, which may have been swapped since; the needle offset
+    // describes the tooling, which has not. The persisted record IS the licence
+    // to move, and it goes stale for exactly one reason: somebody changed the
+    // needle. That is what `calibratedAt` is on the page for.
+    NeedleCal Needle() const;
+    void      SetNeedleCal(const NeedleCal& c);
+
+    // Same worker->UI hand-back as a taught frame, for the same reason: a
+    // command must not write a config file from an engine thread.
+    void      QueueNeedleCal(const NeedleCal& c);
+    std::vector<NeedleCal> TakeNeedleCals();
+
     // Live gantry XY in machine mm. Layer 2 answers "where is the gantry"
     // because layer 2 is what knows WHICH device that is (GantryIndex below);
     // a UI overlay must not go hunting for a device called "gantry-main".
@@ -353,6 +374,7 @@ private:
     void StartPneumatics(const HardwareConfig& hw);   // wires slides to IO pins
     void StartIoWatch(const HardwareConfig& hw);      // wires edge->action bindings
     void StartSafetyWatch(const HardwareConfig& hw);  // wires safety signals
+    void StartNeedleCal();   // loads the needle lever arm from its own file
 
     // Mapped-path executor state. Mutated on the UI thread only (Start/Cancel/
     // TickPath); other threads (safety watch) request cancellation via the
@@ -388,6 +410,11 @@ private:
     // and by the UI (the "live" indicator), written by align_solve.
     mutable std::mutex                       frameMu_;
     std::map<std::string, AlignResult>       liveFrames_;
+
+    // The needle lever arm, plus its worker->UI queue.
+    mutable std::mutex     needleMu_;
+    NeedleCal              needle_;
+    std::vector<NeedleCal> needleQueue_;
 
     // Motion is inhibited while a CRITICAL safety alert is unacknowledged.
     bool SafetyBlocked() const

@@ -320,7 +320,7 @@ void App::DrawAlignPickWindow()
     // Footer height reserved so the image never pushes the buttons off-window.
     // The button row is twice as tall when it leads with the step diagrams.
     const float footerH = ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f +
-                          (req.label.empty() ? 0.0f : ImGui::GetFrameHeight());
+                          (req.stepIcons ? ImGui::GetFrameHeight() : 0.0f);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImVec2 avail = ImGui::GetContentRegionAvail();
     avail.y = avail.y > footerH + 40.0f ? avail.y - footerH : 40.0f;
@@ -493,8 +493,10 @@ void App::DrawAlignPickWindow()
     // The step diagrams lead the button row, and ONLY when an object is being
     // marked: they draw two corners of a part, which is what place_mark asks
     // for and is not what E1/E2 are (two features that fix an axis, anywhere on
-    // the part). A `label` is exactly the signal that this is the object case.
-    if (!req.label.empty()) {
+    // the part). The CALLER says so — a non-empty label used to imply it, until
+    // a pick that was neither case (one needle imprint) inherited the wrong
+    // picture along with its title.
+    if (req.stepIcons) {
         EnsureMarkIcons();
         const MarkIcon icons[2] = {markIcons_[0], markIcons_[1]};
         DrawMarkIconsInline(icons, req.station - 1, ImGui::GetFrameHeight() * 2.0f);

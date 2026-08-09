@@ -1,0 +1,39 @@
+{
+  "notes": [
+    "The dispense needle's lever arm: add offset.dx_mm/dy_mm to a CAMERA pose on",
+    "'device' to get the pose that puts the NEEDLE there, and offset.dz_mm to a",
+    "FOCUSED camera Z to reach the height the needle touches at. All values are",
+    "RAW AXIS coordinates of 'device' - the camera and the needle ride the same",
+    "gantry, so this delta never crosses a frame and must never be pushed through",
+    "the axis transform.",
+    "",
+    "This is the SHIPPED SEED and it is deliberately valid:false, so every",
+    "dispense step refuses until the machine has actually been calibrated. Fill",
+    "dx_mm/dy_mm in with a tape-measure estimate (or type one on the Needle page)",
+    "and the first calibration has somewhere to aim - with nothing at all, the",
+    "first imprint lands a hundred millimetres outside a three-millimetre field of",
+    "view and there is nothing on screen to click.",
+    "",
+    "A completed calibration is written to config/needle_cal.local.json, which is",
+    "gitignored and loads in preference to this file. Do not hand-edit that one -",
+    "the Needle page (F7) shows it and re-measures it."
+  ],
+  "valid": false,
+  "device": "gantry-main",
+  "slide": "Dispenser_Head",
+  "io_device": "IOBottom",
+  "shot_pin": "Dispenser_Shot",
+  "offset": {
+    "dx_mm": 0.0,
+    "dy_mm": 0.0,
+    "dz_mm": 0.0
+  },
+  "measured": {
+    "camera": { "x": 0.0, "y": 0.0, "z": 0.0 },
+    "needle": { "x": 0.0, "y": 0.0, "z": 0.0 },
+    "imprint": { "x": 0.0, "y": 0.0 }
+  },
+  "residual_mm": 0.0,
+  "verified": false,
+  "calibrated_at": ""
+}

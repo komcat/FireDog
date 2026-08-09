@@ -39,16 +39,23 @@ std::string CtxValueToString(const CtxValue& v);
 
 // ---- System procedure scripts ----------------------------------------------
 //
-// The two procedures the app launches from its own buttons and keeps in step
-// with the command family: alignment_procedure.lua and placement_procedure.lua.
-// They are STANDARD — every product runs the shipped copy, and a file of the
-// same name in a product's scripts folder is ignored (with a warning).
+// The procedures the app launches from its own buttons and keeps in step with
+// the command family: alignment_procedure.lua, placement_procedure.lua and
+// needle_calibration.lua. They are STANDARD — every product runs the shipped
+// copy, and a file of the same name in a product's scripts folder is ignored
+// (with a warning).
 //
 // A forked copy is how a product silently loses a step the app added later: the
 // day placement_procedure.lua grew its place_view call, every product carrying
 // its own copy would have gone on skipping it, and the symptom would have been
 // a camera that simply did not move. Product-specific scripts — a scan, a
-// bring-up sequence — keep the override; these two are not that.
+// bring-up sequence — keep the override; these are not that.
+//
+// The needle calibration is here for a slightly different reason worth keeping
+// straight: it measures the MACHINE, so there is no such thing as one product's
+// version of the answer. Dispensing is the opposite — how much glue goes where
+// is a product's business — so dispense_procedure.lua is deliberately NOT on
+// this list and a product's own copy still wins.
 bool IsSystemScript(const std::string& pathOrFile);
 
 // "config/scripts/<file>" for a system script, "" for anything else. The one
@@ -94,6 +101,14 @@ public:
         // placement can say "point 1 of 2 on the lens" through the SAME window
         // and the same handshake. The window identity is unchanged either way.
         std::string label;
+        // Draw the two-corner step diagrams above the buttons. TRUE only for a
+        // placement's pair of object marks, which is what they picture. A label
+        // alone used to imply them, and then the first caller that was neither
+        // an E point nor an object mark — the needle calibration, marking one
+        // imprint — got "point 1 of 2 on the object" iconography over a picture
+        // of a glue dot. What the window asks for and what it illustrates have
+        // to be set by the same caller.
+        bool stepIcons = false;
         std::vector<PickHint> hints;
         // The auto->manual FALLBACK, when the pick exists because detection
         // failed: which model was supposed to find this point, and why it did

@@ -70,6 +70,31 @@ void Workflow::Start(const HardwareConfig& hw)
     StartKeithley(hw);
     StartCld(hw);
     StartPsu(hw);
+    StartNeedleCal();
+}
+
+// The needle lever arm is read from disk, not from the hardware config: it is
+// measured on the machine and rewritten by a calibration run, so it follows the
+// xxx.local.json -> xxx.json rule rather than living in hardware.json.
+void Workflow::StartNeedleCal()
+{
+    std::string path;
+    const NeedleCal c = LoadNeedleCal(&path);
+    {
+        const std::lock_guard<std::mutex> lock(needleMu_);
+        needle_ = c;
+    }
+    // Say which of the two files answered. "The dispenser is 1.4 mm out" and
+    // "the machine is running on the shipped seed" look identical at the needle,
+    // and only the log can tell them apart.
+    if (c.valid)
+        FD_INFO("needle", "needle offset (%.4f, %.4f, %.4f) mm from %s, calibrated %s",
+                c.dx, c.dy, c.dz, path.c_str(),
+                c.calibratedAt.empty() ? "(undated)" : c.calibratedAt.c_str());
+    else
+        FD_WARN("needle", "no needle calibration (%s) - dispensing will refuse to "
+                          "run until the needle calibration procedure has been done",
+                path.empty() ? "no file" : path.c_str());
 }
 
 void Workflow::StartMotion(const HardwareConfig& hw)
@@ -455,6 +480,30 @@ std::vector<Workflow::AlignPointMark> Workflow::TakeAlignPoints()
 {
     const std::lock_guard<std::mutex> lock(alignPtMu_);
     return std::exchange(alignPtQueue_, {});
+}
+
+NeedleCal Workflow::Needle() const
+{
+    const std::lock_guard<std::mutex> lock(needleMu_);
+    return needle_;
+}
+
+void Workflow::SetNeedleCal(const NeedleCal& c)
+{
+    const std::lock_guard<std::mutex> lock(needleMu_);
+    needle_ = c;
+}
+
+void Workflow::QueueNeedleCal(const NeedleCal& c)
+{
+    const std::lock_guard<std::mutex> lock(needleMu_);
+    needleQueue_.push_back(c);
+}
+
+std::vector<NeedleCal> Workflow::TakeNeedleCals()
+{
+    const std::lock_guard<std::mutex> lock(needleMu_);
+    return std::exchange(needleQueue_, {});
 }
 
 bool Workflow::GantryXY(double& x, double& y) const

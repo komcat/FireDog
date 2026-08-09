@@ -248,6 +248,8 @@ void App::DrawMainWindow()
                     if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                         ImGui::SetTooltip("Select an alignment procedure first (View > Alignment)");
                 }
+                if (ImGui::MenuItem("Needle", "F7", currentPage_ == Page::Needle))
+                    ToggleEditorPage(Page::Needle);
                 if (ImGui::MenuItem("Scripts", "F4", currentPage_ == Page::Scripts))
                     ToggleEditorPage(Page::Scripts);
                 if (ImGui::MenuItem("DUT Records", nullptr, currentPage_ == Page::DutView)) {
@@ -267,8 +269,8 @@ void App::DrawMainWindow()
         }
 
         // Global page shortcuts: F1 Run, F2 Recipe Editor, F3 Motion, F4
-        // Scripts, F5 Alignment, F6 Placement. Activate (not toggle) — pressing
-        // the key on its own page is a no-op.
+        // Scripts, F5 Alignment, F6 Placement, F7 Needle. Activate (not toggle)
+        // — pressing the key on its own page is a no-op.
         if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && currentPage_ != Page::Run)
             ToggleEditorPage(Page::Run);
         if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && currentPage_ != Page::RecipeEdit)
@@ -285,6 +287,8 @@ void App::DrawMainWindow()
         // no disabled state to look at, so a silent nothing reads as broken.
         if (ImGui::IsKeyPressed(ImGuiKey_F6, false))
             openPlacement();
+        if (ImGui::IsKeyPressed(ImGuiKey_F7, false) && currentPage_ != Page::Needle)
+            ToggleEditorPage(Page::Needle);
 
         // Quick-access strip (all pages): one-click jump to the operator pages.
         // Same guarded routing as the F-keys (activate, not toggle — clicking
@@ -328,6 +332,8 @@ void App::DrawMainWindow()
                 if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                     ImGui::SetTooltip("Select an alignment procedure first (Alignment, F5)");
             }
+            ImGui::SameLine();
+            pageBtn("Needle (F7)", Page::Needle, true);
             ImGui::Separator();
         }
 
@@ -348,7 +354,8 @@ void App::DrawMainWindow()
             currentPage_ == Page::RecipeEdit || currentPage_ == Page::Scripts ||
             currentPage_ == Page::DutView || currentPage_ == Page::Run ||
             currentPage_ == Page::Align || currentPage_ == Page::VisionTeach ||
-            currentPage_ == Page::AlignNominal || currentPage_ == Page::AlignPlace) {
+            currentPage_ == Page::AlignNominal || currentPage_ == Page::AlignPlace ||
+            currentPage_ == Page::Needle) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
@@ -358,6 +365,7 @@ void App::DrawMainWindow()
                                 : currentPage_ == Page::VisionTeach   ? "Vision detection"
                                 : currentPage_ == Page::AlignNominal  ? "Nominal target"
                                 : currentPage_ == Page::AlignPlace    ? "Place on nominal"
+                                : currentPage_ == Page::Needle        ? "Dispense needle"
                                                                       : "Run";
             // Vision teach and the two alignment teach pages are only ever
             // reached FROM the Alignment page, and a takeover -> takeover switch
@@ -390,6 +398,7 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::VisionTeach)   DrawVisionTeachPanel();
             else if (currentPage_ == Page::AlignNominal)  DrawAlignNominalPanel();
             else if (currentPage_ == Page::AlignPlace)    DrawAlignPlacePanel();
+            else if (currentPage_ == Page::Needle)        DrawNeedlePanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();

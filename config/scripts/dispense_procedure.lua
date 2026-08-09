@@ -1,0 +1,178 @@
+-- Dispense procedure: put a metered dot of epoxy where the camera is looking
+--
+-- The dispense point is a SAVED POSITION holding the camera over the target.
+-- That is the whole trick: a position is taught by driving the camera to the
+-- feature and looking at it, which an operator can do and check, and the needle
+-- calibration is what turns "where the camera stands" into "where the needle
+-- stands". Nothing here holds a needle coordinate, so nothing here goes stale
+-- when the needle is changed - re-calibrate and every taught point still works.
+--
+-- Shot size is the valve open time and nothing else. There is no pressure
+-- control in this loop, no purge, no bead: the external regulator sets the
+-- flow, `shot_ms` sets how long it flows. Do not read `shot_ms` as a volume
+-- without knowing what the regulator is at.
+--
+-- THIS FILE IS NOT A STANDARD PROCEDURE, unlike needle_calibration.lua next to
+-- it, and the split is on purpose. Where the needle is, is a fact about the
+-- machine and every product must measure it identically. How much glue goes
+-- where is a fact about the PRODUCT - so a product's own copy of this file wins
+-- over the shipped one, and is meant to.
+--
+-- Z SIGN: never assumed. `dir` comes from the sign of the calibrated dz, so
+-- "one millimetre above the part" is one millimetre above it on either
+-- convention.
+--
+-- Parameters (fd.param -> ctx keys, injected by a dispense_run recipe step):
+--   disp_position    saved position with the CAMERA over the point  (required)
+--   disp_device      the gantry carrying both       (default "gantry-main")
+--   disp_shot_ms     valve open time = shot size    (default 300)
+--   disp_before_ms   settle at height before firing (default 0)
+--   disp_after_ms    dwell after firing, string break (default 0)
+--   disp_z_trim_mm   + moves the needle CLOSER to the part (default 0)
+--   disp_safety_mm   fast -> slow handover height   (default 1.0)
+--   disp_autofocus   take the height from a focus here instead of the
+--                    position's taught Z            (default false)
+--   disp_confirm     ask before extending and before firing (default true)
+--   disp_verify      bring the camera back over the dot    (default true)
+--   disp_capture     attach an image to the open DUT       (default true)
+--   disp_v_travel / disp_v_approach / disp_v_final   velocities, mm/s
+
+local POS     = fd.param("disp_position", "")
+local DEV     = fd.param("disp_device", "gantry-main")
+local SHOT    = math.floor(fd.param("disp_shot_ms", 300))
+local BEFORE  = math.floor(fd.param("disp_before_ms", 0))
+local AFTER   = math.floor(fd.param("disp_after_ms", 0))
+local TRIM    = fd.param("disp_z_trim_mm", 0.0)
+local SAFETY  = fd.param("disp_safety_mm", 1.0)
+local FOCUS   = fd.param("disp_autofocus", false)
+local CONFIRM = fd.param("disp_confirm", true)
+local VERIFY  = fd.param("disp_verify", true)
+local CAPTURE = fd.param("disp_capture", true)
+local VTRAVEL = fd.param("disp_v_travel", 0.0)
+local VAPPR   = fd.param("disp_v_approach", 20.0)
+local VFINAL  = fd.param("disp_v_final", 5.0)
+
+if POS == "" then
+    error("disp_position is not set (the saved position holding the camera over " ..
+          "the dispense point). Launch this from a dispense_run recipe step - " ..
+          "running the file directly from the Scripts page injects no parameters.")
+end
+
+-- ---- 1. The lever arm ------------------------------------------------------
+-- First, and hard. Everything below is a move computed from these three
+-- numbers; without them the only honest thing to do is stop before anything
+-- has travelled anywhere.
+-- Prefix "arm", not "ndl": a recipe shares one ctx across its steps, and
+-- needle_cal_run injects ndl_* parameters into that same ctx. Two families of
+-- key with one prefix is how a later step quietly reads an earlier step's
+-- setting instead of its own.
+fd.needle_offset{ ctx_prefix = "arm", require = true }
+local dx, dy, dz = fd.ctx.arm_dx, fd.ctx.arm_dy, fd.ctx.arm_dz
+local SLIDE = fd.ctx.arm_slide
+local IO    = fd.ctx.arm_io
+local PIN   = fd.ctx.arm_pin
+local dir   = fd.ctx.arm_down           -- +1 or -1: which way the axis goes DOWN
+
+if not fd.ctx.arm_verified then
+    fd.log("WARNING: dispensing through an UNVERIFIED needle calibration - it was " ..
+           "measured once and never re-checked (Needle page: calibrate with passes >= 2)")
+end
+
+-- ---- 2. Camera over the point ----------------------------------------------
+fd.move_to_position{ device = DEV, position = POS, velocity_mm_s = VTRAVEL }
+
+-- Focusing here rather than trusting the taught Z is the option that makes dz
+-- an offset worth having: the part's actual height today, plus the arm, is the
+-- touch height today. Off by default because it costs a sweep per dot and a
+-- taught Z is usually good enough.
+if FOCUS then
+    fd.auto_focus{ device = DEV, axis = "Z" }
+end
+
+fd.read_position{ device = DEV, ctx_prefix = "cam" }
+local cam_x, cam_y, cam_z = fd.ctx.cam_x, fd.ctx.cam_y, fd.ctx.cam_z
+
+-- + trim brings the needle CLOSER to the part, whichever way this gantry counts.
+local target_z = cam_z + dz + dir * TRIM
+local safety_z = target_z - dir * SAFETY
+fd.logf("dispense: camera (%.4f, %.4f, %.4f), needle target Z %.4f (safety %.4f)",
+        cam_x, cam_y, cam_z, target_z, safety_z)
+
+-- ---- 3. Needle over the point ----------------------------------------------
+-- Still at the camera's height. This leg is the length of the lever arm - tens
+-- of millimetres - and it happens well clear of the part.
+fd.move_axis_to{ device = DEV, axes = "XYZ",
+                 x_mm = cam_x + dx, y_mm = cam_y + dy, z_mm = cam_z,
+                 velocity_mm_s = VTRAVEL }
+
+if CONFIRM then
+    if not fd.prompt(string.format(
+            "Needle is over the point. Extend '%s' and dispense?", SLIDE)) then
+        error("cancelled by operator")
+    end
+end
+fd.extend_slide{ slide = SLIDE }
+
+-- ---- 4. Two-speed descent ---------------------------------------------------
+-- Fast to a millimetre short, slow for the last millimetre. The slow leg is
+-- what stops the needle arriving with momentum it has to shed into the part;
+-- the fast leg is what stops that costing a second per dot.
+fd.move_axis_to{ device = DEV, axes = "Z", z_mm = safety_z, velocity_mm_s = VAPPR }
+fd.move_axis_to{ device = DEV, axes = "Z", z_mm = target_z, velocity_mm_s = VFINAL }
+
+-- ---- 5. The shot -------------------------------------------------------------
+if CONFIRM then
+    if not fd.prompt(string.format("At dispense height. Fire a %d ms shot?", SHOT)) then
+        -- Retreat before failing: leaving the needle sitting on the part because
+        -- the operator said no would be a worse outcome than the dispense.
+        fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VFINAL }
+        fd.retract_slide{ slide = SLIDE }
+        error("cancelled by operator")
+    end
+end
+
+if BEFORE > 0 then fd.sleep(BEFORE) end
+-- pulse_output closes the valve even when a Stop interrupts the wait, which is
+-- the only reason this is one command instead of on / delay / off.
+fd.pulse_output{ device = IO, pin = PIN, ms = SHOT }
+if AFTER > 0 then fd.sleep(AFTER) end
+
+-- ---- 6. Retreat ---------------------------------------------------------------
+-- Z first, then the slide, then XY - the needle is never travelling sideways
+-- while it is still down near the dot it just placed.
+fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VFINAL }
+fd.retract_slide{ slide = SLIDE }
+
+-- ---- 7. Look at the result ------------------------------------------------
+if VERIFY then
+    fd.move_axis_to{ device = DEV, axes = "XYZ",
+                     x_mm = cam_x, y_mm = cam_y, z_mm = cam_z,
+                     velocity_mm_s = VTRAVEL }
+    if CAPTURE and fd.dut.is_open() then
+        fd.dut_capture_image{ key = "dispense" }
+    end
+    if CONFIRM then
+        if not fd.prompt("Does the dot look right?") then
+            error("dispense rejected by operator")
+        end
+    end
+end
+
+-- ---- 8. Leave the device at a sane speed -----------------------------------
+-- Velocity persists on the controller. The last move ran at v_final so the head
+-- can approach a part gently; leaving it there means the NEXT recipe step
+-- crawls, and the symptom of that is a program that mysteriously takes minutes.
+-- With v_travel unset there is nothing to restore to, so say so rather than
+-- leave it quietly slow.
+-- 0.001 is set_velocity's own floor, not a rounding guard: below it the command
+-- fails validation, and failing here - with the glue already down - would report
+-- a dispense that actually worked as a failed step.
+if VTRAVEL >= 0.001 then
+    fd.set_velocity{ device = DEV, velocity_mm_s = VTRAVEL }
+else
+    fd.logf("note: %s is left at %.2f mm/s (v_travel is 0, so there is nothing to " ..
+            "restore) - set v_travel if the next step should move at speed",
+            DEV, VFINAL)
+end
+
+fd.logf("dispensed %d ms at (%.4f, %.4f), needle Z %.4f", SHOT, cam_x, cam_y, target_z)

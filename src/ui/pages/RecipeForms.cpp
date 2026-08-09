@@ -498,7 +498,11 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         break;
     }
     case ParamType::PinName: {
-        const std::string dev = params.value("device", std::string());
+        // "io_device" first: the needle commands' "device" is the gantry, so a
+        // pin picker keyed on that would offer the axes of a motion controller.
+        const std::string dev = params.contains("io_device")
+                                    ? params.value("io_device", std::string())
+                                    : params.value("device", std::string());
         const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
         const IIoDevice* d = nullptr;
         for (std::size_t i = 0; i < hardware_.IoCount(); ++i)

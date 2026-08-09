@@ -16,6 +16,7 @@
 #include "command/Commands.h"
 #include "core/DutSession.h"   // the DUT-open edge that drops taught frames
 #include "core/Log.h"
+#include "core/NeedleCal.h"    // SaveNeedleCalFile (the calibration hand-back)
 #include "vision/HalconEngine.h"
 
 #include <cstddef>
@@ -36,7 +37,7 @@ bool IsTakeoverPage(Page p)
            p == Page::RecipeEdit || p == Page::Scripts ||
            p == Page::DutView || p == Page::Run || p == Page::Align ||
            p == Page::VisionTeach || p == Page::AlignNominal ||
-           p == Page::AlignPlace;
+           p == Page::AlignPlace || p == Page::Needle;
 }
 } // namespace
 
@@ -164,6 +165,17 @@ void App::Update(float dt)
     // persisted) here.
     for (const auto& [uid, frame] : workflow_.TakeAlignResults())
         session_.ApplyAlignResult(uid, frame);
+
+    // And the same route for a freshly measured needle offset. Not a document
+    // this time — it is machine state, so it goes back to Workflow and into its
+    // own config file — but the reason for the hand-off is identical: a worker
+    // thread must not write a config file, least of all one it might be halfway
+    // through when a Stop lands.
+    for (const NeedleCal& c : workflow_.TakeNeedleCals()) {
+        workflow_.SetNeedleCal(c);
+        if (SaveNeedleCalFile(NeedleCalLocalPath(), c))
+            FD_INFO("needle", "needle calibration saved to %s", NeedleCalLocalPath());
+    }
 
     // A finished reliability run writes its statistics into the detection model
     // it tested. Here rather than in the teach window's draw for the same reason

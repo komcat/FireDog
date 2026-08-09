@@ -44,7 +44,8 @@ ExecutionContext::ExecutionContext(Workflow& wf, HardwareManager& hw,
 bool IsSystemScript(const std::string& pathOrFile)
 {
     const std::string file = std::filesystem::path(pathOrFile).filename().string();
-    return file == "alignment_procedure.lua" || file == "placement_procedure.lua";
+    return file == "alignment_procedure.lua" || file == "placement_procedure.lua" ||
+           file == "needle_calibration.lua";
 }
 
 std::string SystemScriptPath(const std::string& pathOrFile)

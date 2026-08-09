@@ -303,6 +303,11 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
 {
     const std::string device    = merged.value("device", std::string());
     const std::string alignment = merged.value("alignment", std::string());
+    // A pin belongs to an IO device, and in most commands "device" IS that IO
+    // device. The needle family is the exception: its "device" is the gantry, so
+    // it names the IO fleet separately and the pin has to follow that one — or a
+    // perfectly good pin would be reported unknown on a motion controller.
+    const std::string ioDevice  = merged.value("io_device", device);
     for (const ParamSpec& p : spec.params) {
         if (!merged.contains(p.name) || !merged[p.name].is_string()) continue;
         const std::string v = merged[p.name].get<std::string>();
@@ -394,7 +399,7 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             break;
         }
         case ParamType::PinName: {
-            const int idx = IoIdx(env.hw, device);
+            const int idx = IoIdx(env.hw, ioDevice);
             if (idx >= 0) {
                 const IIoDevice* dev = env.hw.IoDevice(static_cast<std::size_t>(idx));
                 bool ok = false;
@@ -407,7 +412,7 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
                                       : p.pinDir == PinDir::Output ? "output "
                                                                    : "";
                     Issue(env, where, path, std::string(dir) + "pin '" + v +
-                                          "' unknown on device '" + device + "'");
+                                          "' unknown on device '" + ioDevice + "'");
                 }
             }
             break;

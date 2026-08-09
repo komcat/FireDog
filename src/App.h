@@ -41,7 +41,7 @@ namespace firedog {
 // prevPage_ (a takeover->takeover switch does not update prevPage_).
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
-                  Align, VisionTeach, AlignNominal, AlignPlace };
+                  Align, VisionTeach, AlignNominal, AlignPlace, Needle };
 
 // One XCAN launch preset (a button on the Run page's Scan band): the step
 // ladder + the hexapod_align.lua tunables injected at launch. Five slots;
@@ -251,6 +251,14 @@ private:
     // parameters and it fails on the first one by design.
     void StartPlacementRun(const AlignProc& a, const AlignNominal& n,
                            const std::string& device);
+
+    // Needle page (View menu, full-page): the dispense needle's lever arm — what
+    // it currently is, and the button that measures it again. Deliberately a
+    // teach-and-report surface with nothing that actuates: the calibration run
+    // itself fires a shot, but it does so through the engines behind the
+    // procedure's own prompts, not from a UI button.
+    void DrawNeedlePanel();
+    void StartNeedleCalRun();   // launches needle_calibration.lua
     // Vision detection teach window (GLOBAL, non-modal — a big live image does
     // not fit the Alignment page's middle column). Opened from a station card;
     // tunes that station's detection model until it finds the feature reliably.
@@ -619,6 +627,28 @@ private:
     double alignProbeX_ = 0.0;   // right panel's local->machine check inputs
     double alignProbeY_ = 0.0;
     std::string alignStartErr_;  // why the last Run refused to start
+
+    // Needle page state. The calibration itself lives on Workflow (machine
+    // state, not a document) — these are only the run parameters the page
+    // injects and the two things it has to remember between frames.
+    char   ndlDevice_[32] = "gantry-main";
+    char   ndlSlide_[32]  = "Dispenser_Head";
+    char   ndlIo_[32]     = "IOBottom";
+    char   ndlPin_[32]    = "Dispenser_Shot";
+    int    ndlShotMs_     = 300;
+    int    ndlSettleMs_   = 500;
+    int    ndlPasses_     = 2;
+    double ndlClearMm_    = 1.0;
+    double ndlTolMm_      = 0.05;
+    double ndlVApproach_  = 20.0;
+    double ndlVFinal_     = 5.0;
+    bool   ndlAutofocus_  = true;
+    std::string ndlStartErr_;    // why the last Run refused to start
+    // The bootstrap seed: with no calibration at all the first imprint lands a
+    // hundred millimetres outside a three-millimetre field of view, so the
+    // operator types a tape-measure estimate once and the procedure has
+    // somewhere to aim. Saved INVALID — a guess must never read as a calibration.
+    double ndlSeedDx_ = 0.0, ndlSeedDy_ = 0.0, ndlSeedDz_ = 0.0;
 
     // Nominal teach page state — the nominals themselves live in session_.
     // Page::AlignNominal IS the "open" flag; nomProcUid_ says which procedure.

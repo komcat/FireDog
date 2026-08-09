@@ -49,7 +49,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 `architecture.md` (layering + ownership) · `build-and-sdks.md` (**targets + SDK gating**) · `hardware-layer.md` (per-device drivers) · `vision-layer.md` (focus metric, auto-focus, HALCON) · `state-and-config.md` (config files, persistence, DataBus) · `command-layer.md` (registry, recipes, Lua) · `run-and-dut.md` (programs, Run page, traceability) · `ui-layer.md` · `ui-file-layout.md` (**where UI code goes**) · `rig-console.md` (the FireDogRig console)
 
 **Design rationale — why it is that way:**
-`recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `climb-raster-design.md` (the gap-closing Z + XY raster) · `alignment-procedure-design.md` (the taught local frame O1) · `vision-detection-design.md` (detection models, the teach wizard, auto stations) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
+`recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `climb-raster-design.md` (the gap-closing Z + XY raster) · `alignment-procedure-design.md` (the taught local frame O1) · `vision-detection-design.md` (detection models, the teach wizard, auto stations) · `needle-dispense-design.md` (the camera→needle lever arm and the dispense procedure) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
 
 ## Rules
 
@@ -79,6 +79,13 @@ Breaking any of these is a defect, not a style choice.
 - Recipes never connect hardware; validation at Start requires devices already `Connected`.
 - Ctx does **not** flow between recipes — cross-recipe data goes through the DUT or the DataBus.
 - `$`-prefixed DUT keys are reserved for events.
+
+### Dispense needle
+- **The camera→needle offset lives in `gantry-main` AXIS space and never goes through `AxisTransform`.** Camera and needle ride the same device, so the delta between them crosses no frame — and `gantry-main`'s transform inverts Z (`M33 = -1`), so an axis value issued as a global delta descends when it meant to retreat. `read_position` reads axis, `move_axis_to` commands axis, `NeedleCal` stores axis.
+- **Which way Z counts is derived, never assumed.** `NeedleDownSign` is `sign(dz)` from the measurement. bobcat hardcoded "+Z is down"; that is correct on one machine and a needle crash on the next.
+- **`dz` is an offset from a FOCUSED camera Z, not a height.** An absolute touch height only describes the surface it was taught on, which is why bobcat needed a `dispense_z_<uid>.json` per point. With `auto_focus`, one offset serves every point.
+- **The calibration is machine-level and its persisted record IS the licence to move** — unlike a taught frame, which describes one part and is cleared at every boundary. It goes stale for exactly one reason: the needle was changed. A worker queues it (`Workflow::QueueNeedleCal`); only `App::Update` writes `config/needle_cal.local.json`.
+- **`needle_calibration.lua` is STANDARD; `dispense_procedure.lua` is deliberately NOT.** Where the needle is, is a fact about the machine and every product must measure it identically. How much glue goes where is a fact about the product, so its own copy must keep winning.
 
 ### Hardware
 - Port hardware code from **`bobcat_engine`**, not BobDog. Read the matching adapter in `..\komcat\bobcat_engine\include\` and port its actual SDK calls.
