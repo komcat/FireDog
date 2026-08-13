@@ -40,6 +40,14 @@
             }
         },
         {
+            "name": "x64-release-deploy",
+            "displayName": "x64 Release (deploy: pylon runtime beside the exe)",
+            "inherits": "x64-release",
+            "cacheVariables": {
+                "FIREDOG_STAGE_PYLON": "ON"
+            }
+        },
+        {
             "name": "x86-debug",
             "displayName": "x86 Debug",
             "inherits": "windows-base",

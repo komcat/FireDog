@@ -80,29 +80,127 @@ FetchContent_Declare(stb
 FetchContent_MakeAvailable(stb)
 
 # ---- Basler Pylon SDK (layer 1 camera) — optional ----
-# Prefer a vendored copy under external/, else a system Basler install (PYLON_DEV_DIR).
-set(PYLON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/external/pylon 8")
-if(EXISTS "${PYLON_ROOT}/Development/include")
-    set(PYLON_INCLUDE_DIR "${PYLON_ROOT}/Development/include")
-    set(PYLON_LIB_DIR     "${PYLON_ROOT}/Development/lib/x64")
-    set(PYLON_RUNTIME_DIR "${PYLON_ROOT}/Runtime/x64")
-elseif(DEFINED ENV{PYLON_DEV_DIR})
-    set(PYLON_INCLUDE_DIR "$ENV{PYLON_DEV_DIR}/include")
-    set(PYLON_LIB_DIR     "$ENV{PYLON_DEV_DIR}/lib/x64")
-    set(PYLON_RUNTIME_DIR "")   # system install keeps runtime DLLs on PATH
+# The install root is NOT fixed: Basler versions the folder on some machines
+# ("Basler/pylon 8") and leaves it bare on others ("Basler/pylon"), and a client
+# can sit a major version behind. That is not cosmetic — the import libs and
+# DLLs carry the major in their name (PylonBase_v9), so an exe built against one
+# does not load against the other. Whichever pylon THIS machine has is the one
+# to build against, so the search must find it without anyone editing this file.
+#
+# Note for whoever comes here from a client machine: the SDK is Development/ and
+# Runtime/. "Applications/x64/bin" is the pylon Viewer — Qt and viewer DLLs, no
+# PylonBase, no headers. Pointing this at it finds nothing.
+#
+# Arch follows OUR build, never the environment — same rule as HALCON below.
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(_pylon_arch "x64")
+else()
+    set(_pylon_arch "Win32")
 endif()
 
-if(PYLON_INCLUDE_DIR AND EXISTS "${PYLON_INCLUDE_DIR}")
+# Candidate roots, in priority order; the first one COMPLETE for our arch wins.
+#   1. -DPYLON_ROOT=<dir>     explicit override (CI, or a pinned version)
+#   2. external/pylon*        vendored copy, same convention as VISA/PI/ACS
+#   3. $PYLON_DEV_DIR         what the installer sets (points AT Development)
+#   4. $PYLON_ROOT            what older installers set (points at the root)
+#   5. Basler/pylon*          whatever is installed, newest first
+set(PYLON_ROOT "" CACHE PATH "Basler pylon install dir (empty = auto-detect)")
+set(_pylon_candidates "")
+if(PYLON_ROOT)
+    file(TO_CMAKE_PATH "${PYLON_ROOT}" _pc)
+    list(APPEND _pylon_candidates "${_pc}")
+endif()
+file(GLOB _pylon_vendored "${CMAKE_CURRENT_SOURCE_DIR}/external/pylon*")
+list(SORT _pylon_vendored)
+list(REVERSE _pylon_vendored)               # newest version folder first
+list(APPEND _pylon_candidates ${_pylon_vendored})
+if(DEFINED ENV{PYLON_DEV_DIR})
+    file(TO_CMAKE_PATH "$ENV{PYLON_DEV_DIR}" _pc)
+    string(REGEX REPLACE "/+$" "" _pc "${_pc}")      # the installer sets a trailing slash
+    get_filename_component(_pc "${_pc}" DIRECTORY)   # Development -> root
+    list(APPEND _pylon_candidates "${_pc}")
+endif()
+if(DEFINED ENV{PYLON_ROOT})
+    file(TO_CMAKE_PATH "$ENV{PYLON_ROOT}" _pc)
+    list(APPEND _pylon_candidates "${_pc}")
+endif()
+foreach(_base "$ENV{ProgramFiles}/Basler" "$ENV{ProgramW6432}/Basler"
+              "$ENV{ProgramFiles\(x86\)}/Basler" "C:/Program Files/Basler")
+    file(TO_CMAKE_PATH "${_base}" _base)
+    file(GLOB _pylon_installed "${_base}/pylon*")
+    list(SORT _pylon_installed)
+    list(REVERSE _pylon_installed)
+    list(APPEND _pylon_candidates ${_pylon_installed})
+endforeach()
+list(REMOVE_DUPLICATES _pylon_candidates)
+
+set(PYLON_FOUND FALSE)
+foreach(_root IN LISTS _pylon_candidates)
+    # A root is complete only with BOTH headers and import libs for our arch;
+    # a headers-only hit would configure clean and fail at link. Probe the
+    # include/pylon DIRECTORY, not a named header — which headers ship varies
+    # by version, and a client can be a major behind.
+    if(IS_DIRECTORY "${_root}/Development/include/pylon"
+       AND IS_DIRECTORY "${_root}/Development/lib/${_pylon_arch}")
+        set(PYLON_INCLUDE_DIR "${_root}/Development/include")
+        set(PYLON_LIB_DIR     "${_root}/Development/lib/${_pylon_arch}")
+        set(PYLON_RUNTIME_DIR "${_root}/Runtime/${_pylon_arch}")
+        if(_root MATCHES "^${CMAKE_CURRENT_SOURCE_DIR}/external/")
+            set(_pylon_is_vendored TRUE)
+        endif()
+        set(PYLON_FOUND TRUE)
+        break()
+    endif()
+endforeach()
+
+if(PYLON_FOUND)
     file(GLOB PYLON_LIBRARIES
         "${PYLON_LIB_DIR}/PylonBase_v*.lib"
         "${PYLON_LIB_DIR}/PylonUtility_v*.lib"
         "${PYLON_LIB_DIR}/GCBase_*.lib"
         "${PYLON_LIB_DIR}/GenApi_*.lib")
-    set(PYLON_FOUND TRUE)
-    message(STATUS "Pylon SDK found: ${PYLON_INCLUDE_DIR}")
+    if(NOT PYLON_LIBRARIES)
+        set(PYLON_FOUND FALSE)
+        message(WARNING "Pylon SDK at ${PYLON_LIB_DIR} has no import libs for ${_pylon_arch}"
+                        " - camera runs in test-pattern stub mode")
+    else()
+        message(STATUS "Pylon SDK found: ${PYLON_INCLUDE_DIR}")
+    endif()
 else()
-    set(PYLON_FOUND FALSE)
-    message(WARNING "Pylon SDK not found - camera runs in test-pattern stub mode")
+    message(WARNING "Pylon SDK not found - camera runs in test-pattern stub mode."
+                    " Searched: ${_pylon_candidates}")
+endif()
+
+# Whether the pylon runtime travels WITH the exe. A vendored copy always does —
+# nothing else on that machine provides it. A system install does not by default,
+# because its runtime is already on PATH and a stale copy beside the exe would
+# shadow the installed pylon after an upgrade, which is how a runtime and its
+# camera drivers drift apart.
+#
+# Turn it on to hand the output folder to a machine that has no pylon 8:
+#   cmake --preset x64-release -DFIREDOG_STAGE_PYLON=ON
+# It makes the exe START there. It cannot make a camera WORK there — the USB3
+# and GigE drivers are installed, never copied — so a machine that must talk to
+# a camera still wants Basler's own installer.
+option(FIREDOG_STAGE_PYLON "Copy the pylon runtime DLLs beside the exe (deployment)" OFF)
+set(PYLON_DEPLOY_FILES "")
+if(PYLON_FOUND AND (FIREDOG_STAGE_PYLON OR _pylon_is_vendored) AND EXISTS "${PYLON_RUNTIME_DIR}")
+    # The set FireDog needs, not the whole 213 MB runtime: the DLLs the exe
+    # imports, what they pull in turn, and the transport layers plus producers
+    # that are loaded by name at camera-enumeration time and so appear in no
+    # import table. Globbed on version, since every one of these names carries a
+    # major that moves (PylonBase_v9, gxapi_v15, uxapi_v14).
+    file(GLOB PYLON_DEPLOY_FILES
+        "${PYLON_RUNTIME_DIR}/PylonBase_v*.dll"
+        "${PYLON_RUNTIME_DIR}/PylonUtility_v*.dll"
+        "${PYLON_RUNTIME_DIR}/*_Basler_pylon.dll"
+        "${PYLON_RUNTIME_DIR}/Pylon*_TL.dll"
+        "${PYLON_RUNTIME_DIR}/Producer*.cti"
+        "${PYLON_RUNTIME_DIR}/gxapi_v*.dll"
+        "${PYLON_RUNTIME_DIR}/uxapi_v*.dll"
+        "${PYLON_RUNTIME_DIR}/uxtopapi_v*.dll")
+    list(LENGTH PYLON_DEPLOY_FILES _n)
+    message(STATUS "Pylon runtime staged beside the exe: ${_n} files from ${PYLON_RUNTIME_DIR}")
 endif()
 
 # ---- NI-VISA (Keithley / GPIB instruments) — optional ----
@@ -381,10 +479,10 @@ function(firedog_stage_runtime tgt)
             COMMENT "Copying assets to output directory")
     endif()
 
-    if(PYLON_FOUND AND PYLON_RUNTIME_DIR AND EXISTS "${PYLON_RUNTIME_DIR}")
+    if(PYLON_DEPLOY_FILES)
         add_custom_command(TARGET ${tgt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${PYLON_RUNTIME_DIR}" "$<TARGET_FILE_DIR:${tgt}>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${PYLON_DEPLOY_FILES} "$<TARGET_FILE_DIR:${tgt}>"
             COMMENT "Copying Pylon runtime DLLs")
     endif()
 
