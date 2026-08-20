@@ -87,13 +87,13 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
 
 ```
 +--------------------------------------------------------------------------+
-| Siphog888 [x]Edit   DUT serial                    [Save] [Load]          |
+| [Execute/Stop] scope  Siphog888 [x]Edit  DUT 2087      [Save] [Load]    |
+|  ^ green = ready, red = running                                          |
 +------------------+--------------------------------------+----------------+
-| [slot combo]     | +--------+ RUNNING: Align > XCAN fine| DUT            |
-| Deck             | |Execute | recipe 1/3                |  serial 2087   |
-|  v 2  Align      | | /Stop  | step 3.2 move_to_position |  14 entries    |
-|      coarse  OK  | +--------+ [########----------]      |  [Pass][Fail]  |
-|      xcan    ... |  scope                               |                |
+| [slot combo]     |  RUNNING: Align > XCAN fine          | DUT            |
+| Deck             |  step 3.2 move_to_position ...       |  serial 2087   |
+|  v 2  Align      |  [########----------] 12/28          |  14 entries    |
+|      coarse  OK  |  slot: recipe 1/3                    |  [Pass][Fail]  |
 |      xcan    ... |                                      |----------------|
 |                  |  (idle: slot/recipe summary,         | last results   |
 |                  |   validation issues)                 |  align_best... |
@@ -141,33 +141,28 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
   Overview block (shared drawing code), because the operator flow is
   scan serial → run → pass/fail. Below it, a small ctx snapshot of the last
   finished recipe (align results etc.).
-- **Execute/Stop sits IN the execution view**, at its top-left, grouped beside
-  the narration it drives — the recipe name, the current step and the progress
-  bar are all to its right. The button, the bar and the step are one thing to
-  look at, and an operator watching the bar creep must not have to travel to
-  the top of the page to stop it. It is a *group* rather than a line above the
-  bar so the button holds the same spot whether or not there is a bar to show:
-  a control that moves when the state changes is worse than one in an odd
-  place, because Stop is reached for by memory and the run you most need to
-  stop is the one that just changed what the panel draws. For the same reason
-  the exec view's minimum height is derived from the button — a splitter must
-  not be able to hide it — and a rejected Start (`runStartErr_`) reads there
-  too, since "why did nothing happen?" is asked at the button.
-  ONE button, whose scope follows the deck selection — selected recipe runs
-  alone, otherwise the shown slot runs (a disabled caption under the button
-  names the scope; originally three separate Run Program/Slot/Recipe buttons,
-  collapsed post-R1). While running it toggles to **Stop**, which propagates
-  through the whole chain (queue → recipe engine → command waits → Lua
-  sub-runs). Progress (recipe bar + recipe j/M) displays identically for both
-  granularities — same runner, same status. Prompts surface via the existing
-  global modal.
-- **Top strip**, one ordinary row now that the button has left it: the loaded
-  program's name, the **Edit** toggle, the DUT serial, and **Save** / **Load**
-  (the program list as a modal) parked at the far right. Which program is up
-  and whether it can be edited are questions about the whole page, so they
-  belong in the strip the operator already reads, not buried in the deck
-  column — but they are not run controls, and they no longer take the height a
-  reach-for-it button needed.
+- **Top strip** (originally at the bottom): ONE **Execute** button whose scope
+  follows the deck selection — selected recipe runs alone, otherwise the shown
+  slot runs (a disabled label beside the button names the scope; originally
+  three separate Run Program/Slot/Recipe buttons, collapsed post-R1). While
+  running it toggles to **Stop**, which propagates through the whole chain
+  (queue → recipe engine → command waits → Lua sub-runs). Progress (recipe
+  bar + recipe j/M) displays identically for both granularities — same runner,
+  same status. Prompts surface via the existing global modal. The strip's
+  controls are **twice frame height** so a gloved hand finds Execute/Stop
+  without aiming, and the button is **colour-coded: green ready, red running**
+  — the colour is the part read from across the bench, since the label is only
+  legible once you are standing at the screen and by then you already know.
+  Disabled-green (nothing selected, or another engine busy) dims through
+  `BeginDisabled`, so "not ready" never looks like "go"; it is deliberately the
+  only saturated colour in the strip. It was briefly moved down beside the
+  progress bar and moved back: the strip is where the operator's hand already
+  goes. Beside it live **Save**, a **Load** button opening the program list as
+  a modal, the loaded program's name, the **Edit** toggle and a rejected Start
+  (`runStartErr_`, which belongs next to the press that produced it) — which
+  program is up and whether it can be edited are questions about the whole
+  page, so they belong in the strip the operator already reads, not buried in
+  the deck column.
 - **There is NO whole-program scope** (`RunScope` is `Slot | Recipe`, enforced
   in `BuildRunQueue`, not just hidden in the UI). A multi-slot program is a
   station sequence an operator walks — part in, run this slot, part moves on —

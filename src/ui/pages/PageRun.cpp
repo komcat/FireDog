@@ -349,12 +349,10 @@ void App::DrawRunPanel()
     const bool running = orch_.programs.Active();
 
     const ImGuiStyle& style  = ImGui::GetStyle();
-    // The strip carries the program's identity and the document chores. It is
-    // one ordinary row tall because Execute/Stop no longer lives here — it sits
-    // beside the progress bar it drives (see runExec below), and the height the
-    // double button needed belongs to the execution view instead.
-    const float  stripRowH = ImGui::GetFrameHeight();
-    const float  stripH = stripRowH + style.WindowPadding.y * 2.0f +
+    // The run strip is the operator's one reach-for-it row, so its controls are
+    // twice frame height — a glove finds Execute/Stop without aiming.
+    const float  stripBtnH = ImGui::GetFrameHeight() * 2.0f;
+    const float  stripH = stripBtnH + style.WindowPadding.y * 2.0f +
                           style.ChildBorderSize * 2.0f;
     const ImVec2 avail  = ImGui::GetContentRegionAvail();
     const float  paneH  = avail.y - stripH - style.ItemSpacing.y;
@@ -380,21 +378,52 @@ void App::DrawRunPanel()
     // ---- Top strip: run controls + which program is loaded ----
     ImGui::BeginChild("runStrip", ImVec2(0.0f, stripH), ImGuiChildFlags_Borders);
     const bool canRun = !orch_.Busy() && haveProg && deckSlot_ >= 0;
-    // Everything shorter than a full row is centred against it, or a caption
-    // reads as stuck to the ceiling.
-    const auto centerNext = [stripRowH](float itemH) {
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (stripRowH - itemH) * 0.5f);
+    // Everything shorter than the double-height buttons is centred against
+    // them, or the row reads as a caption stuck to the ceiling.
+    const auto centerNext = [stripBtnH](float itemH) {
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (stripBtnH - itemH) * 0.5f);
     };
-    // Which granularity Execute will use — the selected recipe, or every recipe
-    // in the ONE slot the deck is showing. There is deliberately no
-    // whole-program scope: a multi-slot program is a station sequence an
-    // operator walks, not something to launch in one press. The button itself
-    // is down in the execution view; this is the deck selection that feeds it.
+    // One Execute button, two granularities: the selected recipe, or every
+    // recipe in the ONE slot the deck is showing. There is deliberately no
+    // whole-program scope — a multi-slot program is a station sequence an
+    // operator walks, not something to launch in one press.
+    // While a run is active the button becomes Stop.
+    //
+    // GREEN means the machine is yours to start, RED means it is moving. The
+    // colour is the part read from across the bench — the label is only
+    // legible once you are standing at the screen, and by then you already
+    // know. Disabled-green (nothing selected, or another engine is busy) dims
+    // to a grey-green through BeginDisabled, so "not ready" never looks like
+    // "go". The pair is deliberately the only saturated colour in the strip.
     const bool onRecipe = deckSlot_ >= 0 && deckRecipe_ >= 0;
+    const ImVec4 goCol(0.16f, 0.52f, 0.24f, 1.0f), goHov(0.22f, 0.68f, 0.32f, 1.0f),
+                 goAct(0.11f, 0.40f, 0.18f, 1.0f);
+    const ImVec4 stCol(0.60f, 0.17f, 0.15f, 1.0f), stHov(0.78f, 0.24f, 0.21f, 1.0f),
+                 stAct(0.45f, 0.12f, 0.11f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button,        running ? stCol : goCol);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, running ? stHov : goHov);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  running ? stAct : goAct);
+    if (running) {
+        if (IconButton(UiIcon("Stop"), "Stop", ImVec2(130.0f, stripBtnH)))
+            orch_.programs.Stop();
+    } else {
+        ImGui::BeginDisabled(!canRun);
+        if (IconButton(UiIcon("run_execute"), "Execute", ImVec2(130.0f, stripBtnH)))
+            StartDeckRun(onRecipe ? RunScope::Recipe : RunScope::Slot);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(onRecipe ? "Run the selected recipe"
+                                       : "Run every recipe in this slot");
+        ImGui::EndDisabled();
+    }
+    ImGui::PopStyleColor(3);
+    ImGui::SameLine();
+    centerNext(ImGui::GetTextLineHeight());
+    ImGui::TextDisabled(onRecipe ? "recipe" : "slot");
     // The program is LOADED, not picked from a combo: which program is up is a
     // deliberate operator act, and the name is the answer to "what am I
     // running?" — the reason it sits in the run strip and not down in the
     // deck. Edit mode joins it for the same reason.
+    ImGui::SameLine();
     centerNext(ImGui::GetTextLineHeight());
     if (haveProg) ImGui::Text("%s", session_.Programs()[progSel_].name.c_str());
     else          ImGui::TextDisabled("(no program)");
@@ -409,8 +438,13 @@ void App::DrawRunPanel()
         centerNext(ImGui::GetTextLineHeight());
         ImGui::TextDisabled("DUT: %s", di.open ? di.serial.c_str() : "none");
     }
+    if (!runStartErr_.empty()) {
+        ImGui::SameLine();
+        centerNext(ImGui::GetTextLineHeight());
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", runStartErr_.c_str());
+    }
     // Save/Load are document chores, not run controls — parked at the far right
-    // so nothing sits between the program's name and the operator's eye.
+    // so nothing sits between Execute and the operator's eye.
     constexpr float kSaveW = 110.0f;
     constexpr float kLoadW = 80.0f;
     const float rightX = ImGui::GetWindowContentRegionMax().x -
@@ -420,7 +454,7 @@ void App::DrawRunPanel()
     // otherwise be overprinted by the buttons.
     if (rightX > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(rightX);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
-                         (stripRowH - ImGui::GetFrameHeight()) * 0.5f);
+                         (stripBtnH - ImGui::GetFrameHeight()) * 0.5f);
     ImGui::BeginDisabled(running);
     if (IconButton(UiIcon("Save"), session_.ProgramsDirty() ? "Save*" : "Save",
                    ImVec2(kSaveW, 0.0f)))
@@ -687,13 +721,7 @@ void App::DrawRunPanel()
     const float scanDefaultH = rowH * 8.0f + style.WindowPadding.y * 2.0f;
     if (runScanH_ <= 0.0f) runScanH_ = scanDefaultH;
     constexpr float kSplitH  = 6.0f;
-    // The execution view can never be dragged smaller than the Execute/Stop
-    // button plus its scope caption: that button is the operator's way to stop
-    // the machine, and a splitter must not be able to hide it.
-    const float kMinExec = ImGui::GetFrameHeight() * 2.0f +
-                           ImGui::GetTextLineHeightWithSpacing() +
-                           style.WindowPadding.y * 2.0f +
-                           style.ChildBorderSize * 2.0f;
+    constexpr float kMinExec = 60.0f;
     const float logH  = 190.0f;
     const float midAvailH = ImGui::GetContentRegionAvail().y;
     // The quick-align band is FIXED height and sits outside runExec: it is the
@@ -712,37 +740,6 @@ void App::DrawRunPanel()
     float execH = midAvailH - scanH - fixedH;
     if (execH < kMinExec) execH = kMinExec;
     ImGui::BeginChild("runExec", ImVec2(0.0f, execH), ImGuiChildFlags_Borders);
-    // Execute/Stop lives WITH the run it drives: the button, the bar and the
-    // step it is on are one thing to look at, and an operator watching the bar
-    // creep should not have to travel back to the top of the page to stop it.
-    //
-    // It is a GROUP beside the narration rather than a line above it so the
-    // button holds the same spot whether or not there is a bar to show. A
-    // control that moves when the state changes is worse than a control in an
-    // odd place — you reach for Stop by memory, and the run you most need to
-    // stop is the one that has just changed what the panel is drawing.
-    const float execBtnH = ImGui::GetFrameHeight() * 2.0f;
-    ImGui::BeginGroup();
-    if (running) {
-        if (IconButton(UiIcon("Stop"), "Stop", ImVec2(130.0f, execBtnH)))
-            orch_.programs.Stop();
-    } else {
-        ImGui::BeginDisabled(!canRun);
-        if (IconButton(UiIcon("run_execute"), "Execute", ImVec2(130.0f, execBtnH)))
-            StartDeckRun(onRecipe ? RunScope::Recipe : RunScope::Slot);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(onRecipe ? "Run the selected recipe"
-                                       : "Run every recipe in this slot");
-        ImGui::EndDisabled();
-    }
-    // The scope caption belongs to the button, not to the strip it came from:
-    // it says what this press will launch.
-    ImGui::TextDisabled(onRecipe ? "recipe" : "slot");
-    ImGui::EndGroup();
-
-    // What that button is driving, beside it.
-    ImGui::SameLine();
-    ImGui::BeginGroup();
     if (running || !rs.result.empty()) {
         ImGui::Text("%s: %s", rs.kind.c_str(), rs.label.c_str());
         if (running) {
@@ -752,9 +749,7 @@ void App::DrawRunPanel()
                 float frac = static_cast<float>(es.leafDone) /
                              static_cast<float>(es.leafTotal);
                 if (frac > 1.0f) frac = 1.0f;
-                // Explicit width, not -1: inside a SameLine group that would
-                // measure from the window edge and run out under the button.
-                ImGui::ProgressBar(frac, ImVec2(ImGui::GetContentRegionAvail().x, 0.0f));
+                ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f));
             }
         } else {
             const bool ok = rs.result.rfind("Completed", 0) == 0;
@@ -762,18 +757,6 @@ void App::DrawRunPanel()
                                   : ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
                                "%s", rs.result.c_str());
         }
-    } else {
-        ImGui::TextDisabled("Pick the slot in the deck (or a recipe in it), then Execute.");
-    }
-    // A rejected Start reads beside the button that was pressed: it answers
-    // "why did nothing happen?", and that question is asked at the button.
-    if (!runStartErr_.empty())
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", runStartErr_.c_str());
-    ImGui::EndGroup();
-
-    // The queue itself runs full width under the group — it is a list, and a
-    // list indented to clear a button reads as a caption of one.
-    if (running || !rs.result.empty()) {
         ImGui::Separator();
         for (const ProgramRunner::ItemStatus& it : rs.items) {
             const char* mark = "  ";
@@ -788,9 +771,12 @@ void App::DrawRunPanel()
             ImGui::TextColored(col, "%s  %s / %s", mark, it.slotName.c_str(),
                                it.recipeName.c_str());
         }
-    } else if (haveProg && !session_.Programs()[progSel_].description.empty()) {
-        ImGui::Separator();
-        ImGui::TextWrapped("%s", session_.Programs()[progSel_].description.c_str());
+    } else {
+        ImGui::TextDisabled("Pick the slot above (or a recipe in it), then Execute.");
+        if (haveProg && !session_.Programs()[progSel_].description.empty()) {
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", session_.Programs()[progSel_].description.c_str());
+        }
     }
     ImGui::EndChild();
 
