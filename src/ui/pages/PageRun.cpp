@@ -349,7 +349,10 @@ void App::DrawRunPanel()
     const bool running = orch_.programs.Active();
 
     const ImGuiStyle& style  = ImGui::GetStyle();
-    const float  stripH = ImGui::GetFrameHeight() + style.WindowPadding.y * 2.0f +
+    // The run strip is the operator's one reach-for-it row, so its controls are
+    // twice frame height — a glove finds Execute/Stop without aiming.
+    const float  stripBtnH = ImGui::GetFrameHeight() * 2.0f;
+    const float  stripH = stripBtnH + style.WindowPadding.y * 2.0f +
                           style.ChildBorderSize * 2.0f;
     const ImVec2 avail  = ImGui::GetContentRegionAvail();
     const float  paneH  = avail.y - stripH - style.ItemSpacing.y;
@@ -375,6 +378,11 @@ void App::DrawRunPanel()
     // ---- Top strip: run controls + which program is loaded ----
     ImGui::BeginChild("runStrip", ImVec2(0.0f, stripH), ImGuiChildFlags_Borders);
     const bool canRun = !orch_.Busy() && haveProg && deckSlot_ >= 0;
+    // Everything shorter than the double-height buttons is centred against
+    // them, or the row reads as a caption stuck to the ceiling.
+    const auto centerNext = [stripBtnH](float itemH) {
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (stripBtnH - itemH) * 0.5f);
+    };
     // One Execute button, two granularities: the selected recipe, or every
     // recipe in the ONE slot the deck is showing. There is deliberately no
     // whole-program scope — a multi-slot program is a station sequence an
@@ -382,11 +390,11 @@ void App::DrawRunPanel()
     // While a run is active the button becomes Stop.
     const bool onRecipe = deckSlot_ >= 0 && deckRecipe_ >= 0;
     if (running) {
-        if (IconButton(UiIcon("Stop"), "Stop", ImVec2(130.0f, 0.0f)))
+        if (IconButton(UiIcon("Stop"), "Stop", ImVec2(130.0f, stripBtnH)))
             orch_.programs.Stop();
     } else {
         ImGui::BeginDisabled(!canRun);
-        if (IconButton(UiIcon("run_execute"), "Execute", ImVec2(130.0f, 0.0f)))
+        if (IconButton(UiIcon("run_execute"), "Execute", ImVec2(130.0f, stripBtnH)))
             StartDeckRun(onRecipe ? RunScope::Recipe : RunScope::Slot);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(onRecipe ? "Run the selected recipe"
@@ -394,34 +402,52 @@ void App::DrawRunPanel()
         ImGui::EndDisabled();
     }
     ImGui::SameLine();
+    centerNext(ImGui::GetTextLineHeight());
     ImGui::TextDisabled(onRecipe ? "recipe" : "slot");
+    // The program is LOADED, not picked from a combo: which program is up is a
+    // deliberate operator act, and the name is the answer to "what am I
+    // running?" — the reason it sits in the run strip and not down in the
+    // deck. Edit mode joins it for the same reason.
     ImGui::SameLine();
-    ImGui::BeginDisabled(running);
-    if (IconButton(UiIcon("Save"), session_.ProgramsDirty() ? "Save*" : "Save",
-                   ImVec2(110.0f, 0.0f)))
-        session_.SavePrograms();
-    // The program is LOADED here, not picked from a combo: which program is up
-    // is a deliberate operator act, and the name beside the button is the
-    // answer to "what am I running?" — the reason it sits in the run strip and
-    // not down in the deck. Edit mode joins it for the same reason.
-    ImGui::SameLine();
-    if (ImGui::Button("Load", ImVec2(80.0f, 0.0f))) runOpenLoad_ = true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Load a program into the deck");
-    ImGui::SameLine();
+    centerNext(ImGui::GetTextLineHeight());
     if (haveProg) ImGui::Text("%s", session_.Programs()[progSel_].name.c_str());
     else          ImGui::TextDisabled("(no program)");
     ImGui::SameLine();
+    centerNext(ImGui::GetFrameHeight());
+    ImGui::BeginDisabled(running);
     ImGui::Checkbox("Edit", &runEdit_);
     ImGui::EndDisabled();
     {
         const DutSession::Info di = DutSession::Instance().GetInfo();
         ImGui::SameLine();
+        centerNext(ImGui::GetTextLineHeight());
         ImGui::TextDisabled("DUT: %s", di.open ? di.serial.c_str() : "none");
     }
     if (!runStartErr_.empty()) {
         ImGui::SameLine();
+        centerNext(ImGui::GetTextLineHeight());
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", runStartErr_.c_str());
     }
+    // Save/Load are document chores, not run controls — parked at the far right
+    // so nothing sits between Execute and the operator's eye.
+    constexpr float kSaveW = 110.0f;
+    constexpr float kLoadW = 80.0f;
+    const float rightX = ImGui::GetWindowContentRegionMax().x -
+                         (kSaveW + kLoadW + style.ItemSpacing.x);
+    ImGui::SameLine();
+    // Never step BACK onto what is already drawn: a long start error would
+    // otherwise be overprinted by the buttons.
+    if (rightX > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(rightX);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
+                         (stripBtnH - ImGui::GetFrameHeight()) * 0.5f);
+    ImGui::BeginDisabled(running);
+    if (IconButton(UiIcon("Save"), session_.ProgramsDirty() ? "Save*" : "Save",
+                   ImVec2(kSaveW, 0.0f)))
+        session_.SavePrograms();
+    ImGui::SameLine();
+    if (ImGui::Button("Load", ImVec2(kLoadW, 0.0f))) runOpenLoad_ = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Load a program into the deck");
+    ImGui::EndDisabled();
     ImGui::EndChild();
 
     // ---- Left: the deck ----
@@ -576,8 +602,11 @@ void App::DrawRunPanel()
                         for (int k = 0; k < static_cast<int>(session_.Recipes().size()); ++k)
                             if (session_.Recipes()[k].uid == slot.recipes[ri]) { recipeSel_ = k; break; }
                         edStepSel_.clear();
-                        prevPage_    = Page::Run;   // editor Close comes back here
-                        currentPage_ = Page::RecipeEdit;
+                        // Takeover -> takeover leaves prevPage_ alone, so the
+                        // return page is named here; the switch itself still
+                        // routes through SwitchPage like every other one.
+                        prevPage_ = Page::Run;   // editor Close comes back here
+                        SwitchPage(Page::RecipeEdit);
                     }
                     if (!missing && ImGui::IsItemHovered())
                         ImGui::SetTooltip("Right-click: open in Recipe Editor");
@@ -648,8 +677,16 @@ void App::DrawRunPanel()
     constexpr float kMinExec = 60.0f;
     const float logH  = 190.0f;
     const float midAvailH = ImGui::GetContentRegionAvail().y;
-    // runExec + splitter + runScan + runLog, three item spacings between them.
-    const float fixedH = logH + kSplitH + style.ItemSpacing.y * 3.0f;
+    // The quick-align band is FIXED height and sits outside runExec: it is the
+    // operator's five one-press launches, so a long queue must never be able to
+    // scroll them out of reach. Caption row + two button rows + child padding.
+    const float quickBtnH = ImGui::GetFrameHeight() * 1.8f;
+    const float quickH    = ImGui::GetTextLineHeightWithSpacing() +
+                            quickBtnH * 2.0f + style.ItemSpacing.y +
+                            style.WindowPadding.y * 2.0f +
+                            style.ChildBorderSize * 2.0f;
+    // runExec + quick + splitter + runScan + runLog, four spacings between them.
+    const float fixedH = logH + kSplitH + quickH + style.ItemSpacing.y * 4.0f;
     const float scanH  = clampf(runScanH_, rowH * 3.0f,
                                 midAvailH - fixedH - kMinExec);
     runScanH_ = scanH;
@@ -694,6 +731,12 @@ void App::DrawRunPanel()
             ImGui::TextWrapped("%s", session_.Programs()[progSel_].description.c_str());
         }
     }
+    ImGui::EndChild();
+
+    // Quick-align band: the five presses this product's operators actually
+    // make, each one a target slot + a step ladder + a hexapod in one click.
+    ImGui::BeginChild("runQuick", ImVec2(0.0f, quickH), ImGuiChildFlags_Borders);
+    DrawRunQuickAlign();
     ImGui::EndChild();
 
     // Drag to give the scan forms more (or less) room; persists on the drag END
@@ -1011,6 +1054,125 @@ void App::DrawRunScanBlock()
         }
         ImGui::EndTabBar();
     }
+}
+
+// ---- Quick-align band (Run page, under the execution view) ------------------
+// The five presses a SIPHOG operator actually makes, each collapsing what the
+// XCAN tab spreads over two rows -- pick a target, pick a ladder, pick a
+// hexapod -- into one button. Section 1 is the first-light pass at the low
+// target; section 2 is the four production passes at the high one.
+//
+// The slots are fixed but the LABELS are rendered from the live target, so an
+// operator who retunes slot 2 in the target modal gets a button that still says
+// what it will do rather than a stale number. A button whose target slot or
+// step preset has been switched off in the settings modal is disabled, not
+// hidden -- a missing button reads as a broken build.
+constexpr int kQuickTargetLo = 1;   // xcanTargets_ slot: 400 uA by default
+constexpr int kQuickTargetHi = 2;   // xcanTargets_ slot: 3400 uA by default
+constexpr int kQuickCoarse   = 0;   // xcanPresets_ slot: "Coarse" 10,5,2,1 um
+constexpr int kQuickFine     = 1;   // xcanPresets_ slot: "Fine"   2,1,0.5 um
+
+// Resolve a motion device by its config name; nullptr when it is not built.
+static IMotionController* MotionByName(const HardwareManager& hw, const char* name)
+{
+    for (std::size_t i = 0; i < hw.MotionCount(); ++i) {
+        if (hw.MotionName(i) == name) return hw.MotionDevice(i);
+    }
+    return nullptr;
+}
+
+void App::DrawRunQuickAlign()
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    // Gate on the WHOLE orchestrator, not orch_.lua: the program runner goes
+    // momentarily idle between queue items, so a lua-only check would let a
+    // press slip an align in between two recipes of a running program.
+    const bool busy = orch_.Busy();
+
+    const float gap  = style.ItemSpacing.x;
+    const float btnH = ImGui::GetFrameHeight() * 1.8f;
+    // Three button columns (one low-target, two high-target) plus the divider.
+    const float availW = ImGui::GetContentRegionAvail().x;
+    float btnW = (availW - gap * 5.0f) / 3.0f;
+    btnW = btnW < 90.0f ? 90.0f : (btnW > 240.0f ? 240.0f : btnW);
+    const float blockH = ImGui::GetTextLineHeightWithSpacing() +
+                         btnH * 2.0f + style.ItemSpacing.y;
+
+    // One launch button: activate the target slot the label was drawn from,
+    // then start the ladder on that hexapod. Same channel as the XCAN tab --
+    // StartXcanPreset reads the ACTIVE slot, so the assignment is the argument.
+    const auto launch = [&](const char* label, int targetIdx, int presetIdx,
+                            const char* dev, const ImVec2& size) {
+        const XcanTarget& t = xcanTargets_[targetIdx];
+        const XcanPreset& p = xcanPresets_[presetIdx];
+        const IMotionController* m = MotionByName(hardware_, dev);
+        const bool ready = m && m->IsConnected() && t.enabled && p.enabled;
+        ImGui::BeginDisabled(busy || !ready);
+        if (ImGui::Button(label, size)) {
+            xcanPresetSel_ = targetIdx;
+            StartXcanPreset(dev, presetIdx);
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (!m)                   ImGui::SetTooltip("%s is not configured", dev);
+            else if (!m->IsConnected()) ImGui::SetTooltip("%s is not connected", dev);
+            else if (!t.enabled)      ImGui::SetTooltip("target slot %d is off "
+                                                        "(right-click a Target button)",
+                                                        targetIdx + 1);
+            else if (!p.enabled)      ImGui::SetTooltip("preset slot %d is off "
+                                                        "(right-click a preset button)",
+                                                        presetIdx + 1);
+            else ImGui::SetTooltip("%s  %s: %s um\ntarget %g uA (zones %g-%g uA)",
+                                   dev, p.label.c_str(), p.stepsUm.c_str(),
+                                   t.targetUa, t.zoneLowUa, t.zoneHighUa);
+        }
+    };
+
+    // Section 1: first light at the low target -- one tall button.
+    ImGui::PushID("quickLo");
+    ImGui::BeginGroup();
+    ImGui::TextDisabled("%s", XcanTargetLabel(xcanTargets_[kQuickTargetLo]).c_str());
+    launch("Left Coarse", kQuickTargetLo, kQuickCoarse, "hex-left",
+           ImVec2(btnW, btnH * 2.0f + style.ItemSpacing.y));
+    ImGui::EndGroup();
+    ImGui::PopID();
+
+    // Divider between the two power classes (the drawn line the operator reads
+    // as "these are different passes", not an ImGui separator -- a vertical one
+    // is imgui_internal and this TU does not include it).
+    ImGui::SameLine(0.0f, gap);
+    const ImVec2 dv = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(1.0f, blockH));
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(dv.x, dv.y),
+                                        ImVec2(dv.x, dv.y + blockH),
+                                        ImGui::GetColorU32(ImGuiCol_Separator));
+    ImGui::SameLine(0.0f, gap);
+
+    // Section 2: the production passes at the high target -- left then right,
+    // coarse over fine, the order they are run in.
+    ImGui::PushID("quickHi");
+    ImGui::BeginGroup();
+    ImGui::TextDisabled("%s", XcanTargetLabel(xcanTargets_[kQuickTargetHi]).c_str());
+    launch("Left Coarse", kQuickTargetHi, kQuickCoarse, "hex-left", ImVec2(btnW, btnH));
+    ImGui::SameLine();
+    launch("Left Fine", kQuickTargetHi, kQuickFine, "hex-left", ImVec2(btnW, btnH));
+    launch("Right Coarse", kQuickTargetHi, kQuickCoarse, "hex-right", ImVec2(btnW, btnH));
+    ImGui::SameLine();
+    launch("Right Fine", kQuickTargetHi, kQuickFine, "hex-right", ImVec2(btnW, btnH));
+    ImGui::EndGroup();
+    ImGui::PopID();
+
+    // Stop rides in the band too: the operator who pressed a button here must
+    // not have to find the XCAN tab to call it off.
+    ImGui::SameLine(0.0f, gap);
+    ImGui::BeginGroup();
+    ImGui::TextDisabled(" ");
+    ImGui::BeginDisabled(!orch_.lua.Running());
+    if (IconButton(UiIcon("Stop"), "Stop",
+                   ImVec2(0.0f, btnH * 2.0f + style.ItemSpacing.y)))
+        orch_.lua.RequestStop();
+    ImGui::EndDisabled();
+    ImGui::EndGroup();
 }
 
 // XCAN tab of the Scan band: target/zone preset buttons (one active, yellow)

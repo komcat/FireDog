@@ -336,6 +336,7 @@ private:
     void RestoreDeckSelection();         // re-point the deck after a document load
     void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|Climb|XCAN tabs
     void DrawRunXcanBlock();          // XCAN tab: hex-left/right launch presets
+    void DrawRunQuickAlign();         // operator band: 5 one-press target+ladder launches
     void StartXcanPreset(const std::string& device, int presetIdx);
     void DrawXcanPresetModal();       // right-click settings for a launch preset
     void DrawXcanTargetModal();       // right-click settings for a target preset

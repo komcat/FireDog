@@ -282,10 +282,20 @@ const MarkIcon* App::UiIcon(const char* file)
 // blocks: the editor stays up and its Unsaved Changes modal (Save / Discard /
 // Cancel) completes the switch to edLeaveTarget_. Entering a takeover page
 // from a hardware page remembers it so the editor's Close returns there.
+//
+// A RUN OUTRANKS THE GUARD. The guard is an ImGui MODAL, and a modal blocks
+// input to every other window - including the always-on-top prompt /
+// manual_adjust / pick windows an engine worker is blocked on. Raise it while
+// a run is waiting on the operator and the machine is stuck behind a dialog
+// about unsaved text: the prompt is still on screen, still un-clickable, and
+// the run dies on the Stop that eventually follows. So while orch_ is busy the
+// switch simply goes through - the edits stay in memory and stay dirty, and
+// the guard does its job the next time the machine is idle. Changing pages
+// must never be able to interfere with an execution in progress.
 void App::SwitchPage(Page p)
 {
     if (currentPage_ == p) return;
-    if (currentPage_ == Page::RecipeEdit && session_.RecipesDirty()) {
+    if (currentPage_ == Page::RecipeEdit && session_.RecipesDirty() && !orch_.Busy()) {
         edConfirmAction_ = 1;
         edLeaveTarget_   = p;
         return;

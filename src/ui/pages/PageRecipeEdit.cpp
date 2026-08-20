@@ -122,6 +122,14 @@ void App::DrawRecipeEditPanel()
 {
     const RecipeEngine::Status st = orch_.recipe.GetStatus();
     const bool running = orch_.recipe.Running();
+    // What DISABLES the editor is the machine being busy, not this one engine.
+    // A program run goes momentarily idle between queue items (the same reason
+    // every Run surface gates on Busy), and an editor that comes back to life
+    // in that gap lets an operator who only came here to read start editing,
+    // reloading or deleting the recipe the next queue item is about to run.
+    // `running` stays the engine's own state - it is what the gold executing
+    // row means.
+    const bool busy = orch_.Busy();
     const bool haveSel = recipeSel_ >= 0 && recipeSel_ < static_cast<int>(session_.Recipes().size());
 
     // Live author-time validation of the selected recipe (WITHOUT the
@@ -166,7 +174,7 @@ void App::DrawRecipeEditPanel()
     ImGui::BeginChild("edRecipes", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
     ImGui::TextUnformatted("Recipes");
     ImGui::SameLine();
-    ImGui::BeginDisabled(running);
+    ImGui::BeginDisabled(busy);
     if (ImGui::SmallButton("Reload")) {
         if (session_.RecipesDirty()) {
             edConfirmAction_ = 2;   // guard: reload discards unsaved edits
@@ -176,7 +184,7 @@ void App::DrawRecipeEditPanel()
         }
     }
     ImGui::EndDisabled();
-    ImGui::BeginDisabled(running);
+    ImGui::BeginDisabled(busy);
     if (IconSmallButton(UiIcon("New"), "New")) {
         Recipe r;
         r.uid  = GenerateUid();
@@ -272,11 +280,11 @@ void App::DrawRecipeEditPanel()
     if (haveSel) {
         Recipe& r = session_.Recipes()[recipeSel_];
         ImGui::BeginChild("edPalette", ImVec2(palW, 0.0f), ImGuiChildFlags_Borders);
-        DrawRecipePalette(r, !running);
+        DrawRecipePalette(r, !busy);
         ImGui::EndChild();
         ImGui::SameLine();
         ImGui::BeginChild("edTree", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
-        DrawRecipeTreeToolbar(r, !running);
+        DrawRecipeTreeToolbar(r, !busy);
         ImGui::Separator();
         // Rows scroll in their own child so the ^/v/Delete toolbar above
         // stays pinned (same pattern as the palette's ##palList).
@@ -335,10 +343,10 @@ void App::DrawRecipeEditPanel()
     if (haveSel && !edStepSel_.empty())
         sel = FindStepByPathMut(&session_.Recipes()[recipeSel_].steps, edStepSel_);
     if (sel) {
-        DrawRecipeInspector(*sel, !running);
+        DrawRecipeInspector(*sel, !busy);
     } else if (haveSel) {
         Recipe& r = session_.Recipes()[recipeSel_];
-        ImGui::BeginDisabled(running);
+        ImGui::BeginDisabled(busy);
         char nbuf[64];
         std::snprintf(nbuf, sizeof(nbuf), "%s", r.name.c_str());
         if (ImGui::InputText("name", nbuf, sizeof(nbuf))) r.name = nbuf;
@@ -856,6 +864,14 @@ void App::DrawRecipeRunStrip(float height)
 {
     const RecipeEngine::Status st = orch_.recipe.GetStatus();
     const bool running = orch_.recipe.Running();
+    // The strip shares ONE engine with the Run page's program runner, so while
+    // a program is running these controls are pointed at somebody else's run.
+    // Step and Next would pause a program mid-recipe with no owner on screen to
+    // release it - exactly how "I only changed page" ends as a failed
+    // execution. Stop stays live (the operator must be able to stop the machine
+    // from wherever they are) but it stops the PROGRAM, not one recipe out of
+    // its queue.
+    const bool progRun = orch_.programs.Active();
     ImGui::BeginChild("edRunStrip", ImVec2(0.0f, height), ImGuiChildFlags_Borders);
 
     // One row: state on the left, the run controls right-aligned. Errors get
@@ -886,16 +902,25 @@ void App::DrawRecipeRunStrip(float height)
         ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.16f, 1.0f),
                            "| paused - next: %s", st.nextStep.c_str());
     }
+    if (progRun) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.16f, 1.0f),
+                           "| program run - drive it from the Run page (F1)");
+    }
 
     ImGui::SameLine(rightEdge - ctrlW);
     // Step mode: Run starts paused at the selected step; Next executes one
     // leaf at a time. Toggling while a run is active pauses/resumes it live.
+    ImGui::BeginDisabled(progRun);
     if (ImGui::Checkbox("Step", &edStepMode_) && running)
         orch_.recipe.SetStepMode(edStepMode_);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Step mode: Run pauses at the selected step (or the\n"
-                          "first step); Next executes one step at a time.\n"
-                          "Uncheck to free-run from here; Stop exits.");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(progRun
+                              ? "A program run owns the engine (Run page, F1)"
+                              : "Step mode: Run pauses at the selected step (or the\n"
+                                "first step); Next executes one step at a time.\n"
+                                "Uncheck to free-run from here; Stop exits.");
     ImGui::SameLine();
     const bool canRun = !orch_.Busy() && recipeSel_ >= 0 &&
                         recipeSel_ < static_cast<int>(session_.Recipes().size());
@@ -936,18 +961,22 @@ void App::DrawRecipeRunStrip(float height)
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Run only the selected step (its children included)");
     ImGui::SameLine();
-    ImGui::BeginDisabled(!st.stepPaused);
+    ImGui::BeginDisabled(!st.stepPaused || progRun);
     if (ImGui::Button("Next", ImVec2(btnW, 0.0f))) orch_.recipe.StepAdvance();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Execute the paused step, then pause again");
     ImGui::SameLine();
-    ImGui::BeginDisabled(!running);
-    if (IconButton(UiIcon("Stop"), "Stop", ImVec2(btnW, 0.0f)))
-        orch_.recipe.RequestStop();
+    ImGui::BeginDisabled(!running && !progRun);
+    if (IconButton(UiIcon("Stop"), "Stop", ImVec2(btnW, 0.0f))) {
+        // Stopping ONE recipe out of a program's queue leaves the runner free
+        // to start the next one against a machine the operator meant to halt.
+        if (progRun) orch_.programs.Stop();
+        else         orch_.recipe.RequestStop();
+    }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(running);
+    ImGui::BeginDisabled(orch_.Busy());
     if (IconButton(UiIcon("Save"), session_.RecipesDirty() ? "Save*" : "Save",
                    ImVec2(btnW, 0.0f)))
         session_.SaveRecipes();
