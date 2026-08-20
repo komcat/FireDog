@@ -174,6 +174,10 @@ blocked on the always-on-top prompt window.
 
 ---
 
+*(A slot also carries the deck cycle's two uids — see
+`docs/deck-cycle-design.md`. They are set from this window's right-click menu,
+which keeps it the only surface that writes anything about a program.)*
+
 ## 4. What did NOT change
 
 - `ProgramRunner` — same queue, same `Tick`, same `Stop`, same `$run` writing.

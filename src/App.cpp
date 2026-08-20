@@ -67,6 +67,7 @@ int App::Run()
         if (ui.runDeckW      > 0.0f) runDeckW_      = ui.runDeckW;
         if (ui.runDutW       > 0.0f) runDutW_       = ui.runDutW;
         if (ui.runScanH      > 0.0f) runScanH_      = ui.runScanH;
+        if (ui.orgLibW       > 0.0f) orgLibW_       = ui.orgLibW;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
         showVisionMarks_ = ui.showVisionMarks;
@@ -154,7 +155,22 @@ int App::Run()
 void App::Update(float dt)
 {
     workflow_.Update(dt);        // layer 2 (kept for future orchestration)
+    // BEFORE programs.Tick(): the runner starts the next queue item the moment
+    // it sees the engine idle, so a drain after it would miss the edge on every
+    // recipe but the last. Ordering is the whole mechanism here.
+    DrainCycleVars();
     orch_.programs.Tick();       // sequences program/slot runs between frames
+    // The deck cycle, both halves of it. The marks are copied out of the
+    // runner's per-item status every frame — which is what makes an accent
+    // appear the moment a recipe finishes rather than only at the end of the
+    // queue — and the runner going idle is edge-detected here, the same shape
+    // as the dutOpenKey_ detector below. Design: docs/deck-cycle-design.md.
+    DrainDeckMarks();
+    {
+        const bool runActive = orch_.programs.Active();
+        if (runWasActive_ && !runActive) AdvanceDeckCycle();
+        runWasActive_ = runActive;
+    }
     UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)
     UpdateMoveWatch(dt);         // a UI move in flight (the frame's MOVING banner)
 
@@ -332,6 +348,7 @@ void App::SaveUiSettings()
     s.runDeckW      = runDeckW_;
     s.runDutW       = runDutW_;
     s.runScanH      = runScanH_;
+    s.orgLibW       = orgLibW_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.showVisionMarks = showVisionMarks_;

@@ -25,6 +25,8 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <map>
+#include <set>
 #include <string>
 
 namespace firedog {
@@ -342,20 +344,271 @@ void App::StartDeckRun(RunScope scope)
     // frames are Workflow state and layer 2.5 does not own them.
     workflow_.ClearLiveFrames("program start");
 
+    // Running the START state is what "a new part" means, so it — and a slot
+    // run, which necessarily contains it — is the ONE thing that wipes the
+    // cycle's accents. Nothing else does: they are the operator's record of how
+    // far this part got, and a page switch or a restart must not erase it.
+    // Beside ClearLiveFrames because it is the same kind of boundary, declared
+    // in the same place, for the same reason.
+    if (deckSlot_ >= 0 && deckSlot_ < static_cast<int>(prog.slots.size())) {
+        const ProgramSlot& slot = prog.slots[static_cast<std::size_t>(deckSlot_)];
+        if (scope == RunScope::Slot ||
+            (!deckNode_.empty() && deckNode_ == slot.startNodeUid)) {
+            deckMarks_.clear();
+            cycleVars_.clear();   // same boundary: the ticks and the numbers
+                                  // must never describe two different parts
+            FD_INFO("program", "deck cycle reset at '%s'", slot.name.c_str());
+        }
+    }
+
     RecipeEngine::Env env = session_.MakeRecipeEnv();
     if (!orch_.programs.Start(q.kind, q.label, prog.uid, std::move(q.items),
-                              std::move(env), &runStartErr_))
+                              std::move(env), &runStartErr_)) {
         FD_WARN("program", "run rejected: %s", runStartErr_.c_str());
+        return;
+    }
+    // What actually launched, for AdvanceDeckCycle. A slot run leaves it empty:
+    // it ran the whole chain, so there is nowhere to advance to.
+    runNodeUid_ = (scope == RunScope::Node) ? deckNode_ : std::string();
 }
+
+// ---- Deck cycle -------------------------------------------------------------
+// Design: docs/deck-cycle-design.md. None of this touches the runner: the marks
+// are read out of the status it already keeps, and the advance is a selection
+// change on the UI thread.
+
+bool App::DeckCycleRange(const ProgramSlot& slot, int* startIdx, int* endIdx) const
+{
+    if (slot.startNodeUid.empty() || slot.endNodeUid.empty()) return false;
+    int si = -1, ei = -1;
+    for (int i = 0; i < static_cast<int>(slot.items.size()); ++i) {
+        const std::string& u = slot.items[static_cast<std::size_t>(i)].uid;
+        if (u == slot.startNodeUid) si = i;
+        if (u == slot.endNodeUid)   ei = i;
+    }
+    // Not found at the TOP level (the node was dragged into a folder), or the
+    // end sits above the start: that is a mistake, not a wrapping cycle. Either
+    // way the cycle is undefined — the organizer says so and offers Clear.
+    if (si < 0 || ei < 0 || ei < si) return false;
+    if (startIdx) *startIdx = si;
+    if (endIdx)   *endIdx   = ei;
+    return true;
+}
+
+App::NodeMark App::DeckMarkOf(const ProgramNode& n) const
+{
+    if (!n.IsFolder()) {
+        const auto it = deckMarks_.find(n.uid);
+        return it == deckMarks_.end() ? NodeMark::None : it->second;
+    }
+    // Only recipe leaves become queue items, so a folder has no mark of its
+    // own. One failed leaf makes the folder failed; it is green only once
+    // every leaf under it is.
+    bool anyPassed = true, sawOne = false;
+    for (const ProgramNode& c : n.children) {
+        const NodeMark m = DeckMarkOf(c);
+        if (m == NodeMark::Failed) return NodeMark::Failed;
+        if (m == NodeMark::None)   anyPassed = false;
+        else                       sawOne = true;
+    }
+    return (sawOne && anyPassed) ? NodeMark::Passed : NodeMark::None;
+}
+
+void App::DrainDeckMarks()
+{
+    // Queue order, and Pending writes nothing — which is what makes a x100
+    // folder that failed on pass 3 stay yellow instead of being overwritten by
+    // the ninety-seven passes that never ran.
+    for (const ProgramRunner::ItemStatus& it : orch_.programs.GetStatus().items) {
+        if (it.nodeUid.empty()) continue;
+        switch (it.mark) {
+        case ProgramRunner::Mark::Done:
+            deckMarks_[it.nodeUid] = NodeMark::Passed;
+            break;
+        case ProgramRunner::Mark::Failed:
+        case ProgramRunner::Mark::Stopped:
+            // A Stop is yellow too. To somebody looking at a part the useful
+            // distinction is passed / not-passed; HOW it failed to pass is what
+            // the log band is for.
+            deckMarks_[it.nodeUid] = NodeMark::Failed;
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+void App::AdvanceDeckCycle()
+{
+    const std::string ran = runNodeUid_;
+    runNodeUid_.clear();
+    if (ran.empty()) return;   // slot scope: it ran the whole chain
+    // Hold on a failure, so the very same press retries the step that failed.
+    if (orch_.programs.GetStatus().result.rfind("Completed", 0) != 0) return;
+    if (progSel_ < 0 || progSel_ >= static_cast<int>(session_.Programs().size())) return;
+    const Program& prog = session_.Programs()[progSel_];
+    if (deckSlot_ < 0 || deckSlot_ >= static_cast<int>(prog.slots.size())) return;
+    const ProgramSlot& slot = prog.slots[static_cast<std::size_t>(deckSlot_)];
+
+    int si = 0, ei = 0;
+    if (!DeckCycleRange(slot, &si, &ei)) return;
+    int idx = -1;
+    for (int i = si; i <= ei; ++i) {
+        if (slot.items[static_cast<std::size_t>(i)].uid == ran) { idx = i; break; }
+    }
+    if (idx < 0) return;   // ran something outside the chain (troubleshooting)
+    // At the end, wrap to the start: ready for the next part, with this part's
+    // accents still up until that start press clears them.
+    deckNode_ = slot.items[static_cast<std::size_t>(idx == ei ? si : idx + 1)].uid;
+}
+
+// ---- Cycle values ----------------------------------------------------------
+
+bool App::IsOperatorCtxKey(const std::string& key)
+{
+    // The alignment and placement scripts push a dozen scratch values through
+    // the same ctx a recipe measures into. They are engine bookkeeping, and
+    // burying DarkCurrent under them makes the panel useless at a glance. An
+    // underscore is the escape hatch for a recipe author who wants a key kept
+    // out of the operator's sight.
+    if (key.empty() || key[0] == '_') return false;
+    if (key.rfind("align_", 0) == 0)  return false;
+    if (key.rfind("place_", 0) == 0)  return false;
+    return true;
+}
+
+void App::DrainCycleVars()
+{
+    const bool eng = orch_.recipe.Running();
+    const bool justFinished = engineWasRunning_ && !eng;
+    engineWasRunning_ = eng;
+    if (!justFinished) return;
+
+    // Status.ctx is EMPTY by now (the engine drops its pointer before the state
+    // goes terminal) — lastCtx is the snapshot it took at that boundary.
+    const RecipeEngine::Status es = orch_.recipe.GetStatus();
+    for (const auto& [key, val] : es.lastCtx) {
+        if (!IsOperatorCtxKey(key)) continue;
+        cycleVars_[key] = CycleVar{CtxValueToString(val), es.recipeName};
+    }
+}
+
+// The Run page's right column, under the DUT block: what this part measured.
+// The live keys of a RUNNING recipe are merged over the accumulated ones and
+// marked, so there is one list to read rather than two.
+void App::DrawRunValuesPanel()
+{
+    const RecipeEngine::Status es = orch_.recipe.GetStatus();
+    std::map<std::string, CycleVar> shown = cycleVars_;
+    std::set<std::string> live;
+    if (orch_.recipe.Running()) {
+        for (const auto& [key, val] : es.ctx) {
+            if (!IsOperatorCtxKey(key)) continue;
+            shown[key] = CycleVar{CtxValueToString(val), es.recipeName};
+            live.insert(key);
+        }
+    }
+
+    ImGui::SeparatorText(shown.empty() ? "Values"
+                                       : ("Values (" + std::to_string(shown.size()) + ")").c_str());
+    if (shown.empty()) {
+        ImGui::TextDisabled("Nothing measured yet this cycle.");
+        return;
+    }
+    // Two columns so the numbers line up in a column the eye can run down; the
+    // recipe that wrote each one is a tooltip rather than a third column,
+    // because the right panel is narrow and the name is the rarer question.
+    if (ImGui::BeginTable("runvals", 2,
+                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        for (const auto& [key, v] : shown) {
+            const bool isLive = live.count(key) != 0;
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            if (isLive) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+            ImGui::TextUnformatted(key.c_str());
+            if (isLive) ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered() && !v.source.empty())
+                ImGui::SetTooltip("written by '%s'", v.source.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(v.value.c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", v.value.c_str());
+        }
+        ImGui::EndTable();
+    }
+}
+
+// Deck cycle accents. Immutable file-scope constants, not App state, and not
+// Theme: the page's other run colours (the gold running row, the red missing
+// one) are literals here for the same reason — they say what a RUN did, not how
+// the app is styled.
+namespace {
+const ImVec4 kMarkPassCol(0.28f, 0.78f, 0.38f, 1.0f);   // green: it completed
+const ImVec4 kMarkFailCol(0.95f, 0.76f, 0.20f, 1.0f);   // yellow: it did not
+
+// The tick and the cross are DRAWN, not typed. The deck font is a fixed
+// monospace and a glyph outside its range would silently render as a box —
+// on the one mark an operator reads from three feet away.
+void DrawDeckMarkGlyph(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool passed)
+{
+    const float t = 2.5f;
+    if (passed) {
+        dl->AddLine(ImVec2(c.x - r,         c.y + r * 0.10f),
+                    ImVec2(c.x - r * 0.25f, c.y + r * 0.75f), col, t);
+        dl->AddLine(ImVec2(c.x - r * 0.25f, c.y + r * 0.75f),
+                    ImVec2(c.x + r,         c.y - r * 0.75f), col, t);
+    } else {
+        dl->AddLine(ImVec2(c.x - r * 0.7f, c.y - r * 0.7f),
+                    ImVec2(c.x + r * 0.7f, c.y + r * 0.7f), col, t);
+        dl->AddLine(ImVec2(c.x + r * 0.7f, c.y - r * 0.7f),
+                    ImVec2(c.x - r * 0.7f, c.y + r * 0.7f), col, t);
+    }
+}
+} // namespace
 
 // The deck's node tree, drawn READ-ONLY (recursive: folders hold folders).
 // `runningNodeUid` is the node the runner is executing right now — matched by
 // UID rather than by name, because a loop runs the same recipe many times over
 // and a name match would light every copy of it at once.
 void App::DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool running,
-                        const std::string& runningNodeUid)
+                        const std::string& runningNodeUid,
+                        const std::string& startUid, const std::string& endUid)
 {
     const ProgramRunner::Status& rs = orch_.programs.GetStatus();
+    // Paints the cycle furniture over a row that has just been submitted: the
+    // colour bar down its left edge, the pass/fail glyph and the start/end
+    // caption at its right. Reads the ITEM rect, so it must be called while the
+    // row is still the current item.
+    const auto decorate = [&](const ProgramNode& n) {
+        const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+        ImDrawList* dl  = ImGui::GetWindowDrawList();
+        const NodeMark mk = DeckMarkOf(n);
+        if (mk != NodeMark::None) {
+            const bool passed = (mk == NodeMark::Passed);
+            const ImU32 col   = ImGui::GetColorU32(passed ? kMarkPassCol : kMarkFailCol);
+            // The bar is the part read from across the bench; the glyph is what
+            // you confirm it with once you are standing at the screen.
+            //
+            // It goes in the DECK'S left gutter, not at the row's own left
+            // edge: the rows are indented by the tree, so a per-row bar would
+            // stagger and stop being a column the eye can run down — and on a
+            // folder row it would land on top of the open/close arrow.
+            const float gx = ImGui::GetWindowPos().x + 2.0f;
+            dl->AddRectFilled(ImVec2(gx, mn.y + 1.0f),
+                              ImVec2(gx + 5.0f, mx.y - 1.0f), col);
+            const float r = ImGui::GetTextLineHeight() * 0.34f;
+            DrawDeckMarkGlyph(dl, ImVec2(mx.x - 12.0f - r, (mn.y + mx.y) * 0.5f),
+                              r, col, passed);
+        }
+        const char* cap = (!startUid.empty() && n.uid == startUid) ? "start"
+                        : (!endUid.empty()   && n.uid == endUid)   ? "end"
+                                                                   : nullptr;
+        if (cap) {
+            const float w = ImGui::CalcTextSize(cap).x;
+            dl->AddText(ImVec2(mx.x - 34.0f - w,
+                               (mn.y + mx.y) * 0.5f - ImGui::GetTextLineHeight() * 0.5f),
+                        ImGui::GetColorU32(ImGuiCol_TextDisabled), cap);
+        }
+    };
     for (ProgramNode& n : items) {
         ImGui::PushID(n.uid.c_str());
         if (n.IsFolder()) {
@@ -370,6 +623,7 @@ void App::DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool runnin
                 ? ImGui::TreeNodeEx("##fold", flags, "%s   x%d", n.name.c_str(), n.loop)
                 : ImGui::TreeNodeEx("##fold", flags, "%s", n.name.c_str());
             if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) deckNode_ = n.uid;
+            decorate(n);
             // The pass counter belongs to the INNERMOST folder around the
             // running item — the one whose repetitions the operator is
             // counting — so it is drawn only where that item is a direct child.
@@ -384,7 +638,10 @@ void App::DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool runnin
                 }
             }
             if (open) {
-                DrawDeckNodes(n.children, rowH, running, runningNodeUid);
+                // Captions do not descend: only a top-level node can be a
+                // cycle state, so a nested uid can never legitimately match.
+                DrawDeckNodes(n.children, rowH, running, runningNodeUid,
+                              std::string(), std::string());
                 if (n.children.empty()) ImGui::TextDisabled("  (empty folder)");
                 ImGui::TreePop();
             }
@@ -415,6 +672,7 @@ void App::DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool runnin
         ImGui::GetWindowDrawList()->AddText(
             ImVec2(rowMin.x, rowMin.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f),
             ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+        decorate(n);
         if (picked) deckNode_ = n.uid;
         // Right-click shortcut: open this recipe in the Recipe Editor.
         if (!missing && rowRClick) {
@@ -650,7 +908,15 @@ void App::DrawRunPanel()
                 std::string runningUid;
                 if (running && rs.index < rs.items.size())
                     runningUid = rs.items[rs.index].nodeUid;
-                DrawDeckNodes(slot.items, deckRowH, running, runningUid);
+                // The captions arrive empty unless the cycle RESOLVES, so an
+                // invalid one cannot label a row it no longer describes.
+                std::string cycStart, cycEnd;
+                if (DeckCycleRange(slot, nullptr, nullptr)) {
+                    cycStart = slot.startNodeUid;
+                    cycEnd   = slot.endNodeUid;
+                }
+                DrawDeckNodes(slot.items, deckRowH, running, runningUid,
+                              cycStart, cycEnd);
                 if (slot.items.empty())
                     ImGui::TextDisabled("  (empty - tick Edit to fill it)");
                 ImGui::TreePop();
@@ -806,6 +1072,17 @@ void App::DrawRunPanel()
     // ---- Right: DUT (the operator flow is scan -> run -> pass/fail) ----
     ImGui::BeginChild("runDut", ImVec2(rightW, paneH), ImGuiChildFlags_Borders);
     DrawDutBlock();
+    // The engine line is pinned to the BOTTOM and the values scroll above it:
+    // "what is the engine doing" is glanced at, and a long value list must not
+    // push it off the panel.
+    {
+        const float engH = ImGui::GetTextLineHeightWithSpacing() * 2.0f +
+                           ImGui::GetStyle().ItemSpacing.y;
+        const float valsH = ImGui::GetContentRegionAvail().y - engH;
+        ImGui::BeginChild("runVals", ImVec2(0.0f, valsH > 0.0f ? valsH : 0.0f));
+        DrawRunValuesPanel();
+        ImGui::EndChild();
+    }
     ImGui::Separator();
     ImGui::Text("Engine: %s", RecipeEngine::StateName(es.state));
     if (!es.error.empty() && es.state != RecipeEngine::State::Running)

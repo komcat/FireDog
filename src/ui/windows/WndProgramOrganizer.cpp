@@ -191,8 +191,34 @@ void App::ApplyOrgDrop(ProgramSlot& slot)
 
 // ---- The tree --------------------------------------------------------------
 
-void App::DrawOrgTree(std::vector<ProgramNode>& items)
+void App::DrawOrgTree(ProgramSlot& slot, std::vector<ProgramNode>& items, bool topLevel)
 {
+    // The cycle context menu. Assigning a uid cannot reallocate anything, so
+    // unlike a drop it is safe to apply inside the walk.
+    const auto cycMenu = [&](const ProgramNode& n, bool rClick) {
+        if (!topLevel) return;   // a nested node is not something Execute launches
+        if (rClick) ImGui::OpenPopup("cyc");
+        if (!ImGui::BeginPopup("cyc")) return;
+        ImGui::TextDisabled("deck cycle");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Set as cycle start")) slot.startNodeUid = n.uid;
+        if (ImGui::MenuItem("Set as cycle end"))   slot.endNodeUid   = n.uid;
+        if (ImGui::MenuItem("Clear cycle")) {
+            slot.startNodeUid.clear();
+            slot.endNodeUid.clear();
+        }
+        ImGui::EndPopup();
+    };
+    // The chip that says which state this is. Drawn AFTER the drag source, so
+    // it cannot become the item the drag binds to.
+    const auto cycChip = [&](const ProgramNode& n) {
+        const char* cap = (!slot.startNodeUid.empty() && n.uid == slot.startNodeUid) ? "start"
+                        : (!slot.endNodeUid.empty()   && n.uid == slot.endNodeUid)   ? "end"
+                                                                                     : nullptr;
+        if (!cap) return;
+        ImGui::SameLine();
+        ImGui::TextDisabled("[%s]", cap);
+    };
     // Safe as a range-for because every drop is DEFERRED (ApplyOrgDrop): no
     // insert or erase happens while this walk is holding a node by reference.
     for (ProgramNode& n : items) {
@@ -207,6 +233,7 @@ void App::DrawOrgTree(std::vector<ProgramNode>& items)
                                    ExpandedCount(n.children);
             const bool open = ImGui::TreeNodeEx("##f", flags, "[+] %s   x%d   (%lld runs)",
                                                 n.name.c_str(), n.loop, runs);
+            const bool fRClick = ImGui::IsItemClicked(ImGuiMouseButton_Right);
             if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) orgSel_ = n.uid;
             if (ImGui::BeginDragDropSource()) {
                 ImGui::SetDragDropPayload(kPayloadNode, n.uid.c_str(), n.uid.size());
@@ -214,8 +241,9 @@ void App::DrawOrgTree(std::vector<ProgramNode>& items)
                 ImGui::EndDragDropSource();
             }
             DrawOrgNodeDropTarget(n.uid, /*intoFolder=*/true);
+            cycChip(n);
             if (open) {
-                DrawOrgTree(n.children);
+                DrawOrgTree(slot, n.children, /*topLevel=*/false);
                 if (n.children.empty()) {
                     ImGui::TextDisabled("(empty - drop recipes here)");
                     // The empty folder's own body is a target too, or a folder
@@ -224,6 +252,7 @@ void App::DrawOrgTree(std::vector<ProgramNode>& items)
                 }
                 ImGui::TreePop();
             }
+            cycMenu(n, fRClick);
             ImGui::PopID();
             continue;
         }
@@ -235,6 +264,7 @@ void App::DrawOrgTree(std::vector<ProgramNode>& items)
         std::snprintf(row, sizeof(row), "    %s",
                       missing ? (n.recipeUid + " (missing!)").c_str() : r->name.c_str());
         if (ImGui::Selectable(row, orgSel_ == n.uid)) orgSel_ = n.uid;
+        const bool rRClick = ImGui::IsItemClicked(ImGuiMouseButton_Right);
         if (missing) ImGui::PopStyleColor();
         if (ImGui::BeginDragDropSource()) {
             ImGui::SetDragDropPayload(kPayloadNode, n.uid.c_str(), n.uid.size());
@@ -242,6 +272,8 @@ void App::DrawOrgTree(std::vector<ProgramNode>& items)
             ImGui::EndDragDropSource();
         }
         DrawOrgNodeDropTarget(n.uid, /*intoFolder=*/false);
+        cycChip(n);
+        cycMenu(n, rRClick);
         ImGui::PopID();
     }
 }
@@ -418,28 +450,52 @@ void App::DrawProgramOrganizer()
     // ---- Two panels: the library | the slot tree ----
     const float footH = ImGui::GetFrameHeightWithSpacing() * 3.0f;
     const float bodyH = ImGui::GetContentRegionAvail().y - footH;
-    const float libW  = 240.0f;
+    // The library column is dragged and persisted like every other splitter in
+    // the app. Clamped against the CURRENT width each frame, so shrinking the
+    // window can never leave the tree — the side you are actually editing —
+    // narrower than it can use.
+    constexpr float kOrgSplitW = 6.0f;
+    constexpr float kOrgMinLib = 140.0f;
+    constexpr float kOrgMinTree = 260.0f;
+    {
+        const float room = ImGui::GetContentRegionAvail().x - kOrgSplitW - kOrgMinTree;
+        const float hi   = room < kOrgMinLib ? kOrgMinLib : room;
+        if (orgLibW_ < kOrgMinLib) orgLibW_ = kOrgMinLib;
+        if (orgLibW_ > hi)         orgLibW_ = hi;
+    }
+    const float libW = orgLibW_;
 
     ImGui::BeginChild("orgLib", ImVec2(libW, bodyH), ImGuiChildFlags_Borders);
     ImGui::TextDisabled("Recipes");
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint("##filt", "filter", orgFilter_, sizeof(orgFilter_));
     ImGui::Separator();
+    // The row is sized to STOP where the add button starts, so a long recipe
+    // name is clipped by the Selectable rather than drawn across the button —
+    // the button was previously pinned at a fixed offset and the two overlapped.
+    // The hover tooltip is what gets the clipped name back.
+    const float addW = ImGui::CalcTextSize("add").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     for (const Recipe& r : session_.Recipes()) {
         if (!Contains(r.name, orgFilter_)) continue;
         ImGui::PushID(r.uid.c_str());
+        const float nameW = ImGui::GetContentRegionAvail().x - addW -
+                            ImGui::GetStyle().ItemSpacing.x;
         // Double-click adds at the selection; drag drops it exactly where the
         // operator wants it. Both exist because the first is faster for
         // building a list and the second is the only way to aim into a folder.
-        if (ImGui::Selectable(r.name.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
+        if (ImGui::Selectable(r.name.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick,
+                              ImVec2(nameW > 0.0f ? nameW : 0.0f, 0.0f))) {
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) OrgAddRecipe(r.uid);
         }
+        const bool nameHovered = ImGui::IsItemHovered();
         if (ImGui::BeginDragDropSource()) {
             ImGui::SetDragDropPayload(kPayloadRecipe, r.uid.c_str(), r.uid.size());
             ImGui::TextUnformatted(r.name.c_str());
             ImGui::EndDragDropSource();
         }
-        ImGui::SameLine(libW - 46.0f);
+        if (nameHovered) ImGui::SetTooltip("%s\ndouble-click to add, or drag",
+                                   r.name.c_str());
+        ImGui::SameLine();
         if (ImGui::SmallButton("add")) OrgAddRecipe(r.uid);
         ImGui::PopID();
     }
@@ -447,7 +503,21 @@ void App::DrawProgramOrganizer()
         ImGui::TextWrapped("No recipes in this product yet.");
     ImGui::EndChild();
 
-    ImGui::SameLine();
+    // Drag to re-proportion; persists on the drag END, like every other
+    // splitter in the app. Deliberately OUTSIDE the busy gate: resizing is
+    // layout, not editing, and a run is exactly when somebody wants to widen
+    // the tree to read it.
+    ImGui::EndDisabled();
+    ImGui::SameLine(0.0f, 0.0f);
+    if (Splitter("##orgsplit", true, kOrgSplitW, bodyH)) {
+        orgLibW_ += ImGui::GetIO().MouseDelta.x;
+        orgSplitting_ = true;
+    } else if (orgSplitting_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        orgSplitting_ = false;
+        SaveUiSettings();
+    }
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::BeginDisabled(busy);
 
     ImGui::BeginChild("orgTree", ImVec2(0.0f, bodyH), ImGuiChildFlags_Borders);
     // Organize row: everything acts on the SELECTED node, so one set of buttons
@@ -472,6 +542,11 @@ void App::DrawProgramOrganizer()
     if (ImGui::SmallButton("Remove")) {
         // A folder goes WITH its children: the tree owns them, and leaving them
         // behind at the parent's level is a silent restructure nobody asked for.
+        // A node that no longer exists cannot stay a cycle state. (A node
+        // dragged INTO a folder needs no cleanup: DeckCycleRange stops
+        // resolving it and the line below says so.)
+        if (slot.startNodeUid == orgSel_) slot.startNodeUid.clear();
+        if (slot.endNodeUid   == orgSel_) slot.endNodeUid.clear();
         ExtractNode(slot.items, orgSel_, nullptr);
         orgSel_.clear();
     }
@@ -497,10 +572,49 @@ void App::DrawProgramOrganizer()
                                   "The whole loop is expanded into the run queue at Execute.");
         }
     }
+    // The cycle, in one line. Right-click a top-level row to set either end.
+    {
+        // A node's display name. A lambda rather than a free helper: the recipe
+        // library is reached through session_, which is App's.
+        const auto nodeLabel = [&](const ProgramNode& n) -> std::string {
+            if (n.IsFolder()) return n.name;
+            const Recipe* r = RecipeByUid(session_.Recipes(), n.recipeUid);
+            return r ? r->name : (n.recipeUid + " (missing)");
+        };
+        ImGui::Separator();
+        const bool none = slot.startNodeUid.empty() && slot.endNodeUid.empty();
+        int si = 0, ei = 0;
+        if (none) {
+            ImGui::TextDisabled("cycle: none - right-click a row to set start/end");
+        } else if (DeckCycleRange(slot, &si, &ei)) {
+            ImGui::TextDisabled("cycle:");
+            ImGui::SameLine();
+            ImGui::Text("%s  ->  %s",
+                        nodeLabel(slot.items[static_cast<std::size_t>(si)]).c_str(),
+                        nodeLabel(slot.items[static_cast<std::size_t>(ei)]).c_str());
+        } else {
+            // Half a cycle is not a cycle: say which half is wrong rather than
+            // quietly behaving as if none were set.
+            const char* why = (slot.startNodeUid.empty() || slot.endNodeUid.empty())
+                                  ? "cycle: only one end is set"
+                              : (FindNode(slot.items, slot.startNodeUid) == nullptr ||
+                                 FindNode(slot.items, slot.endNodeUid) == nullptr)
+                                  ? "cycle: a state no longer exists in this slot"
+                                  : "cycle: end is above start, or a state moved into a folder";
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", why);
+        }
+        if (!none) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear##cyc")) {
+                slot.startNodeUid.clear();
+                slot.endNodeUid.clear();
+            }
+        }
+    }
     ImGui::Separator();
 
     ImGui::BeginChild("orgTreeBody", ImVec2(0.0f, 0.0f));
-    DrawOrgTree(slot.items);
+    DrawOrgTree(slot, slot.items, /*topLevel=*/true);
     // Tail target: the drop that means "at the end, top level". Without it the
     // only way to append by drag is onto the last row, which lands you INSIDE
     // it whenever that row happens to be a folder.

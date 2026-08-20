@@ -244,6 +244,8 @@ nlohmann::json ProgramToJson(const Program& p)
     for (const ProgramSlot& s : p.slots) {
         nlohmann::json sj;
         sj["name"] = s.name;
+        if (!s.startNodeUid.empty()) sj["cycle_start"] = s.startNodeUid;
+        if (!s.endNodeUid.empty())   sj["cycle_end"]   = s.endNodeUid;
         nlohmann::json items = nlohmann::json::array();
         for (const ProgramNode& n : s.items) items.push_back(NodeToJson(n));
         sj["items"] = std::move(items);
@@ -264,7 +266,9 @@ Program ProgramFromJson(const nlohmann::json& j)
         for (const nlohmann::json& sj : j["slots"]) {
             if (!sj.is_object()) continue;
             ProgramSlot s;
-            s.name = sj.value("name", std::string("slot"));
+            s.name         = sj.value("name", std::string("slot"));
+            s.startNodeUid = sj.value("cycle_start", std::string());
+            s.endNodeUid   = sj.value("cycle_end",   std::string());
             if (sj.contains("items") && sj["items"].is_array()) {
                 for (const nlohmann::json& nj : sj["items"]) {
                     if (nj.is_object()) s.items.push_back(NodeFromJson(nj));

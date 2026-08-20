@@ -35,6 +35,11 @@ struct UiSettings {
     // (0 = default). Same reasoning again — a takeover page with its own layout.
     float runDeckW = 0.0f;
     float runDutW  = 0.0f;
+    // Program Organizer: width of its recipe-library column in px (0 = default).
+    // Its own field again — the organizer is a WINDOW, so it does not share a
+    // layout with any page.
+    float orgLibW = 0.0f;
+
     // Run page: height of the Scan band in px (0 = default). Its own field
     // rather than lowerH: the band carries the scan parameter forms, and how
     // much room those need has nothing to do with the log strip's height.

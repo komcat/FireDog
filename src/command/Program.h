@@ -39,6 +39,16 @@ struct ProgramNode {
 struct ProgramSlot {
     std::string name = "slot";
     std::vector<ProgramNode> items;   // in execution order
+
+    // The DECK CYCLE: the top-level nodes from start through end, inclusive,
+    // are the run an operator walks for one part. Either empty = no cycle.
+    // Uids rather than indices, like everything else in the tree — a reorder
+    // must not silently move the start state. BOTH must resolve at the TOP
+    // level: a start buried inside a folder is not something Execute can
+    // launch, since the folder is the unit that runs. Resolved by
+    // App::DeckCycleRange; design: docs/deck-cycle-design.md.
+    std::string startNodeUid;
+    std::string endNodeUid;
 };
 
 struct Program {

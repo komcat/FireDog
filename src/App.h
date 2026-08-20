@@ -336,12 +336,37 @@ private:
     void SelectDeckSlot(int slot);       // show one slot; drops the node selection
     void RememberDeckSelection();        // persist program uid + slot to UiSettings
     void RestoreDeckSelection();         // re-point the deck after a document load
+    // The deck tree, read-only. `startUid`/`endUid` are the cycle captions and
+    // arrive EMPTY when the cycle does not resolve, so an invalid one cannot
+    // label a row it no longer describes. Design: docs/deck-cycle-design.md.
     void DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool running,
-                       const std::string& runningNodeUid);   // deck tree, read-only
+                       const std::string& runningNodeUid,
+                       const std::string& startUid, const std::string& endUid);
+    // ---- Deck cycle: start/end states + per-node pass/fail accents ----
+    // A node's last outcome for THIS part. Runtime only, never persisted: a
+    // green tick describes one physical part, exactly like a live frame.
+    enum class NodeMark { None, Passed, Failed };
+    void DrainDeckMarks();     // runner item marks -> deckMarks_ (from App::Update)
+    void AdvanceDeckCycle();   // on the run-finished edge: advance, or hold on a fail
+    // The cycle as two TOP-LEVEL indices. False (and nothing written) when
+    // either uid is empty, does not resolve at the top level, or end sits
+    // above start — an invalid cycle is undefined, never half-defined.
+    bool DeckCycleRange(const ProgramSlot& slot, int* startIdx, int* endIdx) const;
+    // A folder DERIVES its mark from its leaves (only leaves become queue
+    // items), so it can never disagree with what it contains.
+    NodeMark DeckMarkOf(const ProgramNode& n) const;
+    // ---- Cycle values: what the part's recipes wrote into their run ctx ----
+    // Recipe ctx does NOT flow between recipes, so this is the UI collecting
+    // each finished run's final snapshot into one list for the part.
+    void DrainCycleVars();          // engine-idle edge -> cycleVars_ (App::Update)
+    void DrawRunValuesPanel();      // the Run page's right-column "Values" list
+    static bool IsOperatorCtxKey(const std::string& key);   // hides engine scratch
     // Program Organizer (its own window, opened by the Run strip's Edit box):
     // recipe library | the program tree. The ONLY program-editing surface.
     void DrawProgramOrganizer();
-    void DrawOrgTree(std::vector<ProgramNode>& items);
+    // `topLevel` gates the cycle context menu: only a top-level node can be a
+    // cycle state, because the folder is what Execute launches.
+    void DrawOrgTree(ProgramSlot& slot, std::vector<ProgramNode>& items, bool topLevel);
     void DrawOrgNodeDropTarget(const std::string& anchorUid, bool intoFolder);
     void ApplyOrgDrop(ProgramSlot& slot);   // the deferred drop, after the tree draw
     void OrgAddRecipe(const std::string& recipeUid);   // library -> tree, at the selection
@@ -908,6 +933,25 @@ private:
     // closes or is reordered. Empty = slot scope.
     std::string deckNode_;
     bool runEdit_       = false;   // mirrors orgOpen_: the strip's Edit checkbox
+    // Per-node outcome of the current part's cycle, cleared ONLY by running the
+    // start state (App::StartDeckRun). Not in the document and not in
+    // UiSettings — see NodeMark above.
+    std::map<std::string, NodeMark> deckMarks_;
+    // The part's measurements, keyed by ctx key, with the recipe that wrote it.
+    // Cleared on the SAME boundary as deckMarks_ — running the start node — so
+    // the ticks and the numbers can never describe two different parts.
+    struct CycleVar {
+        std::string value;    // already formatted (CtxValueToString)
+        std::string source;   // recipe name that last wrote it
+    };
+    std::map<std::string, CycleVar> cycleVars_;
+    bool engineWasRunning_ = false;   // edge-detect ONE recipe finishing
+    // The node the ACTIVE run was launched on ("" = slot scope). Recorded at
+    // Start because the deck stays clickable during a run: advancing off
+    // deckNode_ afterwards would step from wherever the operator clicked while
+    // watching, not from what actually ran.
+    std::string runNodeUid_;
+    bool        runWasActive_ = false;   // edge-detect the runner going idle
     bool runOpenLoad_   = false;   // request to open the Load Program modal
     // ---- Program Organizer window ----
     // Its own window (multi-viewport: drag it to a second monitor) rather than a
@@ -921,6 +965,8 @@ private:
     // A drag-drop landing is RECORDED during the tree draw and applied after
     // it: an insert reallocates the very vector the recursion is walking, so
     // acting on the spot leaves the loop holding a dangling ProgramNode&.
+    float       orgLibW_ = 240.0f;   // recipe-library column, dragged + persisted
+    bool        orgSplitting_ = false;   // edge-detect the drag END
     std::string orgDropRecipe_;      // library payload (recipe uid)
     std::string orgDropNode_;        // tree payload (node uid being moved)
     std::string orgDropAnchor_;      // where it lands ("" = slot end, top level)

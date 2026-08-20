@@ -111,6 +111,17 @@ public:
         std::string nextStep;
         std::vector<std::size_t> nextPath;
         std::vector<std::pair<std::string, CtxValue>> ctx;   // display snapshot
+        // The ctx as it stood the instant the run ENDED, captured before the
+        // engine drops its pointer. `ctx` above is live and therefore empty by
+        // the time the state is terminal — this is the only way a UI can read
+        // what a finished recipe left behind.
+        //
+        // DISPLAY ONLY. A command handing data back still goes through a
+        // Workflow queue drained in App::Update; do not turn this into a second
+        // result channel, or two mechanisms will disagree about what a run
+        // produced. It is cleared at Start, so it always describes the LAST
+        // finished run and never a stale one.
+        std::vector<std::pair<std::string, CtxValue>> lastCtx;
     };
     Status GetStatus() const;        // mutex-guarded copy — cheap, UI-safe
     bool   Running() const { return running_.load(); }
@@ -172,6 +183,8 @@ private:
     std::size_t leafDone_ = 0, leafTotal_ = 0;
     ExecutionContext* runCtx_ = nullptr;   // valid only while the worker runs;
                                            // set/cleared under mu_
+    // Snapshot of runCtx_ taken at the terminal boundary — see Status::lastCtx.
+    std::vector<std::pair<std::string, CtxValue>> lastCtx_;
 
     std::thread worker_;   // joined in Stop-and-join helper + dtor. Declared
                            // last so everything it uses outlives it.

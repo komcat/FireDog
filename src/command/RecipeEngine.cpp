@@ -88,6 +88,7 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
         stepPaused_  = false;
         nextStep_.clear();
         nextPath_.clear();
+        lastCtx_.clear();   // it describes the LAST finished run, never a stale one
         // Skip-until path: strip the editor's else-branch markers — the
         // runner walks plain indices (same quirk as run highlighting).
         startPath_.clear();
@@ -184,6 +185,7 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.nextStep           = nextStep_;
     s.nextPath           = nextPath_;
     if (runCtx_) s.ctx = runCtx_->CtxSnapshot();   // its own mutex; no deadlock
+    s.lastCtx = lastCtx_;
     return s;
 }
 
@@ -322,7 +324,11 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
     // Terminal state — every path lands here with the cause logged.
     {
         const std::scoped_lock lock(mu_);
-        runCtx_ = nullptr;   // ctx dies with this frame; status stops reading it
+        // Capture BEFORE dropping the pointer. A UI polling Status.ctx per
+        // frame would miss a value written by the recipe's final step, since
+        // the run can end between two frames.
+        lastCtx_ = ctx.CtxSnapshot();
+        runCtx_  = nullptr;   // ctx dies with this frame; status stops reading it
         error_  = runErr;
         if (stopReq_.load() || out == StepRunner::Outcome::Aborted) {
             state_ = State::Stopped;
