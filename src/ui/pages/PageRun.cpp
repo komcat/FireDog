@@ -349,10 +349,12 @@ void App::DrawRunPanel()
     const bool running = orch_.programs.Active();
 
     const ImGuiStyle& style  = ImGui::GetStyle();
-    // The run strip is the operator's one reach-for-it row, so its controls are
-    // twice frame height — a glove finds Execute/Stop without aiming.
-    const float  stripBtnH = ImGui::GetFrameHeight() * 2.0f;
-    const float  stripH = stripBtnH + style.WindowPadding.y * 2.0f +
+    // The strip carries the program's identity and the document chores. It is
+    // one ordinary row tall because Execute/Stop no longer lives here — it sits
+    // beside the progress bar it drives (see runExec below), and the height the
+    // double button needed belongs to the execution view instead.
+    const float  stripRowH = ImGui::GetFrameHeight();
+    const float  stripH = stripRowH + style.WindowPadding.y * 2.0f +
                           style.ChildBorderSize * 2.0f;
     const ImVec2 avail  = ImGui::GetContentRegionAvail();
     const float  paneH  = avail.y - stripH - style.ItemSpacing.y;
@@ -378,37 +380,21 @@ void App::DrawRunPanel()
     // ---- Top strip: run controls + which program is loaded ----
     ImGui::BeginChild("runStrip", ImVec2(0.0f, stripH), ImGuiChildFlags_Borders);
     const bool canRun = !orch_.Busy() && haveProg && deckSlot_ >= 0;
-    // Everything shorter than the double-height buttons is centred against
-    // them, or the row reads as a caption stuck to the ceiling.
-    const auto centerNext = [stripBtnH](float itemH) {
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (stripBtnH - itemH) * 0.5f);
+    // Everything shorter than a full row is centred against it, or a caption
+    // reads as stuck to the ceiling.
+    const auto centerNext = [stripRowH](float itemH) {
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (stripRowH - itemH) * 0.5f);
     };
-    // One Execute button, two granularities: the selected recipe, or every
-    // recipe in the ONE slot the deck is showing. There is deliberately no
-    // whole-program scope — a multi-slot program is a station sequence an
-    // operator walks, not something to launch in one press.
-    // While a run is active the button becomes Stop.
+    // Which granularity Execute will use — the selected recipe, or every recipe
+    // in the ONE slot the deck is showing. There is deliberately no
+    // whole-program scope: a multi-slot program is a station sequence an
+    // operator walks, not something to launch in one press. The button itself
+    // is down in the execution view; this is the deck selection that feeds it.
     const bool onRecipe = deckSlot_ >= 0 && deckRecipe_ >= 0;
-    if (running) {
-        if (IconButton(UiIcon("Stop"), "Stop", ImVec2(130.0f, stripBtnH)))
-            orch_.programs.Stop();
-    } else {
-        ImGui::BeginDisabled(!canRun);
-        if (IconButton(UiIcon("run_execute"), "Execute", ImVec2(130.0f, stripBtnH)))
-            StartDeckRun(onRecipe ? RunScope::Recipe : RunScope::Slot);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(onRecipe ? "Run the selected recipe"
-                                       : "Run every recipe in this slot");
-        ImGui::EndDisabled();
-    }
-    ImGui::SameLine();
-    centerNext(ImGui::GetTextLineHeight());
-    ImGui::TextDisabled(onRecipe ? "recipe" : "slot");
     // The program is LOADED, not picked from a combo: which program is up is a
     // deliberate operator act, and the name is the answer to "what am I
     // running?" — the reason it sits in the run strip and not down in the
     // deck. Edit mode joins it for the same reason.
-    ImGui::SameLine();
     centerNext(ImGui::GetTextLineHeight());
     if (haveProg) ImGui::Text("%s", session_.Programs()[progSel_].name.c_str());
     else          ImGui::TextDisabled("(no program)");
@@ -423,13 +409,8 @@ void App::DrawRunPanel()
         centerNext(ImGui::GetTextLineHeight());
         ImGui::TextDisabled("DUT: %s", di.open ? di.serial.c_str() : "none");
     }
-    if (!runStartErr_.empty()) {
-        ImGui::SameLine();
-        centerNext(ImGui::GetTextLineHeight());
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", runStartErr_.c_str());
-    }
     // Save/Load are document chores, not run controls — parked at the far right
-    // so nothing sits between Execute and the operator's eye.
+    // so nothing sits between the program's name and the operator's eye.
     constexpr float kSaveW = 110.0f;
     constexpr float kLoadW = 80.0f;
     const float rightX = ImGui::GetWindowContentRegionMax().x -
@@ -439,7 +420,7 @@ void App::DrawRunPanel()
     // otherwise be overprinted by the buttons.
     if (rightX > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(rightX);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
-                         (stripBtnH - ImGui::GetFrameHeight()) * 0.5f);
+                         (stripRowH - ImGui::GetFrameHeight()) * 0.5f);
     ImGui::BeginDisabled(running);
     if (IconButton(UiIcon("Save"), session_.ProgramsDirty() ? "Save*" : "Save",
                    ImVec2(kSaveW, 0.0f)))
@@ -518,6 +499,15 @@ void App::DrawRunPanel()
     ImGui::EndDisabled();
     ImGui::Separator();
 
+    // The deck's recipe rows are three text-lines tall. This is the list an
+    // operator picks from between parts, often with a glove on: the row is a
+    // touch target first and a line of text second. It scales off the text
+    // line rather than a fixed pixel count so the font-size picker keeps
+    // working — and yes, fewer rows fit at once; the deck scrolls, and the
+    // whole point of showing ONE slot is that the list is short.
+    constexpr float kDeckRowScale = 3.0f;
+    const float deckRowH = ImGui::GetTextLineHeightWithSpacing() * kDeckRowScale;
+
     if (!haveProg) {
         ImGui::TextWrapped(session_.Programs().empty()
                                ? "No programs yet - Edit > New creates one."
@@ -594,10 +584,29 @@ void App::DrawRunPanel()
                     // flag it claims hover first and the buttons never click.
                     // Only the active slot is drawn, so picking a row narrows
                     // Execute to that recipe — the slot never changes here.
-                    if (ImGui::Selectable(row, sel, ImGuiSelectableFlags_AllowOverlap))
-                        deckRecipe_ = ri;
+                    //
+                    // The row is kDeckRowScale text-lines tall and carries an
+                    // EMPTY label: a Selectable draws its text at the top-left
+                    // of its box, which in a tall row leaves the name floating
+                    // above the band it names. The label is drawn separately,
+                    // centred in the box, at the same x the Selectable would
+                    // have used. Empty label + the enclosing PushID(ri) also
+                    // means renaming a recipe no longer changes the row's ID.
+                    const bool picked = ImGui::Selectable("##rcp", sel,
+                                            ImGuiSelectableFlags_AllowOverlap,
+                                            ImVec2(0.0f, deckRowH));
+                    // Every IsItem* below must read the SELECTABLE, so capture
+                    // them before anything else becomes the current item.
+                    const bool rowRClick = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+                    const bool rowHover  = ImGui::IsItemHovered();
+                    const ImVec2 rowMin  = ImGui::GetItemRectMin();
+                    ImGui::GetWindowDrawList()->AddText(
+                        ImVec2(rowMin.x,
+                               rowMin.y + (deckRowH - ImGui::GetTextLineHeight()) * 0.5f),
+                        ImGui::GetColorU32(ImGuiCol_Text), row);
+                    if (picked) deckRecipe_ = ri;
                     // Right-click shortcut: open this recipe in the Recipe Editor.
-                    if (!missing && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                    if (!missing && rowRClick) {
                         deckRecipe_ = ri;
                         for (int k = 0; k < static_cast<int>(session_.Recipes().size()); ++k)
                             if (session_.Recipes()[k].uid == slot.recipes[ri]) { recipeSel_ = k; break; }
@@ -608,11 +617,15 @@ void App::DrawRunPanel()
                         prevPage_ = Page::Run;   // editor Close comes back here
                         SwitchPage(Page::RecipeEdit);
                     }
-                    if (!missing && ImGui::IsItemHovered())
+                    if (!missing && rowHover)
                         ImGui::SetTooltip("Right-click: open in Recipe Editor");
                     if (cur || missing) ImGui::PopStyleColor();
                     if (runEdit_ && !running) {
                         ImGui::SameLine();
+                        // Centre the reorder buttons in the tall row too, or
+                        // they hang off its ceiling.
+                        ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
+                                             (deckRowH - ImGui::GetFrameHeight()) * 0.5f);
                         ImGui::BeginDisabled(ri == 0);
                         if (ImGui::SmallButton("^"))
                             std::swap(slot.recipes[ri - 1], slot.recipes[ri]);
@@ -674,7 +687,13 @@ void App::DrawRunPanel()
     const float scanDefaultH = rowH * 8.0f + style.WindowPadding.y * 2.0f;
     if (runScanH_ <= 0.0f) runScanH_ = scanDefaultH;
     constexpr float kSplitH  = 6.0f;
-    constexpr float kMinExec = 60.0f;
+    // The execution view can never be dragged smaller than the Execute/Stop
+    // button plus its scope caption: that button is the operator's way to stop
+    // the machine, and a splitter must not be able to hide it.
+    const float kMinExec = ImGui::GetFrameHeight() * 2.0f +
+                           ImGui::GetTextLineHeightWithSpacing() +
+                           style.WindowPadding.y * 2.0f +
+                           style.ChildBorderSize * 2.0f;
     const float logH  = 190.0f;
     const float midAvailH = ImGui::GetContentRegionAvail().y;
     // The quick-align band is FIXED height and sits outside runExec: it is the
@@ -693,6 +712,37 @@ void App::DrawRunPanel()
     float execH = midAvailH - scanH - fixedH;
     if (execH < kMinExec) execH = kMinExec;
     ImGui::BeginChild("runExec", ImVec2(0.0f, execH), ImGuiChildFlags_Borders);
+    // Execute/Stop lives WITH the run it drives: the button, the bar and the
+    // step it is on are one thing to look at, and an operator watching the bar
+    // creep should not have to travel back to the top of the page to stop it.
+    //
+    // It is a GROUP beside the narration rather than a line above it so the
+    // button holds the same spot whether or not there is a bar to show. A
+    // control that moves when the state changes is worse than a control in an
+    // odd place — you reach for Stop by memory, and the run you most need to
+    // stop is the one that has just changed what the panel is drawing.
+    const float execBtnH = ImGui::GetFrameHeight() * 2.0f;
+    ImGui::BeginGroup();
+    if (running) {
+        if (IconButton(UiIcon("Stop"), "Stop", ImVec2(130.0f, execBtnH)))
+            orch_.programs.Stop();
+    } else {
+        ImGui::BeginDisabled(!canRun);
+        if (IconButton(UiIcon("run_execute"), "Execute", ImVec2(130.0f, execBtnH)))
+            StartDeckRun(onRecipe ? RunScope::Recipe : RunScope::Slot);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(onRecipe ? "Run the selected recipe"
+                                       : "Run every recipe in this slot");
+        ImGui::EndDisabled();
+    }
+    // The scope caption belongs to the button, not to the strip it came from:
+    // it says what this press will launch.
+    ImGui::TextDisabled(onRecipe ? "recipe" : "slot");
+    ImGui::EndGroup();
+
+    // What that button is driving, beside it.
+    ImGui::SameLine();
+    ImGui::BeginGroup();
     if (running || !rs.result.empty()) {
         ImGui::Text("%s: %s", rs.kind.c_str(), rs.label.c_str());
         if (running) {
@@ -702,7 +752,9 @@ void App::DrawRunPanel()
                 float frac = static_cast<float>(es.leafDone) /
                              static_cast<float>(es.leafTotal);
                 if (frac > 1.0f) frac = 1.0f;
-                ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f));
+                // Explicit width, not -1: inside a SameLine group that would
+                // measure from the window edge and run out under the button.
+                ImGui::ProgressBar(frac, ImVec2(ImGui::GetContentRegionAvail().x, 0.0f));
             }
         } else {
             const bool ok = rs.result.rfind("Completed", 0) == 0;
@@ -710,6 +762,18 @@ void App::DrawRunPanel()
                                   : ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
                                "%s", rs.result.c_str());
         }
+    } else {
+        ImGui::TextDisabled("Pick the slot in the deck (or a recipe in it), then Execute.");
+    }
+    // A rejected Start reads beside the button that was pressed: it answers
+    // "why did nothing happen?", and that question is asked at the button.
+    if (!runStartErr_.empty())
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", runStartErr_.c_str());
+    ImGui::EndGroup();
+
+    // The queue itself runs full width under the group — it is a list, and a
+    // list indented to clear a button reads as a caption of one.
+    if (running || !rs.result.empty()) {
         ImGui::Separator();
         for (const ProgramRunner::ItemStatus& it : rs.items) {
             const char* mark = "  ";
@@ -724,12 +788,9 @@ void App::DrawRunPanel()
             ImGui::TextColored(col, "%s  %s / %s", mark, it.slotName.c_str(),
                                it.recipeName.c_str());
         }
-    } else {
-        ImGui::TextDisabled("Pick the slot above (or a recipe in it), then Execute.");
-        if (haveProg && !session_.Programs()[progSel_].description.empty()) {
-            ImGui::Separator();
-            ImGui::TextWrapped("%s", session_.Programs()[progSel_].description.c_str());
-        }
+    } else if (haveProg && !session_.Programs()[progSel_].description.empty()) {
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", session_.Programs()[progSel_].description.c_str());
     }
     ImGui::EndChild();
 
