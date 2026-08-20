@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <fstream>
@@ -108,6 +109,30 @@ bool SaveSavedPositionsFile(const std::string& path, const SavedPosMap& position
 bool SaveSavedPositions(const SavedPosMap& positions)
 {
     return SaveSavedPositionsFile(kLocalPath, positions, {});
+}
+
+const SavedPos* NearestSavedPos(const std::vector<SavedPos>& positions,
+                                const std::map<std::string, double>& pose,
+                                double* distMM, bool includeHidden)
+{
+    const SavedPos* best = nullptr;
+    double bestD2 = 0.0;
+    for (const SavedPos& p : positions) {
+        if (p.hidden && !includeHidden) continue;
+        double d2 = 0.0;
+        int shared = 0;
+        for (const auto& [axis, v] : p.vals) {
+            const auto it = pose.find(axis);
+            if (it == pose.end()) continue;
+            const double d = v - it->second;
+            d2 += d * d;
+            ++shared;
+        }
+        if (shared == 0) continue;   // nothing in common — not a candidate
+        if (!best || d2 < bestD2) { bestD2 = d2; best = &p; }
+    }
+    if (distMM) *distMM = best ? std::sqrt(bestD2) : 0.0;
+    return best;
 }
 
 } // namespace firedog

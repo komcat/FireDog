@@ -8,6 +8,11 @@
 // and must be armed explicitly; the cursor crosshair + dX/dY readout are only
 // drawn while it is armed, since they describe the move a click would command.
 //
+// The position plate at the bottom-left names where each stage stands: the live
+// pose of gantry-main / hex-left / hex-right, matched to the nearest saved
+// position of that device. Four decimal places of axis readout do not tell an
+// operator anything; "See Focus Lens" does.
+//
 // The Z arrows (gantry-main, up = Z-, down = Z+) are ordinary jog: they go
 // through Workflow::JogGantryZ and are gated by the shared jogArmed_ flag. The
 // Autofocus button beside them is the second launcher of the sweep the Jog
@@ -20,12 +25,17 @@
 
 #include "ui/Widgets.h"
 #include "core/DataBus.h"
+#include "core/SavedPositions.h"
 #include "core/Log.h"
 #include "core/Topics.h"
 #include "ui/UiSettings.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
+#include <map>
+#include <string>
+#include <vector>
 
 namespace firedog {
 
@@ -64,6 +74,22 @@ void PlateText(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
                       IM_COL32(0, 0, 0, 165), 3.0f);
     dl->AddText(at, col, text);
 }
+
+// The stages the position plate names, in the order it lists them. Config
+// names, resolved through Workflow::DevicePose — a device the machine does not
+// have simply drops out of the list.
+const char* const kAuxPosDevices[] = {"gantry-main", "hex-left", "hex-right"};
+constexpr int kAuxPosDeviceCount = static_cast<int>(sizeof(kAuxPosDevices) / sizeof(kAuxPosDevices[0]));
+
+// How close counts as "at" that position. Deliberately much looser than the
+// move layer's kMoveTolMM: this labels where the stage IS, with encoder noise
+// and whatever drift a jog left behind, not whether a commanded move finished.
+constexpr double kAuxPosAtTolMM = 0.050;
+
+constexpr ImU32 kPosAtCol   = IM_COL32(120, 235, 150, 255);   // sitting on it
+constexpr ImU32 kPosNearCol = IM_COL32(225, 200, 130, 255);   // nearest, but away
+constexpr ImU32 kPosDimCol  = IM_COL32(150, 150, 158, 255);   // nothing to say
+constexpr ImU32 kPosDevCol  = IM_COL32(190, 190, 200, 255);   // the device column
 
 // Step sizes offered by the Aux window's gantry-Z buttons — a short subset of
 // the shared kSteps table (indices into it, so the mm values never drift).
@@ -164,6 +190,10 @@ void App::DrawAuxWindow()
             DrawAuxVisionMarks(dl, origin, avail, center, scale);
         }
 
+        // ---- Where each stage stands, named ----
+        // Bottom-left, clear of the control plate above and the chart opposite.
+        if (showPosLabels_) DrawAuxPositionLabels(dl, origin, avail);
+
         // ---- Overlay: camera status, top-left (dark plate for readability) ----
         char camline[128];
         std::snprintf(camline, sizeof(camline), "%s  [%s]  %dx%d",
@@ -195,6 +225,23 @@ void App::DrawAuxWindow()
                               "alignment's E1/E2 points, projected from machine mm through\n"
                               "the live gantry pose - so they stay on the feature as the\n"
                               "stage moves. Purely a readout; it changes nothing.");
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Positions", &showPosLabels_)) SaveUiSettings();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Name where each stage stands (bottom-left): the live pose of\n"
+                              "gantry-main, hex-left and hex-right matched to the nearest\n"
+                              "saved position of that device. Green = sitting on it (within\n"
+                              "%.3f mm); amber shows how far off the nearest one it is.",
+                              kAuxPosAtTolMM);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!showPosLabels_);
+        if (ImGui::Checkbox("+hidden", &posLabelsHidden_)) SaveUiSettings();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Let hidden (system) positions - a procedure's private\n"
+                              "algn_... stations - be named too. ON is the honest answer:\n"
+                              "with it off the plate names the nearest VISIBLE position,\n"
+                              "which may not be the one the stage is actually sitting on.");
 
         // ---- gantry-main Z: up = Z-, down = Z+, with a step-size combo ----
         // Real motion, so it follows the jog arming rule. Layer 2 owns the
@@ -372,6 +419,75 @@ void App::DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2&
     std::snprintf(lbl, sizeof(lbl), "%.1f, %.1f px   score %.3f   %.1f ms",
                   auxDet_.xPx, auxDet_.yPx, auxDet_.score, auxDet_.elapsedMs);
     PlateText(dl, origin, avail, ImVec2(p.x + arm + 4.0f, p.y + 6.0f), col, lbl);
+}
+
+// Where each stage stands, named against the taught positions.
+//
+// The pose comes from layer 2 (Workflow::DevicePose) and the names from the
+// session document, which is the only pairing that can be right: the positions
+// belong to the loaded PRODUCT, so the same axis reading is "See Focus Lens"
+// under one product and unnamed under another. Matching is the shared
+// NearestSavedPos, so this plate and the Motion page's map cannot disagree
+// about which taught point a pose is sitting on.
+//
+// Hidden positions rank by default (posLabelsHidden_): the plate answers where
+// the stage IS, so dropping the true nearest would name a neighbour and call it
+// home. The "+hidden" checkbox turns that off for when the algn_... names are
+// noise — a readout preference, never a claim about the machine.
+//
+// It is drawn straight onto the draw list rather than into a child window
+// because it is pure readout: a child would swallow the clicks that the image
+// beneath it turns into click-to-move.
+void App::DrawAuxPositionLabels(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail)
+{
+    struct Row { const char* dev; std::string text; ImU32 col; };
+    std::vector<Row> rows;
+    rows.reserve(static_cast<std::size_t>(kAuxPosDeviceCount));
+
+    const SavedPosMap& all = session_.Positions();
+    for (int i = 0; i < kAuxPosDeviceCount; ++i) {
+        const char* dev = kAuxPosDevices[i];
+        std::map<std::string, double> pose;
+        if (!workflow_.DevicePose(dev, pose)) continue;   // absent or not connected
+
+        const auto it = all.find(dev);
+        double dist = 0.0;
+        const SavedPos* p = (it != all.end())
+                             ? NearestSavedPos(it->second, pose, &dist, posLabelsHidden_)
+                             : nullptr;
+        if (!p) { rows.push_back({dev, "(no taught position)", kPosDimCol}); continue; }
+
+        char buf[96];
+        const bool at = dist <= kAuxPosAtTolMM;
+        if (at) std::snprintf(buf, sizeof(buf), "%s", p->name);
+        else    std::snprintf(buf, sizeof(buf), "%s  +%.3f mm", p->name, dist);
+        rows.push_back({dev, buf, at ? kPosAtCol : kPosNearCol});
+    }
+    if (rows.empty()) return;
+
+    // Two columns: device, then what it is sitting on. The device column is
+    // sized to the widest label so the names line up and read as a list.
+    const float pad = 6.0f, gap = 10.0f;
+    float devW = 0.0f, txtW = 0.0f;
+    for (const Row& r : rows) {
+        devW = fmaxf(devW, ImGui::CalcTextSize(r.dev).x);
+        txtW = fmaxf(txtW, ImGui::CalcTextSize(r.text.c_str()).x);
+    }
+    const float lineH = ImGui::GetTextLineHeightWithSpacing();
+    const float boxW  = devW + gap + txtW + pad * 2.0f;
+    const float boxH  = lineH * static_cast<float>(rows.size()) + pad * 2.0f;
+
+    const float x0 = origin.x + 6.0f;
+    const float y1 = origin.y + avail.y - 6.0f;
+    const float y0 = y1 - boxH;
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + boxW, y1), IM_COL32(0, 0, 0, 165), 4.0f);
+
+    float y = y0 + pad;
+    for (const Row& r : rows) {
+        dl->AddText(ImVec2(x0 + pad, y), kPosDevCol, r.dev);
+        dl->AddText(ImVec2(x0 + pad + devW + gap, y), r.col, r.text.c_str());
+        y += lineH;
+    }
 }
 
 void App::DrawImageOverlay()

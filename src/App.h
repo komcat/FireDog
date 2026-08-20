@@ -357,6 +357,11 @@ private:
     // the image box; `scale` is screen px per camera px (the cover fit).
     void DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
                             const ImVec2& center, float scale);
+    // Where each stage stands, named against the taught positions — the live
+    // pose of gantry-main / hex-left / hex-right matched to the nearest saved
+    // position of that device. Bottom-left of the image box; pure readout,
+    // drawn straight onto `dl` so it can never eat a click meant for the image.
+    void DrawAuxPositionLabels(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail);
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
     void DrawImageOverlay();   // image + vision overlay
@@ -800,6 +805,8 @@ private:
     AlignPoint alignMarkE_[2];
     bool       alignMarkHave_[2] = {false, false};
     bool       showVisionMarks_ = true;   // Aux checkbox, persisted
+    bool       showPosLabels_   = true;   // Aux checkbox, persisted — stage names
+    bool       posLabelsHidden_ = true;   // ...and whether `hidden` positions rank
     // Taught-patch thumbnails, one slot per surface that shows one. Each is
     // keyed by what it was built from (VisionModelPatchKey), so a model switch,
     // a re-teach or an anchor drag reloads it and nothing else does.

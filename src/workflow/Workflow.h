@@ -353,6 +353,12 @@ public:
     // False when there is no gantry or it does not report X/Y.
     bool GantryXY(double& x, double& y) const;
 
+    // Live axis values of a motion device, looked up by its CONFIG name. Same
+    // rule as GantryXY one line up: layer 2 owns the fleet lookup so a UI
+    // readout never walks the device list itself. False when no device carries
+    // that name or it is not connected; `out` is only written on true.
+    bool DevicePose(const std::string& name, std::map<std::string, double>& out) const;
+
 private:
     // Fleet index of the gantry: "gantry-main" by name, else the first ACS
     // controller. Returns hw_.MotionCount() when there is none.

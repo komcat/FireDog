@@ -70,6 +70,8 @@ int App::Run()
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
         showVisionMarks_ = ui.showVisionMarks;
+        showPosLabels_   = ui.showPosLabels;
+        posLabelsHidden_ = ui.posLabelsHidden;
         chartScope_      = ui.chartScope;
         runLastProgUid_  = ui.runProgUid;
         runLastSlot_     = ui.runSlot > 0 ? ui.runSlot : 0;
@@ -322,6 +324,8 @@ void App::SaveUiSettings()
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.showVisionMarks = showVisionMarks_;
+    s.showPosLabels   = showPosLabels_;
+    s.posLabelsHidden = posLabelsHidden_;
     s.chartScope  = chartScope_;
     s.runProgUid  = runLastProgUid_;
     s.runSlot     = runLastSlot_;

@@ -520,6 +520,18 @@ bool Workflow::GantryXY(double& x, double& y) const
     return true;
 }
 
+bool Workflow::DevicePose(const std::string& name, std::map<std::string, double>& out) const
+{
+    for (std::size_t i = 0; i < hw_.MotionCount(); ++i) {
+        if (hw_.MotionName(i) != name) continue;
+        IMotionController* m = hw_.MotionDevice(i);
+        if (!m || !m->IsConnected()) return false;
+        out = m->Positions();
+        return true;
+    }
+    return false;
+}
+
 void Workflow::StartCamera(const HardwareConfig& hw)
 {
     const CameraConfig* cam = hw.FirstEnabledCamera();

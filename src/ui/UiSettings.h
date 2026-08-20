@@ -49,6 +49,15 @@ struct UiSettings {
     // Safe to default ON — unlike clickToMove it is a readout, not an action.
     bool showVisionMarks = true;
 
+    // Aux window: name each stage's live pose against the taught positions.
+    // A readout too, so ON by default for the same reason.
+    bool showPosLabels = true;
+    // ...and whether `hidden` (system) positions are candidates for that name.
+    // ON by default: the plate says where the stage IS, and dropping the true
+    // nearest would name a neighbour instead. Off is for when the `algn_...`
+    // names are noise the operator cannot act on.
+    bool posLabelsHidden = true;
+
     // Keithley chart style: true = scope look (bare canvas, overlay legend +
     // live value), false = classic axes/ticks plot.
     bool chartScope  = true;
