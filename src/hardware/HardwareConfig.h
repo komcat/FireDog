@@ -42,9 +42,16 @@ struct CameraConfig {
     double      exposureUs  = 0.0;       // applied after connect; 0 = camera default
 };
 
+// The current-measuring instrument (from "instruments", any type containing
+// "keithley"). `type` picks the DRIVER, and that is the only difference the
+// rest of the program sees — both are ISmu:
+//   "keithley_6482"  SCPI picoammeter, GPIB/USB ("GPIB0::1::INSTR")
+//   "keithley_2602b" TSP SourceMeter over LAN ("TCPIP0::<ip>::INSTR", or
+//                    "TCPIP0::<ip>::5025::SOCKET" if VXI-11 does not enumerate)
+// Exactly one entry should be `enabled` — FirstEnabledKeithley takes the first.
 struct KeithleyConfig {
     std::string      name = "Keithley_6482";
-    std::string      type = "keithley_6482";
+    std::string      type = "keithley_6482";   // selects the ISmu driver
     std::string      visaResource = "GPIB0::1::INSTR";
     bool             enabled = true;
     int              channelCount = 2;

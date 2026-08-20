@@ -156,7 +156,9 @@ private:
     void DrawCameraDetailPanel();  // middle: exposure + pixel->mm + preview
     void DrawCameraExposureControls();   // exposure slider+input (page + Jog tab)
     void DrawCameraInfoPanel();    // right:  identity + stream info
-    // Keithley page — the 6482 picoammeter.
+    // Keithley page — the configured SMU (6482 picoammeter or 2602B SourceMeter;
+    // the driver is chosen from hardware.json and reached through ISmu).
+    std::string KeithleyModelName(); // driver's model name, for headers + legend
     void DrawKeithleyListPanel();    // left:   status + connect/disconnect
     void DrawKeithleyDetailPanel();  // middle: bias + measurement settings + chart
     void DrawKeithleyInfoPanel();    // right:  identity + settings + live values

@@ -8,7 +8,7 @@ is what prevents a mistake when nothing else has been read.
 
 ## What FireDog Is
 
-A **lightweight C++20 controller for a universal active-alignment machine**. Real drivers exist for: Basler camera (Pylon), Keithley 6482 (VISA), Thorlabs CLD101x laser/TEC (VISA), UNI-T UDP3305S 3-channel PSU (VISA), PI hexapods + ACS gantry (motion), FASTECH Ezi-IO + WAGO Modbus (digital IO), plus synthetic pneumatic slides, an IO watch, and a safety watch built on the IO fleet. Still a simulated placeholder: SMU.
+A **lightweight C++20 controller for a universal active-alignment machine**. Real drivers exist for: Basler camera (Pylon), Keithley 6482 picoammeter and Keithley 2602B SMU (VISA, both behind `ISmu`), Thorlabs CLD101x laser/TEC (VISA), UNI-T UDP3305S 3-channel PSU (VISA), PI hexapods + ACS gantry (motion), FASTECH Ezi-IO + WAGO Modbus (digital IO), plus synthetic pneumatic slides, an IO watch, and a safety watch built on the IO fleet. Nothing real is still simulated.
 
 Sibling projects under `..\komcat\` are the reference implementations for the same domain: **`bobcat_engine`** (mature Qt6 version, richest domain map) and **`BobDog`** (a raylib+rlImGui version — useful for how the PI/ACS/Pylon SDKs get wired into CMake). FireDog deliberately does **not** use raylib.
 
@@ -49,7 +49,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 `architecture.md` (layering + ownership) · `build-and-sdks.md` (**targets + SDK gating**) · `hardware-layer.md` (per-device drivers) · `vision-layer.md` (focus metric, auto-focus, HALCON) · `state-and-config.md` (config files, persistence, DataBus) · `command-layer.md` (registry, recipes, Lua) · `run-and-dut.md` (programs, Run page, traceability) · `ui-layer.md` · `ui-file-layout.md` (**where UI code goes**) · `rig-console.md` (the FireDogRig console)
 
 **Design rationale — why it is that way:**
-`recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `climb-raster-design.md` (the gap-closing Z + XY raster) · `alignment-procedure-design.md` (the taught local frame O1) · `vision-detection-design.md` (detection models, the teach wizard, auto stations) · `needle-dispense-design.md` (the camera→needle lever arm and the dispense procedure) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
+`recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `climb-raster-design.md` (the gap-closing Z + XY raster) · `alignment-procedure-design.md` (the taught local frame O1) · `vision-detection-design.md` (detection models, the teach wizard, auto stations) · `needle-dispense-design.md` (the camera→needle lever arm and the dispense procedure) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` (the SMU layer: 6482 SCPI + 2602B TSP behind `ISmu`) · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
 
 ## Rules
 
@@ -91,7 +91,9 @@ Breaking any of these is a defect, not a style choice.
 - Port hardware code from **`bobcat_engine`**, not BobDog. Read the matching adapter in `..\komcat\bobcat_engine\include\` and port its actual SDK calls.
 - All drivers are PIMPL: **vendor headers never leak into ours**, and each has a same-API simulated stub for when the SDK is absent.
 - **IO pin addressing is normalized: bit i == pin i for BOTH inputs and outputs.** Vendor bit layouts are translated inside the driver; a shifted value must never cross the interface.
+- **The current stream has TWO drivers behind one interface: `ISmu`.** `keithley_6482` (SCPI, GPIB/USB) and `keithley_2602b` (TSP, LAN) are picked by `type` in `hardware.json`, and `Workflow::LaunchKeithleyConnect` is the ONE place a concrete meter is constructed. Everything above layer 1 — the `keithley_*` recipe commands, the `keithley/ch1|ch2` topics, the page, the chart — stays model-agnostic; adding a third meter must not add a second code path up there. Do not rename the commands or topics to match a model: saved recipes reference them by name.
 - **Keithley 6482:** read with `:READ?` each iteration. Do **not** set `:INIT:CONT ON` or read with `:FETC?` (every `:READ?` then raises -213 and the stream stalls at 0 Hz), and do not add a fixed inter-read sleep. Sample rate is governed by NPLC, not the poll interval.
+- **Keithley 2602B is a SOURCE-measure unit, so its output must be ON to measure.** A 6482 measures with its V source off; an SMU with its output off reads ~0 A, which looks exactly like a dark photodiode. `SetVoltageBias` therefore switches **every enabled channel** on (ch1 at the bias, ch2 at 0 V) — never make it bias ch1 alone to "match the 6482". It is TSP, not SCPI: `localnode.prompts = 0` must go out **before the first query** or `TSP>` tokens interleave and every read is one reply out of step, and NPLC is clamped to 0.001..25 because the instrument silently ignores an out-of-window value.
 
 ### Vision
 - **Auto-focus must never depend on HALCON.** The focus measure is plain C++ (`vision/FocusMetric`); a licence problem degrades inspection, never alignment. The Alignment Procedure's manual crosshair pick is under the same rule — it is ImGui over a Pylon frame and nothing more.

@@ -182,15 +182,16 @@ void ProbeKeithley(RigSession& s)
 
     Head("keithley  " + hw.KeithleyName());
     Field("state", ConnStateName(hw.KeithleyState()));
-    Keithley6482* k = hw.Keithley();
+    ISmu* k = hw.Keithley();
     if (!k) { Field("driver", "(none)"); return; }
+    Field("model", k->ModelName());   // which ISmu config picked
     if (hw.KeithleyState() != ConnState::Connected) {
         const std::string err = k->LastError();
         Field("last_error", err.empty() ? "(none)" : err);
         return;
     }
 
-    const Keithley6482::Config cfg = k->GetConfig();
+    const SmuConfig cfg = k->GetConfig();
     Field("idn",   k->DeviceId());
     Field("visa",  cfg.visaResource);
     Field("nplc",  Fixed(cfg.nplc, 3));

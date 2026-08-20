@@ -1,5 +1,10 @@
-// PageKeithley.cpp : the Keithley 6482 page + the shared chart pipeline.
+// PageKeithley.cpp : the SMU page + the shared chart pipeline.
 // Definitions of App members — see App.h.
+//
+// The instrument behind this page is whichever ISmu config picked — a 6482
+// picoammeter or a 2602B SourceMeter — so every label that names a model comes
+// from ISmu::ModelName(), never a literal. The page itself is model-agnostic:
+// both answer bias, NPLC, range and two channels of amps.
 //
 // The chart is one pipeline with two consumers: UpdateKeithleyChartData fills
 // the buffers once per frame from App::Update, and DrawKeithleyChart renders
@@ -15,10 +20,12 @@
 #include "core/DataBus.h"
 #include "core/Log.h"
 #include "core/Topics.h"
+#include "hardware/instruments/ISmu.h"
 
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 namespace firedog {
@@ -32,9 +39,17 @@ void ShiftToRelative(const std::vector<float>& t, double now, std::vector<float>
 }
 } // namespace
 
+// Model name of the configured SMU, for the headers and the chart legend. The
+// driver exists from Workflow::Start, so this is right before the first connect.
+std::string App::KeithleyModelName()
+{
+    ISmu* kei = hardware_.Keithley();
+    return kei ? kei->ModelName() : std::string("SMU");
+}
+
 void App::DrawKeithleyListPanel()
 {
-    ImGui::TextUnformatted("Keithley 6482");
+    ImGui::TextUnformatted(KeithleyModelName().c_str());
     ImGui::Separator();
     if (keithleyId_.empty()) {
         ImGui::TextDisabled("no instrument configured in hardware.json");
@@ -60,7 +75,7 @@ void App::DrawKeithleyListPanel()
     }
     ImGui::EndDisabled();
 
-    Keithley6482* kei = hardware_.Keithley();
+    ISmu* kei = hardware_.Keithley();
     ImGui::Spacing();
     if (kei && kei->IsPolling())
         ImGui::Text("polling @ %.0f Hz", MeasuredHz(kT1_.empty() ? kT2_ : kT1_));
@@ -81,11 +96,11 @@ void App::DrawKeithleyListPanel()
 void App::DrawKeithleyDetailPanel()
 {
     const ConnState st  = hardware_.KeithleyState();
-    Keithley6482*   kei = hardware_.Keithley();
+    ISmu*           kei = hardware_.Keithley();
     const bool connected = (st == ConnState::Connected) && kei;
 
     if (connected && !keiPulled_) {   // seed edits from the live driver once
-        const Keithley6482::Config cfg = kei->GetConfig();
+        const SmuConfig cfg = kei->GetConfig();
         keiNplc_      = static_cast<float>(cfg.nplc);
         keiAutoRange_ = cfg.autoRange;
         if (cfg.fixedRange > 0.0) keiRangeIdx_ = KeiRangeIndexFor(cfg.fixedRange);
@@ -203,7 +218,7 @@ void App::DrawKeithleyInfoPanel()
     ImGui::Separator();
 
     const ConnState st  = hardware_.KeithleyState();
-    Keithley6482*   kei = hardware_.Keithley();
+    ISmu*           kei = hardware_.Keithley();
 
     ImGui::TextDisabled("State");
     ImGui::TextColored(StateColor(st), "%s", StateText(st));
@@ -212,7 +227,7 @@ void App::DrawKeithleyInfoPanel()
     ImGui::TextWrapped("%s", (kei && !kei->DeviceId().empty()) ? kei->DeviceId().c_str() : "-");
 
     if (kei) {
-        const Keithley6482::Config cfg = kei->GetConfig();
+        const SmuConfig cfg = kei->GetConfig();
         ImGui::TextDisabled("VISA");
         ImGui::TextWrapped("%s", cfg.visaResource.c_str());
         ImGui::Spacing();
@@ -340,8 +355,12 @@ void App::DrawKeithleyChart(const ImVec2& size)
                 dl->AddText(ImVec2(b0.x + box + 6.0f, ly), IM_COL32(235, 235, 235, 255), label);
                 ly += fs + 2.0f;
             };
-            if (chartCh_ != 1) LegendRow(kCh1Col, "Keithley 6482 Ch1");
-            if (chartCh_ != 0) LegendRow(kCh2Col, "Keithley 6482 Ch2");
+            const std::string model = KeithleyModelName();
+            char l1[64], l2[64];
+            std::snprintf(l1, sizeof(l1), "%s Ch1", model.c_str());
+            std::snprintf(l2, sizeof(l2), "%s Ch2", model.c_str());
+            if (chartCh_ != 1) LegendRow(kCh1Col, l1);
+            if (chartCh_ != 0) LegendRow(kCh2Col, l2);
 
             const float vfs = fs * 1.35f;
             float vy = p0.y + ps.y - pad - vfs;

@@ -27,7 +27,7 @@
 namespace firedog {
 
 class HardwareManager;
-class Keithley6482;
+class ISmu;
 class CLD101x;
 class UDP3305S;
 
@@ -367,7 +367,7 @@ private:
     void StartCamera(const HardwareConfig& hw);
     void LaunchCameraConnect();   // async connect from camCfg_ (Start + reconnect)
     void LaunchKeithleyConnect(); // async connect from keiCfg_ (Start + reconnect)
-    Keithley6482* ConnectedKeithley() const;   // null unless state == Connected
+    ISmu* ConnectedKeithley() const;           // null unless state == Connected
     void StartCld(const HardwareConfig& hw);
     void LaunchCldConnect();      // async connect from cldCfg_ (Start + reconnect)
     CLD101x* ConnectedCld() const;             // null unless state == Connected

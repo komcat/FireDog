@@ -10,7 +10,7 @@
 #include "hardware/IDevice.h"
 #include "hardware/camera/PylonCamera.h"
 #include "hardware/instruments/CLD101x.h"
-#include "hardware/instruments/Keithley6482.h"
+#include "hardware/instruments/ISmu.h"
 #include "hardware/instruments/UDP3305S.h"
 #include "hardware/io/IIoDevice.h"
 #include "hardware/io/IoWatch.h"
@@ -39,8 +39,10 @@ public:
     // --- Direct-SDK instruments (no IDevice adapter — deliberately). ----------
     // Owned here; Workflow drives their connect/bias/poll and reports state back.
     PylonCamera&  Camera()   { return camera_; }
-    Keithley6482* Keithley() { return keithley_.get(); }   // null until Workflow builds it
-    void SetKeithley(std::unique_ptr<Keithley6482> k) { keithley_ = std::move(k); }
+    // The SMU behind the current stream: a 6482 picoammeter or a 2602B, chosen
+    // by config `type` in Workflow. Callers see only ISmu — see ISmu.h.
+    ISmu*         Keithley() { return keithley_.get(); }    // null until Workflow builds it
+    void SetKeithley(std::unique_ptr<ISmu> k) { keithley_ = std::move(k); }
     CLD101x*      Cld()      { return cld_.get(); }        // null until Workflow builds it
     void SetCld(std::unique_ptr<CLD101x> c) { cld_ = std::move(c); }
     UDP3305S*     Psu()      { return psu_.get(); }        // null until Workflow builds it
@@ -126,7 +128,7 @@ private:
     // Direct-SDK instruments, owned alongside the IDevice fleet. Their own
     // destructors stop the grab/poll threads.
     PylonCamera                   camera_;
-    std::unique_ptr<Keithley6482> keithley_;
+    std::unique_ptr<ISmu>         keithley_;   // 6482 or 2602B (ISmu.h)
     std::unique_ptr<CLD101x>      cld_;
     std::unique_ptr<UDP3305S>     psu_;
     std::atomic<ConnState>        camState_{ConnState::Disconnected};

@@ -3,6 +3,8 @@
 
 #include "hardware/HardwareManager.h"
 #include "hardware/HardwareConfig.h"
+#include "hardware/instruments/Keithley2602B.h"
+#include "hardware/instruments/Keithley6482.h"
 #include "hardware/io/EziIoDevice.h"
 #include "hardware/io/WagoIoDevice.h"
 #include "hardware/motion/PIHexapod.h"
@@ -622,20 +624,26 @@ void Workflow::LaunchKeithleyConnect()
     FD_INFO("workflow", "connecting Keithley '%s' (%s)",
             keiCfg_.name.c_str(), keiCfg_.visaResource.c_str());
 
-    Keithley6482::Config cfg;
+    SmuConfig cfg;
     cfg.name            = keiCfg_.name;
+    cfg.type            = keiCfg_.type;
     cfg.visaResource    = keiCfg_.visaResource;
     cfg.channelCount    = keiCfg_.channelCount;
     cfg.enabledChannels = keiCfg_.enabledChannels;
     cfg.nplc            = keiCfg_.nplc;
     cfg.autoRange       = keiCfg_.autoRange;
     cfg.fixedRange      = keiCfg_.fixedRange;
-    hw_.SetKeithley(std::make_unique<Keithley6482>(cfg));
+    // The ONE place a concrete SMU is chosen. Everything above layer 1 works
+    // through ISmu, so a third meter is a new driver plus a branch here.
+    if (cfg.type.find("2602") != std::string::npos)
+        hw_.SetKeithley(std::make_unique<Keithley2602B>(cfg));
+    else
+        hw_.SetKeithley(std::make_unique<Keithley6482>(cfg));
 
     const int    interval = keiCfg_.pollIntervalMs;
     const double bias     = keiCfg_.biasVoltage;   // ch1 alignment bias, from config
     keiConnect_ = std::async(std::launch::async, [this, interval, bias] {
-        Keithley6482* kei = hw_.Keithley();
+        ISmu* kei = hw_.Keithley();
         bool ok = kei && kei->Connect();
         // Bias is verified against the instrument (:OUTP?); a refusal is
         // logged but doesn't abort bring-up — measurement works unbiased.
@@ -655,7 +663,7 @@ bool Workflow::ConnectKeithley()
         return false;
     }
     if (hw_.KeithleyState() == ConnState::Connecting) return false;   // in flight
-    Keithley6482* kei = hw_.Keithley();
+    ISmu* kei = hw_.Keithley();
     if (kei && kei->IsConnected()) return true;                       // already up
     LaunchKeithleyConnect();   // rebuilds the driver from keiCfg_
     return true;
@@ -664,16 +672,16 @@ bool Workflow::ConnectKeithley()
 bool Workflow::DisconnectKeithley()
 {
     if (hw_.KeithleyState() == ConnState::Connecting) return false;   // let it finish
-    Keithley6482* kei = hw_.Keithley();
+    ISmu* kei = hw_.Keithley();
     if (!kei) return false;
-    kei->Disconnect();   // stops polling, :OUTP OFF, restores the display
+    kei->Disconnect();   // stops polling and drops the output (both drivers)
     hw_.SetKeithleyState(ConnState::Disconnected);
     FD_INFO("workflow", "Keithley '%s' disconnected", hw_.KeithleyName().c_str());
     return true;
 }
 
 // The runtime-settings commands all require a live connection.
-Keithley6482* Workflow::ConnectedKeithley() const
+ISmu* Workflow::ConnectedKeithley() const
 {
     if (hw_.KeithleyState() != ConnState::Connected) return nullptr;
     return hw_.Keithley();
@@ -681,37 +689,37 @@ Keithley6482* Workflow::ConnectedKeithley() const
 
 bool Workflow::SetKeithleyBias(double volts)
 {
-    Keithley6482* kei = ConnectedKeithley();
+    ISmu* kei = ConnectedKeithley();
     return kei && kei->SetVoltageBias(volts);
 }
 
 bool Workflow::KeithleyOutputOff()
 {
-    Keithley6482* kei = ConnectedKeithley();
+    ISmu* kei = ConnectedKeithley();
     return kei && kei->OutputOff();
 }
 
 bool Workflow::SetKeithleyNplc(double nplc)
 {
-    Keithley6482* kei = ConnectedKeithley();
+    ISmu* kei = ConnectedKeithley();
     return kei && kei->SetNplc(nplc);
 }
 
 bool Workflow::SetKeithleyRangeAuto()
 {
-    Keithley6482* kei = ConnectedKeithley();
+    ISmu* kei = ConnectedKeithley();
     return kei && kei->SetRangeAuto();
 }
 
 bool Workflow::SetKeithleyRangeFixed(double amps)
 {
-    Keithley6482* kei = ConnectedKeithley();
+    ISmu* kei = ConnectedKeithley();
     return kei && kei->SetRangeFixed(amps);
 }
 
 bool Workflow::SetKeithleyPollInterval(int ms)
 {
-    Keithley6482* kei = ConnectedKeithley();
+    ISmu* kei = ConnectedKeithley();
     if (!kei) return false;
     kei->StopPolling();
     const bool ok = kei->StartPolling(ms, topics::kKeithleyCh1, topics::kKeithleyCh2);

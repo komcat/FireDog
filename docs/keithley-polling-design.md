@@ -1,12 +1,24 @@
-# Keithley 6482 polling subsystem
+# SMU polling subsystem (Keithley 6482 / 2602B)
 
-Dual-channel picoammeter + voltage source. This is the **feedback signal source** for
-active alignment: the XCAN / raster scripts read `keithley/ch1` off the DataBus, so the
-poll loop's sample cadence directly sets the scan cycle time.
+Two channels of current on the DataBus. This is the **feedback signal source** for active
+alignment: the XCAN / raster scripts read `keithley/ch1`, so the poll loop's sample
+cadence directly sets the scan cycle time.
 
-Files: `src/hardware/instruments/Keithley6482.{h,cpp}` (layer 1),
-`src/workflow/Workflow.cpp` (layer 2 bring-up + command surface),
-`src/App.cpp` Keithley page (layer 3).
+Two instruments answer that, chosen by `type` in `config/hardware.json`:
+
+| `type` | Instrument | Transport | Command set |
+|---|---|---|---|
+| `keithley_6482` | dual picoammeter + V source | GPIB / USB | SCPI |
+| `keithley_2602b` | dual-channel SourceMeter SMU | LAN | TSP (Lua on the instrument) |
+
+Both implement **`ISmu`** (`src/hardware/instruments/ISmu.h`), so everything above layer 1
+— Workflow's command surface, the page, the chart, the recipe commands, the topics — is
+written once and does not know which one is attached. §1–§5 describe the 6482 and the
+shared machinery; **§6 is what is different about the 2602B.**
+
+Files: `src/hardware/instruments/ISmu.h`, `Keithley6482.{h,cpp}`, `Keithley2602B.{h,cpp}`
+(layer 1), `src/workflow/Workflow.cpp` (layer 2 bring-up + command surface),
+`src/ui/pages/PageKeithley.cpp` (layer 3).
 
 ---
 
@@ -20,7 +32,8 @@ Workflow::StartKeithley  ──► keiCfg_ (kept for reconnects)
         │                     hw_.SetKeithleyName()
         ▼
 Workflow::LaunchKeithleyConnect
-        │  builds Keithley6482 -> HardwareManager::SetKeithley (sole owner)
+        │  type contains "2602" ? Keithley2602B : Keithley6482
+        │  -> HardwareManager::SetKeithley(unique_ptr<ISmu>) (sole owner)
         │  std::async: Connect() -> SetVoltageBias(bias) -> StartPolling(interval, t1, t2)
         │              ConnState: Connecting -> Connected | Failed
         ▼
@@ -40,7 +53,7 @@ button goes through `Workflow::ConnectKeithley / SetKeithleyNplc / SetKeithleyBi
 SetKeithleyRangeAuto / SetKeithleyRangeFixed / SetKeithleyPollInterval`, each of which
 resolves through `ConnectedKeithley()` (null unless `ConnState::Connected`).
 
-### Class surface (`Keithley6482.h`)
+### Class surface (`ISmu.h` — both drivers)
 
 | Group | Method | Notes |
 |---|---|---|
@@ -59,7 +72,8 @@ chart → script pipeline is exercisable with no instrument attached.
 
 | Key | Default | Effect |
 |---|---|---|
-| `visa_resource` | `GPIB0::1::INSTR` | `viOpen` target |
+| `type` | `keithley_6482` | **selects the driver** — anything containing `2602` picks the 2602B |
+| `visa_resource` | `GPIB0::1::INSTR` | `viOpen` target (`TCPIP0::<ip>::INSTR` for the 2602B) |
 | `enabled_channels` | `[1,2]` | which channels get a DataBus stream |
 | `measurement_nplc` | 5.0 (repo file: **0.1**) | integration time → **the sample rate** |
 | `auto_range` / `fixed_range` | true / 0.0 | `:RANG:AUTO ON` or `:RANG <A>` |
@@ -68,7 +82,7 @@ chart → script pipeline is exercisable with no instrument attached.
 
 ---
 
-## 2. SCPI command reference
+## 2. SCPI command reference (6482)
 
 ### 2.1 Connect / init sequence (`Impl::Connect`, under `visaMutex`)
 
@@ -170,3 +184,99 @@ see `docs/xcan-scan-design.md` §4.
    `ok && outputOn.load()`; do not report success from the write alone.
 4. A failed bias at bring-up **warns but does not abort** — polling still starts, because
    an unbiased measurement is still useful for diagnosis.
+
+---
+
+## 6. The 2602B — same contract, different everything else
+
+`Keithley2602B.{h,cpp}`. The class surface, the two-mutex threading model (§3), the
+`poll_interval_ms` semantics and the "NPLC governs the rate" rule (§4) are all identical —
+that is the point of `ISmu`. What differs is the wire and one piece of physics.
+
+### 6.1 TSP is not SCPI
+
+Every line sent is **Lua executed on the instrument**. Assignments are silent
+(`smua.measure.nplc = 0.1`); bytes come back only when the chunk calls `print()`. So there
+is no `:READ?` and no `?`-suffix query form — a "query" here is `print(<expr>)`.
+
+Two lines go out **before the first query**, and the order is load-bearing:
+
+```
+localnode.prompts = 0      -- else "TSP>" tokens interleave and every read is one reply late
+localnode.showerrors = 0   -- else error text lands between a print() and its value
+```
+
+### 6.2 Connect / init sequence
+
+| # | Call | Purpose |
+|---|---|---|
+| 1 | `viOpen(resource, …, 5000)` , `TMO 5000` | open session |
+| 2 | `VI_ATTR_TERMCHAR_EN = TRUE` , `TERMCHAR = '\n'` | **required** for a `::SOCKET` session — a raw socket has no END bit to end a read. Harmless on VXI-11 |
+| 3 | `viClear` | drop what a previous session left buffered |
+| 4 | `localnode.prompts = 0` , `localnode.showerrors = 0` | see §6.1 |
+| 5 | `*IDN?` | identity; **failure aborts the connect** |
+| 6 | `errorqueue.clear()` , `format.data = format.ASCII` , `format.asciiprecision = 8` | |
+| 7 | `smuX.reset()` | channel defaults: DC-volts source, 0 V, 100 mA compliance, output OFF |
+| 8 | `smuX.source.func = smuX.OUTPUT_DCVOLTS` , `smuX.source.levelv = 0` | |
+| 9 | `smuX.measure.nplc = <n>` | integration time — same meaning as the 6482 |
+| 10 | `smuX.measure.autozero = smuX.AUTOZERO_OFF` , `smuX.measure.filter.enable = smuX.FILTER_OFF` | speed, same two knobs as §2.1 steps 9–10 |
+| 11 | `smuX.measure.autorangei = smuX.AUTORANGE_ON` *or* `smuX.measure.rangei = <A>` | ranging |
+| 12 | `display.smuX.measure.func = display.MEASURE_DCAMPS` | front panel shows what the driver is reading |
+
+`smuX` walks only the **enabled** channels (`smua` ← ch1, `smub` ← ch2), so a one-channel
+config never touches the other SMU.
+
+### 6.3 Steady state
+
+One `print()` returns both channels in one round trip, matching the 6482's `:FORM:ELEM`
+trick:
+
+```lua
+print(string.format("%.6e,%.6e", smua.measure.i(), smub.measure.i()))
+```
+
+Built once in `StartPolling`. A **disabled** channel is padded with a literal `0` rather
+than dropped, so the reply always has two comma-separated fields and `ParseDual` (§2.2) is
+byte-for-byte the same parser.
+
+### 6.4 The one real behavioural difference: output ON to measure
+
+A 6482 is an ammeter — it measures with its voltage source off. **An SMU measures nothing
+with its output off**: it reads ~0 A, which on the chart is indistinguishable from a dark
+photodiode. So `SetVoltageBias` switches **every enabled channel ON** — ch1 at the bias
+voltage, ch2 at 0 V — and `OutputOff` drops them all. `OutputOn()` is true only when every
+enabled channel reads back on.
+
+This is why the bias at bring-up matters more here than on the 6482: without it there is
+no signal at all, not merely an unbiased one.
+
+### 6.5 NPLC and range windows differ
+
+* **NPLC is 0.001 … 25** on the 2600B (the 6482 allows more). Out-of-window values are
+  *silently ignored* by the instrument — it queues an error and keeps the old value — so
+  `SetNplc` **clamps** and stores the clamped value in `cfg`, and the page shows what the
+  instrument is actually doing rather than what was typed.
+* **The UI's fixed-range table is the 6482's decades** (2 nA … 20 mA); the 2602B has
+  different ranges and its floor is 100 nA. It does not reject an in-between request — it
+  selects the smallest range that *contains* it — so `SetRangeFixed` reads
+  `smuX.measure.rangei` back and stores the range the instrument actually chose.
+
+### 6.6 Errors and disconnect
+
+`DrainErrorsInternal` queries `print(errorqueue.count)` and then `print(errorqueue.next())`
+up to 10 times, logging each `FD_WARN("keithley", …)` and keeping the last in `lastError` —
+the TSP equivalent of the 6482's `:SYST:ERR?` drain, and it runs after every runtime setter,
+not only after an output change.
+
+Disconnect: `StopPolling()` → `smuX.source.output = smuX.OUTPUT_OFF` for every enabled
+channel → `viClose`. Outputs are **always** dropped, same as the 6482.
+
+### 6.7 VISA resource forms
+
+```
+TCPIP0::192.168.0.111::INSTR          VXI-11 — try this first
+TCPIP0::192.168.0.111::5025::SOCKET   raw SCPI socket — needs the termchar (§6.2 step 2)
+```
+
+Verify with `*IDN?` in NI MAX before launching the client; a failed `viOpen` or `*IDN?`
+shows verbatim in the page's error band via `LastError()`.
