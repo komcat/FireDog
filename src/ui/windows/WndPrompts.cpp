@@ -16,6 +16,7 @@
 #include "core/Log.h"
 #include "vision/VisionModel.h"   // FindVisionModel — the fallback's taught patch
 
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 
@@ -63,13 +64,26 @@ void App::DrawRecipePromptWindow()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 14.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f, 8.0f));
 
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    const ImGuiViewport* pvp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(pvp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    // WIDE on purpose. This is the window that stops the line: the machine is
+    // standing still until somebody reads it, often from a step back at the
+    // bench, so it takes a share of the viewport instead of shrink-wrapping
+    // the sentence. A size CONSTRAINT rather than SetNextWindowSize, because
+    // AlwaysAutoResize must keep owning the height — constraints are applied
+    // after the auto-fit, so the window widens to the floor and still grows
+    // downward exactly as far as its content needs. It scales off the viewport
+    // so the same prompt reads the same on a laptop panel and a bench monitor.
+    const float promptW = fminf(fmaxf(pvp->Size.x * 0.55f, 640.0f), 1400.0f);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(promptW, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
     ImGui::Begin("Recipe Prompt", nullptr,
                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
                  ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings);
     ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());   // always on top
-    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 560.0f);
+    // Wrap at the window's own edge (0.0f), not at a fixed 560 px: the width is
+    // the viewport's to decide now, and a hard-coded wrap would keep breaking
+    // the message at the old width inside a wider box.
+    ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(pending.c_str());
     ImGui::PopTextWrapPos();
     const auto answer = [&](bool ok) {
@@ -80,13 +94,20 @@ void App::DrawRecipePromptWindow()
     if (wantsInput) {
         // Barcode scanners type + Enter, so Enter submits like OK.
         if (newPrompt || ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-        ImGui::SetNextItemWidth(400.0f);
+        ImGui::SetNextItemWidth(-FLT_MIN);   // full width, like everything else here
         submit = ImGui::InputText("##promptin", promptInputBuf_,
                                   sizeof(promptInputBuf_),
                                   ImGuiInputTextFlags_EnterReturnsTrue);
     }
     ImGui::Separator();
-    const ImVec2 btn(promptFont * 5.0f, 0.0f);   // buttons scale with the font
+    // The two answers split the row. They scale with the font as before, but a
+    // wide window with two small buttons parked in its corner reads as an empty
+    // box — and OK/Cancel are pressed with a glove on, in a hurry, by somebody
+    // who has just walked back to the bench.
+    const float btnAvail = ImGui::GetContentRegionAvail().x;
+    const float btnW = fmaxf(promptFont * 5.0f,
+                             (btnAvail - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
+    const ImVec2 btn(btnW, 0.0f);
     if (ImGui::Button("OK", btn) || submit) answer(true);
     ImGui::SameLine();
     if (ImGui::Button("Cancel", btn)) answer(false);
