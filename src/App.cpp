@@ -141,6 +141,7 @@ int App::Run()
         DrawMainWindow();
         if (showAux_) DrawAuxWindow();
         if (showJog_) DrawJogWindow();
+        if (orgOpen_) DrawProgramOrganizer();
         host_.EndFrame();
     }
 

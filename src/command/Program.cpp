@@ -2,16 +2,236 @@
 #include "command/Program.h"
 
 #include "core/Log.h"
-#include "core/Product.h"   // GenerateUid — backfill for programs without one
+#include "core/Product.h"   // GenerateUid — node/program identities
 
 #include <exception>
 #include <fstream>
+#include <utility>
 
 namespace firedog {
 
 namespace {
 constexpr const char* kLocalPath = "config/programs.local.json";
 constexpr const char* kBasePath  = "config/programs.json";
+// A folder's loop count. The ceiling is not a policy about production runs —
+// it is what stops a mistyped "1000000" from expanding into a queue that eats
+// the process before the first recipe starts.
+constexpr int kMaxLoop = 100000;
+} // namespace
+
+// ---- Node factories --------------------------------------------------------
+
+ProgramNode MakeRecipeNode(const std::string& recipeUid)
+{
+    ProgramNode n;
+    n.kind      = ProgramNode::Kind::Recipe;
+    n.uid       = GenerateUid();
+    n.recipeUid = recipeUid;
+    return n;
+}
+
+ProgramNode MakeFolderNode(const std::string& name)
+{
+    ProgramNode n;
+    n.kind = ProgramNode::Kind::Folder;
+    n.uid  = GenerateUid();
+    n.name = name;
+    n.loop = 1;
+    return n;
+}
+
+// ---- Tree edits ------------------------------------------------------------
+
+ProgramNode* FindNode(std::vector<ProgramNode>& items, const std::string& uid,
+                      std::vector<ProgramNode>** parentOut, int* indexOut)
+{
+    if (uid.empty()) return nullptr;
+    for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+        if (items[static_cast<std::size_t>(i)].uid == uid) {
+            if (parentOut) *parentOut = &items;
+            if (indexOut)  *indexOut  = i;
+            return &items[static_cast<std::size_t>(i)];
+        }
+        ProgramNode& n = items[static_cast<std::size_t>(i)];
+        if (n.IsFolder()) {
+            if (ProgramNode* hit = FindNode(n.children, uid, parentOut, indexOut))
+                return hit;
+        }
+    }
+    return nullptr;
+}
+
+const ProgramNode* FindNode(const std::vector<ProgramNode>& items, const std::string& uid)
+{
+    return FindNode(const_cast<std::vector<ProgramNode>&>(items), uid);
+}
+
+bool NodeContains(const ProgramNode& folder, const std::string& uid)
+{
+    if (folder.uid == uid) return true;
+    for (const ProgramNode& c : folder.children) {
+        if (NodeContains(c, uid)) return true;
+    }
+    return false;
+}
+
+bool ExtractNode(std::vector<ProgramNode>& items, const std::string& uid, ProgramNode* out)
+{
+    std::vector<ProgramNode>* parent = nullptr;
+    int idx = -1;
+    if (!FindNode(items, uid, &parent, &idx)) return false;
+    if (out) *out = std::move((*parent)[static_cast<std::size_t>(idx)]);
+    parent->erase(parent->begin() + idx);
+    return true;
+}
+
+bool InsertAfter(std::vector<ProgramNode>& items, const std::string& targetUid,
+                 ProgramNode node)
+{
+    if (targetUid.empty()) {          // no anchor: the slot's top level
+        items.push_back(std::move(node));
+        return true;
+    }
+    std::vector<ProgramNode>* parent = nullptr;
+    int idx = -1;
+    if (!FindNode(items, targetUid, &parent, &idx)) return false;
+    parent->insert(parent->begin() + idx + 1, std::move(node));
+    return true;
+}
+
+bool InsertInto(std::vector<ProgramNode>& items, const std::string& folderUid,
+                ProgramNode node)
+{
+    ProgramNode* f = FindNode(items, folderUid);
+    if (!f || !f->IsFolder()) return false;
+    f->children.push_back(std::move(node));
+    return true;
+}
+
+bool MoveNodeUp(std::vector<ProgramNode>& items, const std::string& uid)
+{
+    std::vector<ProgramNode>* parent = nullptr;
+    int idx = -1;
+    if (!FindNode(items, uid, &parent, &idx) || idx <= 0) return false;
+    std::swap((*parent)[static_cast<std::size_t>(idx - 1)],
+              (*parent)[static_cast<std::size_t>(idx)]);
+    return true;
+}
+
+bool MoveNodeDown(std::vector<ProgramNode>& items, const std::string& uid)
+{
+    std::vector<ProgramNode>* parent = nullptr;
+    int idx = -1;
+    if (!FindNode(items, uid, &parent, &idx)) return false;
+    if (idx + 1 >= static_cast<int>(parent->size())) return false;
+    std::swap((*parent)[static_cast<std::size_t>(idx)],
+              (*parent)[static_cast<std::size_t>(idx + 1)]);
+    return true;
+}
+
+bool IndentNode(std::vector<ProgramNode>& items, const std::string& uid)
+{
+    std::vector<ProgramNode>* parent = nullptr;
+    int idx = -1;
+    if (!FindNode(items, uid, &parent, &idx) || idx <= 0) return false;
+    // Only into a folder, and only the one directly above: "indent" is a
+    // one-step gesture, not a search for somewhere plausible to land.
+    if (!(*parent)[static_cast<std::size_t>(idx - 1)].IsFolder()) return false;
+    ProgramNode moved = std::move((*parent)[static_cast<std::size_t>(idx)]);
+    parent->erase(parent->begin() + idx);
+    (*parent)[static_cast<std::size_t>(idx - 1)].children.push_back(std::move(moved));
+    return true;
+}
+
+namespace {
+// The list holding `uid`, plus the uid of the folder that owns that list
+// (empty at the slot's top level). Written as a scan rather than a back-link
+// because ProgramNode has no parent pointer — a tree that owns its children by
+// value cannot keep one valid across a std::vector reallocation.
+bool ParentFolderOf(std::vector<ProgramNode>& items, const std::string& uid,
+                    std::string* folderUidOut)
+{
+    for (ProgramNode& n : items) {
+        if (n.uid == uid) { if (folderUidOut) folderUidOut->clear(); return true; }
+        if (!n.IsFolder()) continue;
+        for (const ProgramNode& c : n.children) {
+            if (c.uid == uid) { if (folderUidOut) *folderUidOut = n.uid; return true; }
+        }
+        if (ParentFolderOf(n.children, uid, folderUidOut)) return true;
+    }
+    return false;
+}
+} // namespace
+
+bool OutdentNode(std::vector<ProgramNode>& items, const std::string& uid)
+{
+    std::string folderUid;
+    if (!ParentFolderOf(items, uid, &folderUid)) return false;
+    if (folderUid.empty()) return false;   // already at the top level
+    ProgramNode moved;
+    if (!ExtractNode(items, uid, &moved)) return false;
+    // Lands immediately AFTER the folder it came out of, which is where the
+    // eye expects it: outdent moves a step out, not a step to the end.
+    return InsertAfter(items, folderUid, std::move(moved));
+}
+
+int CountRecipeNodes(const std::vector<ProgramNode>& items)
+{
+    int n = 0;
+    for (const ProgramNode& it : items) {
+        if (it.IsFolder()) n += CountRecipeNodes(it.children);
+        else               ++n;
+    }
+    return n;
+}
+
+// ---- Persistence -----------------------------------------------------------
+
+namespace {
+
+nlohmann::json NodeToJson(const ProgramNode& n)
+{
+    nlohmann::json j;
+    j["uid"] = n.uid;
+    if (n.IsFolder()) {
+        j["kind"] = "folder";
+        j["name"] = n.name;
+        j["loop"] = n.loop;
+        if (!n.alignProcUid.empty()) j["align"] = n.alignProcUid;
+        nlohmann::json kids = nlohmann::json::array();
+        for (const ProgramNode& c : n.children) kids.push_back(NodeToJson(c));
+        j["items"] = std::move(kids);
+    } else {
+        j["kind"]   = "recipe";
+        j["recipe"] = n.recipeUid;
+    }
+    return j;
+}
+
+ProgramNode NodeFromJson(const nlohmann::json& j)
+{
+    ProgramNode n;
+    n.uid = j.value("uid", std::string());
+    if (n.uid.empty()) n.uid = GenerateUid();   // backfill: pre-uid files
+    if (j.value("kind", std::string("recipe")) == "folder") {
+        n.kind         = ProgramNode::Kind::Folder;
+        n.name         = j.value("name", std::string("folder"));
+        n.loop         = j.value("loop", 1);
+        n.alignProcUid = j.value("align", std::string());
+        if (n.loop < 1)        n.loop = 1;
+        if (n.loop > kMaxLoop) n.loop = kMaxLoop;
+        if (j.contains("items") && j["items"].is_array()) {
+            for (const nlohmann::json& cj : j["items"]) {
+                if (cj.is_object()) n.children.push_back(NodeFromJson(cj));
+            }
+        }
+    } else {
+        n.kind      = ProgramNode::Kind::Recipe;
+        n.recipeUid = j.value("recipe", std::string());
+    }
+    return n;
+}
+
 } // namespace
 
 nlohmann::json ProgramToJson(const Program& p)
@@ -23,8 +243,10 @@ nlohmann::json ProgramToJson(const Program& p)
     nlohmann::json slots = nlohmann::json::array();
     for (const ProgramSlot& s : p.slots) {
         nlohmann::json sj;
-        sj["name"]    = s.name;
-        sj["recipes"] = s.recipes;
+        sj["name"] = s.name;
+        nlohmann::json items = nlohmann::json::array();
+        for (const ProgramNode& n : s.items) items.push_back(NodeToJson(n));
+        sj["items"] = std::move(items);
         slots.push_back(std::move(sj));
     }
     j["slots"] = std::move(slots);
@@ -43,9 +265,16 @@ Program ProgramFromJson(const nlohmann::json& j)
             if (!sj.is_object()) continue;
             ProgramSlot s;
             s.name = sj.value("name", std::string("slot"));
-            if (sj.contains("recipes") && sj["recipes"].is_array()) {
+            if (sj.contains("items") && sj["items"].is_array()) {
+                for (const nlohmann::json& nj : sj["items"]) {
+                    if (nj.is_object()) s.items.push_back(NodeFromJson(nj));
+                }
+            } else if (sj.contains("recipes") && sj["recipes"].is_array()) {
+                // Pre-folder shape: a flat list of recipe uids. Read forever —
+                // saved programs are production documents, and the migration
+                // costs one line here against a file nobody can re-author.
                 for (const nlohmann::json& r : sj["recipes"]) {
-                    if (r.is_string()) s.recipes.push_back(r.get<std::string>());
+                    if (r.is_string()) s.items.push_back(MakeRecipeNode(r.get<std::string>()));
                 }
             }
             p.slots.push_back(std::move(s));

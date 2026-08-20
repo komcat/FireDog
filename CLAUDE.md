@@ -49,7 +49,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 `architecture.md` (layering + ownership) · `build-and-sdks.md` (**targets + SDK gating**) · `hardware-layer.md` (per-device drivers) · `vision-layer.md` (focus metric, auto-focus, HALCON) · `state-and-config.md` (config files, persistence, DataBus) · `command-layer.md` (registry, recipes, Lua) · `run-and-dut.md` (programs, Run page, traceability) · `ui-layer.md` · `ui-file-layout.md` (**where UI code goes**) · `rig-console.md` (the FireDogRig console)
 
 **Design rationale — why it is that way:**
-`recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `climb-raster-design.md` (the gap-closing Z + XY raster) · `alignment-procedure-design.md` (the taught local frame O1) · `vision-detection-design.md` (detection models, the teach wizard, auto stations) · `needle-dispense-design.md` (the camera→needle lever arm and the dispense procedure) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` (the SMU layer: 6482 SCPI + 2602B TSP behind `ISmu`) · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
+`recipe-core-design.md` · `recipe-editor-design.md` · `lua-tier-design.md` · `run-page-design.md` · `program-organizer-design.md` (**slots are node TREES: folders + loops; the deck is read-only**) · `dut-design.md` · `xcan-scan-design.md` (the align algorithm) · `climb-raster-design.md` (the gap-closing Z + XY raster) · `alignment-procedure-design.md` (the taught local frame O1) · `vision-detection-design.md` (detection models, the teach wizard, auto stations) · `needle-dispense-design.md` (the camera→needle lever arm and the dispense procedure) · `pi-hexapod-motion-design.md` · `keithley-polling-design.md` (the SMU layer: 6482 SCPI + 2602B TSP behind `ISmu`) · `app-refactor-plan.md` (the 2026-07 App.cpp decomposition, done)
 
 ## Rules
 
@@ -75,6 +75,9 @@ Breaking any of these is a defect, not a style choice.
 - Never hard-code DataBus topic strings; they live in `core/Topics.h`.
 
 ### Orchestration
+- **A slot is a TREE of nodes (recipe | folder), and a FOLDER is the unit of repetition.** Loops are expanded into the flat queue by `BuildRunQueue` at Start — `ProgramRunner` never learns what a folder is, so Stop, progress and `$run` keep exactly one implementation. Hence the ceilings (`kMaxQueueItems`, `kMaxDepth`): a mistyped loop count must be refused before the machine moves. There is no "repeat rows 1-3" range loop — a range is a second way to say what a folder says, and it breaks on the first reorder.
+- **A node is addressed by its UID, never by an index.** An index into a tree means nothing once a folder above it opens, closes or moves; `deckNode_`, the run marks and the organizer's selection are all uids.
+- **Program editing lives ONLY in the Program Organizer window** (`ui/windows/WndProgramOrganizer.cpp`); the Run deck is read-only. Its drops are DEFERRED to `ApplyOrgDrop` — inserting inside `DrawOrgTree` reallocates the vector the recursion is walking. Its editing surfaces gate on `orch_.Busy()` and it raises no modal: it can be open on a second monitor while a worker is blocked on the always-on-top prompt window.
 - **Every Run/Go surface gates on `orch_.Busy()`** — never on a subset of the engines. The program runner goes momentarily idle between queue items, so checking the engines alone lets a second run slip in.
 - Recipes never connect hardware; validation at Start requires devices already `Connected`.
 - Ctx does **not** flow between recipes — cross-recipe data goes through the DUT or the DataBus.

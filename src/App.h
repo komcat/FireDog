@@ -333,9 +333,19 @@ private:
     void DrawRunPanel();              // deck | execution + Scan band + log | DUT
     void StartDeckRun(RunScope scope);   // granularity follows the deck selection
     void SelectDeckProgram(int idx);     // load a program into the deck (slot 0)
-    void SelectDeckSlot(int slot);       // show one slot; drops the recipe selection
+    void SelectDeckSlot(int slot);       // show one slot; drops the node selection
     void RememberDeckSelection();        // persist program uid + slot to UiSettings
     void RestoreDeckSelection();         // re-point the deck after a document load
+    void DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool running,
+                       const std::string& runningNodeUid);   // deck tree, read-only
+    // Program Organizer (its own window, opened by the Run strip's Edit box):
+    // recipe library | the program tree. The ONLY program-editing surface.
+    void DrawProgramOrganizer();
+    void DrawOrgTree(std::vector<ProgramNode>& items);
+    void DrawOrgNodeDropTarget(const std::string& anchorUid, bool intoFolder);
+    void ApplyOrgDrop(ProgramSlot& slot);   // the deferred drop, after the tree draw
+    void OrgAddRecipe(const std::string& recipeUid);   // library -> tree, at the selection
+    void OrgAddFolder();
     void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|Climb|XCAN tabs
     void DrawRunXcanBlock();          // XCAN tab: hex-left/right launch presets
     void DrawRunQuickAlign();         // operator band: 5 one-press target+ladder launches
@@ -893,10 +903,30 @@ private:
     // whole-program run: Execute runs the selected recipe, or that one slot.
     int  progSel_       = -1;
     int  deckSlot_      = -1;
-    int  deckRecipe_    = -1;
-    bool runEdit_       = false;
-    bool runOpenDelete_ = false;
+    // The deck selection is a NODE UID, not an index: a slot is a tree now, and
+    // an index into a tree means nothing the moment a folder above it opens,
+    // closes or is reordered. Empty = slot scope.
+    std::string deckNode_;
+    bool runEdit_       = false;   // mirrors orgOpen_: the strip's Edit checkbox
     bool runOpenLoad_   = false;   // request to open the Load Program modal
+    // ---- Program Organizer window ----
+    // Its own window (multi-viewport: drag it to a second monitor) rather than a
+    // page, so the deck and the DUT panel stay readable behind it while a
+    // program is reshaped. Its slot selection is its OWN: reorganising slot 3
+    // must not drag the operator's deck off the station they are running.
+    bool        orgOpen_  = false;
+    int         orgSlot_  = -1;      // slot being organized (-1 = follow the deck)
+    std::string orgSel_;             // selected node uid in the tree
+    char        orgFilter_[64] = ""; // recipe-library filter box
+    // A drag-drop landing is RECORDED during the tree draw and applied after
+    // it: an insert reallocates the very vector the recursion is walking, so
+    // acting on the spot leaves the loop holding a dangling ProgramNode&.
+    std::string orgDropRecipe_;      // library payload (recipe uid)
+    std::string orgDropNode_;        // tree payload (node uid being moved)
+    std::string orgDropAnchor_;      // where it lands ("" = slot end, top level)
+    bool        orgDropInto_    = false;   // anchor is a folder: go INSIDE it
+    bool        orgDropPending_ = false;
+    bool        orgDelConfirm_  = false;   // open the delete-program confirm
     std::string runStartErr_;
     // The deck selection remembered across restarts (UiSettings run_prog_uid /
     // run_slot). By UID because a rename must not lose it; re-applied by

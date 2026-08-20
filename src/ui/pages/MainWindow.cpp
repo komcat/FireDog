@@ -207,6 +207,10 @@ void App::DrawMainWindow()
             if (ImGui::BeginMenu("View")) {
                 ImGui::MenuItem("Aux Window", nullptr, &showAux_);
                 ImGui::MenuItem("Jog",        nullptr, &showJog_);
+                // Same bit as the Run strip's Edit checkbox — one window, two
+                // ways in, never two answers about whether it is open.
+                if (ImGui::MenuItem("Program Organizer", nullptr, &orgOpen_))
+                    runEdit_ = orgOpen_;
                 if (ImGui::BeginMenu("Theme")) {   // same picker as Display header
                     for (int i = 0; i < Theme::Count(); ++i) {
                         if (ImGui::MenuItem(Theme::Name(i), nullptr, themeIndex_ == i)) {

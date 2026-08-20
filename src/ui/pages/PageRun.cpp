@@ -270,8 +270,8 @@ void App::RememberDeckSelection()
 }
 
 // Show one slot of the current program. -1 (or an empty program) is the only
-// no-slot state; a slot change always drops the recipe selection, because the
-// index means nothing under a different slot.
+// no-slot state; a slot change always drops the node selection, because a node
+// uid from one slot resolves to nothing in another.
 void App::SelectDeckSlot(int slot)
 {
     const bool have = progSel_ >= 0 &&
@@ -281,7 +281,7 @@ void App::SelectDeckSlot(int slot)
     else if (slot < 0)     deckSlot_ = 0;
     else if (slot >= n)    deckSlot_ = n - 1;
     else                   deckSlot_ = slot;
-    deckRecipe_ = -1;
+    deckNode_.clear();
     RememberDeckSelection();
 }
 
@@ -291,6 +291,10 @@ void App::SelectDeckSlot(int slot)
 void App::SelectDeckProgram(int idx)
 {
     progSel_ = (idx >= 0 && idx < static_cast<int>(session_.Programs().size())) ? idx : -1;
+    // The organizer's slot belongs to whichever program was open in it; carried
+    // into a different program it would silently address a different station.
+    orgSlot_ = -1;
+    orgSel_.clear();
     SelectDeckSlot(0);
 }
 
@@ -310,7 +314,9 @@ void App::RestoreDeckSelection()
         const int n = static_cast<int>(session_.Programs()[progSel_].slots.size());
         if (n > 0) deckSlot_ = (runLastSlot_ >= 0 && runLastSlot_ < n) ? runLastSlot_ : 0;
     }
-    deckRecipe_ = -1;
+    deckNode_.clear();
+    orgSlot_ = -1;      // the organizer re-seeds off the deck on its next frame
+    orgSel_.clear();
 }
 
 // The deck's Execute button. The UI contributes the SELECTION; resolving it into
@@ -325,7 +331,7 @@ void App::StartDeckRun(RunScope scope)
     }
     const Program& prog = session_.Programs()[progSel_];
 
-    RunQueue q = BuildRunQueue(prog, scope, deckSlot_, deckRecipe_,
+    RunQueue q = BuildRunQueue(prog, scope, deckSlot_, deckNode_,
                                session_.Recipes(), &runStartErr_);
     if (q.items.empty()) return;   // reason already in runStartErr_
 
@@ -340,6 +346,93 @@ void App::StartDeckRun(RunScope scope)
     if (!orch_.programs.Start(q.kind, q.label, prog.uid, std::move(q.items),
                               std::move(env), &runStartErr_))
         FD_WARN("program", "run rejected: %s", runStartErr_.c_str());
+}
+
+// The deck's node tree, drawn READ-ONLY (recursive: folders hold folders).
+// `runningNodeUid` is the node the runner is executing right now — matched by
+// UID rather than by name, because a loop runs the same recipe many times over
+// and a name match would light every copy of it at once.
+void App::DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool running,
+                        const std::string& runningNodeUid)
+{
+    const ProgramRunner::Status& rs = orch_.programs.GetStatus();
+    for (ProgramNode& n : items) {
+        ImGui::PushID(n.uid.c_str());
+        if (n.IsFolder()) {
+            // Folder rows stay ONE line tall while recipe rows are three: the
+            // tall touch target exists for the thing an operator picks between
+            // parts, and a folder is structure they read past.
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                                       ImGuiTreeNodeFlags_SpanAvailWidth |
+                                       ImGuiTreeNodeFlags_DefaultOpen;
+            if (deckNode_ == n.uid) flags |= ImGuiTreeNodeFlags_Selected;
+            const bool open = (n.loop > 1)
+                ? ImGui::TreeNodeEx("##fold", flags, "%s   x%d", n.name.c_str(), n.loop)
+                : ImGui::TreeNodeEx("##fold", flags, "%s", n.name.c_str());
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) deckNode_ = n.uid;
+            // The pass counter belongs to the INNERMOST folder around the
+            // running item — the one whose repetitions the operator is
+            // counting — so it is drawn only where that item is a direct child.
+            if (running && rs.index < rs.items.size() && rs.items[rs.index].passes > 1) {
+                bool direct = false;
+                for (const ProgramNode& c : n.children)
+                    if (c.uid == runningNodeUid) { direct = true; break; }
+                if (direct) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "pass %d/%d",
+                                       rs.items[rs.index].pass, rs.items[rs.index].passes);
+                }
+            }
+            if (open) {
+                DrawDeckNodes(n.children, rowH, running, runningNodeUid);
+                if (n.children.empty()) ImGui::TextDisabled("  (empty folder)");
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+            continue;
+        }
+
+        const Recipe* r = RecipeByUid(session_.Recipes(), n.recipeUid);
+        const bool missing = (r == nullptr);
+        const bool sel     = deckNode_ == n.uid;
+        const bool cur     = running && n.uid == runningNodeUid;
+        if (cur)          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+        else if (missing) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.3f, 1.0f));
+        const std::string label = missing ? (n.recipeUid + " (missing!)") : r->name;
+        // The row is kDeckRowScale text-lines tall and carries an EMPTY label:
+        // a Selectable draws its text at the top-left of its box, which in a
+        // tall row leaves the name floating above the band it names. The label
+        // is drawn separately, centred in the box, at the same x the Selectable
+        // would have used. An empty label plus the enclosing PushID(uid) also
+        // means renaming a recipe no longer changes the row's ID.
+        const bool picked = ImGui::Selectable("##rcp", sel, ImGuiSelectableFlags_AllowOverlap,
+                                              ImVec2(0.0f, rowH));
+        // Every IsItem* below must read the SELECTABLE, so capture them before
+        // anything else becomes the current item.
+        const bool rowRClick = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+        const bool rowHover  = ImGui::IsItemHovered();
+        const ImVec2 rowMin  = ImGui::GetItemRectMin();
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(rowMin.x, rowMin.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f),
+            ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+        if (picked) deckNode_ = n.uid;
+        // Right-click shortcut: open this recipe in the Recipe Editor.
+        if (!missing && rowRClick) {
+            deckNode_ = n.uid;
+            for (int k = 0; k < static_cast<int>(session_.Recipes().size()); ++k)
+                if (session_.Recipes()[k].uid == n.recipeUid) { recipeSel_ = k; break; }
+            edStepSel_.clear();
+            // Takeover -> takeover leaves prevPage_ alone, so the return page is
+            // named here; the switch itself still routes through SwitchPage like
+            // every other one.
+            prevPage_ = Page::Run;   // editor Close comes back here
+            SwitchPage(Page::RecipeEdit);
+        }
+        if (!missing && rowHover)
+            ImGui::SetTooltip("Right-click: open in Recipe Editor");
+        if (cur || missing) ImGui::PopStyleColor();
+        ImGui::PopID();
+    }
 }
 
 void App::DrawRunPanel()
@@ -395,7 +488,7 @@ void App::DrawRunPanel()
     // know. Disabled-green (nothing selected, or another engine is busy) dims
     // to a grey-green through BeginDisabled, so "not ready" never looks like
     // "go". The pair is deliberately the only saturated colour in the strip.
-    const bool onRecipe = deckSlot_ >= 0 && deckRecipe_ >= 0;
+    const bool onNode = deckSlot_ >= 0 && !deckNode_.empty();
     const ImVec4 goCol(0.16f, 0.52f, 0.24f, 1.0f), goHov(0.22f, 0.68f, 0.32f, 1.0f),
                  goAct(0.11f, 0.40f, 0.18f, 1.0f);
     const ImVec4 stCol(0.60f, 0.17f, 0.15f, 1.0f), stHov(0.78f, 0.24f, 0.21f, 1.0f),
@@ -409,16 +502,16 @@ void App::DrawRunPanel()
     } else {
         ImGui::BeginDisabled(!canRun);
         if (IconButton(UiIcon("run_execute"), "Execute", ImVec2(130.0f, stripBtnH)))
-            StartDeckRun(onRecipe ? RunScope::Recipe : RunScope::Slot);
+            StartDeckRun(onNode ? RunScope::Node : RunScope::Slot);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(onRecipe ? "Run the selected recipe"
-                                       : "Run every recipe in this slot");
+            ImGui::SetTooltip(onNode ? "Run the selected item (a folder runs its loops)"
+                                     : "Run every recipe in this slot");
         ImGui::EndDisabled();
     }
     ImGui::PopStyleColor(3);
     ImGui::SameLine();
     centerNext(ImGui::GetTextLineHeight());
-    ImGui::TextDisabled(onRecipe ? "recipe" : "slot");
+    ImGui::TextDisabled(onNode ? "item" : "slot");
     // The program is LOADED, not picked from a combo: which program is up is a
     // deliberate operator act, and the name is the answer to "what am I
     // running?" — the reason it sits in the run strip and not down in the
@@ -430,7 +523,16 @@ void App::DrawRunPanel()
     ImGui::SameLine();
     centerNext(ImGui::GetFrameHeight());
     ImGui::BeginDisabled(running);
-    ImGui::Checkbox("Edit", &runEdit_);
+    // Edit no longer grows buttons in the deck: it opens the Program Organizer
+    // window. The checkbox mirrors that window's own close box, so the two can
+    // never disagree about whether it is up.
+    if (ImGui::Checkbox("Edit", &runEdit_)) {
+        orgOpen_ = runEdit_;
+        // Opening it lands on the slot the deck is showing: the operator asked
+        // to edit THIS station, not whichever one was last reorganised.
+        if (orgOpen_) { orgSlot_ = deckSlot_; orgSel_.clear(); }
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open the Program Organizer");
     ImGui::EndDisabled();
     {
         const DutSession::Info di = DutSession::Instance().GetInfo();
@@ -504,197 +606,55 @@ void App::DrawRunPanel()
         ImGui::TextDisabled("slot");
         ImGui::EndDisabled();
     }
-    if (runEdit_) {
-        if (IconSmallButton(UiIcon("New"), "New")) {
-            Program p;
-            p.uid = GenerateUid();   // the traceability identity, minted once
-            session_.Programs().push_back(std::move(p));
-            SelectDeckProgram(static_cast<int>(session_.Programs().size()) - 1);
-        }
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!haveProg);
-        if (ImGui::SmallButton("Del")) runOpenDelete_ = true;
-        ImGui::SameLine();
-        if (ImGui::SmallButton("+ Slot")) {
-            session_.Programs()[progSel_].slots.push_back({});
-            // The new slot becomes active so the deck's filtered view shows it.
-            SelectDeckSlot(static_cast<int>(session_.Programs()[progSel_].slots.size()) - 1);
-        }
-        ImGui::EndDisabled();
-        if (haveProg) {
-            Program& prog = session_.Programs()[progSel_];
-            char nbuf[64];
-            std::snprintf(nbuf, sizeof(nbuf), "%s", prog.name.c_str());
-            ImGui::SetNextItemWidth(-40.0f);
-            if (ImGui::InputText("name", nbuf, sizeof(nbuf))) prog.name = nbuf;
-            ImGui::TextDisabled("uid: %s", prog.uid.c_str());
-        }
-    }
     ImGui::EndDisabled();
     ImGui::Separator();
 
-    // The deck's recipe rows are three text-lines tall. This is the list an
-    // operator picks from between parts, often with a glove on: the row is a
-    // touch target first and a line of text second. It scales off the text
-    // line rather than a fixed pixel count so the font-size picker keeps
-    // working — and yes, fewer rows fit at once; the deck scrolls, and the
-    // whole point of showing ONE slot is that the list is short.
+    // The deck is READ-ONLY. Every edit — add, delete, move, folder, loop
+    // count — lives in the Program Organizer window, because the two are
+    // different jobs: the deck is what an operator reads while running one
+    // station, and an editing control in it is a mis-click away from changing
+    // the program under a part. The Edit checkbox in the strip opens the
+    // organizer; it no longer grows buttons here.
+    //
+    // Rows are three text-lines tall. This is the list an operator picks from
+    // between parts, often with a glove on: the row is a touch target first and
+    // a line of text second. It scales off the text line rather than a fixed
+    // pixel count so the font-size picker keeps working — and yes, fewer rows
+    // fit at once; the deck scrolls, and the whole point of showing ONE slot is
+    // that the list is short.
     constexpr float kDeckRowScale = 3.0f;
     const float deckRowH = ImGui::GetTextLineHeightWithSpacing() * kDeckRowScale;
 
     if (!haveProg) {
         ImGui::TextWrapped(session_.Programs().empty()
-                               ? "No programs yet - Edit > New creates one."
+                               ? "No programs yet - Edit creates one."
                                : "Load a program above.");
-    } else {
+    } else if (deckSlot_ >= 0) {
         Program& prog = session_.Programs()[progSel_];
-        for (int si = 0; si < static_cast<int>(prog.slots.size()); ++si) {
-            // The deck shows the active slot and nothing else (Edit or not) —
-            // the combo above IS the view selector.
-            if (si != deckSlot_) continue;
-            ProgramSlot& slot = prog.slots[si];
-            ImGui::PushID(si);
-            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
-                                       ImGuiTreeNodeFlags_SpanAvailWidth |
-                                       ImGuiTreeNodeFlags_DefaultOpen;
-            if (deckSlot_ == si && deckRecipe_ < 0) flags |= ImGuiTreeNodeFlags_Selected;
-            const bool open = ImGui::TreeNodeEx("##slot", flags, "%d  %s", si + 1,
-                                                slot.name.c_str());
-            // Clicking the slot row is how you get BACK to slot scope after
-            // picking a recipe — the slot itself is already the active one.
-            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
-                deckRecipe_ = -1;
+        ProgramSlot& slot = prog.slots[static_cast<std::size_t>(deckSlot_)];
+        // Slot row: clicking it is how you get BACK to slot scope after picking
+        // a node. Only the ACTIVE slot is ever drawn — the combo above IS the
+        // view selector.
+        {
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth |
+                                       ImGuiTreeNodeFlags_DefaultOpen |
+                                       ImGuiTreeNodeFlags_OpenOnArrow;
+            if (deckNode_.empty()) flags |= ImGuiTreeNodeFlags_Selected;
+            const bool open = ImGui::TreeNodeEx("##slot", flags, "%d  %s",
+                                                deckSlot_ + 1, slot.name.c_str());
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) deckNode_.clear();
             if (open) {
-                if (runEdit_ && !running) {
-                    char sbuf[48];
-                    std::snprintf(sbuf, sizeof(sbuf), "%s", slot.name.c_str());
-                    ImGui::SetNextItemWidth(120.0f);
-                    if (ImGui::InputText("##sname", sbuf, sizeof(sbuf))) slot.name = sbuf;
-                    ImGui::SameLine();
-                    ImGui::BeginDisabled(si == 0);
-                    if (ImGui::SmallButton("^")) {
-                        std::swap(prog.slots[si - 1], prog.slots[si]);
-                        // The active slot follows the moved item — the deck
-                        // filters on it, so don't let the view jump. Only the
-                        // active slot is drawn, so si IS deckSlot_ here.
-                        SelectDeckSlot(si - 1);
-                    }
-                    ImGui::EndDisabled();
-                    ImGui::SameLine();
-                    ImGui::BeginDisabled(si + 1 >= static_cast<int>(prog.slots.size()));
-                    if (ImGui::SmallButton("v")) {
-                        std::swap(prog.slots[si], prog.slots[si + 1]);
-                        SelectDeckSlot(si + 1);
-                    }
-                    ImGui::EndDisabled();
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("x slot")) {
-                        prog.slots.erase(prog.slots.begin() + si);
-                        SelectDeckSlot(si);   // clamps onto the next one (or -1)
-                        ImGui::TreePop();
-                        ImGui::PopID();
-                        break;   // container changed; redraw next frame
-                    }
-                }
-                for (int ri = 0; ri < static_cast<int>(slot.recipes.size()); ++ri) {
-                    ImGui::PushID(ri);
-                    const Recipe* r = RecipeByUid(session_.Recipes(), slot.recipes[ri]);
-                    const bool missing = (r == nullptr);
-                    const bool sel = deckSlot_ == si && deckRecipe_ == ri;
-                    // Gold while this exact item runs.
-                    const bool cur = running && rs.index < rs.items.size() &&
-                                     rs.items[rs.index].slotName == slot.name &&
-                                     !missing && rs.items[rs.index].recipeName == r->name;
-                    if (cur)
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
-                    else if (missing)
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.3f, 1.0f));
-                    char row[96];
-                    std::snprintf(row, sizeof(row), "   %s", missing
-                                      ? (slot.recipes[ri] + " (missing!)").c_str()
-                                      : r->name.c_str());
-                    // AllowOverlap: the selectable's hit rect spans the full
-                    // row, UNDER the trailing ^/v/x buttons — without this
-                    // flag it claims hover first and the buttons never click.
-                    // Only the active slot is drawn, so picking a row narrows
-                    // Execute to that recipe — the slot never changes here.
-                    //
-                    // The row is kDeckRowScale text-lines tall and carries an
-                    // EMPTY label: a Selectable draws its text at the top-left
-                    // of its box, which in a tall row leaves the name floating
-                    // above the band it names. The label is drawn separately,
-                    // centred in the box, at the same x the Selectable would
-                    // have used. Empty label + the enclosing PushID(ri) also
-                    // means renaming a recipe no longer changes the row's ID.
-                    const bool picked = ImGui::Selectable("##rcp", sel,
-                                            ImGuiSelectableFlags_AllowOverlap,
-                                            ImVec2(0.0f, deckRowH));
-                    // Every IsItem* below must read the SELECTABLE, so capture
-                    // them before anything else becomes the current item.
-                    const bool rowRClick = ImGui::IsItemClicked(ImGuiMouseButton_Right);
-                    const bool rowHover  = ImGui::IsItemHovered();
-                    const ImVec2 rowMin  = ImGui::GetItemRectMin();
-                    ImGui::GetWindowDrawList()->AddText(
-                        ImVec2(rowMin.x,
-                               rowMin.y + (deckRowH - ImGui::GetTextLineHeight()) * 0.5f),
-                        ImGui::GetColorU32(ImGuiCol_Text), row);
-                    if (picked) deckRecipe_ = ri;
-                    // Right-click shortcut: open this recipe in the Recipe Editor.
-                    if (!missing && rowRClick) {
-                        deckRecipe_ = ri;
-                        for (int k = 0; k < static_cast<int>(session_.Recipes().size()); ++k)
-                            if (session_.Recipes()[k].uid == slot.recipes[ri]) { recipeSel_ = k; break; }
-                        edStepSel_.clear();
-                        // Takeover -> takeover leaves prevPage_ alone, so the
-                        // return page is named here; the switch itself still
-                        // routes through SwitchPage like every other one.
-                        prevPage_ = Page::Run;   // editor Close comes back here
-                        SwitchPage(Page::RecipeEdit);
-                    }
-                    if (!missing && rowHover)
-                        ImGui::SetTooltip("Right-click: open in Recipe Editor");
-                    if (cur || missing) ImGui::PopStyleColor();
-                    if (runEdit_ && !running) {
-                        ImGui::SameLine();
-                        // Centre the reorder buttons in the tall row too, or
-                        // they hang off its ceiling.
-                        ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
-                                             (deckRowH - ImGui::GetFrameHeight()) * 0.5f);
-                        ImGui::BeginDisabled(ri == 0);
-                        if (ImGui::SmallButton("^"))
-                            std::swap(slot.recipes[ri - 1], slot.recipes[ri]);
-                        ImGui::EndDisabled();
-                        ImGui::SameLine();
-                        ImGui::BeginDisabled(ri + 1 >= static_cast<int>(slot.recipes.size()));
-                        if (ImGui::SmallButton("v"))
-                            std::swap(slot.recipes[ri], slot.recipes[ri + 1]);
-                        ImGui::EndDisabled();
-                        ImGui::SameLine();
-                        if (ImGui::SmallButton("x")) {
-                            slot.recipes.erase(slot.recipes.begin() + ri);
-                            if (deckSlot_ == si) {
-                                if (deckRecipe_ == ri) deckRecipe_ = -1;
-                                else if (deckRecipe_ > ri) --deckRecipe_;
-                            }
-                            ImGui::PopID();
-                            break;
-                        }
-                    }
-                    ImGui::PopID();
-                }
-                if (runEdit_ && !running) {
-                    ImGui::SetNextItemWidth(140.0f);
-                    if (ImGui::BeginCombo("##addrcp", "+ recipe")) {
-                        for (const Recipe& r : session_.Recipes()) {
-                            if (ImGui::Selectable(r.name.c_str()))
-                                slot.recipes.push_back(r.uid);
-                        }
-                        ImGui::EndCombo();
-                    }
-                }
+                // The node the runner is on right now — matched by UID, not by
+                // name: a loop runs the same recipe many times and a name match
+                // would light every copy of it at once.
+                std::string runningUid;
+                if (running && rs.index < rs.items.size())
+                    runningUid = rs.items[rs.index].nodeUid;
+                DrawDeckNodes(slot.items, deckRowH, running, runningUid);
+                if (slot.items.empty())
+                    ImGui::TextDisabled("  (empty - tick Edit to fill it)");
                 ImGui::TreePop();
             }
-            ImGui::PopID();
         }
     }
     ImGui::EndChild();
@@ -758,21 +718,52 @@ void App::DrawRunPanel()
                                "%s", rs.result.c_str());
         }
         ImGui::Separator();
-        for (const ProgramRunner::ItemStatus& it : rs.items) {
-            const char* mark = "  ";
-            ImVec4 col = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
-            switch (it.mark) {
-            case ProgramRunner::Mark::Running: mark = "> "; col = ImVec4(1.0f, 0.85f, 0.3f, 1.0f); break;
-            case ProgramRunner::Mark::Done:    mark = "OK"; col = ImVec4(0.4f, 1.0f, 0.5f, 1.0f); break;
-            case ProgramRunner::Mark::Failed:  mark = "X "; col = ImVec4(1.0f, 0.4f, 0.3f, 1.0f); break;
-            case ProgramRunner::Mark::Stopped: mark = "! "; col = ImVec4(1.0f, 0.7f, 0.3f, 1.0f); break;
-            case ProgramRunner::Mark::Pending: break;
+        // A loop expands into the queue, so this list is as long as the RUN is
+        // — thousands of rows for a x100 folder. Clip it (only the visible rows
+        // cost anything) and keep the running row in view, or the one line the
+        // operator wants scrolls away the moment the queue gets interesting.
+        ImGuiListClipper clip;
+        clip.Begin(static_cast<int>(rs.items.size()));
+        // The running row must be SUBMITTED even when it is scrolled out, or
+        // there is nothing to scroll to — the clipper would simply skip it.
+        if (running && rs.index < rs.items.size())
+            clip.IncludeItemByIndex(static_cast<int>(rs.index));
+        while (clip.Step()) {
+            for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
+                const ProgramRunner::ItemStatus& it = rs.items[static_cast<std::size_t>(i)];
+                const char* mark = "  ";
+                ImVec4 col = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+                switch (it.mark) {
+                case ProgramRunner::Mark::Running: mark = "> "; col = ImVec4(1.0f, 0.85f, 0.3f, 1.0f); break;
+                case ProgramRunner::Mark::Done:    mark = "OK"; col = ImVec4(0.4f, 1.0f, 0.5f, 1.0f); break;
+                case ProgramRunner::Mark::Failed:  mark = "X "; col = ImVec4(1.0f, 0.4f, 0.3f, 1.0f); break;
+                case ProgramRunner::Mark::Stopped: mark = "! "; col = ImVec4(1.0f, 0.7f, 0.3f, 1.0f); break;
+                case ProgramRunner::Mark::Pending: break;
+                }
+                std::string where = it.slotName;
+                if (!it.path.empty()) where += " / " + it.path;
+                if (it.passes > 1) {
+                    char pass[32];
+                    std::snprintf(pass, sizeof(pass), " [%d/%d]", it.pass, it.passes);
+                    where += pass;
+                }
+                ImGui::TextColored(col, "%s  %s / %s", mark, where.c_str(),
+                                   it.recipeName.c_str());
+                // Keep it in view, but only when it has actually left: an
+                // unconditional SetScrollHereY fights the operator every frame
+                // they try to scroll back and read what already ran.
+                if (running && i == static_cast<int>(rs.index)) {
+                    const float y   = ImGui::GetItemRectMin().y;
+                    const float top = ImGui::GetWindowPos().y;
+                    const float bot = top + ImGui::GetWindowSize().y -
+                                      ImGui::GetTextLineHeightWithSpacing();
+                    if (y < top || y > bot) ImGui::SetScrollHereY(0.5f);
+                }
             }
-            ImGui::TextColored(col, "%s  %s / %s", mark, it.slotName.c_str(),
-                               it.recipeName.c_str());
         }
+        clip.End();
     } else {
-        ImGui::TextDisabled("Pick the slot above (or a recipe in it), then Execute.");
+        ImGui::TextDisabled("Pick the slot above (or an item in it), then Execute.");
         if (haveProg && !session_.Programs()[progSel_].description.empty()) {
             ImGui::Separator();
             ImGui::TextWrapped("%s", session_.Programs()[progSel_].description.c_str());
@@ -837,7 +828,7 @@ void App::DrawRunPanel()
     if (ImGui::BeginPopupModal("Load Program", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         if (session_.Programs().empty())
-            ImGui::TextDisabled("No programs yet - Edit > New creates one.");
+            ImGui::TextDisabled("No programs yet - tick Edit, then New.");
         for (int i = 0; i < static_cast<int>(session_.Programs().size()); ++i) {
             const Program& p = session_.Programs()[i];
             ImGui::PushID(i);
@@ -856,26 +847,6 @@ void App::DrawRunPanel()
         ImGui::EndPopup();
     }
 
-    // ---- Delete-program confirm ----
-    if (runOpenDelete_) {
-        ImGui::OpenPopup("Delete Program");
-        runOpenDelete_ = false;
-    }
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal("Delete Program", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        if (haveProg)
-            ImGui::Text("Delete program '%s'?", session_.Programs()[progSel_].name.c_str());
-        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveProg) {
-            session_.Programs().erase(session_.Programs().begin() + progSel_);
-            SelectDeckProgram(session_.Programs().empty() ? -1 : 0);
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
 }
 
 void App::LoadScanPresets()

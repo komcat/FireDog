@@ -1,6 +1,10 @@
 # Run Page & Programs — Design (draft for approval)
 
 Status: **approved — R1 implemented** (`command/Program`, `command/ProgramRunner`, Run page).
+**Superseded in part** by `docs/program-organizer-design.md`: a slot is now a
+TREE of nodes (recipe | folder with a loop count), the deck is READ-ONLY, and
+every edit lives in the Program Organizer window. The editing bullets below are
+kept as the history of why the shape moved.
 This fills the product manifest's reserved `programs` role and gives operators
 a production surface: the **Run page**, driving **programs** = ordered decks
 of **slots**, each slot an ordered bundle of recipes.
@@ -9,8 +13,11 @@ of **slots**, each slot an ordered bundle of recipes.
 
 ```
 Program  { uid, name, description, slots: [Slot] }
-Slot     { name, recipes: [recipe uid, ...] }        // ordered
+Slot     { name, recipes: [recipe uid, ...] }        // ordered   <- SUPERSEDED
 ```
+
+*(A slot now holds `items: [Node]`, a tree — see
+`docs/program-organizer-design.md`. The rest of this section still stands.)*
 
 - A **slot** ("deck position") bundles recipes that belong together as one
   operator action — e.g. slot "Load" = [open gripper, move to load, close],
@@ -163,18 +170,20 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
   program is up and whether it can be edited are questions about the whole
   page, so they belong in the strip the operator already reads, not buried in
   the deck column.
-- **There is NO whole-program scope** (`RunScope` is `Slot | Recipe`, enforced
+- **There is NO whole-program scope** (`RunScope` is `Slot | Node`, enforced
   in `BuildRunQueue`, not just hidden in the UI). A multi-slot program is a
   station sequence an operator walks — part in, run this slot, part moves on —
   so one press launching every slot back-to-back would drive the machine
   through stations whose parts have not arrived. Removing the scope from the
   resolver rather than the button is what keeps a later UI from re-offering it.
-- **Light program editing on the page** (Phase R1, gated behind an "Edit"
-  toggle so the operator view stays clean): new/rename/delete program, add/
-  rename/remove/reorder slot, add (recipe combo)/remove/reorder recipes in a
-  slot, Save. Dirty tracking + unsaved-changes guard reuse the recipe
-  editor's pattern. A fancier drag-drop program editor can come later if
-  needed — the model is trivial enough that list buttons suffice.
+- **Light program editing on the page** (Phase R1) — *superseded*. It was
+  buttons growing inside the deck behind an "Edit" toggle. They are gone: the
+  deck is read-only and "Edit" now opens the **Program Organizer** window
+  (`docs/program-organizer-design.md`). The reasoning that killed it is the same
+  one that made the rows three lines tall — the deck is what an operator reads
+  while running a station, and an editing control in it is one mis-click away
+  from changing the program under a part already in the machine. Save, dirty
+  tracking and the unsaved-changes guard are unchanged.
 
 ## 5. Implementation order
 

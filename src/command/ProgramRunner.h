@@ -32,13 +32,18 @@ public:
     // against one consistent world even if the library is edited meanwhile).
     struct Item {
         std::string slotName;
+        std::string path;      // folder breadcrumb inside the slot ("" at top level)
+        std::string nodeUid;   // the tree node this run came from (deck highlight)
+        int         pass   = 1;  // loop pass of the innermost folder, 1-based
+        int         passes = 1;  // that folder's loop count (1 = not in a loop)
         Recipe      recipe;
     };
     // Per-item outcome for the run view.
     enum class Mark { Pending, Running, Done, Failed, Stopped };
 
-    // kind: "program" | "slot" | "recipe" (controls the $run event; "recipe"
-    // writes none). `uid` = program uid ("" for ad-hoc recipe runs).
+    // kind: "slot" | "folder" | "recipe" (controls the $run event; "recipe"
+    // writes none — the recipe's own $run already covers a single-recipe run).
+    // `uid` = program uid ("" for ad-hoc recipe runs).
     bool Start(std::string kind, std::string label, std::string uid,
                std::vector<Item> queue, RecipeEngine::Env env, std::string* err);
     void Tick();    // call every frame from App::Update
@@ -47,7 +52,8 @@ public:
     bool Active() const { return active_; }
 
     struct ItemStatus {
-        std::string slotName, recipeName;
+        std::string slotName, recipeName, path, nodeUid;
+        int         pass = 1, passes = 1;
         Mark        mark = Mark::Pending;
     };
     struct Status {
@@ -82,7 +88,7 @@ private:
 // station sequence an operator walks — part in, run this slot, part moves on —
 // so launching every slot back-to-back from one press would drive the machine
 // through stations whose parts are not there yet.
-enum class RunScope { Slot, Recipe };
+enum class RunScope { Slot, Node };
 
 // A resolved request, ready for ProgramRunner::Start.
 struct RunQueue {
@@ -92,7 +98,16 @@ struct RunQueue {
 };
 
 // Resolve a deck selection into a queue. `slotIdx` is always required;
-// `recipeIdx` is read only by RunScope::Recipe (-1 is fine otherwise).
+// `nodeUid` is read only by RunScope::Node (empty is fine otherwise) and may
+// name EITHER a recipe node or a folder — a folder resolves to its whole
+// subtree, loops included, which is the only way to run one repeated group
+// without running the slot around it.
+//
+// FOLDER LOOPS ARE EXPANDED HERE, at Start, into plain queue items: the runner
+// stays a flat sequence of ordinary RecipeEngine runs, so a loop cannot invent
+// a second execution path with its own stop/prompt/traceability behaviour. The
+// cost is that the queue length is the EXPANDED length — hence kMaxQueueItems,
+// which refuses a mistyped loop count up front instead of after 40 minutes.
 //
 // Fails (empty `items`, reason in *err) on an out-of-range selection or a
 // recipe uid the library does not contain. A missing uid is a HARD stop, not a
@@ -100,7 +115,7 @@ struct RunQueue {
 // one that refuses to start. Recipes are snapshotted into the queue, so the run
 // executes against one consistent world even if the library is edited meanwhile.
 RunQueue BuildRunQueue(const Program& prog, RunScope scope,
-                       int slotIdx, int recipeIdx,
+                       int slotIdx, const std::string& nodeUid,
                        const std::vector<Recipe>& library, std::string* err);
 
 } // namespace firedog
