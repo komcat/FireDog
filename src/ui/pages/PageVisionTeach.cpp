@@ -297,6 +297,13 @@ void App::ResetVisionTeachState()
 
 void App::OpenVisionTeach(AlignProc& a, int station)
 {
+    // Level checked at the TOP, not left to SwitchPage's refusal: everything
+    // below mutates state (the model, the marks, the selections) before it
+    // switches, so a refused switch would leave those edits behind on a page
+    // the caller never reaches. Same reason the Run deck's right-click checks
+    // early. Every caller today sits on an Admin page, so this is insurance,
+    // not a fix — but it is what makes the rule true everywhere.
+    if (!CanAccess(Page::VisionTeach)) return;
     AlignStation& st = (station == 1) ? a.s1 : a.s2;
 
     // Drive to the station FIRST. A detection model is tuned at one pose — that
@@ -457,6 +464,13 @@ const VisionModel* App::NominalDetector(const AlignProc& a, const AlignNominal& 
 // carries (a takeover -> takeover switch does not update prevPage_).
 void App::OpenVisionTeachForNominal(AlignProc& a, AlignNominal& n, int index)
 {
+    // Level checked at the TOP, not left to SwitchPage's refusal: everything
+    // below mutates state (the model, the marks, the selections) before it
+    // switches, so a refused switch would leave those edits behind on a page
+    // the caller never reaches. Same reason the Run deck's right-click checks
+    // early. Every caller today sits on an Admin page, so this is insurance,
+    // not a fix — but it is what makes the rule true everywhere.
+    if (!CanAccess(Page::VisionTeach)) return;
     ResetVisionTeachState();
     // A nominal's own camera view is where the placement is WATCHED from, which
     // is the pose this detector has to work at — the exact counterpart of a

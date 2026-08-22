@@ -67,6 +67,13 @@ std::string CleanName(const char* buf)
 // was first taught, and re-teaching means marking this part.
 void App::OpenAlignNominalTeach(const AlignProc& a, const std::string& nomUid)
 {
+    // Level checked at the TOP, not left to SwitchPage's refusal: everything
+    // below mutates state (the model, the marks, the selections) before it
+    // switches, so a refused switch would leave those edits behind on a page
+    // the caller never reaches. Same reason the Run deck's right-click checks
+    // early. Every caller today sits on an Admin page, so this is insurance,
+    // not a fix — but it is what makes the rule true everywhere.
+    if (!CanAccess(Page::AlignNominal)) return;
     nomProcUid_ = a.uid;
     nomEditUid_ = nomUid;
     nomHave_[0] = nomHave_[1] = false;

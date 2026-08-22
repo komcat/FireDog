@@ -137,6 +137,36 @@ void App::DrawMoveStatusBar()
     ImGui::Separator();
 }
 
+// The User menu plus the identity chip beside it. Called from the menu bar
+// (see DrawMainWindow), so it must be inside a BeginMenuBar block.
+//
+// The chip is text in the bar rather than a click away on purpose: "who is this
+// station signed in as" is the question a supervisor walking the line asks, and
+// every DUT record written right now carries this answer.
+void App::DrawUserMenu()
+{
+    if (ImGui::BeginMenu("User")) {
+        ImGui::MenuItem(user_.Label().c_str(), nullptr, false, false);
+        ImGui::MenuItem(RoleName(user_.role), nullptr, false, false);
+        ImGui::Separator();
+        // Registering a number, setting its level and setting its password are
+        // one admin act on one surface — see WndEmployees.cpp.
+        if (CanUse(UserRole::Admin)) {
+            if (ImGui::MenuItem("Employee Numbers...")) showUsers_ = true;
+            ImGui::Separator();
+        }
+        // Signing out mid-run would leave a program driving axes with nobody
+        // attributable to it, and the record would name whoever signed in next.
+        // Refused rather than queued: the honest answer is "stop the run".
+        const bool busy = orch_.Busy();
+        if (ImGui::MenuItem("Sign out", nullptr, false, !busy)) LogOut();
+        if (busy && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("A run is in progress - stop it first");
+        ImGui::EndMenu();
+    }
+    ImGui::TextDisabled("  %s (%s)", user_.id.c_str(), RoleName(user_.role));
+}
+
 void App::DrawMainWindow()
 {
     const ImGuiViewport* mv = ImGui::GetMainViewport();
@@ -157,6 +187,15 @@ void App::DrawMainWindow()
         // replace the session's procedures wholesale.
         const auto openPlacement = [&]() {
             if (currentPage_ == Page::AlignPlace) return;
+            // Checked here as well as in SwitchPage, because the "no procedure
+            // selected" warning below would otherwise be the first thing an
+            // operator pressing F6 is told — an answer to a question they are
+            // not allowed to ask.
+            if (!CanAccess(Page::AlignPlace)) {
+                FD_WARN("users", "%s (%s) may not open Placement",
+                        user_.id.c_str(), RoleName(user_.role));
+                return;
+            }
             std::vector<AlignProc>& list = session_.Aligns();
             if (alignSel_ < 0 || alignSel_ >= static_cast<int>(list.size())) {
                 FD_WARN("ui", "Placement needs an alignment procedure selected "
@@ -171,10 +210,18 @@ void App::DrawMainWindow()
         // ---- Menu bar (top strip) ----
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("New Product..."))  openNewProduct_  = true;
-                if (ImGui::MenuItem("Load Product...")) openLoadProduct_ = true;
-                if (ImGui::MenuItem("Save Product", nullptr, false, session_.ProductLoaded()))
-                    session_.SaveProduct();
+                // Creating a product defines what the machine builds, so it is
+                // Admin. Loading and saving are Technician: the recipe editor
+                // they already have writes into the product, and an editor whose
+                // Save is out of reach is a trap.
+                if (CanUse(UserRole::Admin) && ImGui::MenuItem("New Product..."))
+                    openNewProduct_  = true;
+                if (CanUse(UserRole::Technician)) {
+                    if (ImGui::MenuItem("Load Product...")) openLoadProduct_ = true;
+                    if (ImGui::MenuItem("Save Product", nullptr, false,
+                                        session_.ProductLoaded()))
+                        session_.SaveProduct();
+                }
                 ImGui::Separator();
                 if (session_.ProductLoaded())
                     ImGui::MenuItem(("Product: " + session_.Product().name).c_str(), nullptr, false, false);
@@ -185,7 +232,9 @@ void App::DrawMainWindow()
                 if (ImGui::MenuItem("Exit", "Alt+F4")) host_.SetShouldClose(true);
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("Hardware")) {
+            // The hardware pages are all Technician, so the menu goes as a unit
+            // rather than emptying itself item by item for an operator.
+            if (CanUse(UserRole::Technician) && ImGui::BeginMenu("Hardware")) {
                 if (ImGui::MenuItem("Overview", nullptr, currentPage_ == Page::Overview))
                     SwitchPage(Page::Overview);
                 if (ImGui::MenuItem("Camera",   nullptr, currentPage_ == Page::Camera))
@@ -205,11 +254,12 @@ void App::DrawMainWindow()
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
-                ImGui::MenuItem("Aux Window", nullptr, &showAux_);
-                ImGui::MenuItem("Jog",        nullptr, &showJog_);
+                if (CanUse(kRoleAux)) ImGui::MenuItem("Aux Window", nullptr, &showAux_);
+                if (CanUse(kRoleJog)) ImGui::MenuItem("Jog",        nullptr, &showJog_);
                 // Same bit as the Run strip's Edit checkbox — one window, two
                 // ways in, never two answers about whether it is open.
-                if (ImGui::MenuItem("Program Organizer", nullptr, &orgOpen_))
+                if (CanUse(kRoleOrg) &&
+                    ImGui::MenuItem("Program Organizer", nullptr, &orgOpen_))
                     runEdit_ = orgOpen_;
                 if (ImGui::BeginMenu("Theme")) {   // same picker as Display header
                     for (int i = 0; i < Theme::Count(); ++i) {
@@ -223,17 +273,29 @@ void App::DrawMainWindow()
                 }
                 ImGui::Separator();
                 // Operator pages first (Run + Recipe Editor, with F-key
-                // shortcuts), then the machine-setup editors.
-                if (ImGui::MenuItem("Run", "F1", currentPage_ == Page::Run))
+                // shortcuts), then the machine-setup editors. Each item is
+                // present only for a level that can open it: SwitchPage would
+                // refuse anyway, but a menu full of doors that answer with a
+                // warning is worse than a short menu.
+                if (CanAccess(Page::Run) &&
+                    ImGui::MenuItem("Run", "F1", currentPage_ == Page::Run))
                     ToggleEditorPage(Page::Run);
-                if (ImGui::MenuItem("Recipe Editor", "F2", currentPage_ == Page::RecipeEdit))
+                if (CanAccess(Page::RecipeEdit) &&
+                    ImGui::MenuItem("Recipe Editor", "F2", currentPage_ == Page::RecipeEdit))
                     ToggleEditorPage(Page::RecipeEdit);
-                ImGui::Separator();
-                if (ImGui::MenuItem("IO Watch Editor", nullptr, currentPage_ == Page::WatchEdit))
+                // Everything below this line is Technician or above, so for an
+                // Operator the separator would be the last thing in the menu —
+                // a rule under nothing, which reads as items that failed to
+                // draw rather than as items that are not theirs.
+                if (CanUse(UserRole::Technician)) ImGui::Separator();
+                if (CanAccess(Page::WatchEdit) &&
+                    ImGui::MenuItem("IO Watch Editor", nullptr, currentPage_ == Page::WatchEdit))
                     ToggleEditorPage(Page::WatchEdit);
-                if (ImGui::MenuItem("Transforms Editor", nullptr, currentPage_ == Page::TransformEdit))
+                if (CanAccess(Page::TransformEdit) &&
+                    ImGui::MenuItem("Transforms Editor", nullptr, currentPage_ == Page::TransformEdit))
                     ToggleEditorPage(Page::TransformEdit);
-                if (ImGui::MenuItem("Alignment", "F5", currentPage_ == Page::Align))
+                if (CanAccess(Page::Align) &&
+                    ImGui::MenuItem("Alignment", "F5", currentPage_ == Page::Align))
                     ToggleEditorPage(Page::Align);
                 // Placement IS reachable from a nominal's Place... button, but
                 // that is three clicks deep inside another page — findable only
@@ -242,7 +304,7 @@ void App::DrawMainWindow()
                 // procedure's own combo up from there, so the menu costs it
                 // nothing: unlike the two teach pages, it carries no state that
                 // only the caller could supply.
-                {
+                if (CanAccess(Page::AlignPlace)) {
                     const bool haveProc =
                         alignSel_ >= 0 &&
                         alignSel_ < static_cast<int>(session_.Aligns().size());
@@ -252,11 +314,14 @@ void App::DrawMainWindow()
                     if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                         ImGui::SetTooltip("Select an alignment procedure first (View > Alignment)");
                 }
-                if (ImGui::MenuItem("Needle", "F7", currentPage_ == Page::Needle))
+                if (CanAccess(Page::Needle) &&
+                    ImGui::MenuItem("Needle", "F7", currentPage_ == Page::Needle))
                     ToggleEditorPage(Page::Needle);
-                if (ImGui::MenuItem("Scripts", "F4", currentPage_ == Page::Scripts))
+                if (CanAccess(Page::Scripts) &&
+                    ImGui::MenuItem("Scripts", "F4", currentPage_ == Page::Scripts))
                     ToggleEditorPage(Page::Scripts);
-                if (ImGui::MenuItem("DUT Records", nullptr, currentPage_ == Page::DutView)) {
+                if (CanAccess(Page::DutView) &&
+                    ImGui::MenuItem("DUT Records", nullptr, currentPage_ == Page::DutView)) {
                     if (currentPage_ != Page::DutView) LoadDutList();
                     ToggleEditorPage(Page::DutView);
                 }
@@ -266,6 +331,7 @@ void App::DrawMainWindow()
                 ImGui::MenuItem("About", nullptr, false, false);
                 ImGui::EndMenu();
             }
+            DrawUserMenu();   // who is signed in, sign out, manage the roster
             if (workflow_.SafetyAlertActive()) {
                 ImGui::TextColored(StateColor(ConnState::Failed), "  !! SAFETY ALERT !!");
             }
@@ -297,8 +363,16 @@ void App::DrawMainWindow()
         // Quick-access strip (all pages): one-click jump to the operator pages.
         // Same guarded routing as the F-keys (activate, not toggle — clicking
         // the current page's button is a no-op); active page highlighted.
+        // Buttons a level cannot use are ABSENT rather than disabled: an
+        // operator's strip is one button wide and reads as their machine, not
+        // as six locked doors. Each button owns its own SameLine so the strip
+        // closes up with no gaps whichever ones are missing.
         {
+            bool anyBtn = false;
             const auto pageBtn = [&](const char* label, Page p, bool takeover) {
+                if (!CanAccess(p)) return;
+                if (anyBtn) ImGui::SameLine();
+                anyBtn = true;
                 const bool active = (currentPage_ == p);
                 if (active)
                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.85f, 1.0f));
@@ -309,20 +383,17 @@ void App::DrawMainWindow()
                 if (active) ImGui::PopStyleColor();
             };
             pageBtn("Run (F1)", Page::Run, true);
-            ImGui::SameLine();
             pageBtn("Recipe Editor (F2)", Page::RecipeEdit, true);
-            ImGui::SameLine();
             pageBtn("Motion (F3)", Page::Motion, false);
-            ImGui::SameLine();
             pageBtn("Scripts (F4)", Page::Scripts, true);
-            ImGui::SameLine();
             pageBtn("Alignment (F5)", Page::Align, true);
-            ImGui::SameLine();
             // Not pageBtn: opening Placement is not a page switch but a switch
             // WITH a subject (the selected procedure), and with no procedure
             // there is nothing to open — hence the disabled state the other
             // buttons never need.
-            {
+            if (CanAccess(Page::AlignPlace)) {
+                if (anyBtn) ImGui::SameLine();
+                anyBtn = true;
                 const bool active = (currentPage_ == Page::AlignPlace);
                 const bool haveProc =
                     alignSel_ >= 0 &&
@@ -336,9 +407,8 @@ void App::DrawMainWindow()
                 if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                     ImGui::SetTooltip("Select an alignment procedure first (Alignment, F5)");
             }
-            ImGui::SameLine();
             pageBtn("Needle (F7)", Page::Needle, true);
-            ImGui::Separator();
+            if (anyBtn) ImGui::Separator();
         }
 
         // Above the page dispatch, so it is on screen whichever page the move
@@ -386,12 +456,18 @@ void App::DrawMainWindow()
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
             ImGui::TextUnformatted(title);
-            ImGui::SameLine();
-            const float closeW = ImGui::CalcTextSize("Close").x +
-                                 ImGui::GetStyle().FramePadding.x * 2.0f;
-            ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - closeW);
-            if (ImGui::Button("Close"))
-                SwitchPage(closeTo);   // dirty recipe edits raise the guard
+            // No Close when there is nowhere to close TO. An Operator has only
+            // the Run page, so closeTo resolves to the page they are already on
+            // and SwitchPage returns early — a button that visibly does nothing
+            // reads as a broken application rather than as a locked door.
+            if (closeTo != currentPage_ && CanAccess(closeTo)) {
+                ImGui::SameLine();
+                const float closeW = ImGui::CalcTextSize("Close").x +
+                                     ImGui::GetStyle().FramePadding.x * 2.0f;
+                ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - closeW);
+                if (ImGui::Button("Close"))
+                    SwitchPage(closeTo);   // dirty recipe edits raise the guard
+            }
             ImGui::Separator();
             if (currentPage_ == Page::WatchEdit)          DrawWatchEditPanel();
             else if (currentPage_ == Page::TransformEdit) DrawTransformEditPanel();

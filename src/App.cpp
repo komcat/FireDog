@@ -15,6 +15,7 @@
 #include "ui/Widgets.h"
 #include "command/Commands.h"
 #include "core/DutSession.h"   // the DUT-open edge that drops taught frames
+#include "core/Employees.h"    // the roster behind the login gate
 #include "core/Log.h"
 #include "core/NeedleCal.h"    // SaveNeedleCalFile (the calibration hand-back)
 #include "vision/HalconEngine.h"
@@ -122,6 +123,10 @@ int App::Run()
     session_.LoadInitial(lastProduct);   // positions/maps/recipes/programs/scripts + DUT wiring
     ResetDocumentSelections();           // the UI side of that load
     LoadScanPresets();             // XCAN launch presets (machine-global local.json)
+    // The roster, read once. It lives under products/ rather than config/
+    // because a rebuild recopies config/ and would replace every registration
+    // made on this machine — see core/Employees.h.
+    employees_ = LoadEmployees();
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
     RegisterBuiltinCommands(orch_.registry, workflow_, hardware_);   // layer 2.5
@@ -139,10 +144,23 @@ int App::Run()
         prev = now;
 
         host_.BeginFrame();
-        DrawMainWindow();
-        if (showAux_) DrawAuxWindow();
-        if (showJog_) DrawJogWindow();
-        if (orgOpen_) DrawProgramOrganizer();
+        // THE ACCESS GATE. While nobody is signed in the login screen draws
+        // INSTEAD of the main window, so the menu bar, the F-keys, the quick
+        // strip and every floating window do not exist yet — there is no
+        // surface left to forget to gate. Update() above still runs, so the
+        // hardware connects while the operator is still typing their number.
+        //
+        // The windows below carry their own level check as well as their open
+        // bit: a role is not something a window may outlive.
+        if (!user_.LoggedIn()) {
+            DrawLoginScreen();
+        } else {
+            DrawMainWindow();
+            if (showAux_   && CanUse(kRoleAux)) DrawAuxWindow();
+            if (showJog_   && CanUse(kRoleJog)) DrawJogWindow();
+            if (orgOpen_   && CanUse(kRoleOrg)) DrawProgramOrganizer();
+            if (showUsers_) DrawEmployeeManager();   // checks Admin itself
+        }
         host_.EndFrame();
     }
 
@@ -312,6 +330,18 @@ const MarkIcon* App::UiIcon(const char* file)
 void App::SwitchPage(Page p)
 {
     if (currentPage_ == p) return;
+    // THE ACCESS CHOKE POINT. Every switch in the tree routes here, so a button
+    // or shortcut that forgot to check still cannot land on a page its level
+    // has no business on. The menu items and strip buttons hide themselves as
+    // well, but that is courtesy; this is the enforcement.
+    //
+    // It warns rather than failing silently: the log band is on screen on the
+    // operator pages, and "F5 did nothing" is the report you get otherwise.
+    if (!CanAccess(p)) {
+        FD_WARN("users", "%s (%s) may not open that page - %s level required",
+                user_.id.c_str(), RoleName(user_.role), RoleName(MinRoleFor(p)));
+        return;
+    }
     if (currentPage_ == Page::RecipeEdit && session_.RecipesDirty() && !orch_.Busy()) {
         edConfirmAction_ = 1;
         edLeaveTarget_   = p;

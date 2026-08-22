@@ -674,8 +674,13 @@ void App::DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool runnin
             ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
         decorate(n);
         if (picked) deckNode_ = n.uid;
-        // Right-click shortcut: open this recipe in the Recipe Editor.
-        if (!missing && rowRClick) {
+        // Right-click shortcut: open this recipe in the Recipe Editor. Level
+        // checked here rather than left to SwitchPage's refusal, because the
+        // shortcut re-points prevPage_ and the editor's selection BEFORE it
+        // switches — an operator's right-click would rearrange editor state it
+        // is never going to see, and the tooltip would advertise a door that
+        // answers with a warning.
+        if (!missing && rowRClick && CanAccess(Page::RecipeEdit)) {
             deckNode_ = n.uid;
             for (int k = 0; k < static_cast<int>(session_.Recipes().size()); ++k)
                 if (session_.Recipes()[k].uid == n.recipeUid) { recipeSel_ = k; break; }
@@ -686,7 +691,7 @@ void App::DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool runnin
             prevPage_ = Page::Run;   // editor Close comes back here
             SwitchPage(Page::RecipeEdit);
         }
-        if (!missing && rowHover)
+        if (!missing && rowHover && CanAccess(Page::RecipeEdit))
             ImGui::SetTooltip("Right-click: open in Recipe Editor");
         if (cur || missing) ImGui::PopStyleColor();
         ImGui::PopID();
@@ -778,20 +783,28 @@ void App::DrawRunPanel()
     centerNext(ImGui::GetTextLineHeight());
     if (haveProg) ImGui::Text("%s", session_.Programs()[progSel_].name.c_str());
     else          ImGui::TextDisabled("(no program)");
-    ImGui::SameLine();
-    centerNext(ImGui::GetFrameHeight());
-    ImGui::BeginDisabled(running);
     // Edit no longer grows buttons in the deck: it opens the Program Organizer
     // window. The checkbox mirrors that window's own close box, so the two can
     // never disagree about whether it is up.
-    if (ImGui::Checkbox("Edit", &runEdit_)) {
-        orgOpen_ = runEdit_;
-        // Opening it lands on the slot the deck is showing: the operator asked
-        // to edit THIS station, not whichever one was last reorganised.
-        if (orgOpen_) { orgSlot_ = deckSlot_; orgSel_.clear(); }
+    //
+    // Absent below Technician: the Run page is the one surface an Operator has,
+    // and this checkbox is a door out of it into program editing. Gated HERE as
+    // well as at the window, because the strip is the only way in that does not
+    // go through the View menu.
+    if (CanUse(kRoleOrg)) {
+        ImGui::SameLine();
+        centerNext(ImGui::GetFrameHeight());
+        ImGui::BeginDisabled(running);
+        if (ImGui::Checkbox("Edit", &runEdit_)) {
+            orgOpen_ = runEdit_;
+            // Opening it lands on the slot the deck is showing: the operator
+            // asked to edit THIS station, not whichever one was last
+            // reorganised.
+            if (orgOpen_) { orgSlot_ = deckSlot_; orgSel_.clear(); }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open the Program Organizer");
+        ImGui::EndDisabled();
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open the Program Organizer");
-    ImGui::EndDisabled();
     {
         const DutSession::Info di = DutSession::Instance().GetInfo();
         ImGui::SameLine();
@@ -807,8 +820,13 @@ void App::DrawRunPanel()
     // so nothing sits between Execute and the operator's eye.
     constexpr float kSaveW = 110.0f;
     constexpr float kLoadW = 80.0f;
+    // Load stays with the Operator — WHICH job is in the deck is the operator's
+    // call, and it mutates nothing. Save writes the programs document, so it
+    // goes with the level that may edit programs at all; below that the deck is
+    // read-only and there is nothing a Save could legitimately persist.
+    const bool canSave = CanUse(kRoleOrg);
     const float rightX = ImGui::GetWindowContentRegionMax().x -
-                         (kSaveW + kLoadW + style.ItemSpacing.x);
+                         (canSave ? kSaveW + kLoadW + style.ItemSpacing.x : kLoadW);
     ImGui::SameLine();
     // Never step BACK onto what is already drawn: a long start error would
     // otherwise be overprinted by the buttons.
@@ -816,10 +834,12 @@ void App::DrawRunPanel()
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
                          (stripBtnH - ImGui::GetFrameHeight()) * 0.5f);
     ImGui::BeginDisabled(running);
-    if (IconButton(UiIcon("Save"), session_.ProgramsDirty() ? "Save*" : "Save",
-                   ImVec2(kSaveW, 0.0f)))
-        session_.SavePrograms();
-    ImGui::SameLine();
+    if (canSave) {
+        if (IconButton(UiIcon("Save"), session_.ProgramsDirty() ? "Save*" : "Save",
+                       ImVec2(kSaveW, 0.0f)))
+            session_.SavePrograms();
+        ImGui::SameLine();
+    }
     if (ImGui::Button("Load", ImVec2(kLoadW, 0.0f))) runOpenLoad_ = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Load a program into the deck");
     ImGui::EndDisabled();

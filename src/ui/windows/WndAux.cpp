@@ -146,7 +146,12 @@ void App::DrawAuxWindow()
         // The cursor marker + world-distance readout only appear while
         // click-to-move is armed: they annotate the move a click would command,
         // so with the feature off they are just clutter over the image.
-        if (haveImg && imgHovered && enableClickMove_) {
+        //
+        // The level is checked here and not only on the checkbox below, because
+        // enableClickMove_ is PERSISTED in UiSettings: a technician who left it
+        // on would otherwise hand an operator a live click-to-move surface at
+        // the next sign-in, with no visible control to turn it off.
+        if (haveImg && imgHovered && enableClickMove_ && CanUse(kRoleJog)) {
             const ImVec2 m = ImGui::GetIO().MousePos;
             // Screen -> camera pixels. The image is "cover"-fit with a single
             // uniform scale, so 1 camera px = `scale` screen px on both axes.
@@ -215,10 +220,16 @@ void App::DrawAuxWindow()
                           ImGuiWindowFlags_NoScrollbar);
         if (ImGui::Checkbox("Chart", &showChart_)) SaveUiSettings();
         ImGui::SameLine();
-        if (ImGui::Checkbox("Click-to-move", &enableClickMove_)) SaveUiSettings();
-        ImGui::SameLine();
-        ImGui::Checkbox("Arm jog", &jogArmed_);   // same flag the Jog window arms
-        ImGui::SameLine();
+        // The Aux window is Operator-level because it MONITORS. Everything on
+        // it that MOVES is Technician, the same level as the Jog window — this
+        // plate would otherwise be a way around that gate, and it arms the very
+        // same jogArmed_ bit.
+        if (CanUse(kRoleJog)) {
+            if (ImGui::Checkbox("Click-to-move", &enableClickMove_)) SaveUiSettings();
+            ImGui::SameLine();
+            ImGui::Checkbox("Arm jog", &jogArmed_);   // same flag the Jog window arms
+            ImGui::SameLine();
+        }
         if (ImGui::Checkbox("Vision marks", &showVisionMarks_)) SaveUiSettings();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Overlay the last detection (20x20 camera-px box) and the\n"
@@ -243,6 +254,11 @@ void App::DrawAuxWindow()
                               "with it off the plate names the nearest VISIBLE position,\n"
                               "which may not be the one the stage is actually sitting on.");
 
+        // ---- gantry-main Z + Autofocus: motion, so Technician and up -------
+        // Both drive the same axis, so they stand or fall together. Absent
+        // rather than disabled below that level: an arrow that never moves
+        // anything is worse than no arrow.
+        if (CanUse(kRoleJog)) {
         // ---- gantry-main Z: up = Z-, down = Z+, with a step-size combo ----
         // Real motion, so it follows the jog arming rule. Layer 2 owns the
         // kinematics (JogGantryZ finds the gantry and applies the transform).
@@ -311,6 +327,9 @@ void App::DrawAuxWindow()
                                    afStatus.error.c_str());
             }
         }
+        }   // end of the Technician motion block opened above (Z + Autofocus).
+            // Left un-indented deliberately: re-indenting ~60 lines would bury
+            // the one line that changed in a diff nobody can read.
         ImGui::EndChild();
         ImGui::PopStyleColor();
 

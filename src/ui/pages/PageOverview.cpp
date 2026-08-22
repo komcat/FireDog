@@ -41,7 +41,11 @@ void App::DrawDutBlock()
 {
     const DutSession::Info di = DutSession::Instance().GetInfo();
     ImGui::TextUnformatted("DUT");
-    if (di.productSet) {
+    // Technician and up. This block is shared with the Run page, so on an
+    // Operator's station it is the ONE control that leaves the application
+    // entirely — an Explorer window, and from there the whole filesystem. The
+    // record it opens is written for them, not by them.
+    if (di.productSet && CanUse(UserRole::Technician)) {
         // Top-right shortcut: the open DUT's record folder, else data/ root.
         const float bw = ImGui::CalcTextSize("Data").x +
                          ImGui::GetStyle().FramePadding.x * 2.0f;

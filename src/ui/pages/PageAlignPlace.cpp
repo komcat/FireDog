@@ -75,6 +75,13 @@ const ImVec4 kBad (0.95f, 0.45f, 0.35f, 1.0f);
 
 void App::OpenAlignPlace(const AlignProc& a, const std::string& nomUid)
 {
+    // Level checked at the TOP, not left to SwitchPage's refusal: everything
+    // below mutates state (the model, the marks, the selections) before it
+    // switches, so a refused switch would leave those edits behind on a page
+    // the caller never reaches. Same reason the Run deck's right-click checks
+    // early. Every caller today sits on an Admin page, so this is insurance,
+    // not a fix — but it is what makes the rule true everywhere.
+    if (!CanAccess(Page::AlignPlace)) return;
     plcProcUid_ = a.uid;
     plcNomUid_  = nomUid;
     plcHave_[0] = plcHave_[1] = false;

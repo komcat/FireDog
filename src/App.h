@@ -20,6 +20,7 @@
 #include "command/Recipe.h"
 #include "core/Log.h"
 #include "core/MotionMap.h"
+#include "core/Employees.h"
 #include "core/Product.h"
 #include "core/SavedPositions.h"
 #include "hardware/HardwareManager.h"
@@ -120,6 +121,20 @@ struct ClimbPreset {
 };
 inline constexpr int kClimbPresetCount = 5;
 
+// The access level a page demands. Anything not named in the table is Admin:
+// a page added next year is locked until somebody grants it deliberately, which
+// is the only default that cannot fail open. Defined in PageLogin.cpp.
+UserRole MinRoleFor(Page p);
+
+// The non-page surfaces. A window has no Page to look up, so its level lives
+// here beside the table rather than inline at three call sites.
+//   Jog commands motion, so it sits with the Motion page.
+//   The Program Organizer edits programs, so it sits with the Recipe Editor.
+//   The Aux window only ever displays, so an operator may have it.
+inline constexpr UserRole kRoleJog = UserRole::Technician;
+inline constexpr UserRole kRoleOrg = UserRole::Technician;
+inline constexpr UserRole kRoleAux = UserRole::Operator;
+
 class App {
 public:
     int Run();
@@ -129,6 +144,18 @@ private:
     void DrawMainWindow();
     void ToggleEditorPage(Page p);   // enter/leave a full-page takeover (View menu + F-keys)
     void SwitchPage(Page p);         // ALL page switches route here (dirty-editor guard)
+
+    // ---- Users & access (docs/user-access-design.md) ----------------------
+    // The login gate replaces the whole frame while nobody is logged in, so the
+    // menu bar, the F-keys and every window simply do not exist yet — there is
+    // no surface left to forget to gate. Definitions in PageLogin.cpp.
+    void DrawLoginScreen();
+    bool LogIn(const std::string& id, const std::string& pw);
+    void LogOut();
+    bool CanAccess(Page p) const { return user_.role >= MinRoleFor(p); }
+    bool CanUse(UserRole need) const { return user_.role >= need; }
+    void DrawUserMenu();          // the User menu (MainWindow.cpp)
+    void DrawEmployeeManager();   // admin-only roster window (WndEmployees.cpp)
     // A UI-commanded move, watched to completion. The UI must never block on a
     // move, but a surface that DRIVES somewhere before it can be used (the
     // vision teach page, opened from a station card) has to be able to say "not
@@ -535,6 +562,34 @@ private:
         float       elapsed = 0.0f;   // seconds since the move was commanded
     };
     MoveWatch moveWatch_;
+
+    // ---- Users & access ---------------------------------------------------
+    // The roster is UI-thread-only state, like the session document: it is read
+    // once at startup and rewritten only by the User Manager. `user_` with role
+    // None is what raises the login gate, so it is the single source of truth
+    // for "is anybody here" — never mirror it into a second bool.
+    std::vector<Employee> employees_;
+    ActiveUser            user_;
+
+    // Login gate fields. loginErr_ says only "employee number or password is
+    // wrong": naming which half was right tells a guesser which half to keep
+    // trying, and the operator who mistyped learns nothing useful from the
+    // distinction anyway.
+    char        loginId_[64] = "";
+    char        loginPw_[64] = "";
+    std::string loginErr_;
+
+    // User Manager window (admin only). usrSel_ indexes employees_ and is
+    // re-clamped after every add/remove — a stale index into a shrunk roster
+    // would reset the password of whoever moved up into the slot.
+    bool        showUsers_ = false;
+    char        usrId_[64]   = "";
+    char        usrName_[64] = "";
+    char        usrPw_[64]   = "";
+    int         usrLevel_    = 0;    // 0 Operator, 1 Technician, 2 Admin
+    int         usrSel_      = -1;
+    bool        usrArmRemove_ = false;   // the armed checkbox in front of Remove
+    std::string usrErr_, usrNote_;
 
     // Main-window page + which motion device is selected on the Motion page.
     // prevPage_ = the hardware page to return to when an editor page closes.

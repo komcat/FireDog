@@ -73,6 +73,26 @@ void DutSession::SetProduct(const std::string& name, const std::string& uid,
     dataDir_  = dataDir;
 }
 
+void DutSession::SetOperator(const std::string& id, const std::string& name,
+                             const std::string& level)
+{
+    const std::scoped_lock lock(mu_);
+    if (id == opId_) return;   // a re-login as the same number is not a handover
+    opId_    = id;
+    opName_  = name;
+    opLevel_ = level;
+
+    // A record already open has just changed hands. The top-level object is
+    // rewritten by the next save either way, but a record that was half built
+    // by one person and finished by another has to SAY so — an append-only log
+    // that silently swapped its operator would read as one continuous shift.
+    if (open_ && !id.empty()) {
+        std::string aerr;
+        if (!AppendLocked("$operator", "object", OperatorJson(), &aerr))
+            FD_WARN("dut", "operator handover not recorded: %s", aerr.c_str());
+    }
+}
+
 DutSession::Info DutSession::GetInfo() const
 {
     const std::scoped_lock lock(mu_);
@@ -164,6 +184,10 @@ bool DutSession::Open(const std::string& serial, bool destructiveNew,
         if (err) *err = aerr;
         return false;
     }
+    // Who opened it, in the log itself. Appended rather than folded into $open's
+    // value so no existing reader of that entry has to change.
+    if (!opId_.empty() && !AppendLocked("$operator", "object", OperatorJson(), &aerr))
+        FD_WARN("dut", "operator not recorded on open: %s", aerr.c_str());
     FD_INFO("dut", "DUT '%s' open (%s, %zu entrie(s))", serial_.c_str(), openMode,
             entries_.size());
     return true;
@@ -244,6 +268,9 @@ void DutSession::RecordRun(const std::string& kind, const std::string& name,
     v["result"] = result;
     if (!uid.empty()) v["uid"] = uid;
     if (recipesDone >= 0) v["recipes_done"] = recipesDone;
+    // The "who ran this" answer, on the run rather than only on the record: a
+    // record open across a shift change has runs belonging to two people.
+    if (!opId_.empty()) v["operator"] = opId_;
     std::string aerr;
     if (!AppendLocked("$run", "object", std::move(v), &aerr))
         FD_WARN("dut", "run event write failed: %s", aerr.c_str());
@@ -269,6 +296,15 @@ bool DutSession::AppendLocked(const std::string& key, const char* type,
     return true;
 }
 
+nlohmann::json DutSession::OperatorJson() const
+{
+    nlohmann::json o;
+    o["id"]    = opId_;
+    o["name"]  = opName_;
+    o["level"] = opLevel_;
+    return o;
+}
+
 bool DutSession::SaveLocked(std::string* err)
 {
     nlohmann::json j;
@@ -278,6 +314,10 @@ bool DutSession::SaveLocked(std::string* err)
     j["opened_at"]   = openedAt_;
     j["closed_at"]   = closedAt_;
     j["status"]      = status_;
+    // Omitted rather than written empty when nobody is signed in: a record with
+    // no operator key is honestly silent, where {"id":""} looks like a field
+    // that was written and lost.
+    if (!opId_.empty()) j["operator"] = OperatorJson();
     j["entries"]     = entries_;
 
     // Atomic-enough on Windows: write a sibling temp file, then rename over

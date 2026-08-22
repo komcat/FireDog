@@ -34,6 +34,15 @@ public:
     void SetProduct(const std::string& name, const std::string& uid,
                     const std::string& dataDir);
 
+    // Who is at the keyboard, wired by App at login/logout (the ONE writer —
+    // see App::LogIn). The record carries it two ways, and both are needed:
+    // the top-level object answers "whose part is this" at a glance, while a
+    // $operator ENTRY at open and at every handover keeps the append-only log
+    // honest about a record that changed hands mid-build. Empty id = nobody,
+    // which is only reachable before the first login.
+    void SetOperator(const std::string& id, const std::string& name,
+                     const std::string& level);
+
     struct Info {
         bool        productSet = false;
         bool        open = false;
@@ -80,6 +89,7 @@ private:
     // All assume mu_ is held.
     bool AppendLocked(const std::string& key, const char* type,
                       nlohmann::json value, std::string* err);
+    nlohmann::json OperatorJson() const;        // {id, name, level}
     bool SaveLocked(std::string* err);          // atomic temp+rename
     void CloseLocked(const std::string& statusValue);   // best-effort ($close)
 
@@ -87,6 +97,10 @@ private:
 
     // Product wiring (set by App).
     std::string prodName_, prodUid_, dataDir_;
+
+    // Operator wiring (set by App at login). Not part of the active record: it
+    // outlives any one DUT, exactly like the product.
+    std::string opId_, opName_, opLevel_;
 
     // Active record.
     bool        open_ = false;
