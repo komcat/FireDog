@@ -505,11 +505,45 @@ CommandResult ExecVisionTest(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// Grab the frame the camera is showing right now and park it for the Run
+// page's image box.
+//
+// Deliberately NOT the same command as dut_capture_image, and deliberately with
+// no DUT requirement. The use case is reading a serial off the part: drive the
+// camera to the label, capture, and the operator types what they can now see
+// into the DUT field. That happens BEFORE a DUT is open — it is how you learn
+// which DUT to open — so a command that failed without one would be useless for
+// exactly the job it exists to do. It records nothing; dut_capture_image is
+// what records.
+CommandResult ExecCaptureView(ExecutionContext& ctx, const ParamValues& p)
+{
+    Workflow::CapturedView v;
+    bool isNew = false;   // a still, not a stream: the current frame will do
+    if (!ctx.Hw().Camera().GetLatestFrame(v.rgb, v.w, v.h, isNew) || v.w <= 0 ||
+        v.h <= 0)
+        return CommandResult::Fail("no camera frame available (camera grabbing?)");
+
+    v.label = p.GetString("label");
+    v.stamp = NowStamp();
+    FD_INFO("vision", "captured %dx%d view%s%s", v.w, v.h,
+            v.label.empty() ? "" : " - ", v.label.c_str());
+    ctx.Wf().SetCapturedView(std::move(v));
+    return CommandResult::Success();
+}
+
 } // namespace
 
 void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareManager& /*hw*/)
 {
     using PT = ParamType;
+
+    reg.Register({"capture_view", "Vision",
+                  "Show the current camera frame in the Run page's image box",
+                  {
+                      {"label", PT::String, false, "", 0, 0, {},
+                       "caption under the picture, e.g. 'serial number'"},
+                  },
+                  CommandSpec::Needs::Camera, ExecCaptureView});
 
     reg.Register({"auto_focus", "Vision",
                   "Sweep one axis, score sharpness per step, move to the sharpest Z",

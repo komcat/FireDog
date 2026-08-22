@@ -30,6 +30,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("run_deck_w")) s.runDeckW = j["run_deck_w"].get<float>();
         if (j.contains("run_dut_w"))  s.runDutW  = j["run_dut_w"].get<float>();
         if (j.contains("run_scan_h")) s.runScanH = j["run_scan_h"].get<float>();
+        if (j.contains("run_shot_h")) s.runShotH = j["run_shot_h"].get<float>();
         if (j.contains("org_lib_w"))  s.orgLibW  = j["org_lib_w"].get<float>();
         if (j.contains("show_chart"))    s.showChart   = j["show_chart"].get<bool>();
         if (j.contains("click_to_move")) s.clickToMove = j["click_to_move"].get<bool>();
@@ -64,6 +65,7 @@ bool UiSettings::Save(const std::string& path) const
     j["run_deck_w"]      = runDeckW;
     j["run_dut_w"]       = runDutW;
     j["run_scan_h"]      = runScanH;
+    j["run_shot_h"]      = runShotH;
     j["org_lib_w"]       = orgLibW;
     j["show_chart"]    = showChart;
     j["click_to_move"] = clickToMove;

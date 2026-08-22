@@ -6,7 +6,9 @@
 #include "command/ExecutionContext.h"
 #include "core/DutSession.h"
 #include "core/Log.h"
+#include "core/Product.h"   // NowStamp (the captured view's timestamp)
 #include "hardware/HardwareManager.h"
+#include "workflow/Workflow.h"   // CapturedView, the Run page's image box
 
 #pragma warning(push)
 #pragma warning(disable : 4244 4456 4996)
@@ -149,6 +151,21 @@ CommandResult ExecDutCaptureImage(ExecutionContext& ctx, const ParamValues& p)
     if (!DutSession::Instance().InsertImage(p.GetString("key"), "images/" + file, &err))
         return CommandResult::Fail(err);
     FD_INFO("dut", "captured %dx%d frame -> %s", w, h, path.c_str());
+
+    // Show it as well as file it. A recipe that photographs the part for the
+    // record has already paid for the frame, and the operator watching the run
+    // is the one person who can tell that the camera photographed the wrong
+    // thing. Same slot the capture_view command fills — one image box, one
+    // route into it. AFTER the record is written, so the picture on screen is
+    // never one that failed to be filed.
+    Workflow::CapturedView v;
+    v.rgb       = std::move(rgb);
+    v.w         = w;
+    v.h         = h;
+    v.label     = p.GetString("key");
+    v.stamp     = NowStamp();
+    v.savedPath = "images/" + file;
+    ctx.Wf().SetCapturedView(std::move(v));
     return CommandResult::Success();
 }
 

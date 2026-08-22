@@ -493,6 +493,105 @@ void App::DrainCycleVars()
     }
 }
 
+// Worker -> UI: turn the parked still into a texture. From App::Update, never
+// from a Draw — EnsureTextureRGB is a GL call, and the pixels have crossed a
+// thread to get here.
+//
+// The frame is MOVED out of the Workflow slot, so the ~15 MB lives in exactly
+// one place at a time. It is dropped again the moment the texture exists: the
+// bytes were only ever a means to that texture, and the GPU has them now.
+void App::DrainCapturedView()
+{
+    Workflow::CapturedView v;
+    if (!workflow_.TakeCapturedView(&v)) return;
+    if (v.w <= 0 || v.h <= 0 || v.rgb.empty()) return;
+
+    runShotTex_   = host_.EnsureTextureRGB(runShotTex_, v.w, v.h, v.rgb.data());
+    runShotW_     = v.w;
+    runShotH_     = v.h;
+    runShotLabel_ = std::move(v.label);
+    runShotStamp_ = std::move(v.stamp);
+    runShotPath_  = std::move(v.savedPath);
+}
+
+// The image box, top of the Run page's right column — above the DUT block
+// because that is the order the operator works in: look at the part, read what
+// it says, THEN type the serial and open the record.
+//
+// One still, not a stream. The Aux window already shows what the camera sees
+// right now; this shows what it was pointed at when a step said so, and it
+// stays put while the stage drives on. Those are different questions and a live
+// view cannot answer the second one.
+void App::DrawRunShotPanel()
+{
+    ImGui::BeginChild("runShot", ImVec2(0.0f, runShotPanelH_), ImGuiChildFlags_Borders);
+    // Emptiness is the SIZE being zero, not the texture id being zero: Clear
+    // keeps the id (see below), so testing the id would leave the box drawing
+    // a 0x0 header over last part's picture.
+    if (runShotTex_ == 0 || runShotW_ <= 0 || runShotH_ <= 0) {
+        ImGui::TextDisabled("Image");
+        ImGui::Separator();
+        ImGui::TextDisabled("Nothing captured yet.");
+        ImGui::TextDisabled("A recipe step (capture_view) puts");
+        ImGui::TextDisabled("a picture here.");
+        ImGui::EndChild();
+        return;
+    }
+
+    // Header: caption, and a Clear that says the picture is stale rather than
+    // leaving last part's label over this part's run.
+    ImGui::TextUnformatted(runShotLabel_.empty() ? "Image" : runShotLabel_.c_str());
+    ImGui::SameLine();
+    const float clrW = ImGui::CalcTextSize("Clear").x +
+                       ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - clrW);
+    if (ImGui::SmallButton("Clear")) {
+        // The texture id is KEPT and reused by the next capture. Freeing it
+        // would buy nothing back: one texture is the ceiling either way, and a
+        // reused id is what EnsureTextureRGB is for.
+        runShotW_ = runShotH_ = 0;
+        runShotLabel_.clear();
+        runShotStamp_.clear();
+        runShotPath_.clear();
+        ImGui::EndChild();
+        return;
+    }
+    ImGui::Separator();
+
+    // Fit the whole frame inside what is left, aspect preserved, centred. FIT
+    // and not cover: a serial number half outside the box is the one failure
+    // this panel exists to avoid.
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float  footH = ImGui::GetTextLineHeightWithSpacing();
+    const float  imgH  = avail.y - footH;
+    if (imgH > 8.0f && avail.x > 8.0f && runShotW_ > 0 && runShotH_ > 0) {
+        const float sx = avail.x / static_cast<float>(runShotW_);
+        const float sy = imgH / static_cast<float>(runShotH_);
+        const float sc = sx < sy ? sx : sy;
+        const ImVec2 sz(static_cast<float>(runShotW_) * sc,
+                        static_cast<float>(runShotH_) * sc);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail.x - sz.x) * 0.5f);
+        ImGui::Image((ImTextureID)(intptr_t)runShotTex_, sz);   // C-style cast: void*/ImU64 ImTextureID
+        // Hover to read it at full size: at this width a serial is a few pixels
+        // tall, and shrinking the deck to read one is not a reasonable ask.
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            const float tw = 640.0f;
+            const float ts = tw / static_cast<float>(runShotW_);
+            ImGui::Image((ImTextureID)(intptr_t)runShotTex_,
+                         ImVec2(tw, static_cast<float>(runShotH_) * ts));
+            ImGui::EndTooltip();
+        }
+    }
+    // Footer: what it is and whether it was filed. "saved" is the difference
+    // between a picture that is evidence and one that is only a glance.
+    ImGui::TextDisabled("%dx%d  %s%s", runShotW_, runShotH_, runShotStamp_.c_str(),
+                        runShotPath_.empty() ? "" : "  saved");
+    if (!runShotPath_.empty() && ImGui::IsItemHovered())
+        ImGui::SetTooltip("Filed in the DUT record as %s", runShotPath_.c_str());
+    ImGui::EndChild();
+}
+
 // The Run page's right column, under the DUT block: what this part measured.
 // The live keys of a RUNNING recipe are merged over the accumulated ones and
 // marked, so there is one list to read rather than two.
@@ -1089,8 +1188,23 @@ void App::DrawRunPanel()
     }
     ImGui::SameLine(0.0f, 0.0f);
 
-    // ---- Right: DUT (the operator flow is scan -> run -> pass/fail) ----
+    // ---- Right: the picture, then DUT (the operator flow is look -> scan ->
+    // run -> pass/fail, and the panel is stacked in that order) ----
     ImGui::BeginChild("runDut", ImVec2(rightW, paneH), ImGuiChildFlags_Borders);
+    // Seeded from a proportion on the first frame and clamped every frame, so
+    // a saved height from a bigger monitor cannot swallow the DUT block below.
+    // The floor leaves room for the header and footer lines; the ceiling leaves
+    // the DUT block its serial row.
+    {
+        const float rowH = ImGui::GetTextLineHeightWithSpacing();
+        if (runShotPanelH_ <= 0.0f) runShotPanelH_ = paneH * 0.34f;
+        runShotPanelH_ = clampf(runShotPanelH_, rowH * 4.0f, paneH - rowH * 8.0f);
+    }
+    DrawRunShotPanel();
+    if (Splitter("##runsplitShot", false, kSplitH, ImGui::GetContentRegionAvail().x)) {
+        runShotPanelH_ += ImGui::GetIO().MouseDelta.y;
+        splitting = true;
+    }
     DrawDutBlock();
     // The engine line is pinned to the BOTTOM and the values scroll above it:
     // "what is the engine doing" is glanced at, and a long value list must not

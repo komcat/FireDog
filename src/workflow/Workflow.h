@@ -283,6 +283,27 @@ public:
     void QueueAlignResult(const std::string& uid, const AlignResult& r);
     std::vector<std::pair<std::string, AlignResult>> TakeAlignResults();
 
+    // ---- Captured view hand-back (capture_view / dut_capture_image) ---------
+    // One frame, parked for the Run page's image box. Same worker->UI route as
+    // the two above and for the same reason — a command runs on an engine
+    // worker and must never touch GL — but a SLOT, not a queue: a 5 MP frame is
+    // ~15 MB, the box can show exactly one, and the one worth showing is the
+    // last one asked for. A queue here would hold megabytes of pictures nobody
+    // will ever see.
+    //
+    // The UI TAKES the frame (moves the pixels out) rather than copying it: the
+    // bytes exist only to become a texture, and holding a second copy in the
+    // slot afterwards would double the cost of every capture for nothing.
+    struct CapturedView {
+        std::vector<unsigned char> rgb;   // w * h * 3
+        int         w = 0, h = 0;
+        std::string label;       // what the operator was asked to look at
+        std::string stamp;       // when it was taken
+        std::string savedPath;   // record-relative path, "" if display-only
+    };
+    void SetCapturedView(CapturedView v);
+    bool TakeCapturedView(CapturedView* out);   // false = nothing new
+
     // ---- LIVE taught frames (align_solve -> align_apply / move_local) -------
     // Runtime state, deliberately NOT the document. A frame describes where ONE
     // physical part sat. The moment that part could have changed, a frame taught
@@ -411,6 +432,13 @@ private:
     // Captured-E-point queue (same producer/consumer split).
     std::mutex alignPtMu_;
     std::vector<AlignPointMark> alignPtQueue_;
+
+    // The captured-view slot. `shotPending_` is a separate flag rather than
+    // "is rgb non-empty", so a take can move the pixels out and leave the
+    // vector's capacity behind for the next capture to reuse.
+    std::mutex   shotMu_;
+    CapturedView shot_;
+    bool         shotPending_ = false;
 
     // Live taught frames by alignment uid. Read by worker threads (move_local)
     // and by the UI (the "live" indicator), written by align_solve.

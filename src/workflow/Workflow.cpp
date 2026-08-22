@@ -411,6 +411,23 @@ std::vector<std::pair<std::string, SavedPos>> Workflow::TakeSavedPositions()
     return std::exchange(teachQueue_, {});
 }
 
+void Workflow::SetCapturedView(CapturedView v)
+{
+    const std::lock_guard<std::mutex> lock(shotMu_);
+    shot_        = std::move(v);   // latest wins; the previous frame is dropped
+    shotPending_ = true;
+}
+
+bool Workflow::TakeCapturedView(CapturedView* out)
+{
+    const std::lock_guard<std::mutex> lock(shotMu_);
+    if (!shotPending_ || !out) return false;
+    *out         = std::move(shot_);
+    shot_        = CapturedView{};
+    shotPending_ = false;
+    return true;
+}
+
 void Workflow::QueueAlignResult(const std::string& uid, const AlignResult& r)
 {
     const std::lock_guard<std::mutex> lock(alignMu_);

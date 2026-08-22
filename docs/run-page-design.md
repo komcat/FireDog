@@ -185,6 +185,55 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
   from changing the program under a part already in the machine. Save, dirty
   tracking and the unsaved-changes guard are unchanged.
 
+## 4b. The image box (added 2026-08-21)
+
+Top of the right column, above the DUT block, because that is the order the
+operator works in: **look at the part, read what it says, then type the serial
+and open the record.**
+
+One still, not a stream. The Aux window already shows what the camera sees right
+now; this shows what it was *pointed at when a step said so*, and it stays put
+while the stage drives on to the next station. A live view cannot answer the
+second question, which is the whole reason the box exists — the motivating case
+is driving the camera to a serial-number label, capturing, and letting the
+operator read it off a picture that no longer moves.
+
+Two commands fill it:
+
+| | Requires a DUT | Writes a file | For |
+|---|---|---|---|
+| `capture_view` | no | no | look at something |
+| `dut_capture_image` | yes | yes | file it as evidence |
+
+`capture_view` deliberately does **not** require an open DUT. Reading the serial
+is how you learn *which* DUT to open, so a command that failed without one would
+be useless for exactly the job it exists to do. `dut_capture_image` fills the
+same box as a side effect after its record write succeeds: the frame is already
+paid for, and the operator watching the run is the one person who can notice
+that the camera photographed the wrong thing.
+
+### The hand-off is a slot, not a queue
+
+`Workflow::CapturedView` is **one** parked frame, latest wins. A 5 MP RGB frame
+is ~15 MB, the box can show exactly one, and the one worth showing is the last
+one asked for — a queue would hold megabytes of pictures nobody will ever see.
+The UI *takes* the frame (moves the pixels out) rather than copying it: the
+bytes exist only to become a texture, and the GPU has them afterwards.
+
+Same worker→UI rule as every other hand-back: the command runs on an engine
+worker and `EnsureTextureRGB` is a GL call, so `DrainCapturedView` runs in
+`App::Update`.
+
+**Its position in `App::Update` is load-bearing.** It sits *after* the DUT-open
+edge detector, which clears the box for the same reason it drops live frames — a
+still shows one physical part. A recipe that does `dut_open` and then
+`dut_capture_image` can land both inside one frame, and draining first would let
+the open wipe the picture the capture just delivered.
+
+The box height is a dragged, persisted splitter (`run_shot_h`) rather than a
+constant: how tall it has to be to read a serial depends on the lens, not on the
+layout. Hovering the picture shows it at 640 px in a tooltip.
+
 ## 5. Implementation order
 
 1. **R1 — model + runner + page**: `command/Program.{h,cpp}` (model, load/

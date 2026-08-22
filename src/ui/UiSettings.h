@@ -44,6 +44,7 @@ struct UiSettings {
     // rather than lowerH: the band carries the scan parameter forms, and how
     // much room those need has nothing to do with the log strip's height.
     float runScanH = 0.0f;
+    float runShotH = 0.0f;   // Run page image box height (px)
 
     // Aux window toggles. NOTE: clickToMove restored true means a click drives
     // the real gantry immediately on startup.

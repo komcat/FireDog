@@ -401,6 +401,8 @@ private:
     void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|Climb|XCAN tabs
     void DrawRunXcanBlock();          // XCAN tab: hex-left/right launch presets
     void DrawRunQuickAlign();         // operator band: 5 one-press target+ladder launches
+    void DrawRunShotPanel();          // the image box above the DUT block
+    void DrainCapturedView();         // worker -> UI: the captured still -> a texture
     void StartXcanPreset(const std::string& device, int presetIdx);
     void DrawXcanPresetModal();       // right-click settings for a launch preset
     void DrawXcanTargetModal();       // right-click settings for a target preset
@@ -484,6 +486,26 @@ private:
     unsigned int               cameraTex_ = 0;
     int                        cameraW_ = 0, cameraH_ = 0;
     std::vector<unsigned char> frameBuf_;
+
+    // The Run page's image box: ONE still, captured by a recipe step and held
+    // until the next one replaces it. Its own texture rather than a share of
+    // cameraTex_ — that one streams, and the whole point of this box is a
+    // picture that STOPS while the stage drives on to the next station.
+    //
+    // Filled only by DrainCapturedView (App::Update), from the Workflow slot a
+    // worker parked it in. Nothing here is persisted: a photograph of one
+    // physical part means nothing at the next boot, exactly like a taught frame
+    // or a deck mark.
+    unsigned int runShotTex_ = 0;
+    int          runShotW_ = 0, runShotH_ = 0;   // the FRAME's size in pixels
+    std::string  runShotLabel_;   // caption the step asked for
+    std::string  runShotStamp_;   // when it was taken
+    std::string  runShotPath_;    // record-relative path, "" if display-only
+    // The BOX's height on screen, dragged by the splitter under it and
+    // persisted like every other panel size (0 = seed on the first frame). A
+    // fixed height would be wrong for the one thing this box is for: how tall
+    // it has to be to read a serial depends on the lens, not on the layout.
+    float        runShotPanelH_ = 0.0f;
 
     // Camera page state: config id (for saving back into hardware.json) and
     // the exposure edit value, pulled from the camera once per connection.

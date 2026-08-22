@@ -68,6 +68,7 @@ int App::Run()
         if (ui.runDeckW      > 0.0f) runDeckW_      = ui.runDeckW;
         if (ui.runDutW       > 0.0f) runDutW_       = ui.runDutW;
         if (ui.runScanH      > 0.0f) runScanH_      = ui.runScanH;
+        if (ui.runShotH      > 0.0f) runShotPanelH_ = ui.runShotH;
         if (ui.orgLibW       > 0.0f) orgLibW_       = ui.orgLibW;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
@@ -233,9 +234,29 @@ void App::Update(float dt)
         const std::string key = di.open ? di.serial + "|" + di.openedAt : std::string();
         if (key != dutOpenKey_) {
             dutOpenKey_ = key;
-            if (!key.empty()) workflow_.ClearLiveFrames("new DUT opened");
+            if (!key.empty()) {
+                workflow_.ClearLiveFrames("new DUT opened");
+                // And the picture, for the same reason: a still shows ONE
+                // physical part. Left up, last part's serial would sit over
+                // this part's run looking like a reading somebody just took.
+                runShotW_ = runShotH_ = 0;
+                runShotLabel_.clear();
+                runShotStamp_.clear();
+                runShotPath_.clear();
+            }
         }
     }
+
+    // The still a capture_view / dut_capture_image step took, turned into a
+    // texture. Here for the same reason as every drain above: the command ran
+    // on an engine worker, and uploading a texture is a GL call only the UI
+    // thread may make.
+    //
+    // AFTER the DUT edge above, and that order is load-bearing: a recipe that
+    // does dut_open and then dut_capture_image can land both inside one frame,
+    // and draining first would have the open wipe the picture the capture just
+    // delivered.
+    DrainCapturedView();
 
     // Age the last detection here rather than timing it in a Draw, so the value
     // and its age can never disagree within a frame. A new detection is one on
@@ -378,6 +399,7 @@ void App::SaveUiSettings()
     s.runDeckW      = runDeckW_;
     s.runDutW       = runDutW_;
     s.runScanH      = runScanH_;
+    s.runShotH      = runShotPanelH_;
     s.orgLibW       = orgLibW_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
