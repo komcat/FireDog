@@ -83,6 +83,14 @@ must never be able to lock out the people who are in it.
 It cannot be registered over — the User Manager refuses the number `admin` —
 because shadowing it would turn a forgotten password into a reinstall.
 
+The login screen prints both the number and the password, but **only while the
+roster is empty**. Naming the account without its password is the unhelpful half
+of the answer: on a machine where nobody is registered there is nothing for the
+recovery account to protect, and somebody who cannot get in has no way to
+register the people who could. The moment anybody is registered there *is*
+something to protect, and the hint disappears — otherwise it stops being a hint
+and becomes an advertisement for the way around every other credential.
+
 It is documented, not secret: the password is in this file, in the header, and
 in git history. Anyone with repo access has admin on any machine. Hardening it
 (require a roster admin once one exists, built-in only as fallback) is a

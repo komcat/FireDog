@@ -202,15 +202,22 @@ void App::DrawLoginScreen()
         ImGui::TextColored(StateColor(ConnState::Failed), "%s", loginErr_.c_str());
     }
 
-    // The one hint an empty machine needs. Shown only when there is genuinely
-    // nobody to log in as — on a registered machine it would just be an
-    // advertisement for the recovery account.
+    // The one hint an empty machine needs, password included. Naming the
+    // account without it is the unhelpful half of the answer: on a machine with
+    // an empty roster there is nothing for the recovery account to protect, and
+    // somebody who cannot get in has no way to register the people who could.
+    // It is a documented account, not a secret.
+    //
+    // Shown ONLY while the roster is empty. The moment anybody is registered
+    // there is something to protect, and this stops being a hint and starts
+    // being an advertisement for the way around it.
     if (employees_.empty()) {
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::TextDisabled("No employee numbers registered yet. Sign in as");
-        ImGui::TextDisabled("'%s' to register them (User > Employee Numbers).",
-                            kBuiltinAdminId);
+        ImGui::TextDisabled("No employee numbers registered yet.");
+        ImGui::TextDisabled("Sign in as '%s' / '%s' to register them",
+                            kBuiltinAdminId, kBuiltinAdminPassword);
+        ImGui::TextDisabled("(User > Employee Numbers).");
     }
     ImGui::EndChild();
 
