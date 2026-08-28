@@ -21,10 +21,14 @@
 #include "ui/Widgets.h"
 #include "core/Log.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <map>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace firedog {
 
@@ -230,10 +234,21 @@ void App::DrawJogPanel()
     if (n == 0) { ImGui::TextDisabled("no motion devices"); return; }
     if (jogDevice_ < 0 || static_cast<size_t>(jogDevice_) >= n) jogDevice_ = 0;
 
-    // --- Active device list ---
+    // --- Active device list (left) + live axis readout of the selection (right) ---
+    // The row is split in half: which device the keys drive, and where that
+    // device currently is. Both boxes are one height, sized for the widest axis
+    // count in the fleet (a hexapod's six) so switching device does not make the
+    // panel below jump.
+    size_t maxAxes = 3;
+    for (size_t i = 0; i < n; ++i)
+        if (IMotionController* d = hardware_.MotionDevice(i))
+            maxAxes = (std::max)(maxAxes, d->Axes().size());
+    const float rowH  = ImGui::GetTextLineHeightWithSpacing() * static_cast<float>(maxAxes)
+                        + ImGui::GetStyle().FramePadding.y * 2.0f;
+    const float halfW = ImGui::GetContentRegionAvail().x * 0.5f - ImGui::GetStyle().ItemSpacing.x * 0.5f;
+
     ImGui::TextUnformatted("Device");
-    ImGui::BeginChild("jogdevs", ImVec2(0.0f, ImGui::GetTextLineHeightWithSpacing() * 3.4f),
-                      ImGuiChildFlags_Borders);
+    ImGui::BeginChild("jogdevs", ImVec2(halfW, rowH), ImGuiChildFlags_Borders);
     for (size_t i = 0; i < n; ++i) {
         IMotionController* d = hardware_.MotionDevice(i);
         if (!d) continue;
@@ -248,6 +263,24 @@ void App::DrawJogPanel()
     ImGui::EndChild();
 
     IMotionController* dev = hardware_.MotionDevice(static_cast<size_t>(jogDevice_));
+
+    // Live X/Y/Z/U/V/W of the selected device, straight off the poll cache — the
+    // same numbers the Motion page shows, in the panel that is moving them.
+    ImGui::SameLine();
+    ImGui::BeginChild("jogpos", ImVec2(0.0f, rowH), ImGuiChildFlags_Borders);
+    if (!dev) {
+        ImGui::TextDisabled("no device");
+    } else {
+        const std::vector<std::string>      axNames = dev->Axes();
+        const std::map<std::string, double> live    = dev->Positions();
+        for (const std::string& ax : axNames) {
+            const auto it = live.find(ax);
+            if (it != live.end()) ImGui::Text("%s %9.4f", ax.c_str(), it->second);
+            else                  ImGui::TextDisabled("%s      --", ax.c_str());
+        }
+    }
+    ImGui::EndChild();
+
     if (!dev) { ImGui::TextDisabled("select a device"); return; }
     const std::vector<std::string> axes = dev->Axes();
     const size_t                   di   = static_cast<size_t>(jogDevice_);
