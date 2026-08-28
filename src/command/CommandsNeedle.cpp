@@ -279,6 +279,10 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"z_trim_mm", PT::Double, false, 0.0, -5.0, 5.0, {},
                        "adjust the dispense height: + moves the needle CLOSER to the "
                        "part, whichever way Z counts on this gantry"},
+                      {"gap_mm", PT::Double, false, 0.0, 0.0, 10.0, {},
+                       "dispense standoff: how far ABOVE the calibrated touch height "
+                       "the needle stops, letting the bead bridge the gap. Distinct "
+                       "from z_trim_mm, which corrects the calibration itself"},
                       {"safety_mm", PT::Double, false, 1.0, 0.0, 20.0, {},
                        "height above the target where the fast descent hands over to "
                        "the slow one"},
@@ -297,6 +301,9 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "Z velocity down to the safety height"},
                       {"v_final", PT::Double, false, 5.0, 0.001, 100.0, {},
                        "Z velocity for the last stretch onto the part"},
+                      {"v_liftoff", PT::Double, false, 5.0, 0.001, 100.0, {},
+                       "Z velocity climbing away after the slide has retracted; "
+                       "v_final is for arriving on a part, not for leaving one"},
                       {"file", PT::ScriptFile, false,
                        "config/scripts/dispense_procedure.lua", 0, 0, {},
                        "script override; a product's own copy of this name wins"},
@@ -309,6 +316,7 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("disp_before_ms", static_cast<double>(p.GetInt("before_ms")));
                       c.CtxSet("disp_after_ms", static_cast<double>(p.GetInt("after_ms")));
                       c.CtxSet("disp_z_trim_mm", p.GetDouble("z_trim_mm"));
+                      c.CtxSet("disp_gap_mm", p.GetDouble("gap_mm"));
                       c.CtxSet("disp_safety_mm", p.GetDouble("safety_mm"));
                       c.CtxSet("disp_autofocus", p.GetBool("autofocus"));
                       c.CtxSet("disp_confirm", p.GetBool("confirm"));
@@ -317,6 +325,7 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("disp_v_travel", p.GetDouble("v_travel"));
                       c.CtxSet("disp_v_approach", p.GetDouble("v_approach"));
                       c.CtxSet("disp_v_final", p.GetDouble("v_final"));
+                      c.CtxSet("disp_v_liftoff", p.GetDouble("v_liftoff"));
                       const std::string file = c.ResolveScript(p.GetString("file"));
                       const std::string err = RunLuaFile(file, *rp, c, {}, false, nullptr);
                       return err.empty() ? CommandResult::Success()

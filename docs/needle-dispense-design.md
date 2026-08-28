@@ -124,7 +124,10 @@ Per pass:
    difference is the measurement.
 8. Confirm → `pulse_output` fires the shot.
 9. Retreat **Z first, then the slide, then XY** — the needle never travels
-   sideways while it is down near the dot it just made.
+   sideways while it is down near the dot it just made. (The *dispense*
+   procedure retracts before lifting; here Z must clear first, because the
+   operator has just jogged the tip into contact and the imprint is what is
+   being measured.)
 10. `pick_point` on the imprint, with the expected position as a hint (an edge
     arrow with its distance when it is out of frame).
 11. `dx = tip_x − dot_wx`, `dy = tip_y − dot_wy`, `dz = tip_z − cam_z`.
@@ -168,20 +171,40 @@ works.
 
 1. `needle_offset{require = true}` — fail before anything travels.
 2. `move_to_position` — camera over the point; optional `auto_focus`.
-3. `read_position` → `cam_*`; `target_z = cam_z + dz + dir*trim`,
-   `safety_z = target_z − dir*safety`.
+3. `read_position` → `cam_*`; `touch_z = cam_z + dz + dir*trim`,
+   `target_z = touch_z − dir*gap`, `safety_z = target_z − dir*safety`.
+   **`z_trim_mm` and `gap_mm` are not the same correction and must stay
+   separate.** Trim corrects the *calibration* — the measured touch height was
+   slightly off on this machine. Gap is a deliberate *standoff*: the needle is
+   meant to stop short and let the bead bridge it, which is a property of the
+   glue and the dot size. Folding one into the other means a product that later
+   wants no gap also throws away the machine correction it was hiding.
 4. `move_axis_to` the needle over the point, still at the camera's Z.
 5. Confirm → `extend_slide`.
 6. Two-speed descent: `v_approach` to `safety_z`, `v_final` to `target_z`.
 7. Confirm → `before_ms` → `pulse_output` → `after_ms`. A cancel here retreats
    before failing: leaving the needle resting on the part would be worse than
    the dispense.
-8. Retreat Z, retract, and only then XY.
+8. Retreat: **retract the slide first**, then Z at `v_liftoff`, then XY. The
+   cylinder lifts the needle off the dot on its own stroke — straighter and
+   faster than Z can, and it breaks the string while the head is still
+   stationary over the point. Climbing at `v_final` instead would crawl away
+   from a part there is nothing left to arrive at. XY stays last either way, so
+   the needle never travels sideways while it is down near the dot.
 9. Optionally bring the camera back, capture an image to the DUT, and ask.
 
 `pulse_output` rather than on/delay/off because it closes the valve **even when
 a Stop interrupts the wait** (`CommandsIo.cpp`). A stop that left
 `Dispenser_Shot` energised would keep pumping.
+
+**Velocity persists on the controller, and this bites hardest here.** The
+descent runs at `v_final`, so whatever the last move sets is what the *next*
+recipe step — and the next run of this one — travels at. With `v_travel` left
+at 0 there is nothing to restore to, and the script says so rather than leaving
+the gantry quietly at half a millimetre per second; the symptom of ignoring it
+is a head that appears not to move for seconds and then a `move_axis_to`
+timeout. Set `v_travel` on any `dispense_run` that is not the last step of a
+program.
 
 **There is no pressure control, no purge, no bead.** bobcat has none either. The
 external regulator sets the flow and `shot_ms` sets how long it flows; `shot_ms`

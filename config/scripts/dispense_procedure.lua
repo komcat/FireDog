@@ -29,13 +29,15 @@
 --   disp_before_ms   settle at height before firing (default 0)
 --   disp_after_ms    dwell after firing, string break (default 0)
 --   disp_z_trim_mm   + moves the needle CLOSER to the part (default 0)
+--   disp_gap_mm      standoff ABOVE the touch height (default 0)
 --   disp_safety_mm   fast -> slow handover height   (default 1.0)
 --   disp_autofocus   take the height from a focus here instead of the
 --                    position's taught Z            (default false)
 --   disp_confirm     ask before extending and before firing (default true)
 --   disp_verify      bring the camera back over the dot    (default true)
 --   disp_capture     attach an image to the open DUT       (default true)
---   disp_v_travel / disp_v_approach / disp_v_final   velocities, mm/s
+--   disp_v_travel / disp_v_approach / disp_v_final / disp_v_liftoff
+--                    velocities, mm/s
 
 local POS     = fd.param("disp_position", "")
 local DEV     = fd.param("disp_device", "gantry-main")
@@ -43,6 +45,7 @@ local SHOT    = math.floor(fd.param("disp_shot_ms", 300))
 local BEFORE  = math.floor(fd.param("disp_before_ms", 0))
 local AFTER   = math.floor(fd.param("disp_after_ms", 0))
 local TRIM    = fd.param("disp_z_trim_mm", 0.0)
+local GAP     = fd.param("disp_gap_mm", 0.0)
 local SAFETY  = fd.param("disp_safety_mm", 1.0)
 local FOCUS   = fd.param("disp_autofocus", false)
 local CONFIRM = fd.param("disp_confirm", true)
@@ -51,6 +54,7 @@ local CAPTURE = fd.param("disp_capture", true)
 local VTRAVEL = fd.param("disp_v_travel", 0.0)
 local VAPPR   = fd.param("disp_v_approach", 20.0)
 local VFINAL  = fd.param("disp_v_final", 5.0)
+local VLIFT   = fd.param("disp_v_liftoff", 5.0)
 
 if POS == "" then
     error("disp_position is not set (the saved position holding the camera over " ..
@@ -92,11 +96,20 @@ end
 fd.read_position{ device = DEV, ctx_prefix = "cam" }
 local cam_x, cam_y, cam_z = fd.ctx.cam_x, fd.ctx.cam_y, fd.ctx.cam_z
 
--- + trim brings the needle CLOSER to the part, whichever way this gantry counts.
-local target_z = cam_z + dz + dir * TRIM
+-- Two Z corrections, and they are not the same thing.
+--   TRIM corrects the CALIBRATION: + brings the needle closer to the part,
+--   because the measured touch height was slightly off on this machine.
+--   GAP is a deliberate STANDOFF: the needle is meant to stop short and let the
+--   bead bridge the gap. It is a property of the glue and the dot size, not of
+--   the machine, which is why it is its own number - trimming a gap away would
+--   also lose the calibration correction it was hiding.
+-- Both are applied along `dir`, so neither assumes which way Z counts.
+local touch_z  = cam_z + dz + dir * TRIM      -- needle ON the part
+local target_z = touch_z - dir * GAP          -- where it actually stops
 local safety_z = target_z - dir * SAFETY
-fd.logf("dispense: camera (%.4f, %.4f, %.4f), needle target Z %.4f (safety %.4f)",
-        cam_x, cam_y, cam_z, target_z, safety_z)
+fd.logf("dispense: camera (%.4f, %.4f, %.4f), touch Z %.4f, gap %.3f -> " ..
+        "needle target Z %.4f (safety %.4f)",
+        cam_x, cam_y, cam_z, touch_z, GAP, target_z, safety_z)
 
 -- ---- 3. Needle over the point ----------------------------------------------
 -- Still at the camera's height. This leg is the length of the lever arm - tens
@@ -123,10 +136,11 @@ fd.move_axis_to{ device = DEV, axes = "Z", z_mm = target_z, velocity_mm_s = VFIN
 -- ---- 5. The shot -------------------------------------------------------------
 if CONFIRM then
     if not fd.prompt(string.format("At dispense height. Fire a %d ms shot?", SHOT)) then
-        -- Retreat before failing: leaving the needle sitting on the part because
-        -- the operator said no would be a worse outcome than the dispense.
-        fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VFINAL }
+        -- Retreat before failing: leaving the needle sitting over the part
+        -- because the operator said no would be a worse outcome than the
+        -- dispense. Same order as the normal retreat below - slide first.
         fd.retract_slide{ slide = SLIDE }
+        fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VLIFT }
         error("cancelled by operator")
     end
 end
@@ -138,10 +152,15 @@ fd.pulse_output{ device = IO, pin = PIN, ms = SHOT }
 if AFTER > 0 then fd.sleep(AFTER) end
 
 -- ---- 6. Retreat ---------------------------------------------------------------
--- Z first, then the slide, then XY - the needle is never travelling sideways
--- while it is still down near the dot it just placed.
-fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VFINAL }
+-- The SLIDE comes up first. It lifts the needle straight off the dot on the
+-- cylinder's own stroke - faster than Z can, and it breaks the string while the
+-- head is still stationary over the point. Only then does Z climb, and at the
+-- lift-off velocity rather than v_final: v_final exists to arrive on a part
+-- gently, and there is nothing left to arrive at once the needle is clear.
+-- XY comes last either way, so the needle never travels sideways while it is
+-- still down near the dot it just placed.
 fd.retract_slide{ slide = SLIDE }
+fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VLIFT }
 
 -- ---- 7. Look at the result ------------------------------------------------
 if VERIFY then
@@ -159,9 +178,12 @@ if VERIFY then
 end
 
 -- ---- 8. Leave the device at a sane speed -----------------------------------
--- Velocity persists on the controller. The last move ran at v_final so the head
--- can approach a part gently; leaving it there means the NEXT recipe step
--- crawls, and the symptom of that is a program that mysteriously takes minutes.
+-- Velocity persists on the controller, and this is the single most common way
+-- to lose minutes to a machine that looks broken: the descent ran at v_final,
+-- and whatever the LAST move here set is what the next recipe step - and the
+-- next RUN of this one - travels at. A gantry left at 0.5 mm/s takes a minute
+-- to cross what it crossed in a second, which reads as a hang, then as a
+-- move timeout.
 -- With v_travel unset there is nothing to restore to, so say so rather than
 -- leave it quietly slow.
 -- 0.001 is set_velocity's own floor, not a rounding guard: below it the command
@@ -172,7 +194,8 @@ if VTRAVEL >= 0.001 then
 else
     fd.logf("note: %s is left at %.2f mm/s (v_travel is 0, so there is nothing to " ..
             "restore) - set v_travel if the next step should move at speed",
-            DEV, VFINAL)
+            DEV, VLIFT)
 end
 
-fd.logf("dispensed %d ms at (%.4f, %.4f), needle Z %.4f", SHOT, cam_x, cam_y, target_z)
+fd.logf("dispensed %d ms at (%.4f, %.4f), needle Z %.4f (%.3f mm above touch)",
+        SHOT, cam_x, cam_y, target_z, GAP)
