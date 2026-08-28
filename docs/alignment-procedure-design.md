@@ -353,12 +353,28 @@ Duplicating a procedure **keeps** its nominals while clearing its `result`. That
 asymmetry is the whole idea in one line: the frame is per-part, the nominals are
 per-design.
 
+### The four steps, numbered on the buttons
+
+A nominal's row is eight equal-looking `SmallButton`s and nothing about them
+says which comes first — least of all that *3. Use* and *4. Place…* are not two
+ways to do the same thing. So the four that **advance** carry their number:
+
+| | Button | What it does |
+|---|---|---|
+| 1 | *Teach nominal…* | mark two features; their midpoint becomes the local X/Y |
+| 2 | *Teach view* | save the current pose as where the camera watches this point from |
+| 3 | *Use* | load it into the local→machine probe, so *Move here* can drive there and check it |
+| 4 | *Place…* | mark a gripped object and compute the correction onto it |
+
+*Go view*, *Clear view*, *Re-teach* and *Delete* stay **unnumbered**, behind a
+24 px gap on their row. They check or undo a step rather than advancing one, and
+a number on them would claim otherwise.
+
 ### What consumes one
 
 The nominal list's *Use* button loads a nominal into the local→machine probe
 fields directly above it, so *Move here* drives the **procedure's own device**
-to it — still
-behind the live-frame gate and the arm checkbox.
+to it — still behind the live-frame gate and the arm checkbox.
 
 ## 6c. Placement — putting a gripped object on a nominal
 
