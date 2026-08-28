@@ -201,12 +201,13 @@ private:
     // Motion page — all motion devices (PI + ACS) on one page. The middle
     // panel is tabbed: "Positions" (saved-position table) and "Mapped Path"
     // (node-edge graph editor + path execution).
-    void DrawMotionListPanel();    // left:   device list + status
+    void DrawMotionListPanel();    // left:   device list + live axes + velocity
     void DrawMotionDetailPanel();  // middle: device header + tab bar
     void DrawMotionPositionsTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionMapTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionScanTab(std::size_t devIdx, IMotionController* m);
-    void DrawMotionInfoPanel();    // right:  live axis positions
+    // No right panel: the live axes moved under the device list, so the
+    // saved-position table in the middle gets the width instead.
     // IO page — all IO devices (Ezi-IO + WAGO) on one page.
     void DrawIoListPanel();        // left:   device list + status
     void DrawIoDetailPanel();      // middle: selected device + output toggles
@@ -227,6 +228,10 @@ private:
     void DrawRecipeTreeToolbar(Recipe& r, bool canEdit);   // move/delete row
     void DrawRecipePalette(Recipe& r, bool canEdit);       // searchable add-step column
     bool DrawParamWidget(const ParamSpec& p, nlohmann::json& params);  // schema form row
+    void DrawTeachPositionModal();    // "Teach here" confirm, raised from a form row
+    // Overwrite an existing saved position (by uid) with the device's live
+    // pose. In place — the uid survives, so every reference to it survives.
+    bool TeachPositionByUid(const std::string& device, const std::string& uid);
     bool DrawConditionEditor(nlohmann::json& cond);   // if / loop-while / wait_until
     void DrawRecipeRunStrip(float height);
     void DrawRecipePromptWindow();    // GLOBAL prompt (recipe + script) — non-modal, always on top
@@ -658,13 +663,26 @@ private:
     std::map<std::string, AxisTransform> transformCfg_;
 
     // Rename-position dialog (name is a label; the uid never changes).
-    bool openRenamePos_ = false;    // row Edit button -> popup handoff
+    bool openRenamePos_ = false;    // row Rename button -> popup handoff
     int  renameRow_     = -1;       // row index in the selected device's list
     char renameBuf_[32] = "";
+
+    // New-position dialog ("+ Add current" asks for the name before saving —
+    // an auto "P24" is a row nobody can identify a week later). The live
+    // position is captured when OK is pressed, not when the dialog opens.
+    bool openNewPos_    = false;
+    char newPosBuf_[32] = "";
 
     // Delete-position confirmation dialog (X button asks before erasing).
     bool openDeletePos_ = false;
     int  deleteRow_     = -1;
+
+    // Teach-position handoff: a PositionUid form row raises the flag, the
+    // Recipe Editor panel opens the modal. A flag rather than a direct
+    // OpenPopup because the row draws inside the inspector's child window.
+    bool        openTeachPos_ = false;
+    std::string teachPosDev_;    // motion device the step names
+    std::string teachPosUid_;    // the saved position to overwrite in place
 
     // Camera pixel->mm calibration (loaded from CameraConfig): drives the Aux
     // world-distance overlay and the click-to-move offset.

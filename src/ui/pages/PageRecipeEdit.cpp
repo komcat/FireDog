@@ -465,6 +465,119 @@ void App::DrawRecipeEditPanel()
         if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+    DrawTeachPositionModal();
+}
+
+// Re-teach the position a step REFERENCES, in place. Raised by the "Teach here"
+// button on a PositionUid form row (RecipeForms.cpp) through openTeachPos_,
+// which is a flag rather than a direct OpenPopup because the row draws inside
+// the inspector's child window and the popup has to live at panel level.
+//
+// This is the one surface in the editor that moves the document outside a
+// recipe, so it asks. What it has to say is not "are you sure" but WHO ELSE is
+// affected: the uid is preserved, so every other step pointing at this position
+// keeps resolving and quietly follows it to the new pose.
+void App::DrawTeachPositionModal()
+{
+    if (openTeachPos_) { ImGui::OpenPopup("Teach Position"); openTeachPos_ = false; }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("Teach Position", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    IMotionController* m = nullptr;
+    for (std::size_t i = 0; i < hardware_.MotionCount(); ++i)
+        if (hardware_.MotionName(i) == teachPosDev_) { m = hardware_.MotionDevice(i); break; }
+    SavedPos*  tgt = nullptr;
+    const auto it  = session_.Positions().find(teachPosDev_);
+    if (it != session_.Positions().end())
+        for (SavedPos& sp : it->second)
+            if (sp.uid == teachPosUid_) { tgt = &sp; break; }
+
+    if (!tgt || !m || !m->IsConnected()) {
+        ImGui::TextUnformatted(!tgt ? "That saved position no longer exists."
+                                    : "The device is not connected.");
+        if (ImGui::Button("Close", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+
+    // The driver idles at 1 Hz and nothing on this page asks otherwise, so a
+    // pose read on the button click would be up to a second stale - at a taught
+    // position that difference IS the measurement. Demand fast polls for as long
+    // as the dialog is up and show what arrives: by the time anyone has read
+    // this and pressed Teach the numbers are current, and they are the numbers
+    // about to be stored.
+    m->RequestFastPoll();
+    const std::map<std::string, double> live = m->Positions();
+
+    ImGui::Text("Re-teach '%s' from the live %s pose?", tgt->name, teachPosDev_.c_str());
+    ImGui::Separator();
+    if (ImGui::BeginTable("teachpos", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("Axis");
+        ImGui::TableSetupColumn("Saved");
+        ImGui::TableSetupColumn("Live");
+        ImGui::TableHeadersRow();
+        for (const std::string& ax : m->Axes()) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(ax.c_str());
+            ImGui::TableSetColumnIndex(1);
+            const auto sv = tgt->vals.find(ax);
+            if (sv != tgt->vals.end()) ImGui::Text("%.4f", sv->second);
+            else                       ImGui::TextDisabled("--");
+            ImGui::TableSetColumnIndex(2);
+            const auto lv = live.find(ax);
+            if (lv != live.end()) ImGui::Text("%.4f", lv->second);
+            else                  ImGui::TextDisabled("--");
+        }
+        ImGui::EndTable();
+    }
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.25f, 1.0f),
+                       "'%s' is a shared saved position.", tgt->name);
+    ImGui::TextDisabled("uid %s is kept, so nothing breaks.", tgt->uid.c_str());
+    ImGui::TextDisabled("Every other step, program and procedure that references it "
+                        "moves here too.");
+    ImGui::Spacing();
+    if (ImGui::Button("Teach", ImVec2(100.0f, 0.0f))) {
+        TeachPositionByUid(teachPosDev_, teachPosUid_);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+// Overwrite an EXISTING saved position with the device's live pose, found by
+// uid and updated in place. It never creates one: the uid came from a step that
+// is already referencing it, so a missing row means a STALE reference, and
+// inventing a position for it would bury exactly the error the picker draws in
+// red. Same update-in-place rule as CapturePrivatePose (PageAlign.cpp), for the
+// shared, named half of the table rather than the private half.
+bool App::TeachPositionByUid(const std::string& device, const std::string& uid)
+{
+    IMotionController* m = nullptr;
+    for (std::size_t i = 0; i < hardware_.MotionCount(); ++i)
+        if (hardware_.MotionName(i) == device) { m = hardware_.MotionDevice(i); break; }
+    if (!m || !m->IsConnected()) return false;
+
+    const auto it = session_.Positions().find(device);
+    if (it == session_.Positions().end()) return false;
+    for (SavedPos& sp : it->second) {
+        if (sp.uid != uid) continue;
+        const std::map<std::string, double> live = m->Positions();
+        for (const std::string& ax : m->Axes()) {
+            const auto lv = live.find(ax);
+            sp.vals[ax] = (lv != live.end()) ? lv->second : 0.0;
+        }
+        session_.SavePositions();
+        FD_INFO("saved", "re-taught '%s' (uid %s, %s) from the live pose",
+                sp.name, uid.c_str(), device.c_str());
+        return true;
+    }
+    FD_WARN("saved", "teach: '%s' has no position uid %s", device.c_str(), uid.c_str());
+    return false;
 }
 
 // Live-generated step label from the params: shown in the tree whenever the

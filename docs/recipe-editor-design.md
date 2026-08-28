@@ -108,10 +108,36 @@ One function, `DrawParamWidget(const ParamSpec&, json& value)`, switched on
 | `Value` | small type combo (bool / number / string) + matching field |
 | `Enum` | combo over `options` |
 | `DeviceMotion` / `DeviceIo` / `Slide` | combo over the HardwareManager fleet names |
-| `PositionUid` | combo of the *device param's* saved positions — shows names, stores uids; re-filtered when the device param changes |
+| `PositionUid` | combo of the *device param's* saved positions — shows names, stores uids; re-filtered when the device param changes; plus **Go** and **Teach here** (below) |
 | `MapName` | combo of the device's maps |
 | `PinName` | combo of the device's pin names (see direction hint below) |
 | `TopicName` | combo of `DataBus::Instance().Topics()` + free-text entry (topics create on demand) |
+
+### `Go` / `Teach here` on a position row
+
+A saved position is a taught pose, and the step that uses it is where an
+operator notices it has drifted. Sending them to the Motion page to fix it is
+how a recipe ends up pointing at a position nobody dared re-teach, so both live
+on the form row.
+
+**Teach writes the position IN PLACE — same uid.** Nothing breaks, because every
+reference still resolves; and that is precisely why it raises a confirmation
+naming the position and saying what else moves with it. The dialog is not an
+"are you sure", it is the only place the sharing is visible: `P24` on one step
+is the same `P24` on every other. `App::TeachPositionByUid` never *creates* a
+row — a uid that resolves to nothing is a stale reference, which the picker
+already draws in red, and inventing a position for it would bury that.
+
+The dialog holds `RequestFastPoll()` open and shows saved-vs-live side by side
+while it is up. Without that the pose read on the click would be up to a second
+stale (the ACS driver idles at 1 Hz and nothing on this page asks otherwise),
+and at a taught position that second *is* the measurement — the same reason
+`record_position` demands a fast poll and waits a cycle out.
+
+Both buttons sit inside the inspector's `BeginDisabled(!canEdit)`, i.e.
+`!orch_.Busy()`: a **Go** from here mid-run would be a second hand on the
+machine. This also means the confirm modal can never appear while an engine
+worker is blocked on the always-on-top prompt window.
 
 `help` renders as a tooltip on the label. Unknown/malformed existing values
 (hand-edited JSON) render as a highlighted raw-text fallback rather than

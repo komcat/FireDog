@@ -57,6 +57,43 @@ void App::DrawMotionListPanel()
         ImGui::PopID();
     }
     if (!any) ImGui::TextDisabled("no motion devices configured");
+
+    // The live axis table and the velocity combo sit under the device list
+    // rather than in a right panel of their own: they describe the device the
+    // list has just selected, and the saved-position table in the middle is
+    // what needs the width. The right panel is left empty for the Motion page.
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextUnformatted("Axis positions");
+    ImGui::Separator();
+
+    IMotionController* m = (selectedMotion_ >= 0 && static_cast<size_t>(selectedMotion_) < n)
+                             ? hardware_.MotionDevice(static_cast<size_t>(selectedMotion_))
+                             : nullptr;
+    if (!m) { ImGui::TextDisabled("no selection"); return; }
+
+    const std::vector<std::string>      axes = m->Axes();
+    const std::map<std::string, double> pos  = m->Positions();
+    if (ImGui::BeginTable("motionpos", 2,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Axis");
+        ImGui::TableSetupColumn("Position");
+        ImGui::TableHeadersRow();
+        for (const std::string& ax : axes) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(ax.c_str());
+            ImGui::TableSetColumnIndex(1);
+            const auto it = pos.find(ax);
+            if (it != pos.end()) ImGui::Text("%.4f", it->second);
+            else                 ImGui::TextDisabled("--");
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    DrawVelocityCombo(static_cast<size_t>(selectedMotion_));
 }
 
 void App::DrawMotionDetailPanel()
@@ -282,13 +319,10 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
     std::vector<SavedPos>& saved   = session_.Positions()[devName];
 
     if (ImGui::SmallButton("+ Add current")) {
-        SavedPos p;
-        std::snprintf(p.name, sizeof(p.name), "P%zu", saved.size());
-        p.uid = GenerateUid();
-        const std::map<std::string, double> pos = m->Positions();
-        for (const auto& a : axes) { const auto it = pos.find(a); p.vals[a] = (it != pos.end()) ? it->second : 0.0; }
-        saved.push_back(std::move(p));
-        session_.SavePositions();
+        // Ask for the name first — the live position is read when OK is
+        // pressed, so the row records where the machine stands at that moment.
+        std::snprintf(newPosBuf_, sizeof(newPosBuf_), "P%zu", saved.size());
+        openNewPos_ = true;
     }
 
     // Per-position visibility widget: system positions stay hidden from the
@@ -357,10 +391,10 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                 session_.SavePositions();
             }
             ImGui::TableSetColumnIndex(2);
-            ImGui::TextUnformatted(sp.name);   // read-only — rename via the Edit dialog
+            ImGui::TextUnformatted(sp.name);   // read-only — rename via the Rename dialog
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("uid: %s", sp.uid.c_str());
             ImGui::TableSetColumnIndex(3);
-            if (ImGui::SmallButton("Edit")) {
+            if (ImGui::SmallButton("Rename")) {
                 renameRow_ = static_cast<int>(r);
                 std::snprintf(renameBuf_, sizeof(renameBuf_), "%s", sp.name);
                 openRenamePos_ = true;
@@ -444,42 +478,45 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
         }
         ImGui::EndPopup();
     }
-}
 
-void App::DrawMotionInfoPanel()
-{
-    // Right panel: the live axis-position table for the selected device.
-    const size_t n = hardware_.MotionCount();
-    IMotionController* m = (selectedMotion_ >= 0 && static_cast<size_t>(selectedMotion_) < n)
-                             ? hardware_.MotionDevice(static_cast<size_t>(selectedMotion_))
-                             : nullptr;
-
-    ImGui::TextUnformatted("Axis positions");
-    ImGui::Separator();
-    if (!m) { ImGui::TextDisabled("no selection"); return; }
-
-    const std::vector<std::string>      axes = m->Axes();
-    const std::map<std::string, double> pos  = m->Positions();
-    if (ImGui::BeginTable("motionpos", 2,
-            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Axis");
-        ImGui::TableSetupColumn("Position");
-        ImGui::TableHeadersRow();
-        for (const std::string& ax : axes) {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(ax.c_str());
-            ImGui::TableSetColumnIndex(1);
-            const auto it = pos.find(ax);
-            if (it != pos.end()) ImGui::Text("%.4f", it->second);
-            else                 ImGui::TextDisabled("--");
+    // ---- New-position dialog ("+ Add current" names the row before saving) ----
+    if (openNewPos_) { ImGui::OpenPopup("New Position"); openNewPos_ = false; }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("New Position", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Save the current %s position as:", devName.c_str());
+        ImGui::SetNextItemWidth(320.0f);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        const bool submit = ImGui::InputText("##newpos", newPosBuf_, sizeof(newPosBuf_),
+                                             ImGuiInputTextFlags_EnterReturnsTrue);
+        const bool valid = newPosBuf_[0] != '\0';
+        // The live axis values as they stand right now — shown so the operator
+        // confirms the machine is where they think it is before the row exists.
+        const std::map<std::string, double> live = m->Positions();
+        for (const auto& a : axes) {
+            const auto it = live.find(a);
+            ImGui::TextDisabled("%s  %.4f", a.c_str(), (it != live.end()) ? it->second : 0.0);
         }
-        ImGui::EndTable();
+        ImGui::Spacing();
+        ImGui::BeginDisabled(!valid);
+        if (ImGui::Button("Save") || (submit && valid)) {
+            SavedPos p;
+            std::snprintf(p.name, sizeof(p.name), "%s", newPosBuf_);
+            p.uid = GenerateUid();
+            for (const auto& a : axes) {
+                const auto it = live.find(a);
+                p.vals[a] = (it != live.end()) ? it->second : 0.0;
+            }
+            FD_INFO("saved", "added '%s' (uid %s, %s)", p.name, p.uid.c_str(), devName.c_str());
+            saved.push_back(std::move(p));
+            session_.SavePositions();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    DrawVelocityCombo(static_cast<size_t>(selectedMotion_));
 }
 
 } // namespace firedog

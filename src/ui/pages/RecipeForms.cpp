@@ -345,6 +345,62 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
                 }
             ImGui::EndCombo();
         }
+
+        // Go / Teach here, next to the picker. A saved position is a taught
+        // pose, and the step that uses it is where an operator notices it has
+        // drifted - sending them to the Motion page to fix it is how a recipe
+        // ends up pointing at a position nobody dared re-teach.
+        //
+        // Teaching writes the position IN PLACE: same uid, so every other
+        // reference still resolves. That is also exactly why it asks first -
+        // those other references now point somewhere else too, and the
+        // confirmation is the only place that fact is visible.
+        //
+        // Both buttons inherit the inspector's BeginDisabled(!canEdit), which
+        // is `!orch_.Busy()` - a Go from here during a run would be a second
+        // hand on the machine.
+        IMotionController* mc = nullptr;
+        int devIdx = -1;
+        for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+            if (hardware_.MotionName(i) != dev) continue;
+            devIdx = static_cast<int>(i);
+            mc     = hardware_.MotionDevice(i);
+            break;
+        }
+        const bool canTeach = mc && mc->IsConnected() && resolved && !v.empty();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!canTeach);
+        if (ImGui::SmallButton("Go")) {
+            std::vector<std::pair<std::string, double>> tgt;
+            // it->second, not Positions()[dev]: operator[] would INSERT an
+            // empty device list for a name that has none. canTeach already
+            // required the lookup above to have found this position.
+            for (const SavedPos& sp : it->second) {
+                if (sp.uid != v) continue;
+                for (const std::string& ax : mc->Axes()) {
+                    const auto av = sp.vals.find(ax);
+                    if (av != sp.vals.end()) tgt.emplace_back(ax, av->second);
+                }
+                break;
+            }
+            if (!workflow_.MoveToPosition(static_cast<std::size_t>(devIdx), tgt))
+                FD_WARN("saved", "move %s -> '%s' failed", dev.c_str(), preview.c_str());
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Teach here")) {
+            // Handoff only. The pose is read when the dialog is confirmed, not
+            // now: the driver idles at 1 Hz and the dialog is what asks it to
+            // poll fast.
+            teachPosDev_  = dev;
+            teachPosUid_  = v;
+            openTeachPos_ = true;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !canTeach)
+            ImGui::SetTooltip("%s", !mc                 ? "the step names no motion device"
+                                    : !mc->IsConnected() ? "device not connected"
+                                                         : "pick a position first");
+
         if (!resolved)
             ImGui::TextColored(kStaleRed, "not a position of '%s' - re-pick", dev.c_str());
         break;
