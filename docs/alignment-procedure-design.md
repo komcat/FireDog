@@ -263,6 +263,17 @@ purpose: when a station is 2 mm off, somebody has to be able to see the number.
 The station card shows the coordinates too, since a private position is not on
 the Motion table.
 
+### Card layout
+
+Each station card is a **two-column table**: *where* on the left (the private
+position, its pose, exposure, lighting), *how* on the right (Manual crosshair /
+Auto detect, and the detector's status block). They answer independent
+questions, and the detector block — button, licence line, filter chain,
+reliability figures, thumbnail, fallback checkbox — is by far the tallest thing
+on the page. Stacked, it pushed the second station and the Run button off the
+bottom of the panel. The columns are stretch-weighted rather than fixed, so both
+cards line up at any panel width, and the divider is draggable.
+
 ### Private detection models
 
 An **auto** station's detector follows the identical pattern, for the identical
@@ -310,7 +321,7 @@ faithfully re-project it to somewhere no part has ever been.
 ### The teach page
 
 `Page::AlignNominal` (`ui/pages/PageAlignNominal.cpp`) is a takeover reached
-only from the frame panel's *Teach nominal…*, on exactly the argument
+only from the nominal list's *Teach nominal…*, on exactly the argument
 `PageVisionTeach` makes: marking a feature needs a big live image, and the
 Alignment page's columns are strips. It shares `CameraView` with the crosshair
 pick window and the vision teach page, so a pixel means the same thing in all
@@ -344,8 +355,9 @@ per-design.
 
 ### What consumes one
 
-The frame panel's *Use* button loads a nominal into the local→machine probe
-fields, so *Move here* drives the **procedure's own device** to it — still
+The nominal list's *Use* button loads a nominal into the local→machine probe
+fields directly above it, so *Move here* drives the **procedure's own device**
+to it — still
 behind the live-frame gate and the arm checkbox.
 
 ## 6c. Placement — putting a gripped object on a nominal
@@ -643,13 +655,21 @@ machine-mm↔pixel projection would drift, and the point of the shared
 | `align_apply` | local (O1) → machine XY into ctx; fails unless a **live** frame was taught this session (§5b) |
 | `move_local` | `align_apply` + one coordinated move (arrival + settle via `MotionWaits.h`) |
 
-The Alignment page's right panel is the interactive twin of the last two: type a
-local X/Y, read the machine XY, and **Move here** drives to it (XY only — the
-frame is 2-D, so Z is left where it is rather than invented). That button sits
-behind the shared `jogArmed_` flag, unlike the station cards' `Go`: `Go` drives
-to a pose a human taught, while this destination is *computed*, so a mis-taught
-frame sends the stage somewhere unexpected — the same risk class as
-click-to-move.
+The **Local → machine** block under *Run alignment* is the interactive twin of
+the last two: type a local X/Y, read the machine XY, and **Move here** drives to
+it (XY only — the frame is 2-D, so Z is left where it is rather than invented).
+That button sits behind the shared `jogArmed_` flag, unlike the station cards'
+`Go`: `Go` drives to a pose a human taught, while this destination is
+*computed*, so a mis-taught frame sends the stage somewhere unexpected — the
+same risk class as click-to-move.
+
+That block, and the nominal list beneath it, live in the **middle** panel under
+Run — not in the right-hand frame panel where they started. The split is by what
+a thing *is*: the right column reports the frame, a record of what was taught;
+the middle carries what you do with it. `DrawAlignFrameActions` therefore
+re-resolves the frame itself rather than taking one as a parameter — the live
+frame is the only one that may move the stage, and a caller handing in
+`a.result` would be exactly the bug §5b exists to prevent.
 | `align_run` | typed one-step wrapper over `alignment_procedure.lua` |
 | `place_view` | drive the camera to a nominal's taught viewing pose (no-op when it has none, unless `required`) |
 | `place_mark` | ask the operator to mark one point on a gripped object (index 1 or 2) |
@@ -714,7 +734,7 @@ rendered as a picker in the recipe editor. It is **not** device-scoped like
    phase; it touches the positions schema, the validator and every move path,
    so it was kept out of this one.
 6. **A nominal has no command yet.** It is document data plus two pages and the
-   frame panel's *Use*; no recipe step reads one.
+   nominal list's *Use*; no recipe step reads one.
 7. **An unattended placement needs a model taught per nominal per mark** — two
    teach sessions before a nominal can place anything without a human, and they
    only hold at the pose and exposure they were tuned at. Nothing shares a model

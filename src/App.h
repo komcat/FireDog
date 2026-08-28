@@ -243,7 +243,7 @@ private:
     void DrawAlignPanel();            // page body: procedures | stations | frame
     void DrawAlignListPanel();        // left:   procedures + New/Duplicate/Delete/Save
     void DrawAlignDetailPanel();      // middle: the two stations + Run
-    void DrawAlignFramePanel();       // right:  the derived frame + local->machine check
+    void DrawAlignFramePanel();       // right:  the derived frame, as a record
     void DrawAlignStationCard(AlignProc& a, int station);
     void StartAlignmentRun(const AlignProc& a);   // launches alignment_procedure.lua
     // Station positions taught from the Alignment page are PRIVATE to their
@@ -270,7 +270,11 @@ private:
     // frame panel). Two crosshair marks on the live image; their MIDPOINT is
     // converted through the LIVE frame into local (O1) and stored on the
     // procedure, so it follows the part instead of the machine.
-    void DrawAlignNominalList(AlignProc& a);       // the list, on the frame panel
+    // Under Run in the middle panel: the frame's two ACTIONS (probe a local
+    // coordinate, drive to it) and the nominals that feed the probe. Separate
+    // from DrawAlignFramePanel, which only reports what was taught.
+    void DrawAlignFrameActions(AlignProc& a);
+    void DrawAlignNominalList(AlignProc& a);
     void DrawAlignNominalPanel();                  // page body (takeover frame)
     void OpenAlignNominalTeach(const AlignProc& a, const std::string& nomUid);
     // Placement page: measure where a gripped object actually is (the same two

@@ -407,170 +407,195 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
     IMotionController* dev =
         devIdx >= 0 ? hardware_.MotionDevice(static_cast<std::size_t>(devIdx)) : nullptr;
 
-    ImGui::BeginDisabled(busy);
-    StationPositionCombo("gantry position", session_.Positions(), a.device, st.posUid);
-    ImGui::EndDisabled();
-    ImGui::SameLine();
+    // The card is two columns, split down the middle: WHERE the station is on
+    // the left (its private position, the pose behind it, exposure, lighting)
+    // and HOW the point gets marked on the right (manual crosshair, or a taught
+    // detector with its status block). They are independent decisions, and the
+    // detector block is by far the tallest thing here - stacked, it pushed the
+    // second station and the Run button off the bottom of the panel.
+    //
+    // Stretch weights rather than fixed widths, so the two station cards line
+    // up with each other at any panel width and the thumbnail keeps its room.
+    if (ImGui::BeginTable("station", 2, ImGuiTableFlags_BordersInnerV |
+                                        ImGuiTableFlags_Resizable |
+                                        ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("##where", ImGuiTableColumnFlags_WidthStretch, 0.55f);
+        ImGui::TableSetupColumn("##how",   ImGuiTableColumnFlags_WidthStretch, 0.45f);
+        ImGui::TableNextRow();
 
-    // Go: a plain UI move to the station, so the operator can confirm the
-    // teach point without launching the whole procedure. Layer 2 owns it.
-    const SavedPos* pos = FindPos(session_.Positions(), a.device, st.posUid);
-    ImGui::BeginDisabled(busy || !pos || !dev || !dev->IsConnected());
-    // NOTE: `pos` points into the positions vector. Teaching may push_back into
-    // that same vector, so it is re-resolved after the Teach button below.
-    if (ImGui::Button("Go")) {
-        std::vector<std::pair<std::string, double>> targets;
-        for (const std::string& ax : dev->Axes()) {
-            const auto it = pos->vals.find(ax);
-            if (it != pos->vals.end()) targets.emplace_back(ax, it->second);
-        }
-        if (!targets.empty())
-            workflow_.MoveToPosition(static_cast<std::size_t>(devIdx), targets);
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-
-    // Teach: jog the gantry where you want the station, then capture it as this
-    // procedure's PRIVATE position. Re-teaching updates in place so the uid
-    // stays stable — anything already pointing at it keeps working.
-    ImGui::BeginDisabled(busy || !dev || !dev->IsConnected());
-    if (ImGui::Button(pos && IsOwnedStationPos(*pos, a.uid) ? "Re-teach here" : "Teach here")) {
-        TeachAlignStation(a, station);
-        pos = FindPos(session_.Positions(), a.device, st.posUid);   // may have reallocated
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Save the CURRENT %s pose as this station's own position\n"
-                          "(private to this procedure: hidden from the Motion page\n"
-                          "table and the recipe position picker).", a.device.c_str());
-
-    // Show the numbers here, since a private position is not on the Motion page.
-    if (pos) {
-        std::string line;
-        for (const auto& [axis, v] : pos->vals) {
-            char buf[48];
-            std::snprintf(buf, sizeof(buf), "%s%s %.4f", line.empty() ? "" : "  ",
-                          axis.c_str(), v);
-            line += buf;
-        }
-        if (IsOwnedStationPos(*pos, a.uid))
-            ImGui::TextDisabled("private  |  %s", line.c_str());
-        else
-            ImGui::TextDisabled("shared '%s'  |  %s", pos->name, line.c_str());
-    }
-
-    ImGui::BeginDisabled(busy);
-    float expo = static_cast<float>(st.exposureUs);
-    ImGui::SetNextItemWidth(140.0f);
-    if (ImGui::InputFloat("exposure (us)", &expo, 0.0f, 0.0f, "%.0f"))
-        st.exposureUs = expo < 0.0f ? 0.0 : static_cast<double>(expo);
-    ImGui::SameLine();
-    ImGui::TextDisabled("(0 = leave)");
-
-    // Lighting is a PLACEHOLDER: no illumination device exists in the hardware
-    // config yet, so "none" is the only setting that does anything today. The
-    // fields are here so a procedure taught now keeps its intent.
-    const char* kinds[] = {"none", "io", "psu"};
-    int kindIdx = st.lighting.kind == "io" ? 1 : (st.lighting.kind == "psu" ? 2 : 0);
-    ImGui::SetNextItemWidth(90.0f);
-    if (ImGui::Combo("lighting", &kindIdx, kinds, 3))
-        st.lighting.kind = (kindIdx == 0) ? "" : kinds[kindIdx];
-    if (kindIdx != 0) {
-        char devBuf[64], chBuf[48];
-        std::snprintf(devBuf, sizeof(devBuf), "%s", st.lighting.device.c_str());
-        std::snprintf(chBuf, sizeof(chBuf), "%s", st.lighting.channel.c_str());
+        ImGui::TableSetColumnIndex(0);
+        ImGui::BeginDisabled(busy);
+        StationPositionCombo("gantry position", session_.Positions(), a.device, st.posUid);
+        ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(110.0f);
-        if (ImGui::InputText("device", devBuf, sizeof(devBuf))) st.lighting.device = devBuf;
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(110.0f);
-        if (ImGui::InputText(kindIdx == 1 ? "pin" : "channel", chBuf, sizeof(chBuf)))
-            st.lighting.channel = chBuf;
-        ImGui::SameLine();
-        float lv = static_cast<float>(st.lighting.value);
-        ImGui::SetNextItemWidth(80.0f);
-        if (ImGui::InputFloat(kindIdx == 1 ? "on" : "volts", &lv, 0.0f, 0.0f, "%.2f"))
-            st.lighting.value = static_cast<double>(lv);
-    }
 
-    // How the E point is marked. Manual = a crosshair on the live image (plain
-    // ImGui over a Pylon frame, so it never depends on a vision licence). Auto =
-    // a taught detection model, which DOES need HALCON — hence the licence line
-    // right here rather than a surprise at run time.
-    int mode = (st.mode == "auto") ? 1 : 0;
-    if (ImGui::RadioButton("Manual (crosshair)", mode == 0)) st.mode = "manual";
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Auto (detect)", mode == 1)) st.mode = "auto";
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Locate the feature with a taught detection model\n"
-                          "(circle/fiducial or gray pattern match). Needs HALCON.");
-    if (st.mode == "auto") {
-        ImGui::Indent();
-
-        // The detection model is PRIVATE to this station — auto-named
-        // `vdet_<procUid>_<n>`, created by the teach window, deleted with the
-        // procedure. There is no picker because there is nothing to pick: the
-        // ROI, threshold and taught patch only mean anything at this station's
-        // pose and exposure. `detector` caches its uid so align_station and any
-        // recipe step resolve it the same way they resolve everything else.
-        const VisionModel* model = StationDetector(a, station);
-
-        if (ImGui::Button(model ? "Teach detection..." : "Set up detection..."))
-            OpenVisionTeach(a, station);
-
-        std::string why;
-        if (!HalconDetector::Available(&why)) {
-            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", why.c_str());
-        } else if (!model) {
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
-                               "no detection set up - this station will fail at run time");
-        } else {
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s%s", model->method.c_str(),
-                                (model->method == "ncc" && model->templateFile.empty())
-                                    ? "  (no template taught)" : "");
-            // A pre-processed model behaves nothing like a raw one, and the
-            // chain is invisible from here otherwise — an operator reading a
-            // card would have no idea the image was thresholded first.
-            const std::string chain = VisionFilterSummary(*model);
-            if (!chain.empty()) ImGui::TextDisabled("pre-process: %s", chain.c_str());
-            if (model->rel.runs > 0) {
-                ImGui::TextDisabled("%d/%d ok, sigma %.2f px, tested %s",
-                                    model->rel.ok, model->rel.runs,
-                                    model->rel.stdXPx > model->rel.stdYPx ? model->rel.stdXPx
-                                                                          : model->rel.stdYPx,
-                                    model->rel.testedAt.c_str());
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
-                                   "never reliability-tested");
+        // Go: a plain UI move to the station, so the operator can confirm the
+        // teach point without launching the whole procedure. Layer 2 owns it.
+        const SavedPos* pos = FindPos(session_.Positions(), a.device, st.posUid);
+        ImGui::BeginDisabled(busy || !pos || !dev || !dev->IsConnected());
+        // NOTE: `pos` points into the positions vector. Teaching may push_back into
+        // that same vector, so it is re-resolved after the Teach button below.
+        if (ImGui::Button("Go")) {
+            std::vector<std::pair<std::string, double>> targets;
+            for (const std::string& ax : dev->Axes()) {
+                const auto it = pos->vals.find(ax);
+                if (it != pos->vals.end()) targets.emplace_back(ax, it->second);
             }
-
-            // The picture the detector matches, with a cross on the point it
-            // REPORTS. It is the only thing on this page that says WHICH point
-            // of the feature a run will use — and it is the same picture the
-            // fallback shows when detection fails and an operator, who did not
-            // tune this model, is asked to mark that point by hand.
-            PatchTex& pt = alignTmpl_[(station == 2) ? 1 : 0];
-            if (EnsurePatchTex(pt, *model)) {
-                ImGui::BeginGroup();
-                DrawPatchThumb(pt, 120.0f, 120.0f);
-                ImGui::EndGroup();
-                ImGui::SameLine();
-                ImGui::BeginGroup();
-                ImGui::TextDisabled("what this station looks for");
-                ImGui::TextDisabled("the cross is the point it reports");
-                ImGui::EndGroup();
-            }
+            if (!targets.empty())
+                workflow_.MoveToPosition(static_cast<std::size_t>(devIdx), targets);
         }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
 
-        ImGui::Checkbox("fall back to a manual pick", &st.autoFallbackManual);
+        // Teach: jog the gantry where you want the station, then capture it as this
+        // procedure's PRIVATE position. Re-teaching updates in place so the uid
+        // stays stable — anything already pointing at it keeps working.
+        ImGui::BeginDisabled(busy || !dev || !dev->IsConnected());
+        if (ImGui::Button(pos && IsOwnedStationPos(*pos, a.uid) ? "Re-teach here" : "Teach here")) {
+            TeachAlignStation(a, station);
+            pos = FindPos(session_.Positions(), a.device, st.posUid);   // may have reallocated
+        }
+        ImGui::EndDisabled();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Off, an auto station FAILS when detection does - which is\n"
-                              "the point: a silent fallback would let a procedure claim\n"
-                              "to be automatic while a human placed every point.");
-        ImGui::Unindent();
+            ImGui::SetTooltip("Save the CURRENT %s pose as this station's own position\n"
+                              "(private to this procedure: hidden from the Motion page\n"
+                              "table and the recipe position picker).", a.device.c_str());
+
+        // Show the numbers here, since a private position is not on the Motion page.
+        if (pos) {
+            std::string line;
+            for (const auto& [axis, v] : pos->vals) {
+                char buf[48];
+                std::snprintf(buf, sizeof(buf), "%s%s %.4f", line.empty() ? "" : "  ",
+                              axis.c_str(), v);
+                line += buf;
+            }
+            if (IsOwnedStationPos(*pos, a.uid))
+                ImGui::TextDisabled("private  |  %s", line.c_str());
+            else
+                ImGui::TextDisabled("shared '%s'  |  %s", pos->name, line.c_str());
+        }
+
+        ImGui::BeginDisabled(busy);
+        float expo = static_cast<float>(st.exposureUs);
+        ImGui::SetNextItemWidth(140.0f);
+        if (ImGui::InputFloat("exposure (us)", &expo, 0.0f, 0.0f, "%.0f"))
+            st.exposureUs = expo < 0.0f ? 0.0 : static_cast<double>(expo);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(0 = leave)");
+
+        // Lighting is a PLACEHOLDER: no illumination device exists in the hardware
+        // config yet, so "none" is the only setting that does anything today. The
+        // fields are here so a procedure taught now keeps its intent.
+        const char* kinds[] = {"none", "io", "psu"};
+        int kindIdx = st.lighting.kind == "io" ? 1 : (st.lighting.kind == "psu" ? 2 : 0);
+        ImGui::SetNextItemWidth(90.0f);
+        if (ImGui::Combo("lighting", &kindIdx, kinds, 3))
+            st.lighting.kind = (kindIdx == 0) ? "" : kinds[kindIdx];
+        if (kindIdx != 0) {
+            char devBuf[64], chBuf[48];
+            std::snprintf(devBuf, sizeof(devBuf), "%s", st.lighting.device.c_str());
+            std::snprintf(chBuf, sizeof(chBuf), "%s", st.lighting.channel.c_str());
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(110.0f);
+            if (ImGui::InputText("device", devBuf, sizeof(devBuf))) st.lighting.device = devBuf;
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(110.0f);
+            if (ImGui::InputText(kindIdx == 1 ? "pin" : "channel", chBuf, sizeof(chBuf)))
+                st.lighting.channel = chBuf;
+            ImGui::SameLine();
+            float lv = static_cast<float>(st.lighting.value);
+            ImGui::SetNextItemWidth(80.0f);
+            if (ImGui::InputFloat(kindIdx == 1 ? "on" : "volts", &lv, 0.0f, 0.0f, "%.2f"))
+                st.lighting.value = static_cast<double>(lv);
+        }
+
+        // One BeginDisabled per column rather than one spanning both: the pair
+        // has to open and close inside the same cell.
+        ImGui::EndDisabled();
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::BeginDisabled(busy);
+        // How the E point is marked. Manual = a crosshair on the live image (plain
+        // ImGui over a Pylon frame, so it never depends on a vision licence). Auto =
+        // a taught detection model, which DOES need HALCON — hence the licence line
+        // right here rather than a surprise at run time.
+        int mode = (st.mode == "auto") ? 1 : 0;
+        if (ImGui::RadioButton("Manual (crosshair)", mode == 0)) st.mode = "manual";
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Auto (detect)", mode == 1)) st.mode = "auto";
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Locate the feature with a taught detection model\n"
+                              "(circle/fiducial or gray pattern match). Needs HALCON.");
+        if (st.mode == "auto") {
+            ImGui::Indent();
+
+            // The detection model is PRIVATE to this station — auto-named
+            // `vdet_<procUid>_<n>`, created by the teach window, deleted with the
+            // procedure. There is no picker because there is nothing to pick: the
+            // ROI, threshold and taught patch only mean anything at this station's
+            // pose and exposure. `detector` caches its uid so align_station and any
+            // recipe step resolve it the same way they resolve everything else.
+            const VisionModel* model = StationDetector(a, station);
+
+            if (ImGui::Button(model ? "Teach detection..." : "Set up detection..."))
+                OpenVisionTeach(a, station);
+
+            std::string why;
+            if (!HalconDetector::Available(&why)) {
+                ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", why.c_str());
+            } else if (!model) {
+                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                                   "no detection set up - this station will fail at run time");
+            } else {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s%s", model->method.c_str(),
+                                    (model->method == "ncc" && model->templateFile.empty())
+                                        ? "  (no template taught)" : "");
+                // A pre-processed model behaves nothing like a raw one, and the
+                // chain is invisible from here otherwise — an operator reading a
+                // card would have no idea the image was thresholded first.
+                const std::string chain = VisionFilterSummary(*model);
+                if (!chain.empty()) ImGui::TextDisabled("pre-process: %s", chain.c_str());
+                if (model->rel.runs > 0) {
+                    ImGui::TextDisabled("%d/%d ok, sigma %.2f px, tested %s",
+                                        model->rel.ok, model->rel.runs,
+                                        model->rel.stdXPx > model->rel.stdYPx ? model->rel.stdXPx
+                                                                              : model->rel.stdYPx,
+                                        model->rel.testedAt.c_str());
+                } else {
+                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                                       "never reliability-tested");
+                }
+
+                // The picture the detector matches, with a cross on the point it
+                // REPORTS. It is the only thing on this page that says WHICH point
+                // of the feature a run will use — and it is the same picture the
+                // fallback shows when detection fails and an operator, who did not
+                // tune this model, is asked to mark that point by hand.
+                PatchTex& pt = alignTmpl_[(station == 2) ? 1 : 0];
+                if (EnsurePatchTex(pt, *model)) {
+                    ImGui::BeginGroup();
+                    DrawPatchThumb(pt, 120.0f, 120.0f);
+                    ImGui::EndGroup();
+                    ImGui::SameLine();
+                    ImGui::BeginGroup();
+                    ImGui::TextDisabled("what this station looks for");
+                    ImGui::TextDisabled("the cross is the point it reports");
+                    ImGui::EndGroup();
+                }
+            }
+
+            ImGui::Checkbox("fall back to a manual pick", &st.autoFallbackManual);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Off, an auto station FAILS when detection does - which is\n"
+                                  "the point: a silent fallback would let a procedure claim\n"
+                                  "to be automatic while a human placed every point.");
+            ImGui::Unindent();
+        }
+        ImGui::EndDisabled();
+        ImGui::EndTable();
     }
-    ImGui::EndDisabled();
     ImGui::PopID();
 }
 
@@ -633,15 +658,22 @@ void App::DrawAlignDetailPanel()
         ImGui::TextDisabled("%s  %s", LuaEngine::StateName(lst.state),
                             lst.error.empty() ? "" : lst.error.c_str());
     }
+
+    // What you DO with the frame, under the button that produces it: probe a
+    // local coordinate, drive to it, and manage the nominals that feed it.
+    // The right column keeps the frame's numbers - the record of the teach.
+    DrawAlignFrameActions(a);
+    DrawAlignNominalList(a);
 }
 
-// ---- Right: the derived frame ---------------------------------------------
+// ---- The derived frame ----------------------------------------------------
 
 // The taught nominals: target points on the PART, held in local (O1)
 // coordinates so they follow it. Teaching happens on its own takeover page
-// (PageAlignNominal.cpp) — a mark needs a big live image, and this column is a
-// strip. Here they are only listed, re-taught, deleted, and loaded into the
-// probe fields above so "Move here" can drive to one.
+// (PageAlignNominal.cpp) — a mark needs a big live image, and no panel here is
+// big enough. Below Run in the middle panel, under the local->machine probe:
+// they are only listed, re-taught, deleted, and loaded into that probe so
+// "Move here" can drive to one.
 void App::DrawAlignNominalList(AlignProc& a)
 {
     const bool busy = orch_.Busy();
@@ -749,58 +781,22 @@ void App::DrawAlignNominalList(AlignProc& a)
     }
 }
 
-void App::DrawAlignFramePanel()
+// The frame's two ACTIONS - check a local coordinate against it, and drive
+// there. Split out of the right-hand frame panel so it can sit under Run
+// alongside the nominals: the right column is the RECORD of what was taught,
+// the middle is what you do with it.
+//
+// It resolves the frame itself rather than taking one as a parameter. The LIVE
+// frame is the only one that may move the stage, and a caller that handed in
+// `a.result` would be exactly the bug that distinction exists to prevent.
+void App::DrawAlignFrameActions(AlignProc& a)
 {
-    std::vector<AlignProc>& list = session_.Aligns();
-    if (alignSel_ < 0 || alignSel_ >= static_cast<int>(list.size())) {
-        ImGui::TextDisabled("Local frame (O1)");
-        return;
-    }
-    AlignProc& a = list[static_cast<std::size_t>(alignSel_)];
-
-    // LIVE frame first, because that is the one that can actually move the
-    // stage. The document's copy is a record of the last teach and may describe
-    // a part that left the machine days ago — showing them as one number would
-    // be the whole safety argument undone in the UI.
     AlignResult live;
     const bool haveLive = workflow_.LiveFrame(a.uid, &live);
     const AlignResult& r = haveLive ? live : a.result;
-
-    ImGui::TextUnformatted("Local frame (O1)");
-    ImGui::Separator();
-
-    if (haveLive) {
-        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "LIVE  taught %s",
-                           live.capturedAt.c_str());
-        ImGui::TextDisabled("usable by move_local until the next program start,");
-        ImGui::TextDisabled("DUT open or product load.");
-    } else if (a.result.valid) {
-        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "NO LIVE FRAME");
-        ImGui::TextWrapped("The numbers below are the RECORD of the last teach (%s). "
-                           "move_local will refuse until this procedure is run again "
-                           "in the current session - a saved frame describes where a "
-                           "part sat then, not where this one sits now.",
-                           a.result.capturedAt.c_str());
-        ImGui::Spacing();
-    } else {
-        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "not taught yet");
-        ImGui::TextWrapped("Run the procedure: E1 becomes the origin and E1->E2 the "
-                           "local X+ axis; local Y+ is X+ rotated +90 degrees.");
-        DrawAlignNominalList(a);   // may hold nominals from a run that did not save
-        return;
-    }
-    ImGui::Spacing();
-    ImGui::Text("origin   %.4f, %.4f mm", r.originX, r.originY);
-    ImGui::Text("theta    %.4f deg", r.thetaDeg);
-    ImGui::Text("span     %.4f mm", r.spanMm);
-    ImGui::Spacing();
-    ImGui::SeparatorText("Marked points (machine mm)");
-    ImGui::Text("E1  %.4f, %.4f", r.e1.wx, r.e1.wy);
-    ImGui::TextDisabled("    gantry %.4f, %.4f  px %.0f, %.0f", r.e1.gx, r.e1.gy,
-                        r.e1.px, r.e1.py);
-    ImGui::Text("E2  %.4f, %.4f", r.e2.wx, r.e2.wy);
-    ImGui::TextDisabled("    gantry %.4f, %.4f  px %.0f, %.0f", r.e2.gx, r.e2.gy,
-                        r.e2.px, r.e2.py);
+    // Nothing has ever been taught, so there is no transform to probe against.
+    // Silent rather than a disabled block: the frame panel already says so.
+    if (!haveLive && !a.result.valid) return;
 
     // Check the frame, then optionally drive to the point — the same transform
     // the move_local command applies. No document mutation either way.
@@ -851,8 +847,59 @@ void App::DrawAlignFramePanel()
         ImGui::TextDisabled("arm first");
     else if (orch_.Busy())
         ImGui::TextDisabled("a run is active");
+}
 
-    DrawAlignNominalList(a);
+void App::DrawAlignFramePanel()
+{
+    std::vector<AlignProc>& list = session_.Aligns();
+    if (alignSel_ < 0 || alignSel_ >= static_cast<int>(list.size())) {
+        ImGui::TextDisabled("Local frame (O1)");
+        return;
+    }
+    AlignProc& a = list[static_cast<std::size_t>(alignSel_)];
+
+    // LIVE frame first, because that is the one that can actually move the
+    // stage. The document's copy is a record of the last teach and may describe
+    // a part that left the machine days ago — showing them as one number would
+    // be the whole safety argument undone in the UI.
+    AlignResult live;
+    const bool haveLive = workflow_.LiveFrame(a.uid, &live);
+    const AlignResult& r = haveLive ? live : a.result;
+
+    ImGui::TextUnformatted("Local frame (O1)");
+    ImGui::Separator();
+
+    if (haveLive) {
+        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "LIVE  taught %s",
+                           live.capturedAt.c_str());
+        ImGui::TextDisabled("usable by move_local until the next program start,");
+        ImGui::TextDisabled("DUT open or product load.");
+    } else if (a.result.valid) {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "NO LIVE FRAME");
+        ImGui::TextWrapped("The numbers below are the RECORD of the last teach (%s). "
+                           "move_local will refuse until this procedure is run again "
+                           "in the current session - a saved frame describes where a "
+                           "part sat then, not where this one sits now.",
+                           a.result.capturedAt.c_str());
+        ImGui::Spacing();
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "not taught yet");
+        ImGui::TextWrapped("Run the procedure: E1 becomes the origin and E1->E2 the "
+                           "local X+ axis; local Y+ is X+ rotated +90 degrees.");
+        return;
+    }
+    ImGui::Spacing();
+    ImGui::Text("origin   %.4f, %.4f mm", r.originX, r.originY);
+    ImGui::Text("theta    %.4f deg", r.thetaDeg);
+    ImGui::Text("span     %.4f mm", r.spanMm);
+    ImGui::Spacing();
+    ImGui::SeparatorText("Marked points (machine mm)");
+    ImGui::Text("E1  %.4f, %.4f", r.e1.wx, r.e1.wy);
+    ImGui::TextDisabled("    gantry %.4f, %.4f  px %.0f, %.0f", r.e1.gx, r.e1.gy,
+                        r.e1.px, r.e1.py);
+    ImGui::Text("E2  %.4f, %.4f", r.e2.wx, r.e2.wy);
+    ImGui::TextDisabled("    gantry %.4f, %.4f  px %.0f, %.0f", r.e2.gx, r.e2.gy,
+                        r.e2.px, r.e2.py);
 }
 
 } // namespace firedog
