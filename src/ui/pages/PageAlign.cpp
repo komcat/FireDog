@@ -634,36 +634,56 @@ void App::DrawAlignDetailPanel()
     DrawAlignStationCard(a, 1);
     DrawAlignStationCard(a, 2);
 
-    ImGui::SeparatorText("Run");
-    const bool ready = !a.s1.posUid.empty() && !a.s2.posUid.empty();
-    const LuaEngine::Status lst = orch_.lua.GetStatus();
-    const bool running = orch_.lua.Running();
+    // Below the station cards the panel splits again: MAKE the frame on the
+    // left (Run, then the local->machine probe that checks it), USE it on the
+    // right (the nominals). Stacked, the nominals sat a scroll below the button
+    // that produces the frame they depend on, while the whole right half of the
+    // panel stayed empty - the two blocks are short and narrow, and the page is
+    // wide. Same table idiom, weights and Resizable as the station cards above,
+    // so every divider on this panel is one the operator can drag.
+    if (ImGui::BeginTable("alrunnoms", 2, ImGuiTableFlags_BordersInnerV |
+                                          ImGuiTableFlags_Resizable |
+                                          ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("##make", ImGuiTableColumnFlags_WidthStretch, 0.35f);
+        ImGui::TableSetupColumn("##use",  ImGuiTableColumnFlags_WidthStretch, 0.65f);
+        ImGui::TableNextRow();
 
-    ImGui::BeginDisabled(busy || !ready);
-    if (ImGui::Button("Run alignment", ImVec2(150.0f, 0.0f))) StartAlignmentRun(a);
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!running);
-    if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) orch_.lua.RequestStop();
-    ImGui::EndDisabled();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::SeparatorText("Run");
+        const bool ready = !a.s1.posUid.empty() && !a.s2.posUid.empty();
+        const LuaEngine::Status lst = orch_.lua.GetStatus();
+        const bool running = orch_.lua.Running();
 
-    if (!ready)
-        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
-                           "assign a saved position to both stations first");
-    else if (busy && !running)
-        ImGui::TextDisabled("another run is active");
-    if (!alignStartErr_.empty())
-        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", alignStartErr_.c_str());
-    if (running || lst.state != LuaEngine::State::Idle) {
-        ImGui::TextDisabled("%s  %s", LuaEngine::StateName(lst.state),
-                            lst.error.empty() ? "" : lst.error.c_str());
+        ImGui::BeginDisabled(busy || !ready);
+        if (ImGui::Button("Run alignment", ImVec2(150.0f, 0.0f))) StartAlignmentRun(a);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!running);
+        if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) orch_.lua.RequestStop();
+        ImGui::EndDisabled();
+
+        if (!ready)
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                               "assign a saved position to both stations first");
+        else if (busy && !running)
+            ImGui::TextDisabled("another run is active");
+        if (!alignStartErr_.empty())
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", alignStartErr_.c_str());
+        if (running || lst.state != LuaEngine::State::Idle) {
+            ImGui::TextDisabled("%s  %s", LuaEngine::StateName(lst.state),
+                                lst.error.empty() ? "" : lst.error.c_str());
+        }
+
+        // What you DO with the frame, under the button that produces it: probe
+        // a local coordinate and drive to it. The right-hand PANEL keeps the
+        // frame's numbers - the record of the teach.
+        DrawAlignFrameActions(a);
+
+        ImGui::TableSetColumnIndex(1);
+        DrawAlignNominalList(a);
+
+        ImGui::EndTable();
     }
-
-    // What you DO with the frame, under the button that produces it: probe a
-    // local coordinate, drive to it, and manage the nominals that feed it.
-    // The right column keeps the frame's numbers - the record of the teach.
-    DrawAlignFrameActions(a);
-    DrawAlignNominalList(a);
 }
 
 // ---- The derived frame ----------------------------------------------------
@@ -671,49 +691,106 @@ void App::DrawAlignDetailPanel()
 // The taught nominals: target points on the PART, held in local (O1)
 // coordinates so they follow it. Teaching happens on its own takeover page
 // (PageAlignNominal.cpp) — a mark needs a big live image, and no panel here is
-// big enough. Below Run in the middle panel, under the local->machine probe:
-// they are only listed, re-taught, deleted, and loaded into that probe so
-// "Move here" can drive to one.
+// big enough. Beside Run in the middle panel, in the wider of its two columns:
+// they are only listed, re-taught, deleted, and loaded into the local->machine
+// probe on the left so "Move here" can drive to one.
+//
+// LIST on the left, ONE nominal's controls on the right. Every nominal used to
+// carry its own copy of all six buttons, so a procedure with four of them put
+// twenty-four buttons on the page and the numbered sequence — the only thing
+// that says what to do first — was repeated four times over. Now the sequence
+// appears once, and the list answers the question the buttons cannot: which
+// point is the one about to be used.
 void App::DrawAlignNominalList(AlignProc& a)
 {
     const bool busy = orch_.Busy();
 
     // The four primary buttons carry their step number, because nothing about a
-    // row of eight equal-looking SmallButtons says which one comes first, and
-    // the answer is not guessable: 3 and 4 both LOOK like ways to use the
-    // nominal, but 3 only drives the camera to check it. The maintenance
-    // buttons (Go/Clear view, Re-teach, Delete) are deliberately left unnumbered
-    // and pushed to the right of a gap - they are not part of the sequence, and
+    // row of equal-looking SmallButtons says which one comes first, and the
+    // answer is not guessable: 3 and 4 both LOOK like ways to use the nominal,
+    // but 3 only drives the camera to check it. The maintenance buttons
+    // (Go/Clear view, Re-teach, Delete) are deliberately left unnumbered and
+    // pushed to the right of a gap - they are not part of the sequence, and
     // numbering them would claim they were.
     ImGui::SeparatorText("Nominals (local)");
-    ImGui::TextDisabled("1 teach the point   2 where to watch it from   "
+    ImGui::TextDisabled("1 add the point   2 where the gripped object is watched from   "
                         "3 check it   4 place onto it");
-    ImGui::BeginDisabled(busy);
-    if (ImGui::SmallButton("1. Teach nominal...")) OpenAlignNominalTeach(a, "");
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("STEP 1 - Mark two features on the live image; their MIDPOINT\n"
-                          "is stored in this frame's local coordinates, so it names the\n"
-                          "same place on the part however the next one is loaded.");
 
-    if (a.nominals.empty()) {
-        ImGui::TextDisabled("none taught yet");
-        return;
-    }
-    // The camera's own device, for the view buttons below: teaching one captures
-    // its live pose, so an unconnected device can only be told about, not asked.
+    // The camera's own device, for the view buttons: teaching one captures its
+    // live pose, so an unconnected device can only be told about, not asked.
     IMotionController* cam = nullptr;
     for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
         if (hardware_.MotionName(i) == a.device) { cam = hardware_.MotionDevice(i); break; }
     }
     const bool camLive = cam && cam->IsConnected();
 
-    for (std::size_t i = 0; i < a.nominals.size(); ++i) {
-        AlignNominal& n = a.nominals[i];
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::Text("%s", n.name.c_str());
+    const float paneH = ImGui::GetTextLineHeightWithSpacing() * 9.0f;
+
+    // ---- Left: New, then the roll of taught points --------------------------
+    // A THIRD of the cell for the roll, never less than 150 px: it holds names,
+    // and the pane beside it holds six buttons that must not wrap.
+    float listW = ImGui::GetContentRegionAvail().x * 0.33f;
+    if (listW < 150.0f) listW = 150.0f;
+    ImGui::BeginChild("alnomlist", ImVec2(listW, paneH), ImGuiChildFlags_Borders);
+    ImGui::BeginDisabled(busy);
+    // "New", not "Teach": this button and the pane's "Re-teach" open the SAME
+    // page, and the only difference is whether a uid is carried in. Calling
+    // both of them "teach" said nothing about the one thing that separates
+    // them — this one makes a nominal that did not exist, that one re-marks the
+    // selected point and keeps everything hanging off its uid.
+    if (ImGui::SmallButton("1. New nominal...")) OpenAlignNominalTeach(a, "");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("STEP 1 - ADD a nominal: mark two features on the live image;\n"
+                          "their MIDPOINT is stored in this frame's local coordinates, so\n"
+                          "it names the same place on the part however the next one is\n"
+                          "loaded. To re-mark one that already exists, select it and use\n"
+                          "Re-teach - this one always makes a new nominal.");
+    ImGui::Separator();
+    if (a.nominals.empty()) ImGui::TextDisabled("none taught yet");
+    for (const AlignNominal& n : a.nominals) {
+        // Selection is by uid, so a row keeps naming the same point when one
+        // above it is deleted. "(no view)" is the one fact worth carrying into
+        // the list rather than leaving to the pane: without one, step 4 opens
+        // looking wherever the gantry happens to be standing.
+        const bool hasView = AlignNominalView(a, n) != nullptr;
+        char row[80];
+        std::snprintf(row, sizeof(row), "%s%s", n.name.c_str(),
+                      hasView ? "" : "   (no view)");
+        ImGui::PushID(n.uid.c_str());
+        if (ImGui::Selectable(row, alignNomSel_ == n.uid)) alignNomSel_ = n.uid;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("local X %.4f  Y %.4f mm\ntaught %s\ncamera view: %s",
+                              n.lx, n.ly, n.taughtAt.c_str(),
+                              hasView ? "taught" : "none");
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    // Resolve the selection AFTER the list, so a nominal taught or deleted this
+    // frame is already accounted for. Empty or stale falls back to the first
+    // one: a pane of controls with no subject is a pane that cannot be used.
+    AlignNominal* sel = alignNomSel_.empty() ? nullptr : FindAlignNominal(a, alignNomSel_);
+    if (!sel && !a.nominals.empty()) {
+        sel = &a.nominals.front();
+        alignNomSel_ = sel->uid;
+    }
+
+    // ---- Right: everything you can do to the SELECTED nominal ---------------
+    // Deletion is DEFERRED out of this child: erasing from the vector the pane
+    // is reading invalidates `sel` mid-draw.
+    std::string dropUid;
+    ImGui::BeginChild("alnomdetail", ImVec2(0.0f, paneH), ImGuiChildFlags_Borders);
+    if (!sel) {
+        ImGui::TextDisabled("Nothing selected - teach the first nominal.");
+    } else {
+        AlignNominal& n = *sel;
+        ImGui::PushID(n.uid.c_str());
+        ImGui::TextUnformatted(n.name.c_str());
         ImGui::TextDisabled("  X %.4f  Y %.4f mm   taught %s", n.lx, n.ly,
                             n.taughtAt.c_str());
+        ImGui::Separator();
 
         // The CAMERA VIEW for this nominal — where the gantry stands to see the
         // object being placed here, which is neither the nominal's own XY nor
@@ -727,12 +804,15 @@ void App::DrawAlignNominalList(AlignProc& a)
             TeachAlignNominalView(a, n);
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("STEP 2 - Jog the camera to where it should watch this\n"
-                              "point from, then press this: it saves the CURRENT %s\n"
-                              "pose as the nominal's camera view. A placement drives\n"
-                              "here before it marks the object, so the object no longer\n"
-                              "has to be in view already (and no move_to_position step\n"
-                              "in front of the run).",
+            ImGui::SetTooltip("STEP 2 - The view of the GRIPPED OBJECT, not of the bare\n"
+                              "nominal. Grip a real one, bring it to where it will hover\n"
+                              "over this point, then jog %s until its two features are\n"
+                              "sharp and centred and press this.\n"
+                              "The Z that focuses the part surface does NOT focus an\n"
+                              "object held above it: teach this with an empty gripper and\n"
+                              "every mark - and every model cut from one - comes out\n"
+                              "blurred. A placement drives here before it marks, so\n"
+                              "nothing in front of the run has to.",
                               a.device.c_str());
         // Same gap as on the row below: what follows checks or undoes step 2,
         // it does not advance the sequence.
@@ -779,30 +859,45 @@ void App::DrawAlignNominalList(AlignProc& a)
                               "think it is. Needs a LIVE frame: run the procedure first.");
         ImGui::SameLine();
         // Place: measure where a gripped object actually is and work out the
-        // correction onto this nominal. Compute only — nothing moves yet.
+        // correction onto this nominal. Opening it drives the CAMERA to this
+        // nominal's view (step 2) — the marking it asks for is made through the
+        // camera, so it has to be looking at the right place first. The OBJECT
+        // does not move until it is asked to, on that page.
         if (ImGui::SmallButton("4. Place...")) OpenAlignPlace(a, n.uid);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("STEP 4 - Mark the gripped object; the correction onto\n"
-                              "this nominal is computed from it. COMPUTE ONLY - nothing\n"
-                              "moves until you ask for it on that page.");
+            ImGui::SetTooltip("STEP 4 - Drives %s to this nominal's camera view,\n"
+                              "then opens the page to mark the gripped object; the\n"
+                              "correction onto this nominal is computed from it. The\n"
+                              "object itself does not move until you ask for it there.",
+                              a.device.c_str());
         // A gap, then the two that undo rather than advance.
         ImGui::SameLine(0.0f, 24.0f);
         if (ImGui::SmallButton("Re-teach")) OpenAlignNominalTeach(a, n.uid);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Re-mark the two features - step 1 again for this nominal.");
+            ImGui::SetTooltip("Re-mark the two features of THIS nominal, on the part that\n"
+                              "is on the machine now. Same page as step 1, but it keeps\n"
+                              "the uid - so its camera view, its detection models and any\n"
+                              "recipe step naming it all survive. (Delete + New would not.)");
         ImGui::SameLine();
-        if (ImGui::SmallButton("Delete")) {
-            FD_INFO("align", "'%s': dropped nominal '%s'", a.name.c_str(), n.name.c_str());
-            DropNominalDetectors(a, n);   // its private object models go with it
-            DropAlignNominalView(a, n);   // and its private camera view
-            a.nominals.erase(a.nominals.begin() + static_cast<long>(i));
-            session_.SaveAligns();   // taught by hand — persisted like the frame
-            ImGui::EndDisabled();
-            ImGui::PopID();
-            return;                  // the vector moved; redraw next frame
-        }
+        if (ImGui::SmallButton("Delete")) dropUid = n.uid;
         ImGui::EndDisabled();
         ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    // The deferred delete, now that nothing points into the vector any more.
+    if (!dropUid.empty()) {
+        for (std::size_t i = 0; i < a.nominals.size(); ++i) {
+            if (a.nominals[i].uid != dropUid) continue;
+            FD_INFO("align", "'%s': dropped nominal '%s'", a.name.c_str(),
+                    a.nominals[i].name.c_str());
+            DropNominalDetectors(a, a.nominals[i]);   // its private object models go too
+            DropAlignNominalView(a, a.nominals[i]);   // and its private camera view
+            a.nominals.erase(a.nominals.begin() + static_cast<long>(i));
+            session_.SaveAligns();   // taught by hand — persisted like the frame
+            alignNomSel_.clear();    // the fallback above picks the first one
+            break;
+        }
     }
 }
 

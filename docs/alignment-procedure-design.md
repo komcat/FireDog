@@ -321,7 +321,9 @@ faithfully re-project it to somewhere no part has ever been.
 ### The teach page
 
 `Page::AlignNominal` (`ui/pages/PageAlignNominal.cpp`) is a takeover reached
-only from the nominal list's *Teach nominal…*, on exactly the argument
+only from the nominal list's *New nominal…* and a nominal's *Re-teach* — one
+call, and the uid it carries (or does not) is the whole difference, which is why
+the two buttons are no longer both called "teach" — on exactly the argument
 `PageVisionTeach` makes: marking a feature needs a big live image, and the
 Alignment page's columns are strips. It shares `CameraView` with the crosshair
 pick window and the vision teach page, so a pixel means the same thing in all
@@ -617,13 +619,22 @@ Four things the commands do that the page's habits made obvious:
 ### The nominal's camera view
 
 A nominal says where the object must **end up**. It says nothing about where the
-camera has to stand to **watch it get there** — and those are never the same
+camera has to stand to **watch the gripped object get there** — and those are never the same
 pose: the object is gripped somewhere else, and the height that focuses on a
 part held above the substrate is not the height that focuses on the substrate.
 Until this existed, every placement paid for that gap twice: an operator jogged
 the gantry by hand before pressing *Run guided placement*, and a recipe carried a
 `move_to_position` step in front of `place_run` that had to be re-taught whenever
 the view changed.
+
+It is a view of the **object**, and teaching it means gripping a real one and
+bringing it to where it will hover before the camera is jogged — the Z that
+focuses the substrate does not focus a part held above it by the gripper
+standoff plus its own thickness. Teach it against an empty gripper and every
+`place_mark` comes up blurred, and so does any detection model cut from that
+frame, which turns an `auto` station into a fallback manual pick that looks like
+a licensing problem and is not. The XY only has to FRAME the object: both marks
+inside the picture, not the nominal's own coordinates.
 
 So the nominal owns one: `AlignNominal::viewUid`, a saved position on the
 **procedure's** device, named `algn_<procUid>_<nomUid>_v` and `hidden` — the
@@ -644,6 +655,15 @@ An untaught view is **not** an error. `place_view` logs that it is leaving the
 camera alone and succeeds, so every procedure written before the field keeps the
 old contract: get the object in view with a `move_to_position` step above the
 run. `required = true` flips that for a recipe that wants the omission caught.
+
+The guided page gets there the same way: `OpenAlignPlace` drives the camera to
+the nominal's view before it switches. The first thing that page asks for is a
+mark on the gripped object, and a mark can only be made through the camera —
+opening it from wherever the gantry happened to be left is opening it looking at
+the wrong place, and the operator's first move was always to press *Go to view*
+anyway. Same no-op rule as `place_view`: no view taught, or the device down, and
+nothing moves. It sits **after** the `CanAccess` gate, so a refused switch never
+leaves a machine that moved for a page nobody reached.
 
 Lifecycle is the rest of the pattern, and all three parts are needed: deleting a
 nominal drops its view (`DropAlignNominalView`), deleting a procedure drops
@@ -679,8 +699,26 @@ That button sits behind the shared `jogArmed_` flag, unlike the station cards'
 *computed*, so a mis-taught frame sends the stage somewhere unexpected — the
 same risk class as click-to-move.
 
-That block, and the nominal list beneath it, live in the **middle** panel under
-Run — not in the right-hand frame panel where they started. The split is by what
+The nominal list is a **list on the left, one nominal's controls on the right**. It began as one block of six buttons per nominal, which read
+tolerably with one point taught and not at all with four: twenty-four buttons,
+and the numbered sequence — the only thing on the page that says what to do
+first — repeated four times over. Now the sequence appears once, and the list
+answers the question no arrangement of buttons could: which point the next press
+acts on. Selection is held as `alignNomSel_`, a **uid** and not an index, for the
+reason indexes are refused everywhere else in this codebase — the vector is
+appended to and erased from while the pane is open. A stale or empty selection
+falls back to the first nominal rather than leaving a pane of controls with no
+subject, and Delete is **deferred** past `EndChild`: erasing from the vector the
+pane is reading invalidates the pointer mid-draw. A row carries one fact beyond
+its name, `(no view)`, because that is the one that changes what step 4 does.
+
+That block and the nominals live in the **middle** panel, and below the station
+cards that panel splits in two the same way the cards themselves do (one table,
+stretch weights, `Resizable`): **make** the frame on the left — Run, then the
+local→machine probe that checks it — and **use** it on the right, the nominals.
+Stacked, as they first were, the nominals sat a scroll below the button that
+produces the frame they depend on while the whole right half of the panel stayed
+empty. Neither belongs in the right-hand frame panel where they started. The split is by what
 a thing *is*: the right column reports the frame, a record of what was taught;
 the middle carries what you do with it. `DrawAlignFrameActions` therefore
 re-resolves the frame itself rather than taking one as a parameter — the live

@@ -104,6 +104,14 @@ void App::OpenAlignPlace(const AlignProc& a, const std::string& nomUid)
         }
     }
 
+    // Drive the camera to this nominal's view on the way in — the same move the
+    // page's own "Go to view" button makes, and the one place_view makes at run
+    // time. The first thing this page asks for is a mark on the gripped object,
+    // which can only be made through the camera, so opening it anywhere else is
+    // opening it somewhere the object is not. A no-op when no view is taught or
+    // the device is down; both are reported on the page itself.
+    if (const AlignNominal* n = FindAlignNominal(a, nomUid)) GoToAlignNominalView(a, *n);
+
     SwitchPage(Page::AlignPlace);   // every page switch routes through here
 }
 

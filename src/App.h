@@ -769,6 +769,11 @@ private:
     double alignProbeX_ = 0.0;   // right panel's local->machine check inputs
     double alignProbeY_ = 0.0;
     std::string alignStartErr_;  // why the last Run refused to start
+    // Which nominal the nominal pane is showing. A UID, never an index: the
+    // vector is erased from and appended to while the pane is open, and an
+    // index would silently start pointing at a different point. Empty = show
+    // the first one.
+    std::string alignNomSel_;
 
     // Needle page state. The calibration itself lives on Workflow (machine
     // state, not a document) — these are only the run parameters the page
