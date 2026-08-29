@@ -73,6 +73,7 @@ void Workflow::Start(const HardwareConfig& hw)
     StartCld(hw);
     StartPsu(hw);
     StartNeedleCal();
+    StartDeviceRegs();   // after StartMotion — logs against the fleet it found
 }
 
 // The needle lever arm is read from disk, not from the hardware config: it is
@@ -97,6 +98,38 @@ void Workflow::StartNeedleCal()
         FD_WARN("needle", "no needle calibration (%s) - dispensing will refuse to "
                           "run until the needle calibration procedure has been done",
                 path.empty() ? "no file" : path.c_str());
+}
+
+// The tip registrations, read from disk for the same reason the needle offset is:
+// they are measured on the machine and rewritten by a registration run, so they
+// follow the xxx.local.json -> xxx.json rule rather than living in hardware.json.
+void Workflow::StartDeviceRegs()
+{
+    std::string path;
+    std::map<std::string, DeviceReg> regs = LoadDeviceRegs(&path);
+    {
+        const std::lock_guard<std::mutex> lock(regMu_);
+        regs_ = regs;
+    }
+    if (regs.empty()) {
+        FD_INFO("devreg", "no device registrations (%s) - a gripper's position is "
+                          "unknown until one is taught, and move_to_point will refuse",
+                path.empty() ? "no file" : path.c_str());
+        return;
+    }
+    // Say which file answered and how old each half is. "The gripper is 0.4 mm
+    // out" and "somebody changed the tool and nobody re-taught the tip" look
+    // identical at the machine, and only this can tell them apart.
+    for (const auto& [name, r] : regs) {
+        if (!r.valid) continue;
+        FD_INFO("devreg", "'%s' registered to '%s' from %s: t=(%.4f, %.4f, %.4f) mm, "
+                          "fitted %s, tip %s%s",
+                name.c_str(), r.refDevice.c_str(), path.c_str(),
+                r.t.x, r.t.y, r.t.z,
+                r.regAt.empty() ? "(undated)" : r.regAt.c_str(),
+                r.tipAt.empty() ? "(undated)" : r.tipAt.c_str(),
+                r.verified ? "" : " (UNVERIFIED - never checked away from its own origin)");
+    }
 }
 
 void Workflow::StartMotion(const HardwareConfig& hw)
@@ -525,6 +558,176 @@ std::vector<NeedleCal> Workflow::TakeNeedleCals()
     return std::exchange(needleQueue_, {});
 }
 
+// ---- Device registrations ---------------------------------------------------
+
+DeviceReg Workflow::DeviceRegFor(const std::string& device) const
+{
+    const std::lock_guard<std::mutex> lock(regMu_);
+    const auto it = regs_.find(device);
+    if (it == regs_.end()) {
+        // An INVALID record carrying the name, not a nameless default: every
+        // caller reports which device it could not place, and a record that says
+        // "hex-left, not registered" reads correctly wherever it lands.
+        DeviceReg r;
+        r.device = device;
+        return r;
+    }
+    return it->second;
+}
+
+std::map<std::string, DeviceReg> Workflow::DeviceRegs() const
+{
+    const std::lock_guard<std::mutex> lock(regMu_);
+    return regs_;
+}
+
+void Workflow::SetDeviceReg(const DeviceReg& r)
+{
+    if (r.device.empty()) return;
+    const std::lock_guard<std::mutex> lock(regMu_);
+    regs_[r.device] = r;
+}
+
+void Workflow::QueueDeviceReg(const DeviceReg& r)
+{
+    const std::lock_guard<std::mutex> lock(regMu_);
+    regQueue_.push_back(r);
+}
+
+std::vector<DeviceReg> Workflow::TakeDeviceRegs()
+{
+    const std::lock_guard<std::mutex> lock(regMu_);
+    return std::exchange(regQueue_, {});
+}
+
+bool Workflow::DeviceRegAimColumns(const std::string& device,
+                                   const std::string& refDevice,
+                                   RegVec3 cols[3], bool* seeded) const
+{
+    if (seeded) *seeded = true;
+
+    // A measured registration answers for itself. Its columns ARE the rotation,
+    // and they already carry the mounting error the typed matrix cannot express.
+    const DeviceReg r = DeviceRegFor(device);
+    if (r.valid && r.refDevice == refDevice) {
+        for (int j = 0; j < 3; ++j)
+            cols[j] = RegVec3{r.R[0][j], r.R[1][j], r.R[2][j]};
+        if (seeded) *seeded = false;
+        return true;
+    }
+
+    // Otherwise fall back to what config/motion_transforms.json implies. Each
+    // entry's `m` maps a GLOBAL delta to that device's axes (axis = M * g), so
+    // g = M^T * axis for the permutation-and-sign matrices that file holds, and
+    // the composition from one device's axes to the other's is
+    //     axis_ref = M_ref * M_dev^T * axis_dev
+    // whose column j is M_ref applied to row j of M_dev.
+    //
+    // This is a SEED. It is exact only for a device bolted square, and the whole
+    // point of the measurement is that nothing is.
+    AxisTransform mdev, mref;
+    bool haveDev = false, haveRef = false;
+    {
+        const auto itd = transforms_.find(device);
+        if (itd != transforms_.end()) { mdev = itd->second; haveDev = true; }
+        const auto itr = transforms_.find(refDevice);
+        if (itr != transforms_.end()) { mref = itr->second; haveRef = true; }
+    }
+    // A device with no transforms entry is identity, which is a legitimate
+    // answer — but a name that matches no device at all is not, so a missing
+    // entry has to be confirmed against the fleet before it is taken as one.
+    const auto inFleet = [this](const std::string& n) {
+        for (std::size_t i = 0; i < hw_.MotionCount(); ++i)
+            if (hw_.MotionName(i) == n) return true;
+        return false;
+    };
+    if (!haveDev && !inFleet(device))    return false;
+    if (!haveRef && !inFleet(refDevice)) return false;
+
+    for (int j = 0; j < 3; ++j) {
+        const double row[3] = {mdev.m[j][0], mdev.m[j][1], mdev.m[j][2]};
+        cols[j] = RegVec3{
+            mref.m[0][0] * row[0] + mref.m[0][1] * row[1] + mref.m[0][2] * row[2],
+            mref.m[1][0] * row[0] + mref.m[1][1] * row[1] + mref.m[1][2] * row[2],
+            mref.m[2][0] * row[0] + mref.m[2][1] * row[1] + mref.m[2][2] * row[2]};
+    }
+    return true;
+}
+
+bool Workflow::DeviceRegTip(const std::string& device, RegVec3& tip,
+                            std::string* why) const
+{
+    const DeviceReg r = DeviceRegFor(device);
+    if (!r.valid) {
+        if (why) *why = "'" + device + "' has no registration - nothing knows where "
+                        "its tip is until one is taught";
+        return false;
+    }
+
+    std::map<std::string, double> pose;
+    if (!DevicePose(device, pose)) {
+        if (why) *why = "'" + device + "' is not connected";
+        return false;
+    }
+    const auto ix = pose.find("X"), iy = pose.find("Y"), iz = pose.find("Z");
+    if (ix == pose.end() || iy == pose.end() || iz == pose.end()) {
+        if (why) *why = "'" + device + "' does not report X/Y/Z";
+        return false;
+    }
+
+    // The rotation guard. A hexapod's tip swings about its pivot, so a fit taken
+    // at one rotation describes no other — and predicting through one anyway
+    // produces a plausible number that is simply wrong, which is the failure this
+    // whole record exists to avoid.
+    const auto iu = pose.find("U"), iv = pose.find("V"), iw = pose.find("W");
+    if (r.hasRot && iu != pose.end() && iv != pose.end() && iw != pose.end()) {
+        const RegVec3 live{iu->second, iv->second, iw->second};
+        if (!DeviceRegRotationOk(r, live, why)) return false;
+    }
+
+    tip = DeviceRegPredict(r, RegVec3{ix->second, iy->second, iz->second});
+    return true;
+}
+
+// One tip triple per valid registration, every frame — cheap (three multiplies
+// off a poll cache the drivers already keep) and it is what makes a gripper's
+// position a thing the UI can simply read.
+//
+// A tip that CANNOT be predicted publishes nothing rather than a stale or a
+// guessed value: absence is the signal, and a chart that flat-lines at the last
+// good number is how a rotated hexapod goes on looking placed. The reason is
+// logged on the edge, because a per-frame log would bury everything else.
+void Workflow::PublishTips()
+{
+    std::map<std::string, DeviceReg> regs;
+    {
+        const std::lock_guard<std::mutex> lock(regMu_);
+        if (regs_.empty()) return;
+        regs = regs_;
+    }
+
+    const double now = NowSec();
+    for (const auto& [name, r] : regs) {
+        if (!r.valid) continue;
+        RegVec3     tip;
+        std::string why;
+        if (!DeviceRegTip(name, tip, &why)) {
+            if (tipMuted_[name] != why) {
+                tipMuted_[name] = why;
+                FD_WARN("devreg", "tip position unavailable: %s", why.c_str());
+            }
+            continue;
+        }
+        if (const auto it = tipMuted_.find(name); it != tipMuted_.end()) {
+            FD_INFO("devreg", "'%s' tip position available again", name.c_str());
+            tipMuted_.erase(it);
+        }
+        DataBus::Instance().Stream(topics::TipAxis(name, "X")).Publish(now, tip.x);
+        DataBus::Instance().Stream(topics::TipAxis(name, "Y")).Publish(now, tip.y);
+        DataBus::Instance().Stream(topics::TipAxis(name, "Z")).Publish(now, tip.z);
+    }
+}
+
 bool Workflow::GantryXY(double& x, double& y) const
 {
     const std::size_t gi = GantryIndex();
@@ -939,6 +1142,8 @@ void Workflow::Update(float dt)
             MeasureFocus(focusRoiPx_.load());
         }
     }
+
+    PublishTips();  // registered devices' tool tips, in the camera device's space
 
     TickPath(dt);   // mapped-path executor (no-op unless a path is running)
 }

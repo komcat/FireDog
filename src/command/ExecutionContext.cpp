@@ -45,7 +45,8 @@ bool IsSystemScript(const std::string& pathOrFile)
 {
     const std::string file = std::filesystem::path(pathOrFile).filename().string();
     return file == "alignment_procedure.lua" || file == "placement_procedure.lua" ||
-           file == "needle_calibration.lua" || file == "alignment_repeat.lua";
+           file == "needle_calibration.lua" || file == "alignment_repeat.lua" ||
+           file == "device_registration.lua" || file == "device_reg_check.lua";
 }
 
 std::string SystemScriptPath(const std::string& pathOrFile)

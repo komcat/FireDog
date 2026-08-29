@@ -17,6 +17,7 @@
 #include "core/DutSession.h"   // the DUT-open edge that drops taught frames
 #include "core/Employees.h"    // the roster behind the login gate
 #include "core/Log.h"
+#include "core/DeviceReg.h"    // SaveDeviceRegsFile (the registration hand-back)
 #include "core/NeedleCal.h"    // SaveNeedleCalFile (the calibration hand-back)
 #include "vision/HalconEngine.h"
 
@@ -38,7 +39,7 @@ bool IsTakeoverPage(Page p)
            p == Page::RecipeEdit || p == Page::Scripts ||
            p == Page::DutView || p == Page::Run || p == Page::Align ||
            p == Page::VisionTeach || p == Page::AlignNominal ||
-           p == Page::AlignPlace || p == Page::Needle;
+           p == Page::AlignPlace || p == Page::Needle || p == Page::DeviceReg;
 }
 } // namespace
 
@@ -213,6 +214,16 @@ void App::Update(float dt)
         workflow_.SetNeedleCal(c);
         if (SaveNeedleCalFile(NeedleCalLocalPath(), c))
             FD_INFO("needle", "needle calibration saved to %s", NeedleCalLocalPath());
+    }
+
+    // And a freshly measured device registration, by the same route for the same
+    // reason. One difference: the file holds the WHOLE fleet, so the live map is
+    // updated first and then written as a unit — writing only the record that
+    // changed would drop every other device's registration on the first save.
+    if (const std::vector<DeviceReg> regs = workflow_.TakeDeviceRegs(); !regs.empty()) {
+        for (const DeviceReg& r : regs) workflow_.SetDeviceReg(r);
+        if (SaveDeviceRegsFile(DeviceRegLocalPath(), workflow_.DeviceRegs()))
+            FD_INFO("devreg", "device registrations saved to %s", DeviceRegLocalPath());
     }
 
     // A finished reliability run writes its statistics into the detection model

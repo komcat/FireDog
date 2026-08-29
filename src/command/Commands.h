@@ -20,6 +20,7 @@ void RegisterDutCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw
 void RegisterVisionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
+void RegisterDeviceRegCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 
 inline void RegisterBuiltinCommands(CommandRegistry& reg, Workflow& wf,
                                     HardwareManager& hw)
@@ -32,6 +33,7 @@ inline void RegisterBuiltinCommands(CommandRegistry& reg, Workflow& wf,
     RegisterVisionCommands(reg, wf, hw);
     RegisterAlignCommands(reg, wf, hw);
     RegisterNeedleCommands(reg, wf, hw);
+    RegisterDeviceRegCommands(reg, wf, hw);
 }
 
 } // namespace firedog

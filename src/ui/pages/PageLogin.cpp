@@ -49,7 +49,7 @@ UserRole MinRoleFor(Page p)
             return UserRole::Technician;
 
         // Teaching the machine: WatchEdit, TransformEdit, Scripts, Align,
-        // VisionTeach, AlignNominal, AlignPlace, Needle.
+        // VisionTeach, AlignNominal, AlignPlace, Needle, DeviceReg.
         default:
             return UserRole::Admin;
     }

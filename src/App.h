@@ -42,7 +42,8 @@ namespace firedog {
 // prevPage_ (a takeover->takeover switch does not update prevPage_).
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
-                  Align, VisionTeach, AlignNominal, AlignPlace, Needle };
+                  Align, VisionTeach, AlignNominal, AlignPlace, Needle,
+                  DeviceReg };
 
 // One XCAN launch preset (a button on the Run page's Scan band): the step
 // ladder + the hexapod_align.lua tunables injected at launch. Five slots;
@@ -310,6 +311,15 @@ private:
     // procedure's own prompts, not from a UI button.
     void DrawNeedlePanel();
     void StartNeedleCalRun();   // launches needle_calibration.lua
+
+    // Registration page (View menu, full-page): where each device's tool tip is
+    // in the camera device's space. Same shape as the Needle page above and for
+    // the same reason — the record is machine state on Workflow, and this page
+    // only shows it, injects the run parameters and launches the two STANDARD
+    // procedures. It measures nothing itself.
+    void DrawDeviceRegPanel();
+    void StartDeviceRegRun();        // launches device_registration.lua
+    void StartDeviceRegCheckRun();   // launches device_reg_check.lua
     // Vision detection teach window (GLOBAL, non-modal — a big live image does
     // not fit the Alignment page's middle column). Opened from a station card;
     // tunes that station's detection model until it finds the feature reliably.
@@ -820,6 +830,25 @@ private:
     // operator types a tape-measure estimate once and the procedure has
     // somewhere to aim. Saved INVALID — a guess must never read as a calibration.
     double ndlSeedDx_ = 0.0, ndlSeedDy_ = 0.0, ndlSeedDz_ = 0.0;
+
+    // Registration page state. The registrations themselves live on Workflow
+    // (machine state, not a document) — these are the selection and the run
+    // parameters the page injects.
+    char   regDevice_[32]   = "hex-left";
+    char   regRef_[32]      = "gantry-main";
+    double regJogMm_        = 10.0;
+    double regFocusRangeMm_ = 1.0;
+    double regVTravel_      = 0.0;
+    double regVJog_         = 0.0;
+    int    regSettleMs_     = 300;
+    bool   regAutofocus_    = true;
+    // Check parameters. The three offsets default non-zero on purpose: a check
+    // at the fitted pose returns the measurement by construction and can verify
+    // nothing, so the default has to be a check that actually tests the fit.
+    double regCheckDx_  = 5.0, regCheckDy_ = 5.0, regCheckDz_ = 0.0;
+    double regCheckTol_ = 0.05;
+    bool   regAdoptTip_ = false;
+    std::string regStartErr_;   // why the last Run/Check refused to start
 
     // Nominal teach page state — the nominals themselves live in session_.
     // Page::AlignNominal IS the "open" flag; nomProcUid_ says which procedure.

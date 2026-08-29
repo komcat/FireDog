@@ -317,6 +317,9 @@ void App::DrawMainWindow()
                 if (CanAccess(Page::Needle) &&
                     ImGui::MenuItem("Needle", "F7", currentPage_ == Page::Needle))
                     ToggleEditorPage(Page::Needle);
+                if (CanAccess(Page::DeviceReg) &&
+                    ImGui::MenuItem("Registration", "F8", currentPage_ == Page::DeviceReg))
+                    ToggleEditorPage(Page::DeviceReg);
                 if (CanAccess(Page::Scripts) &&
                     ImGui::MenuItem("Scripts", "F4", currentPage_ == Page::Scripts))
                     ToggleEditorPage(Page::Scripts);
@@ -359,6 +362,8 @@ void App::DrawMainWindow()
             openPlacement();
         if (ImGui::IsKeyPressed(ImGuiKey_F7, false) && currentPage_ != Page::Needle)
             ToggleEditorPage(Page::Needle);
+        if (ImGui::IsKeyPressed(ImGuiKey_F8, false) && currentPage_ != Page::DeviceReg)
+            ToggleEditorPage(Page::DeviceReg);
 
         // Quick-access strip (all pages): one-click jump to the operator pages.
         // Same guarded routing as the F-keys (activate, not toggle — clicking
@@ -408,6 +413,7 @@ void App::DrawMainWindow()
                     ImGui::SetTooltip("Select an alignment procedure first (Alignment, F5)");
             }
             pageBtn("Needle (F7)", Page::Needle, true);
+            pageBtn("Registration (F8)", Page::DeviceReg, true);
             if (anyBtn) ImGui::Separator();
         }
 
@@ -429,7 +435,7 @@ void App::DrawMainWindow()
             currentPage_ == Page::DutView || currentPage_ == Page::Run ||
             currentPage_ == Page::Align || currentPage_ == Page::VisionTeach ||
             currentPage_ == Page::AlignNominal || currentPage_ == Page::AlignPlace ||
-            currentPage_ == Page::Needle) {
+            currentPage_ == Page::Needle || currentPage_ == Page::DeviceReg) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
@@ -440,6 +446,7 @@ void App::DrawMainWindow()
                                 : currentPage_ == Page::AlignNominal  ? "Nominal target"
                                 : currentPage_ == Page::AlignPlace    ? "Place on nominal"
                                 : currentPage_ == Page::Needle        ? "Dispense needle"
+                                : currentPage_ == Page::DeviceReg     ? "Device registration"
                                                                       : "Run";
             // Vision teach and the two alignment teach pages are only ever
             // reached FROM the Alignment page, and a takeover -> takeover switch
@@ -479,6 +486,7 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::AlignNominal)  DrawAlignNominalPanel();
             else if (currentPage_ == Page::AlignPlace)    DrawAlignPlacePanel();
             else if (currentPage_ == Page::Needle)        DrawNeedlePanel();
+            else if (currentPage_ == Page::DeviceReg)     DrawDeviceRegPanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();

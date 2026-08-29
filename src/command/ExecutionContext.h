@@ -61,6 +61,13 @@ std::string CtxValueToString(const CtxValue& v);
 // version of the answer. Dispensing is the opposite — how much glue goes where
 // is a product's business — so dispense_procedure.lua is deliberately NOT on
 // this list and a product's own copy still wins.
+//
+// The two device-registration procedures are on the list for the needle's
+// reason. Where a gripper is, is a fact about the machine; five products with
+// five answers and no way to tell which is right is exactly what a forkable
+// copy would produce. They also carry the quality gates a fit is refused on —
+// or rather they call the command that does, which is why those gates live in
+// core/DeviceReg.cpp and not in the script.
 bool IsSystemScript(const std::string& pathOrFile);
 
 // "config/scripts/<file>" for a system script, "" for anything else. The one

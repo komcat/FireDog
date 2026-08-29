@@ -48,6 +48,20 @@ inline std::string MotionAxis(const std::string& device, const std::string& axis
     return "motion/" + device + "/" + axis;
 }
 
+// Where a registered device's TOOL TIP is, e.g. "tip/hex-left/X" — the live
+// pose run through that device's DeviceReg, published in the REFERENCE device's
+// axis space (the gantry the camera rides on), which is the space every taught
+// point and every pick already lives in.
+//
+// Published only for a device with a valid registration, and dropped the moment
+// its rotations leave the ones the fit was taught at: a prediction through a
+// pose the fit never saw is a number, not a position. Absence is the signal —
+// see core/DeviceReg.h.
+inline std::string TipAxis(const std::string& device, const std::string& axis)
+{
+    return "tip/" + device + "/" + axis;
+}
+
 // Per-device IO bitmask streams, e.g. "io/IOBottom/in". The drivers' poll
 // threads publish the pin bitmask (as a double) only when it changes; future
 // procedures ("wait for UV_Head_Up") subscribe on the same strings.

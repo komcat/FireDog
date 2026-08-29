@@ -4,6 +4,7 @@
 #pragma once
 
 #include "core/AlignFrame.h"           // AlignResult (taught-frame hand-back queue)
+#include "core/DeviceReg.h"            // DeviceReg (a gripper tip in gantry space)
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
 #include "hardware/HardwareConfig.h"   // AxisTransform, HardwareConfig
@@ -368,6 +369,35 @@ public:
     void      QueueNeedleCal(const NeedleCal& c);
     std::vector<NeedleCal> TakeNeedleCals();
 
+    // ---- Device registrations (a gripper tip in the camera's space) ---------
+    // Machine state on exactly the same terms as the needle offset above, and
+    // held here for the same reasons: worker threads read it (device_reg,
+    // move_to_point), the UI thread writes it after a run hands one back, and
+    // the persisted record IS the licence to move. See core/DeviceReg.h.
+    DeviceReg DeviceRegFor(const std::string& device) const;
+    std::map<std::string, DeviceReg> DeviceRegs() const;
+    void      SetDeviceReg(const DeviceReg& r);
+    void      QueueDeviceReg(const DeviceReg& r);
+    std::vector<DeviceReg> TakeDeviceRegs();
+
+    // The three columns to AIM a registration measurement with: the measured
+    // rotation when `device` has one, otherwise the permutation implied by
+    // config/motion_transforms.json (R_seed = M_ref * M_dev^T). `seeded` says
+    // which — a seed is good to a couple of degrees, which is enough to put the
+    // tip back in a 6 mm field of view after a 10 mm jog and nowhere near good
+    // enough to be the answer.
+    //
+    // Column j is the direction the reference device's axes see when `device`
+    // moves +1 mm on its axis j. False when either device is unknown.
+    bool DeviceRegAimColumns(const std::string& device, const std::string& refDevice,
+                             RegVec3 cols[3], bool* seeded) const;
+
+    // Where a registered device's tip is right now, in the reference device's
+    // axis space. False — with the reason in `why` — when there is no valid
+    // registration, the device is not connected or does not report XYZ, or its
+    // rotations have left the ones the fit was taught at.
+    bool DeviceRegTip(const std::string& device, RegVec3& tip, std::string* why) const;
+
     // Live gantry XY in machine mm. Layer 2 answers "where is the gantry"
     // because layer 2 is what knows WHICH device that is (GantryIndex below);
     // a UI overlay must not go hunting for a device called "gantry-main".
@@ -402,6 +432,8 @@ private:
     void StartIoWatch(const HardwareConfig& hw);      // wires edge->action bindings
     void StartSafetyWatch(const HardwareConfig& hw);  // wires safety signals
     void StartNeedleCal();   // loads the needle lever arm from its own file
+    void StartDeviceRegs();  // loads the per-device tip registrations
+    void PublishTips();      // one tip/<device>/<axis> triple per valid record
 
     // Mapped-path executor state. Mutated on the UI thread only (Start/Cancel/
     // TickPath); other threads (safety watch) request cancellation via the
@@ -449,6 +481,15 @@ private:
     mutable std::mutex     needleMu_;
     NeedleCal              needle_;
     std::vector<NeedleCal> needleQueue_;
+
+    // The device registrations, keyed by device name, plus the same queue.
+    mutable std::mutex               regMu_;
+    std::map<std::string, DeviceReg> regs_;
+    std::vector<DeviceReg>           regQueue_;
+    // Devices whose tip publish is currently suppressed, so the reason is logged
+    // on the edge and not once per frame. Keyed by device, value is the last
+    // reason — a changed reason logs again.
+    std::map<std::string, std::string> tipMuted_;
 
     // Motion is inhibited while a CRITICAL safety alert is unacknowledged.
     bool SafetyBlocked() const

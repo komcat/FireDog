@@ -181,6 +181,8 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/pages/PageScripts.cpp` | Scripts page + Lua debugger controls | 215 |
 | `src/ui/pages/PageDutView.cpp` | DUT Records viewer (read-only) | 150 |
 | `src/ui/pages/PageWatchEdit.cpp` / `PageTransformEdit.cpp` | the two full-page config editors | 135 / 131 |
+| `src/ui/pages/PageNeedle.cpp` | Needle page (takeover, F7): the camera→needle lever arm, its measurement, the run parameters and the bootstrap seed. Launches `needle_calibration.lua`; actuates nothing itself | 302 |
+| `src/ui/pages/PageDeviceReg.cpp` | Registration page (takeover, F8): a device's tip in camera space — the record, both dates, the fit's quality numbers, and the two STANDARD procedures. Launches `device_registration.lua` / `device_reg_check.lua`; actuates nothing itself | 372 |
 | `src/ui/windows/WndJog.cpp` | Jog window + the shared velocity combo | 240 |
 | `src/ui/windows/WndAux.cpp` | Aux window (camera + chart, own OS window) | 170 |
 | `src/ui/windows/WndProgramOrganizer.cpp` | Program Organizer window (Run strip's Edit / View menu): recipe library \| slot tree with folders, loop counts, drag-drop; the ONLY program-editing surface | 520 |
