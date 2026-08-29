@@ -380,12 +380,12 @@ public:
     void      QueueDeviceReg(const DeviceReg& r);
     std::vector<DeviceReg> TakeDeviceRegs();
 
-    // The three columns to AIM a registration measurement with: the measured
-    // rotation when `device` has one, otherwise the permutation implied by
-    // config/motion_transforms.json (R_seed = M_ref * M_dev^T). `seeded` says
-    // which — a seed is good to a couple of degrees, which is enough to put the
-    // tip back in a 6 mm field of view after a 10 mm jog and nowhere near good
-    // enough to be the answer.
+    // The three columns a registration's rotation is built from: the record's
+    // own when `device` already has one, otherwise the permutation implied by
+    // config/motion_transforms.json (R_seed = M_ref * M_dev^T), which is what
+    // the Registration page adopts when a tip is first taught. `seeded` says
+    // which it handed back — nothing MEASURED the transforms-derived one, and
+    // every consumer has to be able to tell.
     //
     // Column j is the direction the reference device's axes see when `device`
     // moves +1 mm on its axis j. False when either device is unknown.
@@ -395,7 +395,7 @@ public:
     // Where a registered device's tip is right now, in the reference device's
     // axis space. False — with the reason in `why` — when there is no valid
     // registration, the device is not connected or does not report XYZ, or its
-    // rotations have left the ones the fit was taught at.
+    // rotations have left the ones the tip was taught at.
     bool DeviceRegTip(const std::string& device, RegVec3& tip, std::string* why) const;
 
     // Live gantry XY in machine mm. Layer 2 answers "where is the gantry"

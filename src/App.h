@@ -318,8 +318,22 @@ private:
     // only shows it, injects the run parameters and launches the two STANDARD
     // procedures. It measures nothing itself.
     void DrawDeviceRegPanel();
-    void StartDeviceRegRun();        // launches device_registration.lua
     void StartDeviceRegCheckRun();   // launches device_reg_check.lua
+    // The teach steps. They mutate machine state, not the document, and they
+    // hand the result to Workflow's queue rather than writing the file — one
+    // write path, drained in App::Update.
+    //
+    // Which of the three teachable poses is being set. The imprint pose is the
+    // only one that also latches the rotations, because it is the pose the
+    // measurement actually happens at.
+    enum RegPoseSlot { kRegImprint = 0, kRegHome, kRegView };
+    // The ONE writer of the three poses. Both ways of naming a pose — stand the
+    // machine there and capture it, or adopt one the product already has taught
+    // — land here, so neither can drift from the other.
+    void StoreDeviceRegPose(RegPoseSlot slot, const RegVec3& p, const std::string& how);
+    void CaptureDeviceRegPose(RegPoseSlot slot);            // from the live pose
+    void AdoptDeviceRegPose(RegPoseSlot slot, const SavedPos& pos);
+    void CompleteDeviceRegTip();
     // Vision detection teach window (GLOBAL, non-modal — a big live image does
     // not fit the Alignment page's middle column). Opened from a station card;
     // tunes that station's detection model until it finds the feature reliably.
@@ -832,23 +846,43 @@ private:
     double ndlSeedDx_ = 0.0, ndlSeedDy_ = 0.0, ndlSeedDz_ = 0.0;
 
     // Registration page state. The registrations themselves live on Workflow
-    // (machine state, not a document) — these are the selection and the run
-    // parameters the page injects.
+    // (machine state, not a document) — these are the selection, the four-step
+    // teach in progress, and the check's parameters.
+    //
+    // The teach is a PAGE flow rather than a procedure script: every step needs
+    // an operator at the machine placing a coupon, jogging a tool into contact,
+    // and marking the corners of the mark it left. There is nothing for a recipe
+    // to automate, and a second way to create a registration would be a second
+    // answer to where the tool is.
     char   regDevice_[32]   = "hex-left";
     char   regRef_[32]      = "gantry-main";
-    double regJogMm_        = 10.0;
-    double regFocusRangeMm_ = 1.0;
-    double regVTravel_      = 0.0;
-    double regVJog_         = 0.0;
-    int    regSettleMs_     = 300;
-    bool   regAutofocus_    = true;
+    double regFocusRangeMm_ = 0.5;
+    // The four corner marks of the imprint, in MACHINE mm, each latched with the
+    // pose it was taken at — so the operator may jog between them and a mark
+    // still means the same place. Session state, never persisted: they describe
+    // one mark on one coupon, and the answer they produce is what is kept.
+    static constexpr int kRegMarkMax = 4;
+    AlignPoint regMark_[kRegMarkMax];
+    bool       regMarkHave_[kRegMarkMax] = {false, false, false, false};
+    int        regMarkCount_  = 4;    // 2 must be a true diameter; 4 is forgiving
+    int        regMarkActive_ = 0;    // which corner the next click lands on
+    float      regPx_ = 0.0f, regPy_ = 0.0f, regZoom_ = 1.0f;   // MarkPicker state
+    // The tool's known width. 0 = unchecked, and the page says so: a corner pick
+    // that lands off the mark shifts the centre by half its error and looks
+    // exactly like a good one, and this is the only number that can see it.
+    double regTipExpectMm_  = 0.0;
+    double regTipExpectTol_ = 0.2;
     // Check parameters. The three offsets default non-zero on purpose: a check
-    // at the fitted pose returns the measurement by construction and can verify
-    // nothing, so the default has to be a check that actually tests the fit.
+    // at the pose the tip was taught at returns the measurement by construction
+    // and can verify nothing, so the default has to be a check that tests it.
     double regCheckDx_  = 5.0, regCheckDy_ = 5.0, regCheckDz_ = 0.0;
     double regCheckTol_ = 0.05;
-    bool   regAdoptTip_ = false;
-    std::string regStartErr_;   // why the last Run/Check refused to start
+    double regVTravel_  = 0.0;
+    double regVJog_     = 0.0;
+    int    regSettleMs_ = 300;
+    bool   regAutofocus_ = true;
+    std::string regStartErr_;   // why the last Check refused to start
+    std::string regTeachMsg_;   // what the last teach step did, or would not do
 
     // Nominal teach page state — the nominals themselves live in session_.
     // Page::AlignNominal IS the "open" flag; nomProcUid_ says which procedure.

@@ -5,36 +5,38 @@
 --
 --     residual = | measured tip - t - R * h_check |
 --
--- THE CHECK POSE MUST NOT BE THE POSE THE FIT WAS TAUGHT AT. t is derived from
--- P0 at h0, so predicting at h0 returns P0 by construction: the residual there
--- measures how well a pick repeats and says nothing whatever about the rotation.
--- Hence the offsets below, and hence a check with all three left at zero refuses
--- to call anything verified however small the number comes out.
+-- THE CHECK POSE MUST NOT BE THE POSE THE TIP WAS TAUGHT AT. t is derived from
+-- the imprint measured at that pose, so predicting there returns the measurement
+-- by construction: the residual is about how well a pick repeats and says nothing
+-- whatever about the rotation. Hence the offsets below, and hence a check with
+-- all three left at zero refuses to call anything verified however small the
+-- number comes out.
+--
+-- This matters more here than it would with a measured rotation, because the
+-- rotation is NOT measured - it is the permutation composed out of
+-- config/motion_transforms.json, exact only for a device bolted square. This
+-- check is the one thing on the machine that ever puts a number on what that
+-- assumption costs, and it can only do it at a distance from the taught pose.
 --
 -- Reading the residual is the whole point, so it is worth knowing what it means:
 --
 --   a CONSTANT shift, the same wherever you check    -> the TOOL moved.
---        Somebody changed the gripper. Re-teach the tip: one pick, keeping the
---        rotation, which is what reg_adopt_tip does.
---   a residual that GROWS with distance from the fitted pose -> the ROTATION is
---        wrong. The device was moved, remounted or crashed. Re-register: the
---        full four-pick pass, because t alone cannot absorb an angle.
+--        Somebody changed the gripper. Re-teach the tip by imprint on the
+--        Registration page: one touch, keeping the rotation.
+--   a residual that GROWS with distance from the taught pose -> the ROTATION is
+--        wrong, which here means the device is not square to the axes the
+--        transforms file claims. t alone cannot absorb an angle; either correct
+--        the mount or keep every approach short.
 --
 -- That split is why the record carries two dates. R belongs to the mount; t
 -- belongs to the mount AND the tool, and only one of them changes when a gripper
 -- is swapped. See core/DeviceReg.h.
 --
--- reg_adopt_tip is the gripper-change path and it is off by default on purpose:
--- it zeroes the residual whatever caused it, so adopting a shift you have not
--- explained is how a rotation error gets quietly re-labelled as a tip offset and
--- carried forward.
---
 -- Parameters (fd.param -> ctx keys, injected by the Registration page's Check
 -- button or a device_reg_check_run recipe step):
 --   reg_device           the registered device            (required)
---   reg_check_dx/dy/dz_mm  check pose, offset from the fitted pose (5, 5, 0)
+--   reg_check_dx/dy/dz_mm  check pose, offset from the taught pose (5, 5, 0)
 --   reg_tol_mm           residual that counts as verified (default 0.05)
---   reg_adopt_tip        re-teach t from this measurement (default false)
 --   reg_autofocus        focus on the tip                 (default true)
 --   reg_focus_range_mm   focus sweep at the check pose    (default 0.5)
 --   reg_v_travel         reference device velocity        (default 0 = as set)
@@ -46,7 +48,6 @@ local DX     = fd.param("reg_check_dx_mm", 5.0)
 local DY     = fd.param("reg_check_dy_mm", 5.0)
 local DZ     = fd.param("reg_check_dz_mm", 0.0)
 local TOL    = fd.param("reg_tol_mm", 0.05)
-local ADOPT  = fd.param("reg_adopt_tip", false)
 local FOCUS  = fd.param("reg_autofocus", true)
 local FRANGE = fd.param("reg_focus_range_mm", 0.5)
 local VTRAV  = fd.param("reg_v_travel", 0.0)
@@ -68,7 +69,9 @@ local C = {
     { x = fd.ctx.reg_c2x, y = fd.ctx.reg_c2y, z = fd.ctx.reg_c2z },
     { x = fd.ctx.reg_c3x, y = fd.ctx.reg_c3y, z = fd.ctx.reg_c3z },
 }
-local h0 = { x = fd.ctx.reg_h0x, y = fd.ctx.reg_h0y, z = fd.ctx.reg_h0z }
+-- The pose the tip was taught at. The check offsets are measured FROM it, which
+-- is the only way this can see a rotation error at all.
+local h0 = { x = fd.ctx.reg_tip_x, y = fd.ctx.reg_tip_y, z = fd.ctx.reg_tip_z }
 
 -- p = t + R*h, written as the columns the record handed back. Same arithmetic
 -- the C++ side does; here because the script is what decides where to drive.
@@ -82,14 +85,14 @@ local offset = math.sqrt(DX * DX + DY * DY + DZ * DZ)
 local tests_rotation = offset > 0.0
 if not tests_rotation then
     fd.log("WARNING: the check offsets are all zero, so this checks the tip at the " ..
-           "very pose the fit was taught at. That measures whether a pick repeats, " ..
+           "very pose its tip was taught at. That measures whether a pick repeats, " ..
            "not whether the rotation is right, and it cannot verify anything - set " ..
-           "check_dx/dy/dz to move away from the fitted pose.")
+           "check_dx/dy/dz to move away from the taught pose.")
 end
 
 local hc = { x = h0.x + DX, y = h0.y + DY, z = h0.z + DZ }
 local pred = predict(hc)
-fd.logf("check: '%s' to (%.4f, %.4f, %.4f), %.3f mm from where it was fitted; the " ..
+fd.logf("check: '%s' to (%.4f, %.4f, %.4f), %.3f mm from where its tip was taught; the " ..
         "record puts its tip at (%.4f, %.4f, %.4f) in '%s' space",
         DEV, hc.x, hc.y, hc.z, offset, pred.x, pred.y, pred.z, REF)
 
@@ -130,26 +133,12 @@ fd.logf("check: tip measured at (%.4f, %.4f, %.4f) - %.4f mm from prediction " .
 fd.move_axis_to{ device = DEV, axes = "XYZ", x_mm = h0.x, y_mm = h0.y, z_mm = h0.z,
                  velocity_mm_s = VJOG }
 
-if ADOPT then
-    -- Keeps R, moves t, and clears `verified` - because the record now describes
-    -- tooling that nothing has checked. The re-check is a second run of this
-    -- file with adopt off, and it should read near zero.
-    fd.device_reg_tip_save{ device = DEV,
-                            h_x_mm = hc.x, h_y_mm = hc.y, h_z_mm = hc.z,
-                            p_x_mm = meas.x, p_y_mm = meas.y, p_z_mm = meas.z }
-    fd.logf("adopted the measured tip for '%s': the %.4f mm it was out is now the " ..
-            "record. The rotation is untouched and the registration is UNVERIFIED " ..
-            "again - run this check once more with adopt off to confirm it.",
-            DEV, residual)
-    return
-end
-
 local verified = tests_rotation and (residual <= TOL)
 fd.device_reg_check_save{ device = DEV, residual_mm = residual, verified = verified,
                           pose_x_mm = hc.x, pose_y_mm = hc.y, pose_z_mm = hc.z }
 
 if verified then
-    fd.logf("'%s' verified: %.4f mm at %.3f mm from the fitted pose, inside %.4f mm",
+    fd.logf("'%s' verified: %.4f mm at %.3f mm from the taught pose, inside %.4f mm",
             DEV, residual, offset, TOL)
     return
 end
@@ -158,15 +147,16 @@ if not tests_rotation then
     -- Recorded, deliberately not failed: the operator asked for a repeatability
     -- measurement and got one. Refusing work that was explicitly requested would
     -- be wrong; letting it read as a verification would be worse.
-    fd.logf("WARNING: '%s' measured %.4f mm at its own fitted pose. That is a " ..
+    fd.logf("WARNING: '%s' measured %.4f mm at the very pose its tip was taught at. That is a " ..
             "repeatability figure, not a verification - it is recorded as such and " ..
             "the registration stays unverified.", DEV, residual)
     return
 end
 
 error(string.format(
-    "'%s' is %.4f mm out at %.3f mm from where it was fitted, outside the %.4f mm " ..
-    "tolerance. A shift of the same size wherever you check is the TOOL - re-teach " ..
-    "the tip (adopt_tip). A miss that grows with distance is the ROTATION - " ..
-    "re-register. Loosening the tolerance fixes neither.",
+    "'%s' is %.4f mm out at %.3f mm from where its tip was taught, outside the " ..
+    "%.4f mm tolerance. A shift of the same size wherever you check is the TOOL - " ..
+    "re-teach the tip by imprint. A miss that grows with distance is the ROTATION, " ..
+    "which came from the axis transforms and is only as square as the mount. " ..
+    "Loosening the tolerance fixes neither.",
     DEV, residual, offset, TOL))

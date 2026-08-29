@@ -479,6 +479,53 @@ CommandResult ExecAlignApply(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// ---- nominal_point -------------------------------------------------------
+//
+// Where a nominal IS, in machine XY, with nothing marked and nothing moved.
+//
+// `align_apply` one function up already converts a local coordinate through the
+// frame — but it takes two raw numbers, and the only thing that knew a
+// NOMINAL's numbers was SolvePlacement, which needs the object's two marks
+// first. That is precisely the measurement a registered device makes
+// unnecessary for the FIRST approach: to send a gripper to n1, something has to
+// be able to say where n1 is before anything has looked at the object.
+//
+// There is deliberately no `_z`. The frame is 2-D rigid and an AlignNominal
+// stores lx/ly and nothing else (core/AlignFrame.h), so a Z reported here would
+// be invented, and an invented Z on a gripper approach is a lens driven into a
+// substrate. A caller that needs one takes it from a focused camera reading or
+// from a stored placement offset — see docs/device-registration-design.md.
+CommandResult ExecNominalPoint(ExecutionContext& ctx, const ParamValues& p)
+{
+    std::string err;
+    AlignResult frame;
+    const AlignProc* proc = LiveProc(ctx, p.GetString("alignment"), &frame, &err);
+    if (!proc) return CommandResult::Fail(err);
+
+    const AlignNominal* nom = FindAlignNominal(*proc, p.GetString("nominal"));
+    if (!nom)
+        return CommandResult::Fail("alignment '" + proc->name + "' has no nominal '" +
+                                   p.GetString("nominal") + "'");
+
+    double mx = 0.0, my = 0.0;
+    AlignLocalToMachine(frame, nom->lx, nom->ly, &mx, &my);
+
+    const std::string prefix = p.GetString("ctx_prefix");
+    ctx.CtxSet(prefix + "_x", mx);
+    ctx.CtxSet(prefix + "_y", my);
+    // The local pair travels with it. A nominal taught against the wrong feature
+    // shows up here as two numbers that do not match the drawing; the machine
+    // pair alone can never show that, because it is supposed to change with
+    // every part.
+    ctx.CtxSet(prefix + "_lx", nom->lx);
+    ctx.CtxSet(prefix + "_ly", nom->ly);
+    ctx.CtxSet(prefix + "_name", nom->name);
+
+    FD_INFO("align", "'%s': nominal '%s' local (%.4f, %.4f) -> machine (%.4f, %.4f)",
+            proc->name.c_str(), nom->name.c_str(), nom->lx, nom->ly, mx, my);
+    return CommandResult::Success();
+}
+
 // ---- move_local ----------------------------------------------------------
 
 CommandResult ExecMoveLocal(ExecutionContext& ctx, const ParamValues& p)
@@ -1021,6 +1068,24 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                        "result goes to <prefix>_x / <prefix>_y"},
                   },
                   CommandSpec::Needs::None, ExecAlignApply});
+
+    // align_apply for a nominal instead of two typed numbers. Registered here,
+    // beside it, because it is the same conversion — what it adds is that the
+    // caller does not have to already know the coordinates of the thing it is
+    // asking about, which is what stood between a taught nominal and a
+    // registered device's first approach.
+    reg.Register({"nominal_point", "Align",
+                  "Where a nominal IS in machine XY, through the live frame - no "
+                  "marks and no motion (<prefix>_x/_y/_lx/_ly/_name)",
+                  {
+                      {"alignment", PT::AlignUid, true, {}, 0, 0, {},
+                       "alignment procedure (uid or name)"},
+                      {"nominal", PT::NominalUid, true, {}, 0, 0, {},
+                       "the nominal to resolve (uid or name)"},
+                      {"ctx_prefix", PT::String, false, "nom", 0, 0, {},
+                       "result goes to <prefix>_x / _y / _lx / _ly / _name"},
+                  },
+                  CommandSpec::Needs::None, ExecNominalPoint});
 
     reg.Register({"move_local", "Align",
                   "Move to a coordinate expressed in an alignment's local frame",
