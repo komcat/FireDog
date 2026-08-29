@@ -109,6 +109,64 @@ AlignResult ResultFromJson(const nlohmann::json& j)
     return r;
 }
 
+nlohmann::json GuardToJson(const AlignGuard& g)
+{
+    nlohmann::json j;
+    j["enabled"]       = g.enabled;
+    j["span_mm"]       = g.spanMm;
+    j["span_tol_mm"]   = g.spanTolMm;
+    j["theta_deg"]     = g.thetaDeg;
+    j["theta_tol_deg"] = g.thetaTolDeg;
+    return j;
+}
+
+AlignGuard GuardFromJson(const nlohmann::json& j)
+{
+    AlignGuard g;
+    if (!j.is_object()) return g;
+    g.enabled     = j.value("enabled", false);
+    g.spanMm      = j.value("span_mm", 0.0);
+    g.spanTolMm   = j.value("span_tol_mm", 0.2);
+    g.thetaDeg    = j.value("theta_deg", 0.0);
+    g.thetaTolDeg = j.value("theta_tol_deg", 5.0);
+    return g;
+}
+
+nlohmann::json RunToJson(const AlignRun& r)
+{
+    nlohmann::json j;
+    j["at"]        = r.at;
+    j["e1x"]       = r.e1x;
+    j["e1y"]       = r.e1y;
+    j["e2x"]       = r.e2x;
+    j["e2y"]       = r.e2y;
+    j["dx"]        = r.dx;
+    j["dy"]        = r.dy;
+    j["span_mm"]   = r.spanMm;
+    j["theta_deg"] = r.thetaDeg;
+    j["guarded"]   = r.guarded;
+    j["ok"]        = r.ok;
+    return j;
+}
+
+AlignRun RunFromJson(const nlohmann::json& j)
+{
+    AlignRun r;
+    if (!j.is_object()) return r;
+    r.at       = j.value("at", "");
+    r.e1x      = j.value("e1x", 0.0);
+    r.e1y      = j.value("e1y", 0.0);
+    r.e2x      = j.value("e2x", 0.0);
+    r.e2y      = j.value("e2y", 0.0);
+    r.dx       = j.value("dx", 0.0);
+    r.dy       = j.value("dy", 0.0);
+    r.spanMm   = j.value("span_mm", 0.0);
+    r.thetaDeg = j.value("theta_deg", 0.0);
+    r.guarded  = j.value("guarded", false);
+    r.ok       = j.value("ok", true);
+    return r;
+}
+
 nlohmann::json NominalToJson(const AlignNominal& n)
 {
     nlohmann::json j;
@@ -213,6 +271,87 @@ bool SolveAlignFrame(const AlignPoint& e1, const AlignPoint& e2,
     return true;
 }
 
+// ---- the guard band ------------------------------------------------------
+
+void AlignSpanTheta(const AlignPoint& e1, const AlignPoint& e2,
+                    double* spanMm, double* thetaDeg)
+{
+    const double dx = e2.wx - e1.wx;
+    const double dy = e2.wy - e1.wy;
+    if (spanMm)   *spanMm = std::sqrt(dx * dx + dy * dy);
+    // Same expression SolveAlignFrame uses, deliberately: a readout that
+    // disagreed with the frame by a sign convention would be worse than none.
+    if (thetaDeg) *thetaDeg = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
+}
+
+bool AlignGuardCheck(const AlignGuard& g, double spanMm, double thetaDeg,
+                     double* spanErr, double* thetaErr)
+{
+    if (!g.enabled) {
+        if (spanErr)  *spanErr  = 0.0;
+        if (thetaErr) *thetaErr = 0.0;
+        return true;
+    }
+    const double ds = spanMm - g.spanMm;
+    // Wrapped to (-180, 180]: a part at 179 deg and a reference at -179 are two
+    // degrees apart, not 358. Without this a band straddling the wrap refuses
+    // every part that crosses it.
+    double dt = thetaDeg - g.thetaDeg;
+    while (dt >  180.0) dt -= 360.0;
+    while (dt <= -180.0) dt += 360.0;
+    if (spanErr)  *spanErr  = ds;
+    if (thetaErr) *thetaErr = dt;
+    return std::fabs(ds) <= g.spanTolMm && std::fabs(dt) <= g.thetaTolDeg;
+}
+
+AlignRun MakeAlignRun(const AlignGuard& g, const AlignResult& r)
+{
+    AlignRun out;
+    out.at       = r.capturedAt;
+    out.e1x      = r.e1.wx;
+    out.e1y      = r.e1.wy;
+    out.e2x      = r.e2.wx;
+    out.e2y      = r.e2.wy;
+    out.dx       = r.e2.wx - r.e1.wx;
+    out.dy       = r.e2.wy - r.e1.wy;
+    out.spanMm   = r.spanMm;
+    out.thetaDeg = r.thetaDeg;
+    out.guarded  = g.enabled;
+    out.ok       = AlignGuardCheck(g, r.spanMm, r.thetaDeg);
+    return out;
+}
+
+AlignCpk ComputeAlignCpk(const std::vector<double>& values, double ref, double tol)
+{
+    AlignCpk out;
+    out.n = static_cast<int>(values.size());
+    if (values.empty()) return out;
+
+    double sum = 0.0;
+    out.minV = out.maxV = values.front();
+    for (const double v : values) {
+        sum += v;
+        if (v < out.minV) out.minV = v;
+        if (v > out.maxV) out.maxV = v;
+    }
+    out.mean = sum / static_cast<double>(out.n);
+    if (out.n < 2 || tol <= 0.0) return out;   // valid stays false
+
+    double ss = 0.0;
+    for (const double v : values) ss += (v - out.mean) * (v - out.mean);
+    out.sigma = std::sqrt(ss / static_cast<double>(out.n - 1));
+    out.valid = true;
+
+    // A spread below a part per million of the tolerance is the arithmetic
+    // running out of digits, not a perfect process. Say so rather than printing
+    // an index in the millions.
+    if (out.sigma <= tol * 1e-6) { out.noSpread = true; return out; }
+
+    out.cp  = tol / (3.0 * out.sigma);
+    out.cpk = (tol - std::fabs(out.mean - ref)) / (3.0 * out.sigma);
+    return out;
+}
+
 void AlignLocalToMachine(const AlignResult& r, double lx, double ly,
                          double* mx, double* my)
 {
@@ -298,9 +437,13 @@ nlohmann::json AlignProcToJson(const AlignProc& p)
     j["station1"] = StationToJson(p.s1);
     j["station2"] = StationToJson(p.s2);
     j["result"]   = ResultToJson(p.result);
+    j["guard"]    = GuardToJson(p.guard);
     nlohmann::json noms = nlohmann::json::array();
     for (const AlignNominal& n : p.nominals) noms.push_back(NominalToJson(n));
     j["nominals"] = std::move(noms);
+    nlohmann::json runs = nlohmann::json::array();
+    for (const AlignRun& r : p.runs) runs.push_back(RunToJson(r));
+    j["runs"] = std::move(runs);
     return j;
 }
 
@@ -315,6 +458,10 @@ AlignProc AlignProcFromJson(const nlohmann::json& j)
     if (j.contains("station1")) p.s1 = StationFromJson(j["station1"]);
     if (j.contains("station2")) p.s2 = StationFromJson(j["station2"]);
     if (j.contains("result"))   p.result = ResultFromJson(j["result"]);
+    // Absent on every procedure authored before the band existed, and the
+    // default is `enabled = false` — so an old procedure loads with no band and
+    // behaves exactly as it did.
+    if (j.contains("guard")) p.guard = GuardFromJson(j["guard"]);
     // Absent in every procedure authored before nominals existed — an empty
     // list is the right answer there, so no migration is needed.
     if (j.contains("nominals") && j["nominals"].is_array()) {
@@ -322,6 +469,17 @@ AlignProc AlignProcFromJson(const nlohmann::json& j)
             if (!row.is_object()) continue;
             p.nominals.push_back(NominalFromJson(row));
         }
+    }
+    // The history, oldest first. Truncated on load as well as on append: a
+    // hand-edited file must not be able to grow the ring past its cap.
+    if (j.contains("runs") && j["runs"].is_array()) {
+        for (const auto& row : j["runs"]) {
+            if (!row.is_object()) continue;
+            p.runs.push_back(RunFromJson(row));
+        }
+        if (p.runs.size() > kAlignRunHistoryMax)
+            p.runs.erase(p.runs.begin(),
+                         p.runs.end() - static_cast<long>(kAlignRunHistoryMax));
     }
     return p;
 }

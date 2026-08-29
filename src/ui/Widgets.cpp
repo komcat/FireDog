@@ -167,6 +167,66 @@ void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
     dl->AddText(lp, col, lbl);
 }
 
+void DrawWorldBand(ImDrawList* dl, const WorldMarkView& wv, const WorldBand& b)
+{
+    if (!dl || !b.have || wv.pixelToMmX <= 0.0f || wv.pixelToMmY <= 0.0f) return;
+    if (b.rMax <= 0.0 || b.aMax <= b.aMin) return;
+
+    // Machine mm -> screen, the same projection DrawWorldMark uses.
+    const auto toScreen = [&](double wx, double wy) {
+        const float px = static_cast<float>((wx - wv.gx) / static_cast<double>(wv.pixelToMmX)) +
+                         static_cast<float>(wv.imgW) * 0.5f;
+        const float py = static_cast<float>((wy - wv.gy) / static_cast<double>(wv.pixelToMmY)) +
+                         static_cast<float>(wv.imgH) * 0.5f;
+        return wv.view.ToScreen(px, py);
+    };
+
+    const ImU32 line = b.col ? b.col : IM_COL32(90, 230, 130, 200);
+    const ImU32 fill = (line & 0x00FFFFFFu) | (40u << 24);
+
+    const double rIn  = b.rMin > 0.0 ? b.rMin : 0.0;
+    const double rOut = b.rMax;
+    const double a0   = b.aMin * 3.14159265358979323846 / 180.0;
+    const double a1   = b.aMax * 3.14159265358979323846 / 180.0;
+
+    // Enough segments that the arc reads as an arc at the zoom the pick window
+    // uses, and few enough that a band spanning 90 degrees is not thousands of
+    // quads. The arcs are nearly straight in a small field of view anyway.
+    int steps = static_cast<int>((b.aMax - b.aMin) * 1.5) + 16;
+    if (steps > 96) steps = 96;
+
+    // Anything this far outside the box is not going to be seen; skipping it
+    // keeps a centre 50 mm away from producing quads with vast coordinates.
+    const float cullPad = (wv.boxMax.x - wv.boxMin.x) * 4.0f + 1000.0f;
+    const auto  offBox  = [&](const ImVec2& p) {
+        return p.x < wv.boxMin.x - cullPad || p.x > wv.boxMax.x + cullPad ||
+               p.y < wv.boxMin.y - cullPad || p.y > wv.boxMax.y + cullPad;
+    };
+
+    std::vector<ImVec2> inner, outer;
+    inner.reserve(static_cast<std::size_t>(steps) + 1);
+    outer.reserve(static_cast<std::size_t>(steps) + 1);
+    for (int i = 0; i <= steps; ++i) {
+        const double t = a0 + (a1 - a0) * static_cast<double>(i) / static_cast<double>(steps);
+        const double c = std::cos(t), s = std::sin(t);
+        inner.push_back(toScreen(b.cx + rIn  * c, b.cy + rIn  * s));
+        outer.push_back(toScreen(b.cx + rOut * c, b.cy + rOut * s));
+    }
+
+    for (int i = 0; i < steps; ++i) {
+        const std::size_t k = static_cast<std::size_t>(i);
+        if (offBox(inner[k]) && offBox(outer[k]) &&
+            offBox(inner[k + 1]) && offBox(outer[k + 1])) continue;
+        dl->AddQuadFilled(inner[k], outer[k], outer[k + 1], inner[k + 1], fill);
+    }
+    // The two arcs bright, the two limit rays dimmer: which way to move the
+    // crosshair is a question about distance far more often than about angle.
+    dl->AddPolyline(inner.data(), steps + 1, line, 0, 1.5f);
+    dl->AddPolyline(outer.data(), steps + 1, line, 0, 1.5f);
+    dl->AddLine(inner.front(), outer.front(), line, 1.0f);
+    dl->AddLine(inner.back(),  outer.back(),  line, 1.0f);
+}
+
 void DrawMarkIconsInline(const MarkIcon icons[2], int active, float height)
 {
     if (!icons || height <= 0.0f) return;

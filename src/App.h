@@ -240,12 +240,25 @@ private:
     // Alignment page (View menu, full-page): teach a local frame (O1) from two
     // operator-marked features. The capture itself runs through the engines, so
     // teaching and a scripted re-run take the identical code path.
-    void DrawAlignPanel();            // page body: procedures | stations | frame
+    void DrawAlignPanel();            // page body: procedures | steps | frame
     void DrawAlignListPanel();        // left:   procedures + New/Duplicate/Delete/Save
-    void DrawAlignDetailPanel();      // middle: the two stations + Run
+    void DrawAlignDetailPanel();      // middle: header + step selector + one step
     void DrawAlignFramePanel();       // right:  the derived frame, as a record
+    // The middle panel's four steps. The selector on its left says WHERE the
+    // procedure stands (a dot per station: taught auto, taught manual, or not
+    // taught); the pane on its right draws exactly ONE of the four, because all
+    // four stacked is what pushed Run off the bottom of the page.
+    void DrawAlignStepSelector(AlignProc& a);
     void DrawAlignStationCard(AlignProc& a, int station);
+    void DrawAlignRunPanel(AlignProc& a);     // Run/Stop + the frame's actions
+    void DrawAlignCheckPanel(AlignProc& a);   // the guard band + the run history
     void StartAlignmentRun(const AlignProc& a);   // launches alignment_procedure.lua
+    // The repeatability sweep: alignment_repeat.lua, which runs the procedure
+    // above `n` times through align_run. One engine Start for the whole sweep,
+    // so orch_.Busy() stays true throughout and Stop ends it — a UI-side loop
+    // that relaunched between iterations would go idle between them and let a
+    // second run slip in, which is the bug the program runner's comment names.
+    void StartAlignmentRepeat(const AlignProc& a, int n);
     // Station positions taught from the Alignment page are PRIVATE to their
     // procedure: named "algn_<procUid>_<n>" and `hidden`, so they stay out of
     // the Motion page table and the recipe position picker. Teaching updates in
@@ -769,6 +782,17 @@ private:
     double alignProbeX_ = 0.0;   // right panel's local->machine check inputs
     double alignProbeY_ = 0.0;
     std::string alignStartErr_;  // why the last Run refused to start
+    // Which step the middle panel's swappable area is showing. An index into a
+    // fixed set of panes (kAlignViewE1 .. kAlignViewCheck, PageAlign.cpp), not a
+    // document reference, so it needs no uid. Reset to E1 on every change of
+    // selected procedure — a pane left on "Run" while a different, untaught
+    // procedure is selected reads as a licence the new one has not earned.
+    int alignView_ = 0;
+    // How many runs the Frame check pane's repeatability sweep asks for, and
+    // the window the Cpk beneath it is computed over. One number for both: the
+    // question the sweep answers is "what did THOSE runs do", and a capability
+    // figure computed over a different span than the sweep is a different claim.
+    int alignRepeatN_ = kAlignRepeatDefault;
     // Which nominal the nominal pane is showing. A UID, never an index: the
     // vector is erased from and appended to while the pane is open, and an
     // index would silently start pointing at a different point. Empty = show

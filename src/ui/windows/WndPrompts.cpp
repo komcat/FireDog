@@ -341,7 +341,10 @@ void App::DrawAlignPickWindow()
     // Footer height reserved so the image never pushes the buttons off-window.
     // The button row is twice as tall when it leads with the step diagrams.
     const float footerH = ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f +
-                          (req.stepIcons ? ImGui::GetFrameHeight() : 0.0f);
+                          (req.stepIcons ? ImGui::GetFrameHeight() : 0.0f) +
+                          // the guard band's two readout lines, when there is one
+                          (req.band.have ? ImGui::GetTextLineHeightWithSpacing() * 2.0f
+                                         : 0.0f);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImVec2 avail = ImGui::GetContentRegionAvail();
     avail.y = avail.y > footerH + 40.0f ? avail.y - footerH : 40.0f;
@@ -434,10 +437,71 @@ void App::DrawAlignPickWindow()
     const double dxMM = static_cast<double>(dxPix) * pixelToMmX_;
     const double dyMM = static_cast<double>(dyPix) * pixelToMmY_;
 
+    // ---- The guard band ----------------------------------------------------
+    // Set only for the E2 of a procedure that has a band: E1 is already
+    // captured, so where E2 is ALLOWED to be is known, and it is a region on
+    // this image. The verdict is recomputed every frame from the crosshair, so
+    // moving the mark is the re-try — there is no loop to run and no second
+    // question to answer. Both the pose and the calibration are needed to
+    // project it; without them the band is simply not shown, exactly like a hint.
+    double gxNow = 0.0, gyNow = 0.0;
+    const bool havePose = workflow_.GantryXY(gxNow, gyNow) &&
+                          pixelToMmX_ > 0.0f && pixelToMmY_ > 0.0f;
+    const bool bandOn = req.band.have && havePose;
+    double bandSpan = 0.0, bandTheta = 0.0, bandSpanErr = 0.0, bandThetaErr = 0.0;
+    bool   bandOk = true;
+    if (bandOn) {
+        AlignPoint e1, e2;
+        e1.wx = req.band.cx;
+        e1.wy = req.band.cy;
+        e2.wx = gxNow + dxMM;
+        e2.wy = gyNow + dyMM;
+        AlignSpanTheta(e1, e2, &bandSpan, &bandTheta);
+        AlignGuard g;
+        g.enabled     = true;
+        g.spanMm      = req.band.spanRef;
+        g.spanTolMm   = req.band.spanTol;
+        g.thetaDeg    = req.band.thetaRef;
+        g.thetaTolDeg = req.band.thetaTol;
+        bandOk = AlignGuardCheck(g, bandSpan, bandTheta, &bandSpanErr, &bandThetaErr);
+    }
+
     if (haveImg) {
         // Clip the overlay to the image box: zoomed in, the image-centre
         // reference can sit outside the visible window entirely.
         dl->PushClipRect(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), true);
+
+        // Everything drawn from MACHINE mm goes through this: the guard band
+        // and the run's reference points alike. Built once, because two copies
+        // of the pose and calibration is how they start disagreeing.
+        WorldMarkView wv;
+        wv.view       = view;
+        wv.boxMin     = origin;
+        wv.boxMax     = ImVec2(origin.x + avail.x, origin.y + avail.y);
+        wv.gx         = gxNow;
+        wv.gy         = gyNow;
+        wv.pixelToMmX = pixelToMmX_;
+        wv.pixelToMmY = pixelToMmY_;
+        wv.imgW       = cameraW_;
+        wv.imgH       = cameraH_;
+
+        // The band FIRST, under everything: it is a region to aim inside, not a
+        // mark, and it must never sit on top of the crosshair being placed. It
+        // turns orange the moment the mark leaves it, so the colour answers
+        // "am I inside?" without reading the numbers below.
+        if (bandOn) {
+            WorldBand wb;
+            wb.have = true;
+            wb.cx   = req.band.cx;
+            wb.cy   = req.band.cy;
+            wb.rMin = req.band.spanRef - req.band.spanTol;
+            wb.rMax = req.band.spanRef + req.band.spanTol;
+            wb.aMin = req.band.thetaRef - req.band.thetaTol;
+            wb.aMax = req.band.thetaRef + req.band.thetaTol;
+            wb.col  = bandOk ? IM_COL32(90, 230, 130, 200)
+                             : IM_COL32(255, 150, 60, 220);
+            DrawWorldBand(dl, wv, wb);
+        }
 
         // The optical/stage reference: image centre, wherever it now maps to.
         const ImVec2 ctr = toScreen(static_cast<float>(cameraW_) * 0.5f,
@@ -472,19 +536,7 @@ void App::DrawAlignPickWindow()
         // becomes an arrow on the edge with its distance, which is the only
         // thing that distinguishes "the target is over there" from "the target
         // is where I am looking".
-        double gx = 0.0, gy = 0.0;
-        if (!req.hints.empty() && workflow_.GantryXY(gx, gy) &&
-            pixelToMmX_ > 0.0f && pixelToMmY_ > 0.0f) {
-            WorldMarkView wv;
-            wv.view       = view;
-            wv.boxMin     = origin;
-            wv.boxMax     = ImVec2(origin.x + avail.x, origin.y + avail.y);
-            wv.gx         = gx;
-            wv.gy         = gy;
-            wv.pixelToMmX = pixelToMmX_;
-            wv.pixelToMmY = pixelToMmY_;
-            wv.imgW       = cameraW_;
-            wv.imgH       = cameraH_;
+        if (!req.hints.empty() && havePose) {
             for (const ExecutionContext::PickHint& h : req.hints) {
                 CameraMark cm;
                 cm.wx    = h.wx;
@@ -502,6 +554,29 @@ void App::DrawAlignPickWindow()
     }
 
     ImGui::Separator();
+
+    // The band in numbers, under the picture of it. Both halves are shown even
+    // when only one is out: "the span is right and the angle is not" is a
+    // different fault (a part turned) from its opposite (the wrong feature), and
+    // the operator is the one who has to tell them apart.
+    if (bandOn) {
+        const ImVec4 okCol(0.4f, 0.9f, 0.5f, 1.0f);
+        const ImVec4 badCol(1.0f, 0.65f, 0.25f, 1.0f);
+        ImGui::TextColored(std::fabs(bandSpanErr) <= req.band.spanTol ? okCol : badCol,
+                           "span %.4f mm (%.4f +/- %.4f, %+.4f)",
+                           bandSpan, req.band.spanRef, req.band.spanTol, bandSpanErr);
+        ImGui::SameLine();
+        ImGui::TextColored(std::fabs(bandThetaErr) <= req.band.thetaTol ? okCol : badCol,
+                           "   theta %.3f deg (%.3f +/- %.3f, %+.3f)",
+                           bandTheta, req.band.thetaRef, req.band.thetaTol, bandThetaErr);
+        if (bandOk) ImGui::TextColored(okCol, "IN BAND");
+        else        ImGui::TextColored(badCol, "OUT OF BAND - move the mark into the "
+                                               "shaded band, or accept it as it is");
+    } else if (req.band.have) {
+        ImGui::TextDisabled("guard band not shown - no gantry pose or no pixel calibration");
+        ImGui::TextDisabled(" ");
+    }
+
     const auto answer = [&](bool ok) {
         ExecutionContext::PickResult r;
         r.px   = pickPx_;
@@ -522,8 +597,30 @@ void App::DrawAlignPickWindow()
         const MarkIcon icons[2] = {markIcons_[0], markIcons_[1]};
         DrawMarkIconsInline(icons, req.station - 1, ImGui::GetFrameHeight() * 2.0f);
     }
+    // Out of band, OK changes its NAME rather than disappearing. The band is a
+    // sanity check, not an interlock: the person at the machine can see the
+    // part and the software cannot, so refusing them would only teach them to
+    // switch the band off. What it must not do is let the accept pass for an
+    // ordinary OK — hence the label, the colour, and the warning in the log,
+    // which is what a run that comes out 200 um wrong is read back from.
+    const bool outOfBand = bandOn && !bandOk;
     ImGui::BeginDisabled(!haveImg);
-    if (ImGui::Button("OK (Mark here)", ImVec2(160.0f, 0.0f))) answer(true);
+    if (outOfBand) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.60f, 0.36f, 0.10f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f, 0.44f, 0.14f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.82f, 0.50f, 0.16f, 1.0f));
+    }
+    if (ImGui::Button(outOfBand ? "Accept out of band" : "OK (Mark here)",
+                      ImVec2(outOfBand ? 200.0f : 160.0f, 0.0f))) {
+        if (outOfBand) {
+            FD_WARN("align", "'%s': %s accepted OUT OF BAND - span %.4f (%.4f +/- %.4f), "
+                             "theta %.3f (%.3f +/- %.3f)",
+                    req.alignName.c_str(), what, bandSpan, req.band.spanRef,
+                    req.band.spanTol, bandTheta, req.band.thetaRef, req.band.thetaTol);
+        }
+        answer(true);
+    }
+    if (outOfBand) ImGui::PopStyleColor(3);
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Cancel (Fail Step)", ImVec2(160.0f, 0.0f))) answer(false);

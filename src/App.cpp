@@ -424,6 +424,7 @@ void App::ResetDocumentSelections()
     alignSel_ = session_.Aligns().empty() ? -1 : 0;
     alignNameBuf_[0] = '\0';
     alignStartErr_.clear();
+    alignView_ = 0;          // the step pane lands on E1 for a new document
     // The vision models are a different document now, so the teach page's
     // selection is stale — leave the page rather than showing a uid that
     // belongs to the previous product. Cached detectors go with it.

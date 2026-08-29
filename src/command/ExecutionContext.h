@@ -40,16 +40,21 @@ std::string CtxValueToString(const CtxValue& v);
 // ---- System procedure scripts ----------------------------------------------
 //
 // The procedures the app launches from its own buttons and keeps in step with
-// the command family: alignment_procedure.lua, placement_procedure.lua and
-// needle_calibration.lua. They are STANDARD — every product runs the shipped
-// copy, and a file of the same name in a product's scripts folder is ignored
-// (with a warning).
+// the command family: alignment_procedure.lua, alignment_repeat.lua,
+// placement_procedure.lua and needle_calibration.lua. They are STANDARD — every
+// product runs the shipped copy, and a file of the same name in a product's
+// scripts folder is ignored (with a warning).
 //
 // A forked copy is how a product silently loses a step the app added later: the
 // day placement_procedure.lua grew its place_view call, every product carrying
 // its own copy would have gone on skipping it, and the symptom would have been
 // a camera that simply did not move. Product-specific scripts — a scan, a
 // bring-up sequence — keep the override; these are not that.
+//
+// The repeatability sweep is here for a third reason: it is the source of a
+// CAPABILITY figure. A forked copy that quietly changed what one iteration does
+// would still produce a Cpk, and a number nobody can reproduce is worse than no
+// number at all.
 //
 // The needle calibration is here for a slightly different reason worth keeping
 // straight: it measures the MACHINE, so there is no such thing as one product's
@@ -92,6 +97,21 @@ public:
         std::string label;
     };
 
+    // The band E2 is expected to land in, centred on E1 in MACHINE mm — the
+    // procedure's guard band, projected onto the live image so the operator can
+    // move the crosshair until the mark is inside it. Empty on every other pick.
+    //
+    // It is here rather than in the UI because only the worker knows E1: it was
+    // captured at the OTHER station, minutes and one move ago, and the window
+    // sees nothing but the current field of view. The UI projects it exactly as
+    // it projects a PickHint.
+    struct PickBand {
+        bool   have = false;
+        double cx = 0.0, cy = 0.0;         // E1, machine mm
+        double spanRef = 0.0, spanTol = 0.0;
+        double thetaRef = 0.0, thetaTol = 0.0;   // degrees
+    };
+
     struct PickRequest {
         std::string message;
         std::string alignName;         // procedure being taught (window title)
@@ -123,6 +143,7 @@ public:
         // model and shows its taught patch with the reported point crossed on it.
         std::string detectorUid;
         std::string autoError;
+        PickBand    band;
     };
     // The UI answers in camera pixels AND in millimetres: only the UI knows the
     // live pixel_to_mm calibration, so the conversion stays there and the worker

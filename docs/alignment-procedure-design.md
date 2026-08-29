@@ -214,6 +214,152 @@ The Alignment page shows the two states separately (`LIVE taught …` versus
 a button that would drive against last week's record is the same bug with a
 friendlier face.
 
+## 5c. The guard band, and the record of every run
+
+`SolveAlignFrame` can only refuse two marks that are on top of each other
+(§2). Everything else it accepts, because two points that are apart *do* define
+an origin and a direction — it has no way to know they are the **right** two
+points. E2 marked on the wrong instance of a repeated feature yields a frame
+wrong by the pitch between them, published as LIVE, and every `move_local` after
+it wrong by the same amount with nothing on screen saying so.
+
+The **guard band** (`AlignGuard`, on the procedure) is the missing check, and it
+is deliberately two numbers of different kinds:
+
+| | what it is | reference | band |
+|---|---|---|---|
+| **span** | a fact about the **part** — the distance between the two features is on the drawing and is the same on every part | taken from a good run (*Set from last run*) | tight; a breach means the wrong feature was marked |
+| **theta** | a fact about the **fixture** — where it holds a part, which the part itself then varies around | 0 (square to the machine), or taken from a run when the fixture sits at an angle | wide; it catches a part in backwards or a slipped clamp |
+
+*Set from last run* fills **both** references, because a fixture that holds
+every part at 0.55° is a fact worth capturing rather than retyping. What it
+never fills is a **tolerance**: that is a judgement about how much a good part
+may vary, and the mistake this table exists to prevent is reading theta's band
+as a measurement tolerance and tightening it to whatever today's part happened
+to measure.
+
+It is **off by default**, so every procedure authored before it behaves exactly
+as it did, and `AlignGuardCheck` on a disabled band returns *in band* with zero
+deviations — an inactive band never refuses anything, and every caller can
+therefore ask unconditionally.
+
+### The re-mark loop is the crosshair
+
+An enabled band does **not** refuse a frame. It surfaces where the mistake can
+still be undone: while E2 is being marked.
+
+`align_station` fills `PickRequest::band` for station 2 — E1 in machine mm, plus
+the span and theta limits — and the pick window projects it exactly as it
+projects a `PickHint` (`DrawWorldBand`, `ui/Widgets.cpp`, through the same
+`WorldMarkView`). The band is an annulus **sector** centred on E1, and only part
+of it is ever on screen: at a 7 mm span in a 3 mm field of view the operator
+sees two arcs and the two limit rays crossing the view, and moves the crosshair
+between them. The verdict is recomputed every frame from the mark, so **moving
+the mark is the retry** — there is no loop to run, no attempt counter and no
+second question to answer.
+
+The band is filled by the worker rather than the UI for the reason every hint is:
+only the worker knows E1. It was captured at the other station, one move ago,
+and the window sees nothing but the current field of view.
+
+Out of band, `OK (Mark here)` becomes **`Accept out of band`** — different
+label, different colour, and an `FD_WARN` naming both deviations. The band is a
+sanity check, not an interlock: the person at the machine can see the part and
+the software cannot, and refusing them outright would only teach them to switch
+the band off. What it must not do is let that acceptance pass for an ordinary
+OK.
+
+An **auto** station gets the same treatment through the path that already
+exists. A detection that succeeds but lands outside the band is treated as a
+detection *failure*: the station falls back to a manual pick if
+`auto_fallback_manual` is set — with the band drawn and the miss in the
+message — and fails loudly if it is not. A high match score says the match was
+good, not that it was the right feature.
+
+`align_solve` therefore **reports** rather than enforces: by the time it runs,
+an out-of-band point has been consciously accepted at the window, or an auto
+station without a fallback has already failed. Failing there would only throw
+away a frame somebody deliberately kept. It writes `<prefix>_guard_ok`,
+`<prefix>_span_err_mm` and `<prefix>_theta_err_deg` into ctx, which is what lets
+a recipe act on the verdict anyway — `dut_record` puts it on the part's record,
+and a branch can refuse to carry on.
+
+### The run history
+
+Each procedure keeps its last `kAlignRunHistoryMax` (100) solved frames as
+`AlignRun` rows: the timestamp, E1 and E2 in machine mm, the E2−E1 vector, span,
+theta, whether a band was in force, and the verdict. The row is built in
+`ProductSession::ApplyAlignResult` — the one writer of `result`, which already
+persists immediately — from the procedure's own band and the frame's own two
+points, so no verdict has to cross the worker/UI boundary.
+
+Two lifetimes, on purpose, and they are the same distinction as §5b one level
+down: `result` is a **licence** and is cleared at every boundary where the part
+might have changed; `runs` is a **record** and is cleared by nothing, because
+the question it answers — *what did the last hundred parts measure?* — is exactly
+the one asked when one of them comes out wrong. The ring is bounded because it
+rides the product document; the cap is applied on load as well as on append, so
+a hand-edited file cannot grow it.
+
+The ring's cap is not an arbitrary round number: it is `kAlignRepeatMax`, the
+longest repeatability sweep the page will run, so a whole sweep's rows are still
+there to compute a capability figure from when it finishes.
+
+### The repeatability sweep, and the capability figure
+
+The band says what a good part may vary by. Whether the procedure can actually
+hold it is a different question, and *Run alignment × N* on the Frame check step
+answers it: 3 to 100 runs (default 30), each one a **whole** alignment through
+`fd.align_run` — travel, settle, exposure and detection together, exactly as a
+recipe runs it. There is deliberately no shortcut that re-captures points
+without moving; a sweep that skipped the move would report the detector's noise
+and call it the machine's.
+
+The loop lives in `config/scripts/alignment_repeat.lua`, a **system** script
+(§7), and not in `App::Update`. That is a correctness point, not a style one:
+one `orch_.lua.Start` covers the whole sweep, so `orch_.Busy()` stays true from
+first run to last and Stop ends the lot. A UI-side loop that relaunched between
+iterations would go momentarily idle between them — and every Run/Go surface in
+the app gates on `Busy()`, so a second run could start in the gap. It is a
+system script for a third reason beyond the two §7 gives: it is the source of a
+capability number, and a forked copy that quietly changed what one iteration
+does would still produce one.
+
+A failed iteration **ends** the sweep. A Cpk computed over the runs that
+happened to succeed is a lie by omission — the failures are the part of the
+distribution that matters most.
+
+The rows it leaves are ordinary history rows; nothing about the sweep is stored
+separately. The pane computes, over the last N of them (N being the same
+spinbox — a figure computed over a different span than the sweep answers a
+question nobody asked):
+
+```
+Cp  = tol / (3 sigma)                    the spread alone, if it were centred
+Cpk = (tol - |mean - ref|) / (3 sigma)   the spread AND where it sits
+```
+
+against **both** halves of the band, with the tolerance as the specification
+limit — which is the whole reason the figure belongs here rather than in a
+spreadsheet: the operator already decided what a good part may vary by when they
+set the band. `sigma` is the **sample** deviation (n−1), unlike vision
+reliability's population form: a capability index is an estimate about future
+parts made from a sample.
+
+Both are shown because the pair is diagnostic. High Cp with low Cpk is a tight
+distribution sitting off the reference — a detector locked onto the wrong edge,
+or a reference taken from a different part — and the pane says so in words when
+it sees it. Cpk is coloured at the usual 1.33 (capable) and 1.00 (the band is
+exactly three sigma wide) lines, because the number is useless to somebody who
+does not know the convention. Zero measurable spread reports as `inf` rather
+than an index in the millions: that is the arithmetic running out of digits, not
+a perfect process.
+
+The page shows all of it on the **Frame check** step, whose dot is the only red
+one on the selector: green the last run passed the band, red it did not, orange
+nothing has been checked. Editing a tolerance never rewrites a stored verdict —
+where the two disagree the pane says which band was in force at the time.
+
 ## 6. Storage
 
 A procedure is product data, so it lives with the product: manifest role
@@ -262,6 +408,56 @@ The Motion page's "Reveal hidden rows (dimmed)" escape hatch keeps working on
 purpose: when a station is 2 mm off, somebody has to be able to see the number.
 The station card shows the coordinates too, since a private position is not on
 the Motion table.
+
+### The middle panel is five steps, one at a time
+
+The middle panel is a **header, a step selector, and a swappable pane**
+(`DrawAlignDetailPanel`). The header holds the two facts that survive every
+step — the procedure's name and the device its stations are poses on — and the
+pane draws exactly *one* of five things: the E1 card, the E2 card, Run, the
+frame check (§5c), or the nominals.
+
+Stacked, as they were, they were far taller than the page. Run — the thing the
+whole page exists to reach — sat below the fold, and the two station cards,
+which differ only in a heading, had to be told apart by reading. The selector
+answers that by *reporting* as well as choosing: E1, E2, Run and Frame check
+each carry a status dot, and every label lines up because the row without one
+spends the same width on a `Dummy`.
+
+The dots answer different questions per row, which is the point of having them
+where the choice is made. A station's says whether it is taught and how; **Run's
+is about this SESSION** — green means a LIVE frame exists, the only state in
+which anything may move against it, so the record left by last week's part is
+deliberately not green; **Frame check's is about the last measurement** (§5c).
+
+The dot has three states, and what makes one green is deliberately stricter than
+"has a position":
+
+| dot | station state |
+|---|---|
+| **green** | taught, `mode = auto`, and a detection model is taught behind it |
+| **cyan** | taught, `mode = manual` — the point is marked by hand |
+| **orange** | no station position **or** an auto station with no model (an NCC one with no patch counts as none) |
+
+An auto station with no model has everything a run needs except the one thing it
+will actually use; it fails at run time, on the machine, with a part loaded. A
+green dot there would be a promise the station cannot keep, so it reads exactly
+as orange as an untaught one — and the card beside it says which of the two it
+is.
+
+**The selector never gates Run.** Both stations taught is what enables the *Run
+alignment* button inside the pane, not the button that opens the pane: a
+selector that refuses to open is a selector that cannot explain itself, and the
+reason (`assign a saved position to both stations first`) is written under the
+button it disables.
+
+`alignView_` is an index, not a uid — unlike every selection that names a
+document object — because it addresses a fixed set of panes that no edit can
+reorder (named `kAlignViewE1..kAlignViewCheck`, so the switch, the selector and
+the resets cannot drift apart). It resets to **E1** whenever the selected procedure changes (New,
+Duplicate, Delete, a click in the list, and a product load): a pane left on
+*Run* while a different, untaught procedure is selected reads as a licence the
+new one has not earned.
 
 ### Card layout
 
@@ -712,18 +908,14 @@ subject, and Delete is **deferred** past `EndChild`: erasing from the vector the
 pane is reading invalidates the pointer mid-draw. A row carries one fact beyond
 its name, `(no view)`, because that is the one that changes what step 4 does.
 
-That block and the nominals live in the **middle** panel, and below the station
-cards that panel splits in two the same way the cards themselves do (one table,
-stretch weights, `Resizable`): **make** the frame on the left — Run, then the
-local→machine probe that checks it — and **use** it on the right, the nominals.
-Stacked, as they first were, the nominals sat a scroll below the button that
-produces the frame they depend on while the whole right half of the panel stayed
-empty. Neither belongs in the right-hand frame panel where they started. The split is by what
-a thing *is*: the right column reports the frame, a record of what was taught;
-the middle carries what you do with it. `DrawAlignFrameActions` therefore
-re-resolves the frame itself rather than taking one as a parameter — the live
-frame is the only one that may move the stage, and a caller handing in
-`a.result` would be exactly the bug §5b exists to prevent.
+That block and the nominals live in the **middle** panel — never in the
+right-hand frame panel where they started. The split between them is by what a
+thing *is*: the right column reports the frame, a record of what was taught; the
+middle carries what you do with it. `DrawAlignFrameActions` therefore re-resolves
+the frame itself rather than taking one as a parameter — the live frame is the
+only one that may move the stage, and a caller handing in `a.result` would be
+exactly the bug §5b exists to prevent.
+
 | `align_run` | typed one-step wrapper over `alignment_procedure.lua` |
 | `place_view` | drive the camera to a nominal's taught viewing pose (no-op when it has none, unless `required`) |
 | `place_mark` | ask the operator to mark one point on a gripped object (index 1 or 2) |
@@ -737,8 +929,8 @@ re-runnable from the Scripts page, from a recipe step, from Lua
 (`fd.align_run{...}`, since every registered command gets an `fd.` binding), and
 from the Alignment page's Run button, all through the same code path.
 
-**Which file it runs**: `alignment_procedure.lua` and `placement_procedure.lua`
-are **standard procedures** — `IsSystemScript` names them, and both
+**Which file it runs**: `alignment_procedure.lua`, `alignment_repeat.lua` and
+`placement_procedure.lua` are **standard procedures** — `IsSystemScript` names them, and both
 `ExecutionContext::ResolveScript` and the two page buttons resolve them to the
 shipped `config/scripts/` copy, always. A file of that name in a product's
 scripts folder is ignored and logged, and the Scripts page says so on the copy

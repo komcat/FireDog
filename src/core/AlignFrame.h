@@ -21,6 +21,7 @@
 // — a missing or malformed file yields an empty vector, never throws.
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -65,6 +66,51 @@ struct AlignResult {
     double      originX = 0.0, originY = 0.0;   // == e1.wx / e1.wy
     double      thetaDeg = 0.0;                 // E1 -> E2 direction
     double      spanMm = 0.0;                   // |E1 -> E2|, diagnostic
+};
+
+// ---- the guard band, and the record of what each run measured -------------
+// A solved frame is always geometrically valid — two points that are not on top
+// of each other always define an origin and a direction. What `SolveAlignFrame`
+// cannot know is whether they are the RIGHT two points: E2 marked on the wrong
+// feature yields a frame wrong by the size of that feature, published as LIVE,
+// and every move_local after it wrong by the same amount with nothing on screen
+// to say so.
+//
+// The band is the missing sanity check, and it is deliberately TWO numbers of
+// different character:
+//
+//   span  is a fact about the PART — the distance between the two features is
+//         on the drawing, it is the same on every part, so its tolerance is
+//         tight and a breach means the wrong feature was marked;
+//   theta is a fact about the LOADING — how the part happens to sit differs
+//         every time, legitimately. Its reference is a nominal orientation
+//         (usually 0: square to the machine), not a measurement, and its band
+//         is wide. It catches a part in backwards or a slipped clamp.
+//
+// Off by default, so every procedure authored before this behaves exactly as it
+// did. An enabled band never REFUSES a frame by itself: the check surfaces
+// while E2 is being marked, where the crosshair can still be moved, and an
+// operator who accepts a mark outside it gets a flagged run rather than a
+// blocked machine.
+struct AlignGuard {
+    bool   enabled     = false;
+    double spanMm      = 0.0;   // reference E1->E2 distance
+    double spanTolMm   = 0.2;
+    double thetaDeg    = 0.0;   // nominal orientation, not a measured one
+    double thetaTolDeg = 5.0;
+};
+
+// One solved frame, kept as a row. E1 and E2 are machine mm — the same numbers
+// the frame panel shows — and dx/dy is E2-E1, which is what a band breach is
+// actually about. `guarded` records whether a band was on AT THE TIME: an `ok`
+// that nothing checked must not read like one that passed.
+struct AlignRun {
+    std::string at;                                 // == AlignResult::capturedAt
+    double e1x = 0.0, e1y = 0.0, e2x = 0.0, e2y = 0.0;
+    double dx = 0.0, dy = 0.0;
+    double spanMm = 0.0, thetaDeg = 0.0;
+    bool   guarded = false;
+    bool   ok      = true;
 };
 
 // One taught NOMINAL: a target point on the part, held in LOCAL (O1)
@@ -135,7 +181,13 @@ struct AlignProc {
     std::string  device = "gantry-main";   // motion device the stations belong to
     AlignStation s1, s2;
     AlignResult  result;
+    AlignGuard   guard;                    // what a solved frame is checked against
     std::vector<AlignNominal> nominals;    // taught targets in this frame
+    // The last kAlignRunHistoryMax solved frames, oldest first. A RECORD, not a
+    // licence: unlike `result` it survives every boundary that clears a frame,
+    // because the question it answers ("what did the last hundred parts
+    // measure?") is exactly the one asked when one of them comes out wrong.
+    std::vector<AlignRun> runs;
 };
 
 // ---- frame maths ---------------------------------------------------------
@@ -147,10 +199,74 @@ struct AlignProc {
 // producing a frame that is quietly rotated by degrees.
 inline constexpr double kAlignMinSpanMM = 0.05;
 
+// How many solved frames a procedure remembers. Bounded because it rides the
+// product document — and set to the longest repeatability sweep the page will
+// run, so a whole sweep's rows are still there to compute a Cpk from when it
+// finishes. Anything smaller silently drops the beginning of the evidence.
+inline constexpr std::size_t kAlignRunHistoryMax = 100;
+
+// The repeatability sweep's bounds. Below three there is no spread to speak of
+// and a Cpk would be arithmetic dressed up as evidence; above a hundred the
+// sweep outlives both the operator's attention and the ring above.
+inline constexpr int kAlignRepeatMin     = 3;
+inline constexpr int kAlignRepeatMax     = 100;
+inline constexpr int kAlignRepeatDefault = 30;
+
 // Fill `out` (origin, angle, span, timestamp, valid) from the two marked
 // points. False + `err` when the two points are too close together.
 bool SolveAlignFrame(const AlignPoint& e1, const AlignPoint& e2,
                      AlignResult* out, std::string* err = nullptr);
+
+// ---- the guard band ------------------------------------------------------
+// The span and direction of E1->E2, without the refusal or the timestamp
+// SolveAlignFrame carries. It exists so a CANDIDATE point — a crosshair the
+// operator is still moving — can be measured against the band without pretending
+// to be a frame. Either out may be null.
+void AlignSpanTheta(const AlignPoint& e1, const AlignPoint& e2,
+                    double* spanMm, double* thetaDeg);
+
+// True when (spanMm, thetaDeg) is inside `g`. `spanErr`/`thetaErr` come back as
+// SIGNED deviations from the reference (measured - reference), because "0.4 mm
+// too long" and "0.4 mm too short" are different mistakes. Both outs may be null.
+//
+// A DISABLED band returns true and zero deviations: an inactive band never
+// refuses anything, and every caller can therefore ask unconditionally.
+bool AlignGuardCheck(const AlignGuard& g, double spanMm, double thetaDeg,
+                     double* spanErr = nullptr, double* thetaErr = nullptr);
+
+// The history row for a solved frame, verdict included. One function so the
+// page, the command and the session cannot disagree about what a run measured.
+AlignRun MakeAlignRun(const AlignGuard& g, const AlignResult& r);
+
+// What a series of measurements did against one half of the band. The band's
+// tolerance IS the specification limit, which is the whole reason a capability
+// figure belongs here rather than in a spreadsheet: the operator already
+// decided what a good part may vary by when they set the band.
+//
+//   Cp  = tol / (3 sigma)                  — the spread alone, if it were centred
+//   Cpk = (tol - |mean - ref|) / (3 sigma) — the spread AND where it sits
+//
+// Cp is the capability the process could have; Cpk is the one it has. Reporting
+// only Cp hides a tight distribution sitting against a limit — which is exactly
+// what a detector locked onto the wrong edge looks like.
+//
+// sigma is the SAMPLE deviation (n-1). Vision reliability uses the population
+// form for a different job (describing one sitting); a capability index is an
+// estimate about future parts from a sample, so it takes the sample form.
+struct AlignCpk {
+    int    n     = 0;
+    double mean  = 0.0;
+    double sigma = 0.0;
+    double minV  = 0.0, maxV = 0.0;
+    double cp    = 0.0, cpk = 0.0;
+    bool   valid = false;   // n >= 2 and tol > 0
+    // Every sample identical to the last digit. Cp/Cpk are infinite rather than
+    // huge, and a printed 1e9 would read as a measurement rather than as the
+    // resolution limit it is.
+    bool   noSpread = false;
+};
+
+AlignCpk ComputeAlignCpk(const std::vector<double>& values, double ref, double tol);
 
 // Local (O1) <-> machine XY. Both are no-ops when the frame is not valid, so a
 // caller that forgets to check gets the identity, never a silent garbage move.

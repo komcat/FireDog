@@ -361,9 +361,22 @@ bool ProductSession::ApplyAlignResult(const std::string& uid, const AlignResult&
         return false;
     }
     p->result = result;
+    // The history row is built HERE, from the procedure's own band and the
+    // frame's own two points, so nothing has to carry a verdict across the
+    // worker/UI boundary — and a band edited between the run and this call is
+    // the one that judges it, which is the only reading that cannot go stale.
+    const AlignRun row = MakeAlignRun(p->guard, result);
+    p->runs.push_back(row);
+    if (p->runs.size() > kAlignRunHistoryMax) p->runs.erase(p->runs.begin());
     SaveAligns();   // a taught frame is worthless if a crash loses it
     FD_INFO("align", "'%s': origin (%.4f, %.4f) mm, theta %.4f deg, span %.4f mm",
             p->name.c_str(), result.originX, result.originY, result.thetaDeg, result.spanMm);
+    if (row.guarded && !row.ok) {
+        FD_WARN("align", "'%s': OUT OF BAND - span %.4f (ref %.4f +/- %.4f), "
+                         "theta %.4f (ref %.4f +/- %.4f)",
+                p->name.c_str(), row.spanMm, p->guard.spanMm, p->guard.spanTolMm,
+                row.thetaDeg, p->guard.thetaDeg, p->guard.thetaTolDeg);
+    }
     return true;
 }
 

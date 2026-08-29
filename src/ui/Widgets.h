@@ -164,6 +164,26 @@ struct WorldMarkView {
 void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
                    float crossLen);
 
+// An annulus SECTOR in machine mm: everywhere a point may be, given a distance
+// range and a direction range from a centre. The Alignment Procedure's guard
+// band is exactly that shape — E2 must be `span +/- tol` away from E1, in the
+// direction `theta +/- tol` — and drawing it is what turns "mark E2" into
+// "mark E2 in here".
+//
+// Only part of it is ever on screen, which is the point rather than a
+// limitation: at a 7 mm span in a 3 mm field of view the operator sees two arcs
+// and the limit rays crossing the view, and can move the crosshair between them.
+// The centre itself is usually off-screen entirely.
+struct WorldBand {
+    bool         have = false;
+    double       cx = 0.0, cy = 0.0;      // the centre, machine mm (E1)
+    double       rMin = 0.0, rMax = 0.0;  // mm
+    double       aMin = 0.0, aMax = 0.0;  // degrees, machine frame
+    unsigned int col = 0;                 // 0 = the default "aim here" colour
+};
+
+void DrawWorldBand(ImDrawList* dl, const WorldMarkView& wv, const WorldBand& b);
+
 // A loaded PNG, ready to draw. Zero `tex` = not available, and every drawing
 // path treats that as "skip", so a missing asset costs a diagram and nothing
 // else.

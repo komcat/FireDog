@@ -20,6 +20,9 @@
 #include "core/Log.h"
 #include "vision/HalconDetector.h"   // Available() — auto stations need a licence
 
+#include <cfloat>    // FLT_MIN — the step buttons fill their column
+#include <cmath>     // fabs — the guard band's deviations
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -108,6 +111,43 @@ bool StationPositionCombo(const char* label, const SavedPosMap& positions,
     return changed;
 }
 
+// ---- the step selector's status dots ---------------------------------------
+// Three colours for three states, on the two rows where the question has an
+// answer: a station located by a taught detection model, one marked by hand,
+// and one that is not finished. Why "not finished" is stricter than "has a
+// position" is argued at DrawAlignStepSelector.
+constexpr float kDotW      = 18.0f;   // the dot's column, so labels line up
+constexpr float kDotR      = 6.0f;
+const ImU32     kDotAuto   = IM_COL32( 90, 215, 115, 255);   // green
+const ImU32     kDotManual = IM_COL32( 90, 215, 240, 255);   // cyan
+const ImU32     kDotOpen   = IM_COL32(255, 165,  60, 255);   // orange
+// Red is reserved for ONE thing: a measurement that was checked and did not
+// pass. Orange is "not finished", which is a different fact and must not wear
+// the colour of a failure.
+const ImU32     kDotBad    = IM_COL32(240,  85,  75, 255);
+
+// The panes the step selector switches between. Named because the switch, the
+// selector and every reset would otherwise be three lists of bare integers that
+// have to agree.
+enum : int {
+    kAlignViewE1 = 0,
+    kAlignViewE2,
+    kAlignViewRun,
+    kAlignViewNominals,
+    kAlignViewCheck,
+};
+
+// A dot vertically centred against a button `h` tall. It advances the cursor by
+// the full dot column, so a row WITHOUT one lines its label up by spending the
+// same width on a Dummy.
+void StatusDot(ImU32 col, float h)
+{
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddCircleFilled(
+        ImVec2(p.x + kDotW * 0.5f, p.y + h * 0.5f), kDotR, col, 20);
+    ImGui::Dummy(ImVec2(kDotW, h));
+}
+
 } // namespace
 
 // Launch the procedure script. Same channel the Motion page's XCAN button uses:
@@ -128,6 +168,28 @@ void App::StartAlignmentRun(const AlignProc& a)
     alignStartErr_.clear();
     if (!orch_.lua.Start(script, std::move(env), &alignStartErr_))
         FD_WARN("align", "alignment run rejected: %s", alignStartErr_.c_str());
+}
+
+// The repeatability sweep. Same channel and the same gating as the single run
+// above — one engine Start for the whole sweep, so nothing else can start a run
+// between iterations and Stop ends the lot. The script itself refuses an `n`
+// outside the bounds, so a hand-written ctx cannot ask for a thousand.
+void App::StartAlignmentRepeat(const AlignProc& a, int n)
+{
+    if (n < kAlignRepeatMin) n = kAlignRepeatMin;
+    if (n > kAlignRepeatMax) n = kAlignRepeatMax;
+    const std::string script = SystemScriptPath("alignment_repeat.lua");
+    LuaEngine::Env env = session_.MakeLuaEnv();
+    env.initialCtx = {
+        {"align_name", a.uid},
+        {"align_prefix", std::string("frame")},
+        {"align_repeat", static_cast<double>(n)},
+    };
+    alignStartErr_.clear();
+    if (!orch_.lua.Start(script, std::move(env), &alignStartErr_))
+        FD_WARN("align", "repeatability sweep rejected: %s", alignStartErr_.c_str());
+    else
+        FD_INFO("align", "'%s': repeatability sweep of %d runs started", a.name.c_str(), n);
 }
 
 // Capture the device's CURRENT pose as this station's private position.
@@ -303,6 +365,7 @@ void App::DrawAlignListPanel()
         list.push_back(a);
         alignSel_ = static_cast<int>(list.size()) - 1;
         alignNameBuf_[0] = '\0';
+        alignView_ = 0;
     }
     const bool haveSel = alignSel_ >= 0 && alignSel_ < static_cast<int>(list.size());
     ImGui::SameLine();
@@ -350,6 +413,7 @@ void App::DrawAlignListPanel()
         list.push_back(a);
         alignSel_ = static_cast<int>(list.size()) - 1;
         alignNameBuf_[0] = '\0';
+        alignView_ = 0;
         session_.SavePositions();
     }
     ImGui::SameLine();
@@ -359,6 +423,7 @@ void App::DrawAlignListPanel()
         list.erase(list.begin() + alignSel_);
         alignSel_ = list.empty() ? -1 : 0;
         alignNameBuf_[0] = '\0';
+        alignView_ = 0;
     }
     ImGui::EndDisabled();
     ImGui::EndDisabled();
@@ -377,6 +442,7 @@ void App::DrawAlignListPanel()
         if (ImGui::Selectable(a.name.c_str(), alignSel_ == i)) {
             alignSel_ = i;
             alignNameBuf_[0] = '\0';
+            alignView_ = 0;   // always land on E1, whatever the last one showed
         }
         ImGui::SameLine();
         if (a.result.valid)
@@ -389,7 +455,7 @@ void App::DrawAlignListPanel()
     }
 }
 
-// ---- Middle: the two stations + Run ---------------------------------------
+// ---- Middle: a header, a step selector, and ONE step at a time -------------
 
 void App::DrawAlignStationCard(AlignProc& a, int station)
 {
@@ -609,6 +675,11 @@ void App::DrawAlignDetailPanel()
     AlignProc& a = list[static_cast<std::size_t>(alignSel_)];
     const bool busy = orch_.Busy();
 
+    // ---- Header: WHICH procedure, and on WHAT ------------------------------
+    // The two facts that hold for every step below, so they stay put while the
+    // pane under them swaps: the procedure's name, and the motion device its
+    // stations are poses on.
+    ImGui::SeparatorText("Set up origin frame");
     if (alignNameBuf_[0] == '\0')
         std::snprintf(alignNameBuf_, sizeof(alignNameBuf_), "%s", a.name.c_str());
     ImGui::BeginDisabled(busy);
@@ -630,58 +701,490 @@ void App::DrawAlignDetailPanel()
         ImGui::EndCombo();
     }
     ImGui::EndDisabled();
+    ImGui::Separator();
 
-    DrawAlignStationCard(a, 1);
-    DrawAlignStationCard(a, 2);
+    // ---- The four steps: choose on the left, ONE of them draws on the right -
+    // Stacked, the two station cards, Run and the nominals were taller than the
+    // page: Run — the thing all of it exists to reach — sat below the fold, and
+    // the two cards, which differ only in a heading, had to be told apart by
+    // reading. One at a time, chosen from a column that also REPORTS where each
+    // station stands, is the same information without the scroll.
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    float selW = 190.0f;
+    if (avail.x < selW * 3.0f) selW = avail.x * 0.33f;   // never eat the pane
+    if (selW < 90.0f) selW = 90.0f;   // a NEGATIVE width means "fill" to ImGui
 
-    // Below the station cards the panel splits again: MAKE the frame on the
-    // left (Run, then the local->machine probe that checks it), USE it on the
-    // right (the nominals). Stacked, the nominals sat a scroll below the button
-    // that produces the frame they depend on, while the whole right half of the
-    // panel stayed empty - the two blocks are short and narrow, and the page is
-    // wide. Same table idiom, weights and Resizable as the station cards above,
-    // so every divider on this panel is one the operator can drag.
-    if (ImGui::BeginTable("alrunnoms", 2, ImGuiTableFlags_BordersInnerV |
-                                          ImGuiTableFlags_Resizable |
-                                          ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("##make", ImGuiTableColumnFlags_WidthStretch, 0.35f);
-        ImGui::TableSetupColumn("##use",  ImGuiTableColumnFlags_WidthStretch, 0.65f);
-        ImGui::TableNextRow();
+    ImGui::BeginChild("alSteps", ImVec2(selW, avail.y), ImGuiChildFlags_Borders);
+    DrawAlignStepSelector(a);
+    ImGui::EndChild();
+    ImGui::SameLine();
 
-        ImGui::TableSetColumnIndex(0);
-        ImGui::SeparatorText("Run");
-        const bool ready = !a.s1.posUid.empty() && !a.s2.posUid.empty();
-        const LuaEngine::Status lst = orch_.lua.GetStatus();
-        const bool running = orch_.lua.Running();
+    ImGui::BeginChild("alStep", ImVec2(0.0f, avail.y), ImGuiChildFlags_Borders);
+    switch (alignView_) {
+        case kAlignViewE2:       DrawAlignStationCard(a, 2); break;
+        case kAlignViewRun:      DrawAlignRunPanel(a);       break;
+        case kAlignViewNominals: DrawAlignNominalList(a);    break;
+        case kAlignViewCheck:    DrawAlignCheckPanel(a);     break;
+        default:                 DrawAlignStationCard(a, 1); break;
+    }
+    ImGui::EndChild();
+}
 
-        ImGui::BeginDisabled(busy || !ready);
-        if (ImGui::Button("Run alignment", ImVec2(150.0f, 0.0f))) StartAlignmentRun(a);
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!running);
-        if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) orch_.lua.RequestStop();
-        ImGui::EndDisabled();
+// The selector column: which step the pane beside it is showing, and — for the
+// two stations — whether that step is finished. A dot rather than a word,
+// because the column is narrow and the answer is meant to be glanceable:
+// green a station located by a taught detection model, cyan one marked by hand,
+// orange one that is not finished.
+//
+// "Not finished" is deliberately STRICTER for an auto station than "has a
+// position": one with no detection model behind it has everything a run needs
+// except the single thing it will actually use, and it fails at run time, on
+// the machine, with a part loaded. A green dot there would be a promise the
+// station cannot keep — so an auto station without a model (or an NCC one with
+// no patch cut yet) reads exactly as orange as an untaught one, and the card
+// beside it says which of the two it is.
+//
+// Run is NOT gated here. The button always swaps the pane in; it is the *Run
+// alignment* button inside that stays disabled, with the reason written under
+// it — a selector that refuses to open is a selector that cannot explain
+// itself.
+//
+// Run and Frame check carry dots of their own, and they answer different
+// questions from a station's. Run's is about THIS SESSION: green means a LIVE
+// frame exists, which is the only state in which anything may move against it —
+// the record left by last week's part is deliberately not green. Frame check's
+// is about the last measurement: green passed the band, red failed it, orange
+// means nothing checked it.
+void App::DrawAlignStepSelector(AlignProc& a)
+{
+    // Tall enough for the two-line label on the last one, and for the dot
+    // beside it to read as a lamp rather than a bullet point.
+    const float btnH = ImGui::GetFrameHeight() * 1.8f;
 
-        if (!ready)
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
-                               "assign a saved position to both stations first");
-        else if (busy && !running)
-            ImGui::TextDisabled("another run is active");
-        if (!alignStartErr_.empty())
-            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", alignStartErr_.c_str());
-        if (running || lst.state != LuaEngine::State::Idle) {
-            ImGui::TextDisabled("%s  %s", LuaEngine::StateName(lst.state),
-                                lst.error.empty() ? "" : lst.error.c_str());
+    ImGui::TextDisabled("Steps");
+    ImGui::Separator();
+
+    for (int station = 1; station <= 2; ++station) {
+        const AlignStation& st = (station == 1) ? a.s1 : a.s2;
+        ImU32       dot = kDotOpen;
+        const char* why = "not taught: no station position assigned";
+        if (!st.posUid.empty()) {
+            if (st.mode == "auto") {
+                const VisionModel* m = StationDetector(a, station);
+                const bool ready =
+                    m && !(m->method == "ncc" && m->templateFile.empty());
+                dot = ready ? kDotAuto : kDotOpen;
+                why = ready ? "taught - located automatically (detection model)"
+                            : "auto, but no detection model taught:\n"
+                              "this station would fail at run time";
+            } else {
+                dot = kDotManual;
+                why = "taught - the point is marked by hand on the live image";
+            }
         }
 
-        // What you DO with the frame, under the button that produces it: probe
-        // a local coordinate and drive to it. The right-hand PANEL keeps the
-        // frame's numbers - the record of the teach.
-        DrawAlignFrameActions(a);
+        ImGui::PushID(station);
+        StatusDot(dot, btnH);
+        ImGui::SameLine();
+        const bool sel = (alignView_ == station - 1);   // kAlignViewE1 / E2
+        if (sel)
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button(station == 1 ? "E1" : "E2", ImVec2(-FLT_MIN, btnH)))
+            alignView_ = station - 1;
+        if (sel) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s\n%s",
+                              station == 1 ? "E1 - the local origin"
+                                           : "E2 - the local X+ direction",
+                              why);
+        ImGui::PopID();
+    }
 
-        ImGui::TableSetColumnIndex(1);
-        DrawAlignNominalList(a);
+    ImGui::Spacing();
 
+    // Run: green only while a LIVE frame exists. `a.result.valid` is
+    // deliberately NOT enough — that is the record of the last teach, and a
+    // green light over a frame nothing may move against is the whole live/record
+    // distinction undone in the UI.
+    AlignResult live;
+    const bool haveLive = workflow_.LiveFrame(a.uid, &live);
+
+    // Frame check: what the band said about the last run. `runs.back()` and not
+    // the band's own state, because the question is "did the last part pass",
+    // and a band switched on after a run has judged nothing yet.
+    const AlignRun* last = a.runs.empty() ? nullptr : &a.runs.back();
+    ImU32       checkDot = kDotOpen;
+    const char* checkWhy = "no band set - nothing checks the frame";
+    if (a.guard.enabled && last && last->guarded) {
+        checkDot = last->ok ? kDotAuto : kDotBad;
+        checkWhy = last->ok ? "the last run was inside the band"
+                            : "the last run was OUT OF BAND";
+    } else if (a.guard.enabled) {
+        checkWhy = "band set, but no run has been checked against it yet";
+    }
+
+    // Their labels line up with the stations' because a row without a dot
+    // spends the same width on a Dummy.
+    struct Step { const char* label; int view; ImU32 dot; const char* tip; };
+    const Step rest[3] = {
+        {"Run alignment", kAlignViewRun, haveLive ? kDotAuto : kDotOpen,
+         haveLive ? "A LIVE frame is taught - move_local and Move here will use it."
+                  : "No live frame in this session. Run the procedure: a saved\n"
+                    "frame is a record of the last teach, not a licence to move."},
+        {"Frame check", kAlignViewCheck, checkDot, checkWhy},
+        {"Teach nominal\nposition", kAlignViewNominals, 0,
+         "The target points on the PART, in local (O1) coordinates - added,\n"
+         "checked and placed onto from here."},
+    };
+    for (const Step& s : rest) {
+        ImGui::PushID(s.view);
+        if (s.dot) StatusDot(s.dot, btnH);
+        else       ImGui::Dummy(ImVec2(kDotW, btnH));
+        ImGui::SameLine();
+        const bool sel = (alignView_ == s.view);
+        if (sel)
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button(s.label, ImVec2(-FLT_MIN, btnH))) alignView_ = s.view;
+        if (sel) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", s.tip);
+        ImGui::PopID();
+    }
+}
+
+// Step 3: MAKE the frame, then check it. The button that produces the frame and
+// the local->machine probe that reads it back belong on one pane — a run whose
+// result is never probed is how a bad teach survives as far as a placement.
+// The right-hand PANEL keeps the frame's numbers: that is the record of the
+// teach, this is what you do with it.
+void App::DrawAlignRunPanel(AlignProc& a)
+{
+    const bool busy = orch_.Busy();
+
+    ImGui::SeparatorText("Run");
+    const bool ready = !a.s1.posUid.empty() && !a.s2.posUid.empty();
+    const LuaEngine::Status lst = orch_.lua.GetStatus();
+    const bool running = orch_.lua.Running();
+
+    ImGui::BeginDisabled(busy || !ready);
+    if (ImGui::Button("Run alignment", ImVec2(150.0f, 0.0f))) StartAlignmentRun(a);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!running);
+    if (ImGui::Button("Stop", ImVec2(90.0f, 0.0f))) orch_.lua.RequestStop();
+    ImGui::EndDisabled();
+
+    if (!ready)
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                           "assign a saved position to both stations first");
+    else if (busy && !running)
+        ImGui::TextDisabled("another run is active");
+    if (!alignStartErr_.empty())
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", alignStartErr_.c_str());
+    if (running || lst.state != LuaEngine::State::Idle) {
+        ImGui::TextDisabled("%s  %s", LuaEngine::StateName(lst.state),
+                            lst.error.empty() ? "" : lst.error.c_str());
+    }
+
+    DrawAlignFrameActions(a);
+}
+
+// The band, and the roll of what every run measured against it.
+//
+// The two halves of the band are different KINDS of number and the pane says so
+// rather than leaving an operator to discover it by widening the wrong one:
+// span is on the drawing (the same on every part, so a breach means the wrong
+// feature was marked), theta is how this one happens to sit in the fixture (it
+// differs every load, legitimately, so its reference is a nominal orientation
+// and its band is wide).
+void App::DrawAlignCheckPanel(AlignProc& a)
+{
+    const bool busy = orch_.Busy();
+
+    ImGui::SeparatorText("Guard band");
+    ImGui::BeginDisabled(busy);
+    ImGui::Checkbox("check every solved frame against a band", &a.guard.enabled);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Off, a frame is only checked for being geometrically\n"
+                          "possible. On, the band is drawn on the live image while\n"
+                          "E2 is marked, so the mark can be moved into it - and an\n"
+                          "auto station that detects outside it falls back to a\n"
+                          "manual pick instead of teaching a wrong frame.");
+
+    ImGui::BeginDisabled(!a.guard.enabled);
+    float f = 0.0f;
+    ImGui::SetNextItemWidth(120.0f);
+    f = static_cast<float>(a.guard.spanMm);
+    if (ImGui::InputFloat("span reference (mm)", &f, 0.0f, 0.0f, "%.4f"))
+        a.guard.spanMm = f < 0.0 ? 0.0 : static_cast<double>(f);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    f = static_cast<float>(a.guard.spanTolMm);
+    if (ImGui::InputFloat("+/- (mm)##spantol", &f, 0.0f, 0.0f, "%.4f"))
+        a.guard.spanTolMm = f < 0.0f ? 0.0 : static_cast<double>(f);
+    ImGui::SameLine();
+    // BOTH references come off a run rather than being typed. The span on the
+    // drawing is between two DESIGN features and this one is between the two the
+    // operator actually marks; and a fixture that holds every part at 0.55 deg
+    // is a fact about the fixture, so making somebody read it off the frame
+    // panel and retype it only invites a typo. What the run cannot supply is the
+    // TOLERANCE — that is a judgement about how much a good part may vary, and
+    // it stays typed.
+    ImGui::BeginDisabled(a.runs.empty());
+    if (ImGui::SmallButton("Set from last run")) {
+        a.guard.spanMm  = a.runs.back().spanMm;
+        a.guard.thetaDeg = a.runs.back().thetaDeg;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Copy the span AND the angle the last run measured. Do this on\n"
+                          "a part you have checked, then widen each tolerance to what a\n"
+                          "good part may vary by - not to what makes today's part pass.\n"
+                          "The angle is where the fixture holds a part, so keep its band\n"
+                          "wide: it is here to catch one in backwards, not a mis-pick.");
+    ImGui::TextDisabled("   the distance E1->E2 on a good part: a breach means the wrong "
+                        "feature was marked");
+
+    ImGui::SetNextItemWidth(120.0f);
+    f = static_cast<float>(a.guard.thetaDeg);
+    if (ImGui::InputFloat("theta reference (deg)", &f, 0.0f, 0.0f, "%.3f"))
+        a.guard.thetaDeg = static_cast<double>(f);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    f = static_cast<float>(a.guard.thetaTolDeg);
+    if (ImGui::InputFloat("+/- (deg)##thetatol", &f, 0.0f, 0.0f, "%.3f"))
+        a.guard.thetaTolDeg = f < 0.0f ? 0.0 : static_cast<double>(f);
+    ImGui::TextDisabled("   where the fixture HOLDS a part (0 = square to the machine) - "
+                        "keep the band wide:");
+    ImGui::TextDisabled("   it is here to catch one loaded backwards, not a mis-picked "
+                        "feature");
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+
+    // What the band said about the last run, in the numbers it said it with.
+    ImGui::SeparatorText("Last run");
+    if (a.runs.empty()) {
+        ImGui::TextDisabled("No run recorded yet.");
+    } else {
+        const AlignRun& r = a.runs.back();
+        double spanErr = 0.0, thetaErr = 0.0;
+        const bool nowOk = AlignGuardCheck(a.guard, r.spanMm, r.thetaDeg,
+                                           &spanErr, &thetaErr);
+        ImGui::Text("%s", r.at.empty() ? "(no timestamp)" : r.at.c_str());
+        if (!a.guard.enabled) {
+            ImGui::TextDisabled("span %.4f mm   theta %.4f deg   (no band)",
+                                r.spanMm, r.thetaDeg);
+        } else {
+            const ImVec4 okCol(0.4f, 0.9f, 0.5f, 1.0f), badCol(1.0f, 0.55f, 0.3f, 1.0f);
+            ImGui::TextColored(std::fabs(spanErr) <= a.guard.spanTolMm ? okCol : badCol,
+                               "span  %.4f mm  (%+.4f)", r.spanMm, spanErr);
+            ImGui::TextColored(std::fabs(thetaErr) <= a.guard.thetaTolDeg ? okCol : badCol,
+                               "theta %.4f deg (%+.4f)", r.thetaDeg, thetaErr);
+            // The verdict RECORDED with the run, beside the one the band gives
+            // now: editing a tolerance must not silently rewrite history.
+            if (r.guarded && r.ok != nowOk)
+                ImGui::TextDisabled("recorded as %s under the band in force at the time",
+                                    r.ok ? "in band" : "OUT OF BAND");
+            else if (!r.guarded)
+                ImGui::TextDisabled("this run was not checked - the band was off when it ran");
+        }
+    }
+
+    // ---- The repeatability sweep, and what it proves ------------------------
+    // The band says what a good part may vary by. This says whether the
+    // procedure can actually hold it — the same question a Cpk answers on a
+    // production line, asked of the thing that measures rather than the thing
+    // measured.
+    ImGui::SeparatorText("Repeatability");
+    const bool ready   = !a.s1.posUid.empty() && !a.s2.posUid.empty();
+    const bool running = orch_.lua.Running();
+
+    ImGui::BeginDisabled(busy || !ready);
+    char runBtn[48];
+    std::snprintf(runBtn, sizeof(runBtn), "Run alignment x %d", alignRepeatN_);
+    if (ImGui::Button(runBtn, ImVec2(190.0f, 0.0f))) StartAlignmentRepeat(a, alignRepeatN_);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Run the WHOLE procedure %d times - travel, settle, exposure\n"
+                          "and detection every iteration, exactly as a recipe runs it.\n"
+                          "Each run stores its own row below, and the capability figures\n"
+                          "are computed from them. A failed run ends the sweep: a Cpk\n"
+                          "over only the runs that worked is a lie by omission.",
+                          alignRepeatN_);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(busy);
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::InputInt("runs", &alignRepeatN_, 1, 5)) {
+        if (alignRepeatN_ < kAlignRepeatMin) alignRepeatN_ = kAlignRepeatMin;
+        if (alignRepeatN_ > kAlignRepeatMax) alignRepeatN_ = kAlignRepeatMax;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!running);
+    if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
+    ImGui::EndDisabled();
+
+    if (!ready) {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                           "assign a saved position to both stations first");
+    } else if (a.s1.mode != "auto" || a.s2.mode != "auto") {
+        // Worth saying before the sweep rather than after twenty picks: a manual
+        // station asks the operator on EVERY iteration, and what comes out then
+        // is the repeatability of a person, which is a real number but not the
+        // one this button is usually pressed for.
+        ImGui::TextDisabled("a manual station asks for a pick on every run - set both "
+                            "stations to auto");
+        ImGui::TextDisabled("to measure the DETECTOR's repeatability instead of the "
+                            "operator's");
+    }
+    if (!alignStartErr_.empty())
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", alignStartErr_.c_str());
+    if (running)
+        ImGui::TextDisabled("running - %zu rows recorded so far", a.runs.size());
+
+    // Capability over the last `alignRepeatN_` rows: the sweep's own runs when
+    // one has just finished, and the most recent N otherwise. The window is the
+    // sweep size deliberately - a figure computed over a different span than the
+    // sweep would be answering a question nobody asked.
+    const std::size_t want = static_cast<std::size_t>(alignRepeatN_);
+    const std::size_t take = a.runs.size() < want ? a.runs.size() : want;
+    if (take >= 2 && a.guard.enabled) {
+        std::vector<double> spans, thetas;
+        spans.reserve(take);
+        thetas.reserve(take);
+        for (std::size_t i = a.runs.size() - take; i < a.runs.size(); ++i) {
+            spans.push_back(a.runs[i].spanMm);
+            thetas.push_back(a.runs[i].thetaDeg);
+        }
+        const AlignCpk cs = ComputeAlignCpk(spans,  a.guard.spanMm,   a.guard.spanTolMm);
+        const AlignCpk ct = ComputeAlignCpk(thetas, a.guard.thetaDeg, a.guard.thetaTolDeg);
+
+        ImGui::SeparatorText("Capability");
+        ImGui::TextDisabled("over the last %zu of %zu runs, against the band above",
+                            take, a.runs.size());
+        // 1.33 is the usual "capable" line and 1.00 the point at which the band
+        // is exactly three sigma wide - the numbers are useless without them,
+        // and an operator should not have to know the convention to read this.
+        if (ImGui::BeginTable("alcpk", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                          ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("");
+            ImGui::TableSetupColumn("mean");
+            ImGui::TableSetupColumn("sigma");
+            ImGui::TableSetupColumn("min");
+            ImGui::TableSetupColumn("max");
+            ImGui::TableSetupColumn("Cp");
+            ImGui::TableSetupColumn("Cpk");
+            ImGui::TableHeadersRow();
+
+            const auto row = [](const char* label, const AlignCpk& c, const char* fmt) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(label);
+                char buf[32];
+                const auto cell = [&](int col, double v) {
+                    ImGui::TableSetColumnIndex(col);
+                    std::snprintf(buf, sizeof(buf), fmt, v);
+                    ImGui::TextUnformatted(buf);
+                };
+                cell(1, c.mean);
+                cell(2, c.sigma);
+                cell(3, c.minV);
+                cell(4, c.maxV);
+                if (!c.valid) {
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::TextDisabled("-");
+                    ImGui::TableSetColumnIndex(6);
+                    ImGui::TextDisabled("no tolerance set");
+                    return;
+                }
+                if (c.noSpread) {
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::TextDisabled("inf");
+                    ImGui::TableSetColumnIndex(6);
+                    ImGui::TextDisabled("inf (no measurable spread)");
+                    return;
+                }
+                ImGui::TableSetColumnIndex(5);
+                ImGui::Text("%.2f", c.cp);
+                ImGui::TableSetColumnIndex(6);
+                const ImVec4 col = c.cpk >= 1.33 ? ImVec4(0.4f, 0.9f, 0.5f, 1.0f)
+                                 : c.cpk >= 1.00 ? ImVec4(1.0f, 0.85f, 0.4f, 1.0f)
+                                                 : ImVec4(1.0f, 0.55f, 0.3f, 1.0f);
+                ImGui::TextColored(col, "%.2f", c.cpk);
+            };
+            row("span (mm)",  cs, "%.4f");
+            row("theta (deg)", ct, "%.4f");
+            ImGui::EndTable();
+        }
+        ImGui::TextDisabled("Cpk >= 1.33 capable   1.00 = the band is exactly three sigma "
+                            "wide   below that, runs will fall outside it");
+        // Cp high with Cpk low is the signature worth naming: the spread is
+        // fine, it is simply not where the band says it should be - a detector
+        // on the wrong edge, or a reference taken from a different part.
+        if (cs.valid && !cs.noSpread && cs.cp >= 1.33 && cs.cpk < 1.0)
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                               "span repeats well but sits off the reference by %+.4f mm - "
+                               "re-take the reference, or check which feature is marked",
+                               cs.mean - a.guard.spanMm);
+    } else if (a.guard.enabled) {
+        ImGui::TextDisabled("run the sweep to get a capability figure (needs 2+ runs)");
+    } else {
+        ImGui::TextDisabled("set a band above to get a capability figure from a sweep");
+    }
+
+    // The roll. Newest first: the question asked here is almost always "what did
+    // the last few parts do", and scrolling to the bottom to answer it is the
+    // kind of small friction that stops it being asked at all.
+    ImGui::SeparatorText("Recent runs");
+    ImGui::TextDisabled("%zu of %zu kept, newest first", a.runs.size(), kAlignRunHistoryMax);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(busy || a.runs.empty());
+    if (ImGui::SmallButton("Clear history")) {
+        a.runs.clear();
+        session_.SaveAligns();   // taught by the machine, persisted like the frame
+    }
+    ImGui::EndDisabled();
+
+    // A fixed ten rows rather than "whatever is left": the blocks above it grow
+    // (a capability table appears once a sweep has run), and a table sized by
+    // the remainder would shrink to nothing exactly when there is most to read.
+    // Its own scrollbar holds the other ninety.
+    const ImVec2 rollSize(0.0f, ImGui::GetTextLineHeightWithSpacing() * 11.0f);
+    if (ImGui::BeginTable("alruns", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                       ImGuiTableFlags_ScrollY |
+                                       ImGuiTableFlags_SizingStretchProp, rollSize)) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("when",  ImGuiTableColumnFlags_WidthStretch, 1.5f);
+        ImGui::TableSetupColumn("E1",    ImGuiTableColumnFlags_WidthStretch, 1.4f);
+        ImGui::TableSetupColumn("E2",    ImGuiTableColumnFlags_WidthStretch, 1.4f);
+        ImGui::TableSetupColumn("dx",    ImGuiTableColumnFlags_WidthStretch, 0.9f);
+        ImGui::TableSetupColumn("dy",    ImGuiTableColumnFlags_WidthStretch, 0.9f);
+        ImGui::TableSetupColumn("span",  ImGuiTableColumnFlags_WidthStretch, 0.9f);
+        ImGui::TableSetupColumn("theta", ImGuiTableColumnFlags_WidthStretch, 0.9f);
+        ImGui::TableHeadersRow();
+        for (std::size_t i = a.runs.size(); i-- > 0;) {
+            const AlignRun& r = a.runs[i];
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            // The verdict is the ROW's colour, not a column: an out-of-band run
+            // has to be findable by glance in a list of a hundred.
+            if (r.guarded && !r.ok)
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(90, 40, 30, 180));
+            ImGui::TextUnformatted(r.at.empty() ? "-" : r.at.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%.4f, %.4f", r.e1x, r.e1y);
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%.4f, %.4f", r.e2x, r.e2y);
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%+.4f", r.dx);
+            ImGui::TableSetColumnIndex(4);
+            ImGui::Text("%+.4f", r.dy);
+            ImGui::TableSetColumnIndex(5);
+            ImGui::Text("%.4f", r.spanMm);
+            ImGui::TableSetColumnIndex(6);
+            ImGui::Text("%.3f", r.thetaDeg);
+        }
         ImGui::EndTable();
     }
 }
@@ -691,9 +1194,9 @@ void App::DrawAlignDetailPanel()
 // The taught nominals: target points on the PART, held in local (O1)
 // coordinates so they follow it. Teaching happens on its own takeover page
 // (PageAlignNominal.cpp) — a mark needs a big live image, and no panel here is
-// big enough. Beside Run in the middle panel, in the wider of its two columns:
-// they are only listed, re-taught, deleted, and loaded into the local->machine
-// probe on the left so "Move here" can drive to one.
+// big enough. This is the fourth step of the middle panel: they are only
+// listed, re-taught, deleted, and loaded into the local->machine probe on the
+// Run step so "Move here" can drive to one.
 //
 // LIST on the left, ONE nominal's controls on the right. Every nominal used to
 // carry its own copy of all six buttons, so a procedure with four of them put
@@ -724,7 +1227,11 @@ void App::DrawAlignNominalList(AlignProc& a)
     }
     const bool camLive = cam && cam->IsConnected();
 
-    const float paneH = ImGui::GetTextLineHeightWithSpacing() * 9.0f;
+    // The step pane is this list's alone now, so both children take whatever
+    // height is left rather than a fixed nine lines: a roll of nominals is
+    // exactly the thing that grows, and it used to scroll inside a box with
+    // empty pane below it.
+    const float paneH = 0.0f;
 
     // ---- Left: New, then the roll of taught points --------------------------
     // A THIRD of the cell for the roll, never less than 150 px: it holds names,
@@ -902,8 +1409,8 @@ void App::DrawAlignNominalList(AlignProc& a)
 }
 
 // The frame's two ACTIONS - check a local coordinate against it, and drive
-// there. Split out of the right-hand frame panel so it can sit under Run
-// alongside the nominals: the right column is the RECORD of what was taught,
+// there. Split out of the right-hand frame panel so it can sit under Run on the
+// middle panel's Run step: the right column is the RECORD of what was taught,
 // the middle is what you do with it.
 //
 // It resolves the frame itself rather than taking one as a parameter. The LIVE

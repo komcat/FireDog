@@ -89,6 +89,42 @@ double CtxNumber(ExecutionContext& ctx, const std::string& key, bool* found)
     return std::get<double>(*v);
 }
 
+// The world point of an already-captured station, straight out of ctx. False
+// when that station has not been captured in this run under this prefix.
+bool CtxWorldPoint(ExecutionContext& ctx, const std::string& prefix, int station,
+                   double* wx, double* wy)
+{
+    bool fx = false, fy = false;
+    const double x = CtxNumber(ctx, PointKey(prefix, station, "wx"), &fx);
+    const double y = CtxNumber(ctx, PointKey(prefix, station, "wy"), &fy);
+    if (!fx || !fy) return false;
+    if (wx) *wx = x;
+    if (wy) *wy = y;
+    return true;
+}
+
+// The guard band for THIS pick, when there is one to show: E2 of a procedure
+// whose band is on, with E1 already captured. Everything else leaves it empty
+// and the window draws nothing.
+//
+// It is filled HERE rather than in the UI because only the worker knows E1 — it
+// was captured at the other station, one move ago, and the pick window sees
+// nothing but the current field of view.
+void FillPickBand(ExecutionContext& ctx, const AlignProc& proc, int station,
+                  const std::string& prefix, ExecutionContext::PickBand* band)
+{
+    if (!band || station != 2 || !proc.guard.enabled) return;
+    double e1x = 0.0, e1y = 0.0;
+    if (!CtxWorldPoint(ctx, prefix, 1, &e1x, &e1y)) return;
+    band->have     = true;
+    band->cx       = e1x;
+    band->cy       = e1y;
+    band->spanRef  = proc.guard.spanMm;
+    band->spanTol  = proc.guard.spanTolMm;
+    band->thetaRef = proc.guard.thetaDeg;
+    band->thetaTol = proc.guard.thetaTolDeg;
+}
+
 // Turn a captured pick into a world point: where the device is, plus where in
 // the frame the feature was marked. Read the pose AFTER the capture — nothing
 // moved, but this is the pose the pixel offset is relative to.
@@ -186,6 +222,13 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     // downstream is identical whether a detector or an operator produced it.
     ExecutionContext::PickResult pick;
     bool manual = (st.mode != "auto");
+    // The world point, and whether it is already in hand. An auto capture has to
+    // be turned into one EARLY, because the guard band is a statement about
+    // where E2 sits relative to E1 and a pixel offset cannot answer it. Kept so
+    // the happy path captures the pose exactly once.
+    AlignPoint e;
+    bool       haveE  = false;
+    const std::string prefix = p.GetString("ctx_prefix");
 
     if (!manual && autoErr.empty()) {
         // Prove the frame is post-move before believing it: frame #1 may have
@@ -218,6 +261,37 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
             FD_INFO("align", "'%s' E%d: '%s' found at (%.2f, %.2f) px, score %.3f",
                     proc->name.c_str(), station, model->name.c_str(),
                     det.xPx, det.yPx, det.score);
+
+            // Is the point the detector found where E2 is ALLOWED to be? A
+            // detector that locks onto the wrong instance of a repeated feature
+            // succeeds with a high score and a frame wrong by the pitch between
+            // them — the score says the match was good, not that it was the
+            // right one. Out of band it is treated exactly like a detection
+            // failure, so the existing rule decides what happens: ask the
+            // operator if the station allows a fallback, fail if it does not.
+            const CommandResult cap = CaptureWorldPoint(ctx, m, pick, &e);
+            if (!cap.ok) return cap;
+            haveE = true;
+            double e1x = 0.0, e1y = 0.0;
+            if (proc->guard.enabled && station == 2 &&
+                CtxWorldPoint(ctx, prefix, 1, &e1x, &e1y)) {
+                AlignPoint e1;
+                e1.wx = e1x;
+                e1.wy = e1y;
+                double span = 0.0, theta = 0.0;
+                AlignSpanTheta(e1, e, &span, &theta);
+                if (!AlignGuardCheck(proc->guard, span, theta)) {
+                    char buf[224];
+                    std::snprintf(buf, sizeof(buf),
+                                  "'%s' found a point OUT OF BAND: span %.4f mm "
+                                  "(%.4f +/- %.4f), theta %.3f deg (%.3f +/- %.3f)",
+                                  model->name.c_str(), span, proc->guard.spanMm,
+                                  proc->guard.spanTolMm, theta, proc->guard.thetaDeg,
+                                  proc->guard.thetaTolDeg);
+                    autoErr = buf;
+                    haveE   = false;   // the operator's mark replaces it
+                }
+            }
         } else {
             autoErr = "'" + model->name + "': " + det.error;
         }
@@ -250,15 +324,22 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
             std::snprintf(buf, sizeof(buf), "Mark E%d on the live image, then OK", station);
             req.message = buf;
         }
+        // Where E2 is allowed to land, drawn on the image the operator is
+        // marking. This is the whole re-mark loop: the crosshair moves until it
+        // is inside the band, and accepting one outside takes its own button.
+        FillPickBand(ctx, *proc, station, prefix, &req.band);
         if (!ctx.AwaitPick(req, &pick))
             return CommandResult::Fail("cancelled by operator");
+        haveE = false;   // the operator's mark, not whatever the detector said
     }
 
     // The world point: where the gantry is, plus where in the frame the feature
-    // was marked (by hand or by the detector).
-    AlignPoint e;
-    const CommandResult captured = CaptureWorldPoint(ctx, m, pick, &e);
-    if (!captured.ok) return captured;
+    // was marked (by hand or by the detector). Already in hand when an auto
+    // capture had to be measured against the band.
+    if (!haveE) {
+        const CommandResult captured = CaptureWorldPoint(ctx, m, pick, &e);
+        if (!captured.ok) return captured;
+    }
 
     // Feedback to the live overlays, the moment the point exists. align_solve
     // only fires after BOTH stations, so without this the Aux window would have
@@ -266,7 +347,6 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     // an operator wants to see that E1 landed where they expected.
     ctx.Wf().QueueAlignPoint(proc->uid, station, e);
 
-    const std::string prefix = p.GetString("ctx_prefix");
     ctx.CtxSet(PointKey(prefix, station, "gx"), e.gx);
     ctx.CtxSet(PointKey(prefix, station, "gy"), e.gy);
     ctx.CtxSet(PointKey(prefix, station, "px"), e.px);
@@ -320,6 +400,27 @@ CommandResult ExecAlignSolve(ExecutionContext& ctx, const ParamValues& p)
     ctx.CtxSet(prefix + "_theta_deg", r.thetaDeg);
     ctx.CtxSet(prefix + "_span_mm", r.spanMm);
     ctx.CtxSet(prefix + "_valid", true);
+
+    // The guard band's verdict, into ctx beside the frame. It is REPORTED here,
+    // not enforced: by the time a solve runs, an out-of-band point has already
+    // been shown to the operator on the image and consciously accepted, or an
+    // auto station without a fallback has already failed. Failing the step now
+    // would only throw away a frame somebody deliberately kept.
+    //
+    // The ctx keys are what let a recipe act on it anyway — `dut_record` writes
+    // the verdict onto the part's record, and a branch can refuse to carry on.
+    double spanErr = 0.0, thetaErr = 0.0;
+    const bool inBand = AlignGuardCheck(proc->guard, r.spanMm, r.thetaDeg,
+                                        &spanErr, &thetaErr);
+    ctx.CtxSet(prefix + "_guard_ok", inBand);
+    ctx.CtxSet(prefix + "_span_err_mm", spanErr);
+    ctx.CtxSet(prefix + "_theta_err_deg", thetaErr);
+    if (!inBand) {
+        FD_WARN("align", "'%s' solved OUT OF BAND: span %.4f (%.4f +/- %.4f), "
+                         "theta %.4f (%.4f +/- %.4f)",
+                proc->name.c_str(), r.spanMm, proc->guard.spanMm, proc->guard.spanTolMm,
+                r.thetaDeg, proc->guard.thetaDeg, proc->guard.thetaTolDeg);
+    }
 
     // The LIVE frame — what align_apply / move_local will actually use. Set
     // unconditionally, even when `save` is off: `save` decides whether the
