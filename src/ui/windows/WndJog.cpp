@@ -305,6 +305,8 @@ void App::DrawJogPanel()
 
     // --- Step size button array ---
     ImGui::TextUnformatted("Step size");
+    ImGui::SameLine();
+    ImGui::TextDisabled("Q / E");
     const float bw    = 54.0f;
     const float availw = ImGui::GetContentRegionAvail().x;
     int perRow = static_cast<int>(availw / (bw + 6.0f));
@@ -386,15 +388,23 @@ void App::DrawJogPanel()
     }
     ImGui::EndDisabled();
 
-    // --- Keyboard jog (armed + this window focused): one step per key press ---
-    // A/D = Left/Right, W/S = In/Out, R/F = Up/Down.
-    if (jogArmed_ && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
-        if (ImGui::IsKeyPressed(ImGuiKey_A, false)) workflow_.JogGlobal(di, -1.0f, 0.0f, 0.0f, step);  // Left  X-
-        if (ImGui::IsKeyPressed(ImGuiKey_D, false)) workflow_.JogGlobal(di,  1.0f, 0.0f, 0.0f, step);  // Right X+
-        if (ImGui::IsKeyPressed(ImGuiKey_W, false)) workflow_.JogGlobal(di, 0.0f, -1.0f, 0.0f, step);  // In    Y-
-        if (ImGui::IsKeyPressed(ImGuiKey_S, false)) workflow_.JogGlobal(di, 0.0f,  1.0f, 0.0f, step);  // Out   Y+
-        if (ImGui::IsKeyPressed(ImGuiKey_R, false)) workflow_.JogGlobal(di, 0.0f, 0.0f,  1.0f, step);  // Up    Z+
-        if (ImGui::IsKeyPressed(ImGuiKey_F, false)) workflow_.JogGlobal(di, 0.0f, 0.0f, -1.0f, step);  // Down  Z-
+    // --- Keyboard shortcuts (this window focused): one action per key press ---
+    // Q/E pick the step size (down/up the array); A/D = Left/Right, W/S =
+    // In/Out, R/F = Up/Down. Q/E sit OUTSIDE the arm gate on purpose: choosing
+    // a distance moves nothing, and reaching for the size before arming is the
+    // normal order. Everything that actually moves stays armed-only.
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Q, false) && jogStepIndex_ > 0)              --jogStepIndex_;
+        if (ImGui::IsKeyPressed(ImGuiKey_E, false) && jogStepIndex_ < kStepCount - 1) ++jogStepIndex_;
+
+        if (jogArmed_) {
+            if (ImGui::IsKeyPressed(ImGuiKey_A, false)) workflow_.JogGlobal(di, -1.0f, 0.0f, 0.0f, step);  // Left  X-
+            if (ImGui::IsKeyPressed(ImGuiKey_D, false)) workflow_.JogGlobal(di,  1.0f, 0.0f, 0.0f, step);  // Right X+
+            if (ImGui::IsKeyPressed(ImGuiKey_W, false)) workflow_.JogGlobal(di, 0.0f, -1.0f, 0.0f, step);  // In    Y-
+            if (ImGui::IsKeyPressed(ImGuiKey_S, false)) workflow_.JogGlobal(di, 0.0f,  1.0f, 0.0f, step);  // Out   Y+
+            if (ImGui::IsKeyPressed(ImGuiKey_R, false)) workflow_.JogGlobal(di, 0.0f, 0.0f,  1.0f, step);  // Up    Z+
+            if (ImGui::IsKeyPressed(ImGuiKey_F, false)) workflow_.JogGlobal(di, 0.0f, 0.0f, -1.0f, step);  // Down  Z-
+        }
     }
 }
 
