@@ -229,10 +229,9 @@ IMotionController* ResolveMotion(ExecutionContext& ctx, const std::string& devic
     return m;
 }
 
-// ---- File-local from here on ------------------------------------------------
-namespace {
-
-// Position uid -> targets restricted to the device's axes.
+// Position uid -> targets restricted to the device's axes. Declared in
+// MotionWaits.h: the registration family drives a saved position too, and two
+// copies of this loop would be two answers to which axes a position commands.
 std::vector<std::pair<std::string, double>> TargetsOf(const SavedPos& p,
                                                       const IMotionController* m)
 {
@@ -243,6 +242,9 @@ std::vector<std::pair<std::string, double>> TargetsOf(const SavedPos& p,
     }
     return targets;
 }
+
+// ---- File-local from here on ------------------------------------------------
+namespace {
 
 // Optional pre-move actions shared by EVERY motion command: a device velocity
 // override (persists on the device — same semantics as the Jog panel; there

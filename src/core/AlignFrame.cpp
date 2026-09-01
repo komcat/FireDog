@@ -176,6 +176,13 @@ nlohmann::json NominalToJson(const AlignNominal& n)
     j["ly"]       = n.ly;
     j["p1"]       = PointToJson(n.p1);
     j["p2"]       = PointToJson(n.p2);
+    // Only when they mean something: a two-mark nominal writing two empty
+    // points would read as a four-mark teach with two marks at the origin.
+    if (n.points >= 4) {
+        j["p3"]     = PointToJson(n.p3);
+        j["p4"]     = PointToJson(n.p4);
+        j["points"] = n.points;
+    }
     j["mx"]       = n.mx;
     j["my"]       = n.my;
     j["span_mm"]  = n.spanMm;
@@ -187,6 +194,7 @@ nlohmann::json NominalToJson(const AlignNominal& n)
     j["det2"]      = n.det2;
     j["auto_fallback_manual"] = n.autoFallbackManual;
     j["view_uid"]  = n.viewUid;
+    j["cam_uid"]   = n.camUid;
     return j;
 }
 
@@ -201,6 +209,11 @@ AlignNominal NominalFromJson(const nlohmann::json& j)
     n.ly   = j.value("ly", 0.0);
     if (j.contains("p1")) n.p1 = PointFromJson(j["p1"]);
     if (j.contains("p2")) n.p2 = PointFromJson(j["p2"]);
+    if (j.contains("p3")) n.p3 = PointFromJson(j["p3"]);
+    if (j.contains("p4")) n.p4 = PointFromJson(j["p4"]);
+    // Absent = two, which is what every file written before four existed meant.
+    n.points = j.value("points", 2);
+    if (n.points != 4) n.points = 2;
     n.mx       = j.value("mx", 0.0);
     n.my       = j.value("my", 0.0);
     n.spanMm   = j.value("span_mm", 0.0);
@@ -214,6 +227,7 @@ AlignNominal NominalFromJson(const nlohmann::json& j)
     n.mode2    = j.value("mode2", n.det2.empty() ? "manual" : "auto");
     n.autoFallbackManual = j.value("auto_fallback_manual", true);
     n.viewUid  = j.value("view_uid", "");
+    n.camUid   = j.value("cam_uid", "");
     return n;
 }
 
@@ -373,26 +387,62 @@ void AlignMachineToLocal(const AlignResult& r, double mx, double my,
     if (ly) *ly = -dx * s + dy * c;
 }
 
-bool SolveAlignNominal(const AlignResult& frame, const AlignPoint& p1,
-                       const AlignPoint& p2, AlignNominal* out, std::string* err)
+bool SolveAlignNominalN(const AlignResult& frame, const AlignPoint* pts, int n,
+                        AlignNominal* out, std::string* err)
 {
     if (!frame.valid) {
         if (err) *err = "no valid local frame - teach the alignment first";
         return false;
     }
+    if (!pts || (n != 2 && n != 4)) {
+        if (err) *err = "a nominal is taught from 2 or 4 marks";
+        return false;
+    }
     if (!out) return true;
 
-    const double dx = p2.wx - p1.wx;
-    const double dy = p2.wy - p1.wy;
-    out->p1 = p1;
-    out->p2 = p2;
-    out->mx = (p1.wx + p2.wx) * 0.5;
-    out->my = (p1.wy + p2.wy) * 0.5;
-    out->spanMm = std::sqrt(dx * dx + dy * dy);
+    double sx = 0.0, sy = 0.0;
+    for (int i = 0; i < n; ++i) { sx += pts[i].wx; sy += pts[i].wy; }
+    out->mx = sx / n;
+    out->my = sy / n;
+
+    // Two marks: the separation, which is what `spanMm` has always meant. Four:
+    // twice the mean distance from the centre — the same figure for a ring that
+    // the separation is for a pair, so one number reads the same either way.
+    // (DeviceReg::tipSpreadMm is the identical construction, for the identical
+    // reason: it is the only number that can see a mark placed off its feature.)
+    if (n == 2) {
+        const double dx = pts[1].wx - pts[0].wx;
+        const double dy = pts[1].wy - pts[0].wy;
+        out->spanMm = std::sqrt(dx * dx + dy * dy);
+    } else {
+        double sum = 0.0;
+        for (int i = 0; i < n; ++i) {
+            const double dx = pts[i].wx - out->mx;
+            const double dy = pts[i].wy - out->my;
+            sum += std::sqrt(dx * dx + dy * dy);
+        }
+        out->spanMm = 2.0 * sum / n;
+    }
+
+    out->points = n;
+    out->p1 = pts[0];
+    out->p2 = pts[1];
+    // Left as they were on a two-mark teach: `points` says they are not real,
+    // and a re-teach from four to two must not leave the old ring half-written.
+    out->p3 = (n == 4) ? pts[2] : AlignPoint{};
+    out->p4 = (n == 4) ? pts[3] : AlignPoint{};
+
     AlignMachineToLocal(frame, out->mx, out->my, &out->lx, &out->ly);
     out->taughtAt = NowStamp();
     out->frameAt  = frame.capturedAt;
     return true;
+}
+
+bool SolveAlignNominal(const AlignResult& frame, const AlignPoint& p1,
+                       const AlignPoint& p2, AlignNominal* out, std::string* err)
+{
+    const AlignPoint pts[2] = {p1, p2};
+    return SolveAlignNominalN(frame, pts, 2, out, err);
 }
 
 // ---- lookup --------------------------------------------------------------

@@ -71,6 +71,12 @@ struct UiSettings {
     // names are noise the operator cannot act on.
     bool posLabelsHidden = true;
 
+    // Nominal teach page: the tool footprint box, in mm. A viewing aid, kept
+    // because re-typing the gripper's width at every teach is how one stops
+    // being used. 0 = the page's own default.
+    float nomBoxW = 0.0f;
+    float nomBoxH = 0.0f;
+
     // Aux window: draw each registered device's tool tip on the image. A
     // readout, so ON by default like the two above.
     bool showGripperMarks = true;

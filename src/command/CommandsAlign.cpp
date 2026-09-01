@@ -39,18 +39,6 @@ namespace firedog {
 
 namespace {
 
-// A station's saved position, restricted to the axes the device actually has.
-std::vector<std::pair<std::string, double>> StationTargets(const SavedPos& p,
-                                                           const IMotionController* m)
-{
-    std::vector<std::pair<std::string, double>> targets;
-    for (const std::string& a : m->Axes()) {
-        const auto it = p.vals.find(a);
-        if (it != p.vals.end()) targets.emplace_back(a, it->second);
-    }
-    return targets;
-}
-
 // Illumination for a station. No illumination device exists in the hardware
 // config yet, so an empty `kind` (the default) is a no-op and the whole thing
 // is a placeholder with a real call path already wired.
@@ -172,7 +160,7 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
 
     const SavedPos* pos = ctx.FindPosition(proc->device, st.posUid);
     if (!pos) return CommandResult::Fail("station position uid not found");
-    const auto targets = StationTargets(*pos, m);
+    const auto targets = TargetsOf(*pos, m);
     if (targets.empty()) return CommandResult::Fail("station position shares no axes with device");
 
     // Resolve the detector BEFORE moving, so a mis-typed model name costs no
@@ -838,7 +826,18 @@ CommandResult ExecPickPoint(ExecutionContext& ctx, const ParamValues& p)
 //
 // An untaught view is NOT an error: every procedure written before the field
 // existed drove there with a move_to_position step, and those must keep working.
-CommandResult ExecPlaceView(ExecutionContext& ctx, const ParamValues& p)
+// A nominal owns TWO camera poses and they are not interchangeable: `_v` looks
+// at a gripped OBJECT hovering over the point, `_c` looks at the point ITSELF,
+// focused on the substrate. They differ by the height of the grip. Two commands,
+// therefore, so a recipe says which one it means and cannot be read as the
+// other — over one body, so the wait, the settle and the failure text are the
+// same wherever a camera is sent to a nominal.
+//
+// `focusPose` picks the field; `what` and `button` name it in the messages,
+// because "no camera view taught" pointing at the wrong button to press is
+// worse than no message at all.
+CommandResult DriveToNominalPose(ExecutionContext& ctx, const ParamValues& p,
+                                 bool focusPose, double offX, double offY, double offZ)
 {
     const AlignProc* proc = ctx.FindAlign(p.GetString("alignment"));
     if (!proc) return CommandResult::Fail("alignment procedure not found: '" +
@@ -848,12 +847,16 @@ CommandResult ExecPlaceView(ExecutionContext& ctx, const ParamValues& p)
         return CommandResult::Fail("alignment '" + proc->name + "' has no nominal '" +
                                    p.GetString("nominal") + "'");
 
-    if (nom->viewUid.empty()) {
+    const std::string uid    = focusPose ? nom->camUid : nom->viewUid;
+    const char* const what   = focusPose ? "camera focus position" : "camera view";
+    const char* const button = focusPose ? "Save cam focus" : "Teach view";
+
+    if (uid.empty()) {
         if (p.GetBool("required"))
-            return CommandResult::Fail("nominal '" + nom->name + "' has no camera view "
-                                       "taught (Alignment page: Teach view)");
-        FD_INFO("align", "'%s': nominal '%s' has no camera view - leaving %s where it is",
-                proc->name.c_str(), nom->name.c_str(), proc->device.c_str());
+            return CommandResult::Fail("nominal '" + nom->name + "' has no " + what +
+                                       " taught (Alignment page: " + button + ")");
+        FD_INFO("align", "'%s': nominal '%s' has no %s - leaving %s where it is",
+                proc->name.c_str(), nom->name.c_str(), what, proc->device.c_str());
         return CommandResult::Success();
     }
 
@@ -862,32 +865,77 @@ CommandResult ExecPlaceView(ExecutionContext& ctx, const ParamValues& p)
     IMotionController* m = ResolveMotion(ctx, proc->device, &idx, &err);
     if (!m) return CommandResult::Fail(err);
 
-    const SavedPos* pos = ctx.FindPosition(proc->device, nom->viewUid);
+    const SavedPos* pos = ctx.FindPosition(proc->device, uid);
     if (!pos)
-        return CommandResult::Fail("nominal '" + nom->name + "' names a camera view "
-                                   "position that no longer exists - re-teach it");
-    const auto targets = StationTargets(*pos, m);
+        return CommandResult::Fail("nominal '" + nom->name + "' names a " + what +
+                                   " that no longer exists - re-teach it");
+    auto targets = TargetsOf(*pos, m);
     if (targets.empty())
-        return CommandResult::Fail("camera view shares no axes with '" + proc->device + "'");
+        return CommandResult::Fail(std::string(what) + " shares no axes with '" +
+                                   proc->device + "'");
+
+    // The offsets, added to the taught pose in the DEVICE'S OWN AXIS SPACE -
+    // the same thing move_to_position_offset does to a saved position, and for
+    // the same reason: "that pose, but 0.5 mm higher" is a step somebody writes
+    // constantly, and the alternative is a second taught pose per variation.
+    //
+    // Axis space, not global: this pose was captured axis-by-axis off the
+    // device, and gantry-main's transform inverts Z, so a number that took a
+    // detour through the global frame would descend where it meant to retreat.
+    // An axis the pose does not command is not invented here either - offsetting
+    // an axis that was never taught would be a move to a place nobody chose.
+    if (offX != 0.0 || offY != 0.0 || offZ != 0.0) {
+        bool any = false;
+        for (auto& [axis, v] : targets) {
+            if (axis == "X")      { v += offX; any = any || offX != 0.0; }
+            else if (axis == "Y") { v += offY; any = any || offY != 0.0; }
+            else if (axis == "Z") { v += offZ; any = any || offZ != 0.0; }
+        }
+        if (!any)
+            return CommandResult::Fail(std::string(what) + " commands none of the axes "
+                                       "the offsets name - check X/Y/Z against '" +
+                                       proc->device + "'");
+        FD_INFO("align", "'%s': %s offset by (%+.4f, %+.4f, %+.4f) in '%s' axis space",
+                proc->name.c_str(), what, offX, offY, offZ, proc->device.c_str());
+    }
 
     if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
-        return CommandResult::Fail("move to the camera view rejected");
+        return CommandResult::Fail(std::string("move to the ") + what + " rejected");
     const auto arrived = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
                                     p.GetInt("timeout_ms"));
     if (arrived != ExecutionContext::WaitResult::Ok) {
         ctx.Wf().StopMotion(static_cast<std::size_t>(idx));   // defined state on any abort
         return CommandResult::Fail(arrived == ExecutionContext::WaitResult::Stopped
                                        ? "stopped"
-                                       : "timeout driving to the camera view");
+                                       : std::string("timeout driving to the ") + what);
     }
     // Settle before anything looks through the lens: a mark taken while the
     // stage is still ringing carries that ring into the placement.
     const CommandResult settled = WaitSettle(ctx, m, idx);
     if (!settled.ok) return settled;
 
-    FD_INFO("align", "'%s': %s at the camera view for '%s'",
-            proc->name.c_str(), proc->device.c_str(), nom->name.c_str());
+    FD_INFO("align", "'%s': %s at the %s for '%s'", proc->name.c_str(),
+            proc->device.c_str(), what, nom->name.c_str());
     return CommandResult::Success();
+}
+
+// No offsets: a placement's view is the pose its detection models were taught
+// through, and a model matched at a different standoff is matched against a
+// picture it never saw. If a placement ever needs one, it needs a re-teach.
+CommandResult ExecPlaceView(ExecutionContext& ctx, const ParamValues& p)
+{
+    return DriveToNominalPose(ctx, p, false, 0.0, 0.0, 0.0);
+}
+
+// The focused view of the nominal ITSELF. Its Z is the reason it exists: the
+// local frame is 2-D, so a nominal converted through it gives an XY and no
+// height at all — this is the one place the height that focuses this point on
+// this substrate was ever written down.
+CommandResult ExecNominalView(ExecutionContext& ctx, const ParamValues& p)
+{
+    return DriveToNominalPose(ctx, p, true,
+                              p.GetDouble("offset_x_mm"), p.GetDouble("offset_y_mm"),
+                              p.GetDouble("offset_z_mm"));
 }
 
 // The shared arithmetic behind place_apply and place_move: read the two marks,
@@ -1141,6 +1189,40 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                       PreDelayParam(), PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecPlaceView});
+
+    // Its sibling, and registered right beside it so nobody picks one meaning
+    // the other: place_view looks at the OBJECT above the point, this looks at
+    // the POINT. Under Align rather than a placement group, because looking at
+    // a nominal is not a placement step - it is what a check, a measurement or
+    // an operator wants.
+    reg.Register({"nominal_view", "Align",
+                  "Drive the camera to a nominal's taught FOCUS pose - the point "
+                  "itself, in focus, including the Z - plus an optional XYZ offset",
+                  {
+                      {"alignment", PT::AlignUid, true, {}, 0, 0, {},
+                       "alignment procedure - its device is the one carrying the camera"},
+                      {"nominal", PT::NominalUid, true, {}, 0, 0, {},
+                       "nominal whose camera FOCUS position to drive to (Alignment "
+                       "page: Centre camera, focus, Save cam focus)"},
+                      {"required", PT::Bool, false, false, 0, 0, {},
+                       "fail when the nominal has no focus pose taught; off = leave "
+                       "the camera where it is"},
+                      {"offset_x_mm", PT::Double, false, 0.0, -100.0, 100.0, {},
+                       "added to the taught pose's X, in the DEVICE'S OWN axis space "
+                       "(not global) - the same thing move_to_position_offset does"},
+                      {"offset_y_mm", PT::Double, false, 0.0, -100.0, 100.0, {},
+                       "added to the taught pose's Y, device axis space"},
+                      {"offset_z_mm", PT::Double, false, 0.0, -100.0, 100.0, {},
+                       "added to the taught pose's Z, device axis space - a standoff "
+                       "from the focused height. Which way +Z counts is a property of "
+                       "the machine (gantry-main's transform inverts Z), so try a "
+                       "small value and watch before trusting a large one"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {},
+                       "arrival tolerance"},
+                      PreDelayParam(), PostDelayParam(),
+                  },
+                  CommandSpec::Needs::None, ExecNominalView});
 
     reg.Register({"place_mark", "Align",
                   "Ask the operator to mark one point on a gripped object",

@@ -495,13 +495,30 @@ each of them just `lx`/`ly` plus the record of how it was taught. A list rather
 than a single point because one procedure's frame typically serves several
 targets, and because a name is how anything downstream will address one.
 
-### Two marks, not one
+### Two marks, not one — or four
 
-A nominal is taught as the **midpoint of two marks**. The reason is the same one
-that makes a centre hard to teach at all: the interesting point is usually the
-*middle* of something, and a middle has no feature under it to put a crosshair
-on. Marking two opposite corners puts the crosshair on something real both
-times and leaves the centre to arithmetic.
+A nominal is taught as the **centre of two or four marks**. The reason is the
+same one that makes a centre hard to teach at all: the interesting point is
+usually the *middle* of something, and a middle has no feature under it to put a
+crosshair on. Marking corners puts the crosshair on something real every time and
+leaves the centre to arithmetic.
+
+Two or four is a real choice. Two opposite corners give the centre in one stroke
+and **cannot check themselves**: a mark that lands off its feature moves the
+centre by half its error and looks exactly like a good mark. Four give the same
+centre as the average of a ring, and `spanMm` — twice the mean distance from the
+centre, the identical construction `DeviceReg::tipSpreadMm` uses, and for the
+identical reason — is then a *width across the marks* that either matches the
+part or does not. `SolveAlignNominalN` takes 2 or 4 and refuses anything else: a
+three-mark ring has no centre worth the name, and averaging one anyway would put
+a nominal somewhere nobody chose. `points` on the record says which; files
+written before four existed have no key and load as two. `SolveAlignNominal`
+(two marks) stays, delegating, because most callers have exactly two.
+
+The picker needed no second code path for it: the centre it draws is the average
+of every *latched* mark and the envelope is their bounding box, which is the
+midpoint and the diagonal box when there are two. Only the diagonal LINE is
+pair-only — across four marks it joins two arbitrary corners of the ring.
 
 This is deliberately *not* the frame's two-point rule. E1/E2 fix an origin **and
 a direction**, so `SolveAlignFrame` refuses a short span — below `kAlignMinSpanMM`
@@ -524,6 +541,18 @@ the two buttons are no longer both called "teach" — on exactly the argument
 Alignment page's columns are strips. It shares `CameraView` with the crosshair
 pick window and the vision teach page, so a pixel means the same thing in all
 three.
+
+It can also draw a **registered tool's tip** (a combo of the devices registered
+against this image's gantry — a tip in another origin, projected through this
+pose, is off by the distance between the two) and a **resizable box centred on
+it**. Drag a corner on the image to size it; it re-centres on the tip every
+frame, so a drag can only change the size and there is no way to leave the box
+describing a place the tool is not. Its size persists in `UiSettings` and
+**nothing about it is stored on the nominal** — a nominal is a point on the part,
+and how wide the gripper is says nothing about where that point belongs. What it
+answers is the question an operator actually has while teaching one: *will the
+tool clear what is beside it*, which no number on the panel answers. A tip that
+cannot be predicted draws nothing and the panel prints the reason in full.
 
 Three things about it are worth stating outright:
 
@@ -573,6 +602,59 @@ a number on them would claim otherwise.
 The nominal list's *Use* button loads a nominal into the local→machine probe
 fields directly above it, so *Move here* drives the **procedure's own device**
 to it — still behind the live-frame gate and the arm checkbox.
+
+### A nominal owns two camera poses, not one
+
+`viewUid` (`algn_<procUid>_<nomUid>_v`) is where the camera stands to watch a
+**gripped object** hovering over this point. `camUid` (`…_c`) is where it stands,
+**focused, looking at the nominal itself** — the bare target on the substrate.
+
+They are separate fields and must stay separate. The Z that focuses a part held
+in the jaws does not focus the substrate under it: they differ by the height of
+the grip, which is exactly the mistake `viewUid`'s tooltip already warns about.
+Merging them would make that mistake unavoidable rather than merely easy.
+
+The focus pose is worth storing for its **Z**. The local frame is 2-D:
+`AlignLocalToMachine` hands back an XY and says nothing about height, so the
+height that focuses this point on this substrate exists nowhere else once the
+stage has moved. Writing it down while it is in focus is the only way to have it.
+
+Teaching one is three steps on the nominal's row, in the order they are used:
+
+| Button | What it does |
+|---|---|
+| *Centre camera* | local → machine through the **live** frame, XY only, then drives there. **Armed**, and gated on a live frame, exactly like *Move here*: a computed destination out of a stale frame goes somewhere nobody chose. Z is left where it is — the focus is the operator's to set next. |
+| *Save cam focus* | stores the pose the device is at now, **X, Y and the focused Z**, as `algn_<procUid>_<nomUid>_c` (hidden, private to the nominal). |
+| *Go focus* / *Clear focus* | a plain taught-pose move, and the delete. |
+
+It follows every rule the object view follows, because it is the same kind of
+thing: the name is the ownership record, deleting the nominal drops it
+(`DropAlignNominalCamPos` beside `DropAlignNominalView`), duplicating the
+procedure copies it, and the procedure-level prefix sweep catches it because
+`IsOwnedAlignPos` matches on `algn_<procUid>_` rather than enumerating suffixes.
+
+`nominal_view` is what drives there from a recipe, registered beside
+`place_view` and sharing one body (`DriveToNominalPose`) so the arrival, the
+settle and the failure text cannot drift apart. Two commands rather than a flag
+on one, because a step has to *say* which pose it means: reading `place_view` as
+"look at the nominal" is exactly the grip-height error above, wearing a name that
+sounds right. Neither fails on an untaught pose unless `required` is set — a
+procedure older than the field drives there some other way.
+
+`nominal_view` also takes **`offset_x/y/z_mm`**, added to the taught pose in the
+device's **own axis space** — the same thing `move_to_position_offset` does to a
+saved position, and for the same reason: *that pose, but 0.5 mm higher* is a step
+people write constantly, and the alternative is a second taught pose per
+variation. Axis space and not global, because the pose was captured axis-by-axis
+off the device and `gantry-main`'s transform inverts Z, so a number routed
+through the global frame would descend where it meant to retreat; which way +Z
+counts is a property of the machine, and the parameter help says to try a small
+value first. An offset naming only axes the pose does not command **fails** —
+offsetting an axis that was never taught is a move to a place nobody chose.
+
+`place_view` deliberately takes none: a placement's view is the pose its
+detection models were taught through, and a model matched at a different standoff
+is matched against a picture it never saw.
 
 ## 6c. Placement — putting a gripped object on a nominal
 

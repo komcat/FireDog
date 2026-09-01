@@ -68,6 +68,10 @@ constexpr ImU32 kTipCol     = IM_COL32(255, 190, 70, 255);
 // How near the focused plane a tip counts as being AT it, in mm of the
 // reference device's Z. Only a label threshold - nothing acts on it.
 constexpr double kTipAtFocusMM = 0.050;
+// The plate that says a tip is missing ON PURPOSE. Dim, because it is not an
+// alarm; present, because a cross that is simply absent is indistinguishable
+// from an overlay that is broken - which is exactly how it was read.
+constexpr ImU32 kTipGoneCol = IM_COL32(200, 170, 110, 220);
 
 // A small dark-plated label, kept inside the image box.
 void PlateText(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
@@ -285,9 +289,10 @@ void App::DrawAuxWindow()
                               "an edge arrow and its distance when the tip is outside the\n"
                               "frame, and dZ against the plane in focus.\n"
                               "A tip that cannot be predicted (no registration, or the\n"
-                              "device rotated away from where it was taught) draws\n"
-                              "NOTHING - never a stale cross. Teach one on the\n"
-                              "Registration page (F8).");
+                              "device rotated away from where its tip was taught) gets NO\n"
+                              "cross - never a stale one - and a dim \"no tip:\" line in the\n"
+                              "bottom-right corner saying which and why.\n"
+                              "Teach one on the Registration page (F8).");
         if (ImGui::Checkbox("Positions", &showPosLabels_)) SaveUiSettings();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Name where each stage stands (bottom-left): the live pose of\n"
@@ -507,11 +512,14 @@ void App::DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2&
 // cross stays on the tool as the stage moves. Two rules carry over unchanged
 // from the tip topics (see docs/device-registration-design.md):
 //
-//   * a tip that cannot be predicted draws NOTHING - no registration, not
+//   * a tip that cannot be predicted draws NO POSITION - no registration, not
 //     connected, or the device rotated away from where its tip was taught.
 //     A readout frozen at the last good number is how a rotated hexapod goes
-//     on looking placed. The reason belongs in the log, not on the picture
-//     once per frame.
+//     on looking placed. What it DOES draw is one dim line in the corner
+//     naming the device and the refusal: absence is the signal, but silent
+//     absence answers no question - an operator hunting for a gripper that is
+//     not on screen cannot tell a refusal from a broken overlay, which is
+//     exactly how it was read the first time.
 //   * a tip registered against a DIFFERENT reference is not drawn either.
 //     This image belongs to the camera's gantry, and a point in another
 //     origin projected through this pose is off by the whole distance
@@ -566,11 +574,26 @@ void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2
     wv.imgW       = cameraW_;
     wv.imgH       = cameraH_;
 
+    // Every registration that COULD have been drawn and was not, with the reason.
+    // Absence stays the signal - nothing here invents a position - but silent
+    // absence answers no question: an operator looking for a gripper that is not
+    // on screen cannot tell a refusal from a broken overlay, and the log says it
+    // once per session.
+    std::vector<std::string> gone;
+
     for (const auto& [name, r] : workflow_.DeviceRegs()) {
         if (!r.valid || r.refDevice != refName) continue;
         RegVec3     tip;
         std::string why;
-        if (!workflow_.DeviceRegTip(name, tip, &why)) continue;   // says nothing
+        if (!workflow_.DeviceRegTip(name, tip, &why)) {
+            // The head of the reason, up to its explanatory tail: "rotated to X
+            // but taught at Y" fits a corner, the paragraph after the dash does
+            // not. Elided rather than rewritten - a second wording would be a
+            // second answer to why a tip is unavailable.
+            const std::size_t cut = why.find(" - ");
+            gone.push_back(cut == std::string::npos ? why : why.substr(0, cut));
+            continue;
+        }
 
         // The plate names the device and says 'reg', because a cross that only
         // said 'hex-left' would read as an observation of one.
@@ -592,6 +615,23 @@ void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2
         cm.label = lbl;
         cm.col   = kTipCol;
         DrawWorldMark(dl, wv, cm, 16.0f);
+    }
+
+    // Bottom-right, stacked upward: the opposite corner from the position plate,
+    // and out of the way of a mark that is on screen.
+    const float lineH = ImGui::GetTextLineHeightWithSpacing();
+    float       y     = origin.y + avail.y - 8.0f - lineH;
+    for (const std::string& g : gone) {
+        char line[192];
+        std::snprintf(line, sizeof(line), "no tip: %s", g.c_str());
+        const ImVec2 ts = ImGui::CalcTextSize(line);
+        const ImVec2 at(origin.x + avail.x - ts.x - 12.0f, y);
+        if (at.x < origin.x + 4.0f) break;   // narrower than the text: say nothing
+        dl->AddRectFilled(ImVec2(at.x - 4.0f, at.y - 2.0f),
+                          ImVec2(at.x + ts.x + 4.0f, at.y + ts.y + 2.0f),
+                          IM_COL32(0, 0, 0, 165), 3.0f);
+        dl->AddText(at, kTipGoneCol, line);
+        y -= lineH;
     }
 }
 

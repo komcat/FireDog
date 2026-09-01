@@ -172,6 +172,10 @@ std::string DeviceRegSetTip(DeviceReg& r, const RegVec3& h, const RegVec3& p,
 bool DeviceRegRotationOk(const DeviceReg& r, const RegVec3& liveRot, std::string* why)
 {
     if (!r.hasRot) return true;   // no U/V/W to disagree about
+    // The pivot is at the tip, so a rotation turns the tool about the very point
+    // this record stores and does not move it. Nothing to guard. See the field's
+    // comment in the header for why this is a switch and not an assumption.
+    if (r.pivotAtTip) return true;
     const double du = std::fabs(liveRot.x - r.taughtRot.x);
     const double dv = std::fabs(liveRot.y - r.taughtRot.y);
     const double dw = std::fabs(liveRot.z - r.taughtRot.z);
@@ -179,13 +183,18 @@ bool DeviceRegRotationOk(const DeviceReg& r, const RegVec3& liveRot, std::string
         dw <= kDeviceRegRotTolDeg)
         return true;
     if (why) {
+        // Zero prints as zero. An axis resting on zero reports a value either
+        // side of it, and "%.3f" turns that into -0.000 half the time - which
+        // reads as a real negative rotation to anybody who has not been told
+        // otherwise, and made this message change from poll to poll.
+        const auto tidy = [](double v) { return std::fabs(v) < 5e-4 ? 0.0 : v; };
         char buf[256];
         std::snprintf(buf, sizeof(buf),
                       "'%s' is rotated to (%.3f, %.3f, %.3f) but the tip was taught "
                       "at (%.3f, %.3f, %.3f) - the tip swings about the pivot and "
                       "this record says nothing about a pose it never saw",
-                      r.device.c_str(), liveRot.x, liveRot.y, liveRot.z,
-                      r.taughtRot.x, r.taughtRot.y, r.taughtRot.z);
+                      r.device.c_str(), tidy(liveRot.x), tidy(liveRot.y), tidy(liveRot.z),
+                      tidy(r.taughtRot.x), tidy(r.taughtRot.y), tidy(r.taughtRot.z));
         *why = buf;
     }
     return false;
@@ -210,6 +219,7 @@ nlohmann::json DeviceRegToJson(const DeviceReg& r)
 
     j["taught_rotation"] = Vec3ToJson(r.taughtRot);
     j["has_rotation"]    = r.hasRot;
+    j["pivot_at_tip"]    = r.pivotAtTip;
 
     j["poses"]["imprint"]     = Vec3ToJson(r.imprintPose);
     j["poses"]["has_imprint"] = r.hasImprintPose;
@@ -254,6 +264,10 @@ DeviceReg DeviceRegFromJson(const nlohmann::json& j)
 
     if (j.contains("taught_rotation")) r.taughtRot = Vec3FromJson(j["taught_rotation"]);
     r.hasRot = j.value("has_rotation", false);
+    // Absent in files written before the field existed. TRUE is the right
+    // default for those: they were written on a machine whose pivots ARE at
+    // the tips, and the guard they predate was blanking their tips.
+    r.pivotAtTip = j.value("pivot_at_tip", true);
 
     if (j.contains("poses") && j["poses"].is_object()) {
         const nlohmann::json& ps = j["poses"];

@@ -14,6 +14,7 @@
 
 #include "command/CommandSpec.h"
 #include "command/ExecutionContext.h"
+#include "core/SavedPositions.h"   // SavedPos (TargetsOf below)
 
 namespace firedog {
 
@@ -36,6 +37,15 @@ CommandResult WaitSettle(ExecutionContext& ctx, IMotionController* m, int idx);
 // Resolve a device name to a CONNECTED controller; null + *err otherwise.
 IMotionController* ResolveMotion(ExecutionContext& ctx, const std::string& device,
                                  int* idxOut, std::string* err);
+
+// A saved position's values, restricted to the axes this device actually has.
+// Shared for the reason everything else here is: a second copy would be a
+// second answer to which axes a position commands, and a position that shares
+// no axis with the device has to fail the same way from every caller. Three
+// families call it now - motion, align and registration - and the align one
+// carried its own identical copy (`StationTargets`) until this replaced it.
+std::vector<std::pair<std::string, double>> TargetsOf(const SavedPos& p,
+                                                      const IMotionController* m);
 
 // ---- the two-speed move ----------------------------------------------------
 // Drive to `targets` and wait, optionally covering the last stretch slowly:

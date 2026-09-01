@@ -291,6 +291,15 @@ private:
     void TeachAlignNominalView(AlignProc& a, AlignNominal& n);
     void GoToAlignNominalView(const AlignProc& a, const AlignNominal& n);
     void DropAlignNominalView(const AlignProc& a, AlignNominal& n);
+    // The camera's FOCUSED view of the nominal itself (its own private
+    // position, `_c`), and the computed move that centres the camera on the
+    // nominal so that pose can be taught in the first place. Separate from
+    // the `_v` object view on purpose - see AlignNominal::camUid.
+    const SavedPos* AlignNominalCamPos(const AlignProc& a, const AlignNominal& n) const;
+    void TeachAlignNominalCamPos(AlignProc& a, AlignNominal& n);
+    void GoToAlignNominalCamPos(const AlignProc& a, const AlignNominal& n);
+    void DropAlignNominalCamPos(const AlignProc& a, AlignNominal& n);
+    void CentreCameraOnNominal(const AlignProc& a, const AlignNominal& n);
     // Nominal teach page (a takeover, reached only from the Alignment page's
     // frame panel). Two crosshair marks on the live image; their MIDPOINT is
     // converted through the LIVE frame into local (O1) and stored on the
@@ -934,9 +943,26 @@ private:
     // The two marks, in MACHINE mm, each latched with the gantry pose it was
     // taken at — so the operator may jog between them and a mark still means
     // the same physical place. Drawn by projecting back through the live pose.
-    AlignPoint  nomPt_[2];
-    bool        nomHave_[2] = {false, false};
-    int         nomActive_  = 0;          // which mark "Set" will write (0 or 1)
+    // TWO or FOUR of them: two opposite corners are the quick way to a centre,
+    // four are the honest one - a corner that lands off the feature shifts a
+    // 2-mark centre by half its error and looks exactly like a good mark, and
+    // the spread across four is the only thing that can see it. Same trade the
+    // registration's imprint makes.
+    static constexpr int kNomMarkMax = 4;
+    AlignPoint  nomPt_[kNomMarkMax];
+    bool        nomHave_[kNomMarkMax] = {false, false, false, false};
+    int         nomCount_   = 2;          // 2 or 4 - how many marks are asked for
+    int         nomActive_  = 0;          // which mark "Set" will write
+    // The registered tool whose tip is drawn on this page, and the footprint box
+    // around it. The box is a VIEWING aid - it is never stored on the nominal:
+    // a nominal is a point on the part, and how wide the gripper is has nothing
+    // to do with where that point is. Its size persists in UiSettings because
+    // re-typing the tool's width at every teach is how a viewing aid stops
+    // being used.
+    char        nomToolDev_[32] = "";
+    float       nomBoxW_ = 1.000f, nomBoxH_ = 1.000f;   // mm
+    bool        nomBoxDrag_ = false;      // a corner drag is in progress
+    bool        nomBoxWasDrag_ = false;   // ...edge-detected, to persist on release
     float       nomPx_ = 0.0f, nomPy_ = 0.0f;   // crosshair, camera px
     float       nomZoom_ = 1.5f;          // same default as the pick window
     // Overlay only: rotates the envelope box the two marks bound, for a part

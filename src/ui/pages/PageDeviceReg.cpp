@@ -500,6 +500,37 @@ void App::DrawDeviceRegPanel()
                             reg.rotSource.empty() ? "(none)" : reg.rotSource.c_str(),
                             reg.regAt.empty() ? "(undated)" : reg.regAt.c_str());
         ImGui::Text("tip taught %s", reg.tipAt.empty() ? "(undated)" : reg.tipAt.c_str());
+
+        // The one assumption on this page that is about the MACHINE rather than
+        // the measurement, so it is stated where the record is read and not
+        // buried in a header. With the controller's pivot on the tool tip, a
+        // rotation turns the tool about the very point the record stores and
+        // does not move it - so the taught rotations describe every rotation and
+        // the guard has nothing to protect. Off, the tip swings, and a record
+        // taken at one rotation describes no other.
+        {
+            bool pivot = reg.pivotAtTip;
+            if (ImGui::Checkbox("pivot is at the tool tip", &pivot)) {
+                DeviceReg edited = reg;
+                edited.pivotAtTip = pivot;
+                workflow_.QueueDeviceReg(edited);
+                FD_INFO("devreg", "'%s': pivot-at-tip %s - rotations %s the tip",
+                        regDevice_, pivot ? "ON" : "OFF",
+                        pivot ? "no longer blank" : "again blank");
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("ON: U/V/W turn the tool about the tip itself, so the\n"
+                                  "tip does not move and the record is good at every\n"
+                                  "rotation. This is how both grippers here are set up.\n"
+                                  "OFF: the tip swings about a pivot somewhere else, so\n"
+                                  "predicting past %.2f deg from the taught rotations is\n"
+                                  "refused - no marker, and every move through the\n"
+                                  "registration fails until the device is turned back.",
+                                  kDeviceRegRotTolDeg);
+            if (reg.hasRot && !reg.pivotAtTip)
+                ImGui::TextDisabled("taught at U %.3f  V %.3f  W %.3f", reg.taughtRot.x,
+                                    reg.taughtRot.y, reg.taughtRot.z);
+        }
         if (reg.tipSpreadMm > 0.0)
             ImGui::TextDisabled("from a mark %.4f mm across, %d picks",
                                 reg.tipSpreadMm, reg.tipPoints);

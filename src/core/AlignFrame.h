@@ -132,11 +132,41 @@ struct AlignNominal {
     std::string uid;
     std::string name = "nominal";
     double      lx = 0.0, ly = 0.0;   // LOCAL (O1) mm — the only field a run uses
-    AlignPoint  p1, p2;               // the two marks, machine mm
-    double      mx = 0.0, my = 0.0;   // midpoint, machine mm, AT TEACH TIME
-    double      spanMm = 0.0;         // |p1->p2| — diagnostic, like AlignResult::spanMm
+    // The marks it was taught from, machine mm. TWO or FOUR: two opposite
+    // corners give the centre in one stroke, four give it as the average of a
+    // ring — the same trade the registration imprint makes, and for the same
+    // reason. A corner that lands off the feature shifts a 2-mark centre by half
+    // its error and looks exactly like a good mark; with four, it shows up as a
+    // spread that does not match the part.
+    //
+    // p1/p2 keep their names and their meaning so every file and every consumer
+    // written before this still reads: `points` is 2 unless somebody marked four.
+    AlignPoint  p1, p2, p3, p4;
+    int         points = 2;           // 2 or 4 — how many of the above are real
+    double      mx = 0.0, my = 0.0;   // CENTRE, machine mm, AT TEACH TIME
+    // Two marks: the separation. Four: twice the mean distance from the centre,
+    // so one number means the same thing either way — a width across the marks,
+    // exactly like DeviceReg::tipSpreadMm. Diagnostic, like AlignResult::spanMm.
+    double      spanMm = 0.0;
     std::string taughtAt;             // "2026-08-01T10:22:31"
     std::string frameAt;              // capturedAt of the frame it was converted through
+
+    // Where the CAMERA stands, focused, to look at this nominal ITSELF — the
+    // bare target on the substrate, with nothing gripped over it. A private
+    // position like `viewUid`, named `algn_<procUid>_<nomUid>_c`.
+    //
+    // It is NOT `viewUid` and must never be merged with it. That one is the view
+    // of a gripped OBJECT hovering above the point: a different XY, and a
+    // different Z, because the height that focuses a part held in the jaws does
+    // not focus the substrate under it. Teaching one from the other is exactly
+    // the mistake `viewUid`'s tooltip already warns about, and merging the two
+    // fields would make that mistake unavoidable rather than merely easy.
+    //
+    // Its Z is the whole point of storing it: the local frame is 2-D, so
+    // local->machine hands back XY and nothing else. The focused Z is a
+    // measurement of where the substrate is at this point, and the only way to
+    // get it back is to have written it down when it was in focus.
+    std::string camUid;
 
     // How the OBJECT's two marks are found when something is placed here.
     // "manual" = ask the operator; "auto" = run the taught detection model in
@@ -284,6 +314,14 @@ void AlignMachineToLocal(const AlignResult& r, double mx, double my,
 // would then be re-projected by the next frame into somewhere no part has ever
 // been. There is no minimum span here (unlike the frame): a nominal is a point,
 // so two coincident marks are merely a point, not a meaningless direction.
+// The N-mark form: 2 or 4 marks, whose CENTRE is the target. Anything else is
+// refused rather than averaged — a 3-mark ring has no centre worth the name, and
+// silently accepting one would put a nominal somewhere nobody chose.
+bool SolveAlignNominalN(const AlignResult& frame, const AlignPoint* pts, int n,
+                        AlignNominal* out, std::string* err);
+
+// The two-mark form, kept because most callers have exactly two and because
+// every file written before four existed says two. Delegates.
 bool SolveAlignNominal(const AlignResult& frame, const AlignPoint& p1,
                        const AlignPoint& p2, AlignNominal* out,
                        std::string* err = nullptr);

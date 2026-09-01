@@ -17,6 +17,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -71,6 +72,11 @@ constexpr ImU32 kCurCol = IM_COL32(255, 200, 60, 255);   // the live crosshair
 constexpr ImU32 kPtCol  = IM_COL32(120, 200, 255, 255);  // a latched mark
 constexpr ImU32 kMidCol = IM_COL32(255, 90, 90, 255);    // their midpoint
 constexpr ImU32 kEnvCol = IM_COL32(255, 90, 90, 110);    // the span they bound
+constexpr ImU32 kToolCol = IM_COL32(255, 190, 70, 255);  // a registered tool tip
+constexpr ImU32 kToolBox = IM_COL32(255, 190, 70, 190);  // ...and its footprint
+// Grab radius for the footprint box's corners, screen px. Generous: the
+// corner is a handle on a live camera image, not a window edge.
+constexpr float kBoxGrabPx = 12.0f;
 
 // A labelled cross. `len` is what distinguishes the live crosshair from the
 // latched marks at a glance, so the overlay needs no legend. `ring` is off for
@@ -388,7 +394,67 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
     ImGui::SetCursorScreenPos(origin);
     const bool clicked = ImGui::InvisibleButton(id, img);
     const bool hovered = ImGui::IsItemHovered();
-    if (haveImg && clicked) view.ToCamera(ImGui::GetIO().MousePos, mp.px, mp.py);
+
+    // ---- The tool's footprint box, and its corner handles -------------------
+    // Resolved BEFORE the crosshair click below, because a press that grabbed a
+    // corner must not also place a mark: the box is dragged with the same button
+    // that marks a feature, and on a live camera image the operator cannot see
+    // which one they hit.
+    //
+    // The box is CENTRED on the tip, every frame, and that is the whole design.
+    // It is not a rectangle you position; it is the tool's perimeter, and the
+    // tool is wherever the registration says. So a corner drag can only change
+    // the SIZE - there is no way to leave the box describing a place the tool
+    // is not.
+    const bool  haveTool = haveImg && mp.toolHave && mp.havePose &&
+                           mp.pixelToMmX > 0.0f && mp.pixelToMmY > 0.0f;
+    ImVec2      toolScr(0.0f, 0.0f);
+    bool        toolInBox = false;
+    float       boxHalfW = 0.0f, boxHalfH = 0.0f;
+    const bool  wasDragging = mp.boxDragging && *mp.boxDragging;
+    bool        boxGrabbed  = wasDragging;
+    if (haveTool) {
+        const float tpx = static_cast<float>((mp.toolWx - mp.gx) /
+                                             static_cast<double>(mp.pixelToMmX)) +
+                          static_cast<float>(mp.imgW) * 0.5f;
+        const float tpy = static_cast<float>((mp.toolWy - mp.gy) /
+                                             static_cast<double>(mp.pixelToMmY)) +
+                          static_cast<float>(mp.imgH) * 0.5f;
+        toolScr   = view.ToScreen(tpx, tpy);
+        toolInBox = toolScr.x >= origin.x && toolScr.x <= origin.x + img.x &&
+                    toolScr.y >= origin.y && toolScr.y <= origin.y + img.y;
+
+        if (mp.boxWmm && mp.boxHmm && mp.boxDragging && toolInBox) {
+            // mm -> screen px: camera px per mm, times the view's magnification.
+            boxHalfW = 0.5f * *mp.boxWmm / mp.pixelToMmX * view.scale;
+            boxHalfH = 0.5f * *mp.boxHmm / mp.pixelToMmY * view.scale;
+            const ImVec2 m = ImGui::GetIO().MousePos;
+            const float  dx = fabsf(m.x - toolScr.x), dy = fabsf(m.y - toolScr.y);
+            const bool   onCorner = fabsf(dx - boxHalfW) <= kBoxGrabPx &&
+                                    fabsf(dy - boxHalfH) <= kBoxGrabPx;
+            if (*mp.boxDragging) {
+                if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                    // Both halves follow the cursor: the corner IS the size.
+                    // Floored rather than allowed to reach zero, so a box
+                    // dragged shut can still be grabbed and opened again.
+                    *mp.boxWmm = fmaxf(0.02f, 2.0f * dx / view.scale * mp.pixelToMmX);
+                    *mp.boxHmm = fmaxf(0.02f, 2.0f * dy / view.scale * mp.pixelToMmY);
+                } else {
+                    *mp.boxDragging = false;
+                }
+            } else if (hovered && onCorner &&
+                       ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                *mp.boxDragging = true;
+                boxGrabbed      = true;
+            }
+            if (onCorner || *mp.boxDragging)
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+        }
+    }
+
+    // A click that belonged to the box is not a mark. `wasDragging` covers the
+    // RELEASE, which is the edge ImGui reports as the click.
+    if (haveImg && clicked && !boxGrabbed) view.ToCamera(ImGui::GetIO().MousePos, mp.px, mp.py);
 
     // RIGHT click = drive there. The offset from the image centre in mm is the
     // move that brings the clicked feature under the centre — the same
@@ -470,13 +536,33 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
                 if (!mp.marks) break;
                 DrawWorldMark(dl, wv, mp.marks[i], 16.0f);
             }
-            if (mp.midpointLabel && mp.marks && mp.markCount >= 2 &&
-                mp.marks[0].have && mp.marks[1].have) {
-                float ax = 0.0f, ay = 0.0f, bx = 0.0f, by = 0.0f;
-                toPixel(mp.marks[0].wx, mp.marks[0].wy, &ax, &ay);
-                toPixel(mp.marks[1].wx, mp.marks[1].wy, &bx, &by);
-                const ImVec2 sa = view.ToScreen(ax, ay);
-                const ImVec2 sb = view.ToScreen(bx, by);
+            // The centre of every LATCHED mark, and the box they bound. Two
+            // marks make it a midpoint and four make it the centre of a ring;
+            // the arithmetic is the same average either way, which is the whole
+            // reason four marks needed no second code path here.
+            int nHave = 0;
+            for (int i = 0; i < mp.markCount && mp.marks; ++i)
+                if (mp.marks[i].have) ++nHave;
+            if (mp.midpointLabel && mp.marks && nHave >= 2) {
+                double cwx = 0.0, cwy = 0.0;
+                ImVec2 lo(FLT_MAX, FLT_MAX), hi(-FLT_MAX, -FLT_MAX);
+                ImVec2 sa(0.0f, 0.0f), sb(0.0f, 0.0f);
+                int    seen = 0;
+                for (int i = 0; i < mp.markCount; ++i) {
+                    if (!mp.marks[i].have) continue;
+                    cwx += mp.marks[i].wx;
+                    cwy += mp.marks[i].wy;
+                    float mx = 0.0f, my = 0.0f;
+                    toPixel(mp.marks[i].wx, mp.marks[i].wy, &mx, &my);
+                    const ImVec2 sp = view.ToScreen(mx, my);
+                    lo.x = fminf(lo.x, sp.x); lo.y = fminf(lo.y, sp.y);
+                    hi.x = fmaxf(hi.x, sp.x); hi.y = fmaxf(hi.y, sp.y);
+                    if (seen == 0)      sa = sp;
+                    else if (seen == 1) sb = sp;
+                    ++seen;
+                }
+                cwx /= seen;
+                cwy /= seen;
                 // The footprint the two corners bound. Both marks are usually
                 // off screen together at working zoom, and a bare diagonal
                 // between two edge arrows says nothing about how big the part
@@ -484,8 +570,6 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
                 // checking when the midpoint looks wrong. Machine-axis aligned
                 // unless `envelopeDeg` spins it — this is the span the marks
                 // define, not the taught frame.
-                const ImVec2 lo(fminf(sa.x, sb.x), fminf(sa.y, sb.y));
-                const ImVec2 hi(fmaxf(sa.x, sb.x), fmaxf(sa.y, sb.y));
                 const ImVec2 c((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
                 // Screen space, not camera px: the rotation stays a rotation
                 // only where the scale is the same on both axes, and the view's
@@ -498,15 +582,49 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
                 };
                 dl->AddQuad(spin(lo.x, lo.y), spin(hi.x, lo.y),
                             spin(hi.x, hi.y), spin(lo.x, hi.y), kEnvCol, 1.0f);
-                dl->AddLine(sa, sb, kMidCol, 1.0f);
+                // The diagonal only means something for a PAIR: across four
+                // marks it is a line between two arbitrary corners of the ring.
+                if (seen == 2) dl->AddLine(sa, sb, kMidCol, 1.0f);
                 CameraMark mid;
-                mid.wx    = (mp.marks[0].wx + mp.marks[1].wx) * 0.5;
-                mid.wy    = (mp.marks[0].wy + mp.marks[1].wy) * 0.5;
+                mid.wx    = cwx;
+                mid.wy    = cwy;
                 mid.have  = true;
                 mid.label = mp.midpointLabel;
                 mid.col   = kMidCol;
                 DrawWorldMark(dl, wv, mid, 22.0f);
             }
+        }
+
+        // The tool tip and its footprint, on top of the marks (it is what the
+        // operator is comparing them against) and under the live crosshair
+        // (which is what they are placing).
+        if (haveTool) {
+            if (toolInBox && mp.boxWmm && mp.boxHmm && boxHalfW > 0.0f) {
+                const ImVec2 lo(toolScr.x - boxHalfW, toolScr.y - boxHalfH);
+                const ImVec2 hi(toolScr.x + boxHalfW, toolScr.y + boxHalfH);
+                dl->AddRect(lo, hi, kToolBox, 0.0f, 0, 1.6f);
+                // Corner handles, so the box looks draggable rather than drawn.
+                const float g = 5.0f;
+                const ImVec2 cs[4] = {lo, ImVec2(hi.x, lo.y), hi, ImVec2(lo.x, hi.y)};
+                for (const ImVec2& q : cs)
+                    dl->AddRectFilled(ImVec2(q.x - g, q.y - g), ImVec2(q.x + g, q.y + g),
+                                      kToolBox);
+                char bl[64];
+                std::snprintf(bl, sizeof(bl), "%.3f x %.3f mm", *mp.boxWmm, *mp.boxHmm);
+                const ImVec2 ts = ImGui::CalcTextSize(bl);
+                const ImVec2 at(hi.x - ts.x, lo.y - ts.y - 4.0f);
+                dl->AddRectFilled(ImVec2(at.x - 4.0f, at.y - 2.0f),
+                                  ImVec2(at.x + ts.x + 4.0f, at.y + ts.y + 2.0f),
+                                  IM_COL32(0, 0, 0, 165), 3.0f);
+                dl->AddText(at, kToolBox, bl);
+            }
+            CameraMark tm;
+            tm.wx    = mp.toolWx;
+            tm.wy    = mp.toolWy;
+            tm.have  = true;
+            tm.label = mp.toolLabel;
+            tm.col   = kToolCol;
+            DrawWorldMark(dl, wv, tm, 14.0f);
         }
 
         DrawCross(dl, view.ToScreen(*mp.px, *mp.py), kCurCol, 22.0f, nullptr, false);

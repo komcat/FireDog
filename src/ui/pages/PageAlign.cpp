@@ -59,7 +59,17 @@ std::string NominalViewPosName(const std::string& procUid, const std::string& no
     return "algn_" + procUid + "_" + nomUid + "_v";
 }
 
-// Everything a procedure owns, by name — stations AND every nominal's view.
+// And the second pose a nominal owns: where the camera stands, FOCUSED, over the
+// nominal itself. Same convention, "_c" — it is not the "_v" object view, and
+// the two differ in Z by however far a gripped part hovers above the substrate.
+//
+// "algn_" + 8 + "_" + 8 + "_c" = 24 chars, inside SavedPos::name's 32.
+std::string NominalCamPosName(const std::string& procUid, const std::string& nomUid)
+{
+    return "algn_" + procUid + "_" + nomUid + "_c";
+}
+
+// Everything a procedure owns, by name — stations AND every nominal's poses.
 // Prefix rather than an enumeration, because the sweep runs at DELETE time and
 // a nominal that was removed earlier must not leave a hidden row behind.
 bool IsOwnedAlignPos(const SavedPos& sp, const std::string& procUid)
@@ -205,8 +215,9 @@ void App::TeachAlignStation(AlignProc& a, int station)
     FD_INFO("align", "'%s' station %d taught as '%s'", a.name.c_str(), station, name.c_str());
 }
 
-// The one place a hidden, owner-named position is written. Two callers now
-// (a station and a nominal's camera view) and they must not drift: an
+// The one place a hidden, owner-named position is written. Three callers now
+// (a station, a nominal's object view and its camera focus pose) and they must
+// not drift: an
 // update-in-place that assigned a fresh uid would silently orphan whatever
 // already pointed at the old one. "" when the device cannot be read.
 std::string App::CapturePrivatePose(const std::string& device, const std::string& name)
@@ -299,6 +310,109 @@ void App::DropAlignNominalView(const AlignProc& a, AlignNominal& n)
         session_.SavePositions();
         FD_INFO("align", "'%s' nominal '%s': dropped its camera view position",
                 a.name.c_str(), n.name.c_str());
+        return;
+    }
+}
+
+// ---- a nominal's camera FOCUS pose ----------------------------------------
+// Where the camera stands, focused, looking at the nominal itself. The local
+// frame is 2-D: local->machine hands back an XY and says nothing about height,
+// so the focused Z is a measurement that exists nowhere else once the stage
+// has moved. Writing it down while it is in focus is the only way to have it.
+//
+// Deliberately its own pose and not the `_v` object view: that one looks at a
+// part held ABOVE this point and is out of focus on the substrate by exactly
+// the height of the grip.
+
+const SavedPos* App::AlignNominalCamPos(const AlignProc& a, const AlignNominal& n) const
+{
+    return FindPos(session_.Positions(), a.device, n.camUid);
+}
+
+void App::TeachAlignNominalCamPos(AlignProc& a, AlignNominal& n)
+{
+    const std::string name = NominalCamPosName(a.uid, n.uid);
+    const std::string uid  = CapturePrivatePose(a.device, name);
+    if (uid.empty()) return;
+    n.camUid = uid;
+    session_.SavePositions();
+    session_.SaveAligns();
+    FD_INFO("align", "'%s' nominal '%s': camera focus position taught as '%s'",
+            a.name.c_str(), n.name.c_str(), name.c_str());
+}
+
+// A plain UI move to a pose a human taught, like the object view's Go.
+void App::GoToAlignNominalCamPos(const AlignProc& a, const AlignNominal& n)
+{
+    const SavedPos* pos = AlignNominalCamPos(a, n);
+    if (!pos) return;
+    for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+        if (hardware_.MotionName(i) != a.device) continue;
+        IMotionController* dev = hardware_.MotionDevice(i);
+        if (!dev || !dev->IsConnected()) return;
+        std::vector<std::pair<std::string, double>> targets;
+        for (const std::string& ax : dev->Axes()) {
+            const auto it = pos->vals.find(ax);
+            if (it != pos->vals.end()) targets.emplace_back(ax, it->second);
+        }
+        if (!targets.empty()) workflow_.MoveToPosition(i, targets);
+        return;
+    }
+}
+
+void App::DropAlignNominalCamPos(const AlignProc& a, AlignNominal& n)
+{
+    n.camUid.clear();
+    session_.SaveAligns();
+    const auto it = session_.Positions().find(a.device);
+    if (it == session_.Positions().end()) return;
+    std::vector<SavedPos>& list = it->second;
+    const std::string name = NominalCamPosName(a.uid, n.uid);
+    for (std::size_t i = list.size(); i-- > 0;) {
+        if (list[i].name != name) continue;
+        list.erase(list.begin() + static_cast<long>(i));
+        session_.SavePositions();
+        FD_INFO("align", "'%s' nominal '%s': dropped its camera focus position",
+                a.name.c_str(), n.name.c_str());
+        return;
+    }
+}
+
+// Drive the camera so the nominal lands under the crosshair: local -> machine
+// through the LIVE frame, XY only.
+//
+// Armed, and gated on a live frame, for the reason the Local->machine probe's
+// *Move here* is: this destination is COMPUTED out of a frame, so a frame that
+// describes last week's part sends the stage somewhere nobody chose. Z is left
+// exactly where it is rather than invented - the frame is 2-D, and the height
+// is what the operator is about to set by focusing.
+void App::CentreCameraOnNominal(const AlignProc& a, const AlignNominal& n)
+{
+    AlignResult live;
+    if (!workflow_.LiveFrame(a.uid, &live)) {
+        FD_WARN("align", "centre on '%s' refused - no LIVE frame. A nominal is "
+                         "stored in local coordinates; without a frame taught on the "
+                         "part that is here now there is nothing to convert it "
+                         "through.", n.name.c_str());
+        return;
+    }
+    if (!jogArmed_) {
+        FD_WARN("align", "centre on '%s' ignored - arm jog first", n.name.c_str());
+        return;
+    }
+    double mx = 0.0, my = 0.0;
+    AlignLocalToMachine(live, n.lx, n.ly, &mx, &my);
+    for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+        if (hardware_.MotionName(i) != a.device) continue;
+        IMotionController* dev = hardware_.MotionDevice(i);
+        if (!dev || !dev->IsConnected()) return;
+        const std::vector<std::pair<std::string, double>> targets = {{"X", mx}, {"Y", my}};
+        if (!workflow_.MoveToPosition(i, targets))
+            FD_WARN("align", "centre on '%s' rejected", n.name.c_str());
+        else
+            FD_INFO("align", "'%s': centring on nominal '%s' - local (%.4f, %.4f) "
+                             "-> machine (%.4f, %.4f)",
+                    a.name.c_str(), n.name.c_str(), n.lx, n.ly, mx, my);
         return;
     }
 }
@@ -405,6 +519,18 @@ void App::DrawAlignListPanel()
                           NominalViewPosName(a.uid, a.nominals[i].uid).c_str());
             np.uid = GenerateUid();
             a.nominals[i].viewUid = np.uid;
+            pl.push_back(std::move(np));
+        }
+        // ...and every nominal's CAMERA FOCUS pose, on the identical argument.
+        for (std::size_t i = 0; i < a.nominals.size() && i < src.nominals.size(); ++i) {
+            const SavedPos* cp = FindPos(session_.Positions(), src.device,
+                                         src.nominals[i].camUid);
+            if (!cp) continue;
+            SavedPos np = *cp;   // copy BEFORE the push_back that may reallocate
+            std::snprintf(np.name, sizeof(np.name), "%s",
+                          NominalCamPosName(a.uid, a.nominals[i].uid).c_str());
+            np.uid = GenerateUid();
+            a.nominals[i].camUid = np.uid;
             pl.push_back(std::move(np));
         }
         // Private DETECTION MODELS copy the same way and for the same reason —
@@ -1333,6 +1459,74 @@ void App::DrawAlignNominalList(AlignProc& a)
         ImGui::BeginDisabled(busy || !vp);
         if (ImGui::SmallButton("Clear view")) DropAlignNominalView(a, n);
         ImGui::EndDisabled();
+        // ---- The camera's FOCUSED view of the nominal itself ----------------
+        // Two buttons in the order they are used: centre the camera on the
+        // point (computed from the live frame, so it is armed), focus, then
+        // write the pose down. The Z is why it is worth storing at all - the
+        // frame is 2-D and hands back an XY, while the height that focuses
+        // this point on this substrate exists nowhere else once the stage has
+        // moved.
+        {
+            AlignResult liveF;
+            const bool  haveLiveF = workflow_.LiveFrame(a.uid, &liveF);
+            const SavedPos* cp = AlignNominalCamPos(a, n);
+
+            // The same shared flag the Jog window and the probe below arm, put
+            // here because this is where it is needed: a disabled button whose
+            // switch is two panels away reads as broken.
+            ImGui::Checkbox("Arm", &jogArmed_);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(busy || !camLive || !haveLiveF || !jogArmed_);
+            if (ImGui::SmallButton("Centre camera")) CentreCameraOnNominal(a, n);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Drive %s so THIS nominal sits under the crosshair:\n"
+                                  "local (%.4f, %.4f) through the LIVE frame. XY only -\n"
+                                  "the frame is 2-D, so Z is left where it is and the\n"
+                                  "focus is yours to set next.\n"
+                                  "Needs a live frame and Arm: the destination is\n"
+                                  "COMPUTED, so a stale frame drives somewhere nobody\n"
+                                  "chose - the same rule Move here follows.",
+                                  a.device.c_str(), n.lx, n.ly);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(busy || !camLive);
+            if (ImGui::SmallButton(cp ? "Re-save cam focus" : "Save cam focus"))
+                TeachAlignNominalCamPos(a, n);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Store where %s is standing NOW - X, Y and the\n"
+                                  "focused Z - as this nominal's camera focus\n"
+                                  "position. Centre first, focus on the point, then\n"
+                                  "press this.\n"
+                                  "It is NOT the object view above: that one looks at a\n"
+                                  "part held above this spot and is out of focus on the\n"
+                                  "substrate by the height of the grip.",
+                                  a.device.c_str());
+            ImGui::SameLine(0.0f, 24.0f);
+            ImGui::BeginDisabled(busy || !camLive || !cp);
+            if (ImGui::SmallButton("Go focus")) GoToAlignNominalCamPos(a, n);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(busy || !cp);
+            if (ImGui::SmallButton("Clear focus")) DropAlignNominalCamPos(a, n);
+            ImGui::EndDisabled();
+            // Re-resolved after the buttons that can push into or erase from
+            // the positions vector `cp` points into.
+            cp = AlignNominalCamPos(a, n);
+            if (cp) {
+                std::string line;
+                for (const auto& [axis, v] : cp->vals) {
+                    char buf[48];
+                    std::snprintf(buf, sizeof(buf), "%s%s %.3f", line.empty() ? "" : "  ",
+                                  axis.c_str(), v);
+                    line += buf;
+                }
+                ImGui::TextDisabled("   cam focus  %s", line.c_str());
+            } else {
+                ImGui::TextDisabled("   cam focus  none - centre, focus, then save");
+            }
+        }
+
         // Re-resolve: `vp` points INTO the positions vector, and both buttons
         // above can push into it or erase from it.
         vp = AlignNominalView(a, n);
@@ -1400,6 +1594,7 @@ void App::DrawAlignNominalList(AlignProc& a)
                     a.nominals[i].name.c_str());
             DropNominalDetectors(a, a.nominals[i]);   // its private object models go too
             DropAlignNominalView(a, a.nominals[i]);   // and its private camera view
+            DropAlignNominalCamPos(a, a.nominals[i]);  // ...and its focus pose
             a.nominals.erase(a.nominals.begin() + static_cast<long>(i));
             session_.SaveAligns();   // taught by hand — persisted like the frame
             alignNomSel_.clear();    // the fallback above picks the first one

@@ -286,6 +286,30 @@ measured described tooling that may no longer be on the machine.
   rotation away from the taught one, and — via `max_mm`, default 10 mm — a move
   longer than an approach has any business being. Unattended, nobody notices that
   a stale record turned a short approach into a lunge.
+* `move_tool_to_camera{device, z_offset_mm}` — the same approach aimed at the one
+  point a recipe author cannot write down: wherever the camera is looking when
+  the step runs. It reads the reference device's live pose, so the target comes
+  from whatever left the stage there (an operator, an alignment, a detection),
+  and it goes through the identical refusals and the identical ceiling because
+  it ends in the identical helper. **`z_offset_mm` is an offset from the FOCUSED
+  plane, not a height** — the same argument the needle's `dz` makes: the
+  reference Z of what is under the camera is "the gantry Z that focuses on it",
+  so 0 would send the tip into that surface. It defaults to −2 mm, and negative
+  is the direction *away* from the surface on this machine (measured 2026-09-01;
+  `gantry-main`'s transform inverts Z), stated and dated in the parameter help
+  rather than asserted as a rule;
+* `tool_travel_to_camera{device, lift_mm, via_position, z_offset_mm}` — retreat,
+  cross, descend, as one step. It exists because of the "not in scope" bullet
+  below: `move_tool_to_camera` is ONE coordinated move straight through whatever
+  is in the way, and a path that lives only in a recipe author's head is the one
+  the next recipe leaves out. Leg 1 is a relative move along **global** Z through
+  the device's own transform (default 4 mm; positive is up on this machine, 0
+  skips it); leg 2 is an optional taught waypoint; leg 3 is
+  `move_tool_to_camera`. Each leg waits for arrival *and* settle before the next
+  is issued — three moves, not one interpolated path, so a Stop between them
+  leaves the tool somewhere defined. The registration is checked **before the
+  first millimetre**: a lift-off followed by a refusal to descend parks the tool
+  mid-air over a fault that was knowable up front.
 
 **Must not consume it: the final placement.** A typed rotation and one measured
 point get a tool close — nowhere near `place_tol_mm`'s 20 µm.
@@ -302,9 +326,16 @@ and a distance when the tip is outside the frame and `dZ` against the plane in
 focus — because two tips 3 mm apart in Z land on the same pixel. It is a readout
 and nothing acts on it, but it inherits both of the record's refusals verbatim: a
 tip that cannot be predicted (no registration, not connected, rotated away from
-where it was taught) draws **nothing**, and a tip registered against a different
-reference is not drawn at all, since a point in another origin projected through
-this pose is off by the whole distance between the two. The colour and the word
+where it was taught) draws **no position**, and a tip registered against a
+different reference is not drawn at all, since a point in another origin
+projected through this pose is off by the whole distance between the two.
+
+What a refusal *does* draw is one dim `no tip: <reason>` line in the corner.
+Absence stays the signal — nothing invents a position — but silent absence answers
+no question: the first operator to look for a gripper that was 1.4° off its
+taught rotation could not tell a refusal from a broken overlay, and the log says
+it once per session. The line is the reason string with its explanatory tail
+elided, not a second wording of it. The colour and the word
 `reg` on the plate exist to stop it reading as a detection: one is what the camera
 saw, the other is what the machine believes.
 
@@ -367,10 +398,14 @@ to name the target before anything had looked at the object. It goes through
   repeatability. Either teach the tip with a reference part gripped (then `t` is
   per part type, which is what `tipAt` is for) or let the placement loop absorb
   it. Do not assume it.
-* **A path.** `move_to_point` is one coordinated move from wherever the gripper
-  is to the target, straight through whatever is in the way. Retreat to a safe
-  height, traverse, descend — the same discipline `dispense_procedure.lua` spells
-  out, and for the same reason.
+* **A path**, for `move_to_point` and `move_tool_to_camera` alike: each is one
+  coordinated move from wherever the gripper is to the target, straight through
+  whatever is in the way. Retreat to a safe height, traverse, descend — the same
+  discipline `dispense_procedure.lua` spells out, and for the same reason.
+  `tool_travel_to_camera` packages exactly that for the camera point and nothing
+  more: it is three ordinary moves in a fixed order, not a planner, and it knows
+  nothing about what is actually on the table. The waypoint is still the
+  author's to teach.
 
 ## 10. The rule this changed
 
@@ -383,13 +418,40 @@ The premise — that the two origins have never been related — is what this re
 The rule was **rewritten, not deleted**: delete it and the next person places a
 part open-loop through a record that was never meant to carry it.
 
+## 10b. The pivot, and when the rotation guard is nothing but harm
+
+`DeviceRegRotationOk` refuses to predict a tip more than `kDeviceRegRotTolDeg`
+(0.05°) from the rotations it was taught at, because a tip that swings about a
+pivot somewhere else describes no rotation but its own. That is right — *when the
+pivot is somewhere else*.
+
+A PI hexapod's pivot is a **controller setting**, and both grippers here have it
+on the tool tip. Rotating U/V/W then turns the tool about the very point the
+record stores and does not translate it, so `t` describes every rotation and the
+guard protects nothing. What it does instead is blank a perfectly good tip: at
+U = 0 against a tip taught at U = −1.4° the marker vanished from the Aux view,
+every `move_to_point` refused, and the reason arrived as one log line an operator
+reading a camera image never sees. Absence looked like a broken overlay.
+
+So the assumption became a field — `DeviceReg::pivotAtTip`, persisted as
+`pivot_at_tip`, with a checkbox on the Registration page — rather than either a
+hard-coded refusal or a hard-coded bypass. **It defaults to true**, and files
+written before the field existed load as true: they were written on this machine,
+by this pivot, and the guard they predate was blanking their tips. Turn it off
+for a device whose pivot is not on the tool, and the refusal returns exactly as
+it was — the page then also prints the rotations the tip was taught at, because
+that is the number you need to get back to.
+
+One switch, read by `DeviceRegRotationOk`, so the overlay, the tip topics and
+every move command agree about it by construction.
+
 ## 11. Sketch of the pieces
 
 | Piece | Where |
 |---|---|
-| record, predict/solve, the two setters, JSON, load/save | `src/core/DeviceReg.{h,cpp}` |
+| record, predict/solve, the two setters, the pivot switch, JSON, load/save | `src/core/DeviceReg.{h,cpp}` |
 | live records, queue, seed columns, tip publish | `src/workflow/Workflow.{h,cpp}` |
-| `device_reg`, `device_reg_check_save`, `move_to_point`, `device_reg_check_run` | `src/command/CommandsDeviceReg.cpp` |
+| `device_reg`, `device_reg_check_save`, `move_to_point`, `move_tool_to_camera`, `tool_travel_to_camera`, `device_reg_check_run` | `src/command/CommandsDeviceReg.cpp` (`PrepareRegMove` + `ApproachRefPoint` are the one shared refusal/approach pair) |
 | the four-step teach and the page | `src/ui/pages/PageDeviceReg.cpp` (F8) |
 | the check (STANDARD) | `config/scripts/device_reg_check.lua` |
 | `nominal_point` | `src/command/CommandsAlign.cpp` |
@@ -401,8 +463,10 @@ Page access is **Admin** — this teaches the machine, which is the line
 
 ## 12. Deliberately not in scope
 
-* **U/V/W compensation.** The grippers are used at zero rotation, so the record
-  is pinned there, stores the angles the tip was taught at, and **refuses to
+* **U/V/W compensation**, in the general case. See *The pivot* below for the
+  case that is not general — and is the one this machine is in. Where the pivot
+  is somewhere else, the record
+  is pinned to the rotations it was taught at, stores them, and **refuses to
   predict** past `kDeviceRegRotTolDeg`. Silently predicting through a rotation the
   record never saw is the failure this avoids. If rotations are ever commanded,
   the record grows a tool vector from the pivot and prediction becomes

@@ -94,9 +94,26 @@ struct DeviceReg {
 
     // The rotations the fit was pinned to. Not compensated for — refused past
     // kDeviceRegRotTolDeg, because the record says nothing about a pose it never
-    // saw.
+    // saw. UNLESS the pivot is at the tip; see below.
     RegVec3 taughtRot;
     bool    hasRot = false;   // false when the device reports no U/V/W at all
+
+    // The controller's pivot point coincides with the tool tip, so rotating
+    // U/V/W turns the tool WITHOUT translating the point this record stores.
+    // With that true, `t` describes every rotation and the guard above has
+    // nothing to protect: refusing at 0.05 deg would blank a perfectly good tip
+    // the moment somebody nudged a rotation axis, which is what it did.
+    //
+    // It is a property of how the hexapod is SET UP, not of the registration —
+    // a PI pivot is a controller setting — so it lives here as a stated
+    // assumption with a switch, rather than being hard-coded either way. Turn
+    // it off for a device whose pivot is somewhere else, and the tip swings
+    // again: then a record taken at one rotation really does describe no other.
+    //
+    // Defaults TRUE: both grippers on this machine are set up that way, and the
+    // guard's failure mode is silent absence (no marker, refused moves) which
+    // reads as a broken overlay rather than as a stated refusal.
+    bool pivotAtTip = true;
 
     // ---- The teachable poses -------------------------------------------------
     // Three positions the operator sets once and the page drives back to, so a

@@ -8,6 +8,8 @@
 //   device_reg             put the registration into ctx
 //   device_reg_check_save  record what the check pass measured
 //   move_to_point          command a reference-space point to a registered device
+//   move_tool_to_camera    ...that point being wherever the camera is looking now
+//   tool_travel_to_camera  lift off, cross, then move_tool_to_camera
 //   device_reg_check_run   run the daily check as one recipe step
 //
 // TEACHING IS NOT HERE. Adopting the rotation and measuring the tip both live on
@@ -143,11 +145,22 @@ CommandResult ExecDeviceRegCheckSave(ExecutionContext& ctx, const ParamValues& p
     return CommandResult::Success();
 }
 
-// ---- move_to_point ---------------------------------------------------------
-
-CommandResult ExecMoveToPoint(ExecutionContext& ctx, const ParamValues& p)
+// ---- the two halves both point commands share -------------------------------
+//
+// A registration may only be driven through under conditions the record
+// itself states, and there must be exactly one statement of them: a second
+// command that forgot the rotation guard would produce a plausible pose that
+// is simply wrong, which is the failure this whole record exists to avoid.
+//
+// `expectedRef` is the space a caller CLAIMS its point is in; empty trusts
+// the record. A gantry coordinate interpreted against a registration taught
+// to a different reference is wrong by the whole distance between two origins,
+// and that is not a detail a recipe author may leave to chance.
+CommandResult PrepareRegMove(ExecutionContext& ctx, const ParamValues& p,
+                             const std::string& device,
+                             const std::string& expectedRef, DeviceReg* regOut,
+                             IMotionController** mOut, int* idxOut)
 {
-    const std::string device = p.GetString("device");
     std::string err;
     int idx = -1;
     IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
@@ -160,15 +173,10 @@ CommandResult ExecMoveToPoint(ExecutionContext& ctx, const ParamValues& p)
             "space means nothing to it - only a DELTA crosses between unregistered "
             "devices. Register it, or use a relative move.");
 
-    // The point is stated in SOME device's axis space, and which one is not a
-    // detail the caller may leave to chance: a gantry coordinate interpreted
-    // against a registration taught to a different reference is wrong by the
-    // whole distance between two origins.
-    const std::string ref = p.GetString("ref_device");
-    if (!ref.empty() && ref != r.refDevice)
+    if (!expectedRef.empty() && expectedRef != r.refDevice)
         return CommandResult::Fail("'" + device + "' is registered against '" +
                                    r.refDevice + "', but the point was given in '" +
-                                   ref + "' space");
+                                   expectedRef + "' space");
 
     if (!r.verified && !p.GetBool("allow_unverified"))
         return CommandResult::Fail(
@@ -190,8 +198,24 @@ CommandResult ExecMoveToPoint(ExecutionContext& ctx, const ParamValues& p)
         }
     }
 
-    const RegVec3 target = Vec3Param(p, "x_mm", "y_mm", "z_mm");
-    const RegVec3 h      = DeviceRegSolve(r, target);
+    *regOut = r;
+    *mOut   = m;
+    *idxOut = idx;
+    return CommandResult::Success();
+}
+
+// The other half: drive the tip to a point in the REFERENCE device's axis
+// space, once the record has been found and its refusals have passed. Every
+// command that moves a registered device ends here, so the travel ceiling, the
+// two-speed approach and the log line are the same wherever the point came
+// from - a second implementation of 'drive a registered device to a point' is
+// precisely what this family exists to not have.
+CommandResult ApproachRefPoint(ExecutionContext& ctx, const ParamValues& p,
+                               const std::string& device, const DeviceReg& r,
+                               IMotionController* m, int idx, const RegVec3& target)
+{
+    const std::map<std::string, double> live = m->Positions();
+    const RegVec3 h = DeviceRegSolve(r, target);
 
     const std::string axes = p.GetString("axes");
     if (axes.empty()) return CommandResult::Fail("axes is empty - name the axes to command");
@@ -248,6 +272,157 @@ CommandResult ExecMoveToPoint(ExecutionContext& ctx, const ParamValues& p)
             device.c_str(), target.x, target.y, target.z, r.refDevice.c_str(),
             h.x, h.y, h.z, travel);
     return MoveWithApproach(ctx, m, idx, targets, p, "the registered point");
+}
+
+// ---- move_to_point ---------------------------------------------------------
+
+CommandResult ExecMoveToPoint(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    DeviceReg          r;
+    IMotionController* m   = nullptr;
+    int                idx = -1;
+    const CommandResult ready = PrepareRegMove(ctx, p, device, p.GetString("ref_device"),
+                                               &r, &m, &idx);
+    if (!ready.ok) return ready;
+
+    return ApproachRefPoint(ctx, p, device, r, m, idx,
+                            Vec3Param(p, "x_mm", "y_mm", "z_mm"));
+}
+
+// ---- move_tool_to_camera ----------------------------------------------------
+//
+// The point the camera is looking at RIGHT NOW, handed to a registered tool.
+// It is move_to_point with the target read off the reference device instead of
+// typed into the step, and that is the whole difference - which makes it the
+// one worth having, because the coordinates under a camera are not something a
+// recipe author can write down in advance: they are wherever the operator, an
+// alignment or a detection has just left the stage.
+//
+// Z IS AN OFFSET FROM THE FOCUSED PLANE, NOT A HEIGHT - the same argument the
+// needle's dz makes. The reference Z of what the camera is looking at is 'the
+// gantry Z that focuses on it', so 0 would send the tip INTO the surface in
+// focus. The default is -2 mm, which on this machine stands the tool 2 mm off
+// it: negative counts away from the surface, because gantry-main's transform
+// inverts Z. That is a measured fact about this machine (2026-09-01), stated
+// in the parameter help and dated there, not a rule - re-check it after any
+// edit to config/motion_transforms.json.
+//
+// Still an APPROACH, exactly like move_to_point: a typed rotation and one
+// measured tip get the tool close, and a placement still measures and corrects.
+CommandResult ExecMoveToolToCamera(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    DeviceReg          r;
+    IMotionController* m   = nullptr;
+    int                idx = -1;
+    const CommandResult ready = PrepareRegMove(ctx, p, device, "", &r, &m, &idx);
+    if (!ready.ok) return ready;
+
+    // Where the camera stands. Read through layer 2 by the record's OWN
+    // reference name: the registration says which device it was taught
+    // against, and nothing here may second-guess it.
+    std::map<std::string, double> refPose;
+    if (!ctx.Wf().DevicePose(r.refDevice, refPose))
+        return CommandResult::Fail("'" + r.refDevice + "' is not connected - there "
+                                   "is no camera point to move to");
+    const auto ix = refPose.find("X"), iy = refPose.find("Y"), iz = refPose.find("Z");
+    if (ix == refPose.end() || iy == refPose.end() || iz == refPose.end())
+        return CommandResult::Fail("'" + r.refDevice + "' does not report X/Y/Z");
+
+    const RegVec3 target{ix->second, iy->second,
+                         iz->second + p.GetDouble("z_offset_mm")};
+    FD_INFO("devreg", "'%s' to the camera point: '%s' is at (%.4f, %.4f, %.4f), "
+                      "z_offset %+.4f",
+            device.c_str(), r.refDevice.c_str(), ix->second, iy->second, iz->second,
+            p.GetDouble("z_offset_mm"));
+    return ApproachRefPoint(ctx, p, device, r, m, idx, target);
+}
+
+// ---- tool_travel_to_camera --------------------------------------------------
+//
+// The convenience wrapper, and the reason it is a command rather than three
+// steps an author is trusted to remember: move_tool_to_camera is ONE
+// coordinated move from wherever the tool happens to be, straight through
+// whatever is between it and the camera. Retreat, cross, descend is the
+// discipline dispense_procedure.lua spells out for the same reason, and a
+// path that only exists in a recipe author's head is the one that gets left
+// out of the next recipe.
+//
+//   1  LIFT OFF   a relative move along GLOBAL Z, through the device's own
+//                 transform, so one number means the same thing on a hexapod
+//                 and on a gantry whose axis Z is inverted. Positive is up on
+//                 this machine; 0 skips the leg for a tool already clear.
+//   2  CROSS      an optional taught position - the waypoint that keeps the
+//                 traverse out of the fixtures. Optional because a station
+//                 with nothing in the way should not have to invent one. It
+//                 goes through MoveWithApproach like every other
+//                 point-to-point move, so a configured approach zone slows
+//                 the crossing too: that is the price of having exactly one
+//                 implementation, and it is cheap next to a second copy
+//                 drifting off the settle rule.
+//   3  DESCEND    move_tool_to_camera, with its own z_offset.
+//
+// Each leg waits for arrival and settle before the next is issued: they are
+// three moves, not one interpolated path, and a Stop between them leaves the
+// tool in a defined place.
+CommandResult ExecToolTravelToCamera(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    DeviceReg          r;
+    IMotionController* m   = nullptr;
+    int                idx = -1;
+    // The registration is checked FIRST, before anything moves: a lift off
+    // followed by a refusal to descend leaves the tool parked mid-air for a
+    // fault that was knowable before the first millimetre.
+    const CommandResult ready = PrepareRegMove(ctx, p, device, "", &r, &m, &idx);
+    if (!ready.ok) return ready;
+
+    // One velocity for the whole trip, set once. MoveWithApproach only RESTORES
+    // velocity_mm_s after its approach leg - the caller is what applies it - so
+    // without this the lift and the crossing would run at whatever the last step
+    // left on the device.
+    const double vel = p.GetDouble("velocity_mm_s");
+    if (vel > 0.0 && !ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx), vel))
+        return CommandResult::Fail("velocity change rejected");
+
+    const double lift = p.GetDouble("lift_mm");
+    if (lift != 0.0) {
+        std::vector<std::pair<std::string, double>> issued;
+        if (!ctx.Wf().MoveRelativeGlobal(static_cast<std::size_t>(idx), 0.0, 0.0,
+                                         lift, &issued))
+            return CommandResult::Fail("lift off rejected - is global Z mapped for '" +
+                                       device + "'?");
+        // Wait on exactly what was SENT: the transform decided which local axes
+        // those millimetres landed on, and recomputing them from a pose that has
+        // since moved is how a wait starts passing early.
+        const auto arrived = WaitArrive(ctx, m, issued, kMoveTolMM,
+                                        p.GetInt("timeout_ms"));
+        if (arrived != ExecutionContext::WaitResult::Ok) {
+            ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
+            return CommandResult::Fail(arrived == ExecutionContext::WaitResult::Stopped
+                                           ? "stopped"
+                                           : "timeout lifting off");
+        }
+        const CommandResult settled = WaitSettle(ctx, m, idx);
+        if (!settled.ok) return settled;
+        FD_INFO("devreg", "'%s' lifted %+.3f mm along global Z", device.c_str(), lift);
+    }
+
+    const std::string via = p.GetString("via_position");
+    if (!via.empty()) {
+        const SavedPos* pos = ctx.FindPosition(device, via);
+        if (!pos)
+            return CommandResult::Fail("via_position uid not found for '" + device + "'");
+        const auto targets = TargetsOf(*pos, m);
+        if (targets.empty())
+            return CommandResult::Fail("via_position shares no axes with '" + device + "'");
+        const CommandResult crossed =
+            MoveWithApproach(ctx, m, idx, targets, p, "'" + std::string(pos->name) + "'");
+        if (!crossed.ok) return crossed;
+    }
+
+    return ExecMoveToolToCamera(ctx, p);
 }
 
 }   // namespace
@@ -323,6 +498,76 @@ void RegisterDeviceRegCommands(CommandRegistry& reg, Workflow& wf, HardwareManag
                   },
                   CommandSpec::Needs::None, ExecMoveToPoint});
 
+    // The same approach, aimed at the one point a recipe author cannot write
+    // down: wherever the camera is looking when the step runs.
+    reg.Register({"move_tool_to_camera", "Registration",
+                  "APPROACH the point the camera is looking at now with a registered "
+                  "tool - z_offset_mm stands it off the focused plane",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {},
+                       "the registered device whose TIP is being sent to the camera"},
+                      {"z_offset_mm", PT::Double, false, -2.0, -100.0, 100.0, {},
+                       "offset from the camera's own Z, which is the Z that FOCUSES "
+                       "on what is under it - so 0 sends the tip onto that surface. "
+                       "NEGATIVE stands the tool off it (higher), positive drives it "
+                       "in: measured on this machine 2026-09-01, where gantry-main's "
+                       "transform inverts Z. Re-check after editing "
+                       "config/motion_transforms.json"},
+                      {"axes", PT::String, false, "XYZ", 0, 0, {},
+                       "which axes to command; the others are left where they are"},
+                      {"max_mm", PT::Double, false, 10.0, 0.0, 500.0, {},
+                       "refuse a move longer than this; 0 disables the ceiling"},
+                      {"allow_unverified", PT::Bool, false, false, 0, 0, {},
+                       "move through a registration whose check has not been run"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
+                      {"velocity_mm_s", PT::Double, false, 0.0, 0, 0, {},
+                       "optional velocity for this move; 0 = keep current"},
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                  },
+                  CommandSpec::Needs::None, ExecMoveToolToCamera});
+
+    // Retreat, cross, descend - one step, because a path that lives only in the
+    // author's head is the one the next recipe leaves out.
+    reg.Register({"tool_travel_to_camera", "Registration",
+                  "Lift off, optionally cross via a taught position, then approach "
+                  "the camera point (move_tool_to_camera)",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {},
+                       "the registered device to bring to the camera"},
+                      {"lift_mm", PT::Double, false, 4.0, -100.0, 100.0, {},
+                       "retreat along GLOBAL Z before crossing, through the device's "
+                       "own transform - positive is up on this machine. 0 skips the "
+                       "leg for a tool that is already clear"},
+                      {"via_position", PT::PositionUid, false, "", 0, 0, {},
+                       "optional taught waypoint to cross through, so the traverse "
+                       "misses the fixtures; empty goes straight to the camera "
+                       "point. An approach zone, if set, slows this leg as well "
+                       "as the final descent"},
+                      {"z_offset_mm", PT::Double, false, -2.0, -100.0, 100.0, {},
+                       "offset from the camera's focused Z on arrival. NEGATIVE "
+                       "stands the tool off the surface (higher) on this machine - "
+                       "see move_tool_to_camera"},
+                      {"axes", PT::String, false, "XYZ", 0, 0, {},
+                       "which axes the final approach commands"},
+                      {"max_mm", PT::Double, false, 10.0, 0.0, 500.0, {},
+                       "ceiling on the FINAL approach; 0 disables it"},
+                      {"allow_unverified", PT::Bool, false, false, 0, 0, {},
+                       "move through a registration whose check has not been run"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {},
+                       "arrival timeout, per leg"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {},
+                       "arrival tolerance for the crossing and the approach"},
+                      {"velocity_mm_s", PT::Double, false, 0.0, 0, 0, {},
+                       "velocity for every leg; 0 = keep current"},
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                  },
+                  CommandSpec::Needs::None, ExecToolTravelToCamera});
+
     CommandRegistry* rp = &reg;
 
     reg.Register({"device_reg_check_run", "Registration",
@@ -340,7 +585,11 @@ void RegisterDeviceRegCommands(CommandRegistry& reg, Workflow& wf, HardwareManag
                        "check pose, Z offset from the taught pose"},
                       {"tol_mm", PT::Double, false, 0.05, 0.001, 5.0, {},
                        "residual that counts as verified"},
-                      {"autofocus", PT::Bool, false, true, 0, 0, {}, "focus on the tip"},
+                      {"autofocus", PT::Bool, false, false, 0, 0, {},
+                       "sweep for focus at the check pose. OFF by default: the tip Z in "
+                       "the record is a HAND-focused Z from the teach, so a check that "
+                       "focuses by sweep measures how far the two METHODS disagree and "
+                       "reports it as a registration error"},
                       {"focus_range_mm", PT::Double, false, 0.5, 0.01, 20.0, {},
                        "focus sweep at the check pose"},
                       {"v_travel", PT::Double, false, 0.0, 0.0, 100.0, {},

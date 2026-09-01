@@ -252,15 +252,38 @@ struct MarkPicker {
     double gx = 0.0, gy = 0.0;           // the pose marks are projected through
     const CameraMark* marks = nullptr;
     int    markCount = 0;
-    // Non-null draws the midpoint of marks 0 and 1 (both latched) under this
-    // label — the point those two marks exist to define, plus the envelope box
-    // they bound.
+    // Non-null draws the CENTRE of every latched mark under this label — the
+    // point those marks exist to define — plus the envelope box they bound.
+    // Two marks make it a midpoint; four make it the centre of the ring. It
+    // needs at least two latched, because one mark defines no centre but its
+    // own.
     const char* midpointLabel = nullptr;
     // Spins that envelope box about the midpoint, for a footprint that sits at
     // an angle. PURELY COSMETIC: the box is drawn from it and nothing else is,
     // because the marks are two measured machine points and the midpoint of a
     // pair is the same point at every angle.
     float envelopeDeg = 0.0f;
+    // A REFERENCE point the operator is not placing: a registered tool tip,
+    // projected through the same pose as the marks. It is drawn differently from
+    // a mark on purpose — a mark is a thing somebody measured, a tip is a thing
+    // the machine computed out of a registration, and the two must not be read
+    // as the same kind of claim. Off-screen it becomes an edge arrow like any
+    // other world mark.
+    bool        toolHave = false;
+    double      toolWx = 0.0, toolWy = 0.0;
+    const char* toolLabel = nullptr;
+    // The tool's FOOTPRINT, centred on that tip: a rectangle in mm, drawn so an
+    // operator can see the gripper's perimeter against the part before anything
+    // is placed. Non-null enables it AND receives corner drags — the box always
+    // re-centres on the tip, so dragging a corner can only change the size, and
+    // there is no position for it to drift into.
+    //
+    // Both the size and the drag flag are the CALLER's state, as everything in
+    // this file is: the widget keeps none. `boxDragging` latches a drag that
+    // started on a corner so the same press does not also place the crosshair.
+    float* boxWmm     = nullptr;
+    float* boxHmm     = nullptr;
+    bool*  boxDragging = nullptr;
     // Step diagrams, bottom-left. `activeMark` is the 0-based mark the operator
     // should place next; the other is dimmed.
     MarkIcon icons[2];

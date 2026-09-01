@@ -712,7 +712,14 @@ void Workflow::PublishTips()
         RegVec3     tip;
         std::string why;
         if (!DeviceRegTip(name, tip, &why)) {
-            if (tipMuted_[name] != why) {
+            // ONE warning per device, until the tip comes back. The mute used to
+            // key on the reason TEXT, and the rotation reason carries live
+            // encoder values: a hexapod resting on zero reports -0.000 one poll
+            // and 0.000 the next, so the string changed every few seconds and
+            // re-fired a warning about a condition that had not changed at all.
+            // The live reason is on the Registration page and in the Grippers
+            // overlay's absence; the log only has to say that it started.
+            if (tipMuted_.find(name) == tipMuted_.end()) {
                 tipMuted_[name] = why;
                 FD_WARN("devreg", "tip position unavailable: %s", why.c_str());
             }
