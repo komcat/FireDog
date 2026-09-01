@@ -1,10 +1,11 @@
 // WndJog.cpp : the Jog window (View menu) and the velocity combo it shares
 // with the Motion page. Definitions of App members — see App.h.
 //
-// The window has two tabs: "Jog" (the motion fleet) and "Camera" (the camera
+// The window has three tabs: "Jog" (the motion fleet), "Camera" (the camera
 // fleet — device combo + the Camera page's exposure controls, reused rather
 // than copied so the seed/apply rule lives in one place, plus the live focus
-// score and the Autofocus button).
+// score and the Autofocus button) and "Pos" (a 3x3 pad of quick moves to
+// taught positions, assigned by right-click).
 //
 // The Autofocus button does NOT sweep inline: it starts the `auto_focus`
 // command as a one-step ad-hoc recipe on the engine worker, because the sweep
@@ -36,6 +37,16 @@ namespace {
 // Jog velocities (mm/s) per controller type.
 constexpr double kVelPI[]  = {1.0, 2.0, 5.0, 10.0};
 constexpr double kVelACS[] = {1.0, 5.0, 10.0, 20.0, 40.0};
+
+// The taught position a Pos-tab pad slot points at, or null when the uid is
+// unknown to the loaded product (another product, or the position was deleted).
+const SavedPos* FindPosByUid(const std::vector<SavedPos>* list, const std::string& uid)
+{
+    if (!list || uid.empty()) return nullptr;
+    for (const SavedPos& p : *list)
+        if (p.uid == uid) return &p;
+    return nullptr;
+}
 } // namespace
 
 void App::DrawJogWindow()
@@ -47,8 +58,11 @@ void App::DrawJogWindow()
                             ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(250.0f, 640.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Jog", &showJog_)) {
-        // Two tabs so the window covers both "move the stage" and "see it":
-        // Jog = the motion fleet, Camera = the camera fleet (device + exposure).
+        // Three tabs so the window covers "move the stage", "see it" and
+        // "go somewhere taught": Jog = the motion fleet, Camera = the camera
+        // fleet (device + exposure), Pos = the quick-move pad.
+        // BeginTabItem pushes the tab's ID, so the Arm checkbox and STOP button
+        // repeated on the Pos tab do not collide with the Jog tab's.
         if (ImGui::BeginTabBar("JogTabs")) {
             if (ImGui::BeginTabItem("Jog")) {
                 DrawJogPanel();
@@ -56,6 +70,10 @@ void App::DrawJogWindow()
             }
             if (ImGui::BeginTabItem("Camera")) {
                 DrawJogCameraTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Pos")) {
+                DrawJogPosTab();
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -193,6 +211,190 @@ void App::DrawJogCameraTab()
     }
     if (!afErr_.empty())
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", afErr_.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Pos tab: pick a motion device, then drive it to a taught position with one
+// click on a 3x3 pad. The pad is a SHORTCUT, never a second way to create or
+// edit a position — teaching stays on the Motion page, and a slot only ever
+// holds the uid of a position that page already owns.
+//
+// The device is jogDevice_, the SAME selection the Jog tab drives: one window,
+// one device under its hands. The pad is keyed per device name, so switching
+// device relays the nine buttons rather than re-pointing them.
+//
+// Assignment is a right-click POPUP, not a modal: a modal blocks input to every
+// other window including the always-on-top prompt an engine worker may be
+// waiting on, and choosing which button means "load station" is no reason to
+// freeze a running machine. It stays reachable while disarmed too — laying out
+// the pad moves nothing.
+void App::DrawJogPosTab()
+{
+    const std::size_t n = hardware_.MotionCount();
+    if (n == 0) { ImGui::TextDisabled("no motion devices"); return; }
+    if (jogDevice_ < 0 || static_cast<std::size_t>(jogDevice_) >= n) jogDevice_ = 0;
+    const std::size_t di      = static_cast<std::size_t>(jogDevice_);
+    const std::string devName = hardware_.MotionName(di);
+    const ConnState   st      = hardware_.MotionState(di);
+
+    ImGui::TextUnformatted("Device");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##posdev", devName.c_str())) {
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!hardware_.MotionDevice(i)) continue;
+            const ConnState s = hardware_.MotionState(i);
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::TextColored(StateColor(s), "%s", StateGlyph(s));
+            ImGui::SameLine();
+            if (ImGui::Selectable(hardware_.MotionName(i).c_str(), jogDevice_ == static_cast<int>(i)))
+                jogDevice_ = static_cast<int>(i);
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    DeviceStatusLine(st, devName.c_str());
+
+    // --- Arm + STOP, the same members the Jog tab shows ----------------------
+    // Repeated here rather than pointing at the other tab: a pad button starts a
+    // full travel, so the thing that stops it must be under the same thumb.
+    ImGui::Separator();
+    ImGui::Checkbox("Arm##pos", &jogArmed_);
+    ImGui::SameLine();
+    if (jogArmed_) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.20f, 1.0f), "ARMED");
+    else           ImGui::TextDisabled("disarmed");
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.88f, 0.26f, 0.26f, 1.0f));
+    if (ImGui::Button("STOP##pos", ImVec2(-FLT_MIN, 30.0f))) orch_.StopAll();
+    ImGui::PopStyleColor(2);
+
+    // --- Where the stage stands now, named -----------------------------------
+    // Four decimals of axis readout do not tell an operator which pad button is
+    // already under them; the nearest taught name does. Hidden positions count
+    // (NearestSavedPos's default): this answers "where is it", and dropping the
+    // true nearest would name a neighbour instead.
+    const std::vector<SavedPos>* saved = nullptr;
+    {
+        const auto it = session_.Positions().find(devName);
+        if (it != session_.Positions().end()) saved = &it->second;
+    }
+    ImGui::Separator();
+    if (IMotionController* dev = hardware_.MotionDevice(di)) {
+        double          dist = 0.0;
+        const SavedPos* here = saved ? NearestSavedPos(*saved, dev->Positions(), &dist) : nullptr;
+        if (here) ImGui::TextDisabled("at %s  (%.3f mm)", here->name, dist);
+        else      ImGui::TextDisabled("at (nothing taught to name it)");
+    }
+
+    // --- The pad -------------------------------------------------------------
+    std::vector<std::string>& slots = PosPadSlots(devName);
+
+    const bool busy  = orch_.Busy();
+    const bool ready = jogArmed_ && !busy && st == ConnState::Connected;
+
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    const float bw  = (ImGui::GetContentRegionAvail().x - gap * static_cast<float>(kPosPadCols - 1))
+                      / static_cast<float>(kPosPadCols);
+    const float bh  = ImGui::GetTextLineHeight() * 2.6f;
+
+    for (int s = 0; s < kPosPadSlots; ++s) {
+        if (s % kPosPadCols != 0) ImGui::SameLine();
+        ImGui::PushID(s);
+
+        const SavedPos* p        = FindPosByUid(saved, slots[static_cast<std::size_t>(s)]);
+        const bool      empty    = slots[static_cast<std::size_t>(s)].empty();
+        const bool      dangling = !empty && !p;   // uid from another product
+
+        // An unresolved uid must never be clickable: it names a position this
+        // product does not contain, and the pad has no idea where that is.
+        ImGui::BeginDisabled(!ready || !p);
+        if (empty)         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
+        else if (dangling) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.30f, 0.20f, 1.0f));
+        const char* label = p ? p->name : (dangling ? "?" : "--");
+        const bool  hit   = ImGui::Button(label, ImVec2(bw, bh));
+        if (empty || dangling) ImGui::PopStyleColor();
+        ImGui::EndDisabled();
+
+        if (hit && p) {
+            // StartWatchedMove is the shared UI move: it resolves the uid, drives
+            // every axis together, and reports the travel in the status banner
+            // until the axes arrive — on whatever page the operator walks to.
+            if (StartWatchedMove(devName, p->uid, p->name))
+                FD_INFO("saved", "pad %d: %s -> '%s'", s + 1, devName.c_str(), p->name);
+            else
+                FD_WARN("saved", "pad %d: %s -> '%s' refused", s + 1, devName.c_str(), p->name);
+        }
+
+        // AllowWhenDisabled on both: the tooltip and the assign menu are wanted
+        // exactly when the button is grey (unassigned, or jog disarmed).
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (p) {
+                std::string tip = std::string(p->name) + "\n";
+                for (const auto& av : p->vals) {
+                    char b[64];
+                    std::snprintf(b, sizeof(b), "%s %9.4f\n", av.first.c_str(), av.second);
+                    tip += b;
+                }
+                tip += "right-click to reassign";
+                ImGui::SetTooltip("%s", tip.c_str());
+            } else if (dangling) {
+                ImGui::SetTooltip("assigned position is not in the loaded product\n"
+                                  "(uid %s)\nright-click to reassign",
+                                  slots[static_cast<std::size_t>(s)].c_str());
+            } else {
+                ImGui::SetTooltip("empty slot - right-click to assign a position");
+            }
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) ImGui::OpenPopup("padassign");
+        }
+
+        if (ImGui::BeginPopup("padassign")) {
+            ImGui::TextDisabled("Assign to slot %d  (%s)", s + 1, devName.c_str());
+            ImGui::Separator();
+            // Hidden positions are withheld, the rule the recipe picker and the
+            // registration picker both follow: the `algn_...` system poses are
+            // noise to somebody laying out a pad.
+            bool any = false;
+            if (saved) {
+                // PushID by row, not by name: two positions may share a label,
+                // and then one Selectable would eat the other's click.
+                for (std::size_t r = 0; r < saved->size(); ++r) {
+                    const SavedPos& sp = (*saved)[r];
+                    if (sp.hidden) continue;
+                    any = true;
+                    ImGui::PushID(static_cast<int>(r));
+                    if (ImGui::Selectable(sp.name, sp.uid == slots[static_cast<std::size_t>(s)])) {
+                        slots[static_cast<std::size_t>(s)] = sp.uid;
+                        SaveUiSettings();
+                    }
+                    ImGui::PopID();
+                }
+            }
+            if (!any) ImGui::TextDisabled("no taught positions for '%s'", devName.c_str());
+            ImGui::Separator();
+            if (ImGui::Selectable("Clear slot")) {
+                slots[static_cast<std::size_t>(s)].clear();
+                SaveUiSettings();
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+
+    // Why a filled button is unavailable, rather than a grid of dead rectangles.
+    if (!jogArmed_)                      ImGui::TextDisabled("arm jog first");
+    else if (st != ConnState::Connected) ImGui::TextDisabled("device not connected");
+    else if (busy)                       ImGui::TextDisabled("a run is active");
+}
+
+// The nine slots of one device, created blank on first ask. posPad_ is UI state
+// and not the document, so growing it from a Draw is not the mutation the
+// project rule forbids. The resize also normalises a settings file that was
+// hand-edited to the wrong length.
+std::vector<std::string>& App::PosPadSlots(const std::string& device)
+{
+    std::vector<std::string>& v = posPad_[device];
+    if (v.size() != static_cast<std::size_t>(kPosPadSlots))
+        v.resize(static_cast<std::size_t>(kPosPadSlots));
+    return v;
 }
 
 // Build the one-step recipe and hand it to the engine — the same "Run Step"

@@ -384,9 +384,24 @@ void App::DrawDeviceRegPanel()
                                  {{"X", p.x}, {"Y", p.y}, {"Z", p.z}});
     };
 
-    const ImVec2 avail  = ImGui::GetContentRegionAvail();
-    const float  rightW = 430.0f;
-    const float  imgW   = avail.x - rightW - ImGui::GetStyle().ItemSpacing.x;
+    // The control column is draggable: its four steps carry long explanatory
+    // text and the operator's font size moves all of it, so no constant width
+    // reads the same on every station. Clamped every frame, not just on the
+    // drag: the window is resizable too, and a width saved on a wide monitor
+    // must not push the image off a narrow one.
+    constexpr float kSplitW = 6.0f;
+    constexpr float kMinImgW = 240.0f;
+    constexpr float kMinCtlW = 260.0f;
+
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (regCtlW_ < kMinCtlW) regCtlW_ = kMinCtlW;
+    const float maxCtlW = avail.x - kSplitW - kMinImgW;
+    if (regCtlW_ > maxCtlW) regCtlW_ = fmaxf(kMinCtlW, maxCtlW);
+    // Floored: the two minimums together can exceed a very narrow window, and
+    // ImGui reads a negative width as "available minus this", which would turn
+    // a cramped layout into a scrambled one.
+    const float rightW = regCtlW_;
+    const float imgW   = fmaxf(40.0f, avail.x - rightW - kSplitW);
 
     // ---- Left: the live image, and the corner marks on it --------------------
     ImGui::BeginChild("drImg", ImVec2(imgW, avail.y), ImGuiChildFlags_Borders);
@@ -430,7 +445,16 @@ void App::DrawDeviceRegPanel()
         }
     }
     ImGui::EndChild();
-    ImGui::SameLine();
+
+    ImGui::SameLine(0.0f, 0.0f);
+    if (Splitter("##drsplit", true, kSplitW, avail.y)) {
+        regCtlW_ -= ImGui::GetIO().MouseDelta.x;
+        regCtlSplitting_ = true;
+    } else if (regCtlSplitting_) {
+        regCtlSplitting_ = false;
+        SaveUiSettings();   // persist on drag END, like every other splitter here
+    }
+    ImGui::SameLine(0.0f, 0.0f);
 
     // ---- Right: the record, the four steps, the check ------------------------
     ImGui::BeginChild("drCtl", ImVec2(rightW, avail.y), ImGuiChildFlags_Borders);
@@ -479,14 +503,36 @@ void App::DrawDeviceRegPanel()
         if (reg.tipSpreadMm > 0.0)
             ImGui::TextDisabled("from a mark %.4f mm across, %d picks",
                                 reg.tipSpreadMm, reg.tipPoints);
-        if (reg.verified)
+        // Three states, not two. A check that RAN and disagreed is not the same
+        // thing as a check that was never run: one has measured what the rotation
+        // costs and reported a number, the other has measured nothing. Saying
+        // "nothing has measured the tip" to an operator who just watched the check
+        // drive, focus and pick reads as the page having missed it.
+        if (reg.verified) {
             ImGui::TextColored(kGood, "verified - %.4f mm at the check, %s",
                                reg.checkResidualMm,
                                reg.checkedAt.empty() ? "(undated)" : reg.checkedAt.c_str());
-        else
+        } else if (!reg.checkedAt.empty()) {
+            // How far the check stood from the taught pose is the whole reading of
+            // the residual: the same miss wherever you check is the tool, one that
+            // grows with distance is the rotation.
+            const double cdx = reg.checkPose.x - reg.imprintPose.x;
+            const double cdy = reg.checkPose.y - reg.imprintPose.y;
+            const double cdz = reg.checkPose.z - reg.imprintPose.z;
+            const double cd  = std::sqrt(cdx * cdx + cdy * cdy + cdz * cdz);
+            ImGui::TextColored(kBad, "CHECK FAILED - %.4f mm out, %.3f mm from the",
+                               reg.checkResidualMm, cd);
+            ImGui::TextColored(kBad, "taught pose, %s", reg.checkedAt.c_str());
+            ImGui::TextWrapped("The same miss at every distance is the TOOL - re-teach "
+                               "the tip by imprint. A miss that grows with distance is "
+                               "the ROTATION, and it is only as square as the mount the "
+                               "axis transforms describe. Check again further out to "
+                               "tell the two apart.");
+        } else {
             ImGui::TextColored(kWarn, "UNVERIFIED - nothing has measured the tip away\n"
                                       "from the pose it was taught at, so nothing has\n"
                                       "put a number on what the rotation costs");
+        }
     }
 
     // ---- Step 1: the imprint pose --------------------------------------------
@@ -694,9 +740,25 @@ void App::DrawDeviceRegPanel()
         ImGui::SetNextItemWidth(80.0f);
         ImGui::InputDouble("v jog", &regVJog_, 0.0, 0.0, "%.2f");
         if (regVJog_ < 0.0) regVJog_ = 0.0;
+
+        // Off by default, and worth the paragraph: the tip Z in the record is a
+        // HAND-focused Z from step 2, so a check that focuses by sweep measures
+        // how far the two methods disagree - 0.15 mm on a flat coupon is normal -
+        // and reports it as a registration error. With it off, the operator
+        // focuses the same way they taught, watching the live dZ in the pick
+        // window until it closes.
+        ImGui::Checkbox("autofocus at the check pose", &regAutofocus_);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Off: the pick window shows the live dX/dY/dZ against the\n"
+                              "prediction and you focus by hand - the same way step 2\n"
+                              "taught the tip Z.\n"
+                              "On: a sweep sets Z before the pick. Only trust it if the\n"
+                              "camera view in step 2 was captured after a sweep too.");
         ImGui::SameLine();
+        ImGui::BeginDisabled(!regAutofocus_);
         ImGui::SetNextItemWidth(80.0f);
         ImGui::InputDouble("focus mm", &regFocusRangeMm_, 0.0, 0.0, "%.2f");
+        ImGui::EndDisabled();
         if (regFocusRangeMm_ < 0.01) regFocusRangeMm_ = 0.01;
 
         const bool running = orch_.lua.Running();
@@ -722,14 +784,151 @@ void App::DrawDeviceRegPanel()
         }
     }
 
+    // ---- Send the tool here --------------------------------------------------
+    // The consuming end of the registration, on the page that taught it: drive
+    // the registered device so its TIP lands where the reference device is
+    // standing right now - the point under the camera. It is the same solve
+    // move_to_point does (h = R^T (p - t)), and it belongs here because a
+    // registration that has never been driven through has never been seen to
+    // work: reading a residual off a log is not the same as watching the tool
+    // arrive where the camera is looking.
+    //
+    // It stays an APPROACH. Nothing here closes a loop, so it must never be
+    // read as a placement - the rotation is typed, the tip is one point, and
+    // the last 20 um belongs to placement_procedure.lua measuring and
+    // correcting.
+    ImGui::SeparatorText("Send the tool here");
+    {
+        double rx = 0.0, ry = 0.0, rz = 0.0;
+        bool   haveRefXYZ = false;
+        std::map<std::string, double> refPose;
+        if (workflow_.DevicePose(regRef_, refPose)) {
+            const auto ix = refPose.find("X"), iy = refPose.find("Y"),
+                       iz = refPose.find("Z");
+            if (ix != refPose.end() && iy != refPose.end() && iz != refPose.end()) {
+                rx = ix->second; ry = iy->second; rz = iz->second;
+                haveRefXYZ = true;
+            }
+        }
+
+        ImGui::TextWrapped("Drives '%s' so its tip lands where '%s' is standing now - "
+                           "the point under the camera. The same solve a recipe's "
+                           "move_to_point step does.", regDevice_, regRef_);
+
+        ImGui::SetNextItemWidth(80.0f);
+        ImGui::InputDouble("Z offset", &regSendZOff_, 0.0, 0.0, "%.3f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Added to the target Z in '%s' AXIS space.\n"
+                              "NEGATIVE lifts the tool AWAY from the focused\n"
+                              "surface (measured on this machine, 2026-09-01);\n"
+                              "positive drives it toward the surface, and 0 sends\n"
+                              "the tip to the focused surface itself - a TOUCH.\n"
+                              "The sign is a fact about this gantry, not a rule:\n"
+                              "its transform inverts Z. Re-check it after any\n"
+                              "change to the transforms file.", regRef_);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.0f);
+        ImGui::InputDouble("max mm", &regSendMaxMm_, 0.0, 0.0, "%.1f");
+        if (regSendMaxMm_ < 0.0) regSendMaxMm_ = 0.0;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Refuses a move longer than this. A stale record turns a\n"
+                              "short approach into a lunge, and that is the failure this\n"
+                              "button has to survive. 0 = no ceiling.");
+        ImGui::SameLine();
+        ImGui::Checkbox("allow unverified", &regSendUnver_);
+
+        // Everything the move needs, computed live so the destination can be
+        // read BEFORE anything is armed. The same three refusals move_to_point
+        // makes, in the same order: a second opinion about when a registration
+        // may be driven through is how two surfaces start disagreeing.
+        const RegVec3 target{rx, ry, rz + regSendZOff_};
+        const RegVec3 h = DeviceRegSolve(reg, target);
+        std::string   refuse;
+        double        travel     = 0.0;
+        bool          haveTravel = false;
+        if (!reg.valid)       refuse = "no registration to drive through";
+        else if (!haveRefXYZ) refuse = std::string("no live X/Y/Z from '") + regRef_ + "'";
+        else if (!reg.verified && !regSendUnver_)
+            refuse = "UNVERIFIED - run the check, or tick allow unverified and watch it";
+        std::map<std::string, double> devPose;
+        if (refuse.empty() && workflow_.DevicePose(regDevice_, devPose)) {
+            // A hexapod's tip swings about its pivot, so a record taken at one
+            // set of rotations describes no other. Same guard as the command.
+            const auto iu = devPose.find("U"), iv = devPose.find("V"),
+                       iw = devPose.find("W");
+            if (reg.hasRot && iu != devPose.end() && iv != devPose.end() &&
+                iw != devPose.end()) {
+                std::string why;
+                if (!DeviceRegRotationOk(reg, RegVec3{iu->second, iv->second, iw->second},
+                                         &why))
+                    refuse = why;
+            }
+            const auto ix = devPose.find("X"), iy = devPose.find("Y"),
+                       iz = devPose.find("Z");
+            if (ix != devPose.end() && iy != devPose.end() && iz != devPose.end()) {
+                const double dx = h.x - ix->second, dy = h.y - iy->second,
+                             dz = h.z - iz->second;
+                travel     = std::sqrt(dx * dx + dy * dy + dz * dz);
+                haveTravel = true;
+            }
+        }
+        if (refuse.empty() && haveTravel && regSendMaxMm_ > 0.0 &&
+            travel > regSendMaxMm_) {
+            char b[128];
+            std::snprintf(b, sizeof(b), "%.3f mm of travel exceeds the %.1f mm ceiling",
+                          travel, regSendMaxMm_);
+            refuse = b;
+        }
+
+        if (haveRefXYZ)
+            ImGui::TextDisabled("tip to (%.4f, %.4f, %.4f) in '%s' space",
+                                target.x, target.y, target.z, regRef_);
+        if (reg.valid && haveRefXYZ) {
+            if (haveTravel)
+                ImGui::Text("puts '%s' at (%.4f, %.4f, %.4f), %.3f mm of travel",
+                            regDevice_, h.x, h.y, h.z, travel);
+            else
+                ImGui::Text("puts '%s' at (%.4f, %.4f, %.4f)", regDevice_,
+                            h.x, h.y, h.z);
+        }
+        if (!refuse.empty()) ImGui::TextColored(kWarn, "%s", refuse.c_str());
+
+        // Armed like every other surface that moves something, and gated on
+        // the WHOLE orchestration rather than on one engine.
+        ImGui::BeginDisabled(busy || sameDev || !refuse.empty());
+        if (ImGui::Button("Send tool here", ImVec2(180.0f, 0.0f))) {
+            FD_WARN("devreg", "sending '%s' to the '%s' point (%.4f, %.4f, %.4f): "
+                              "pose (%.4f, %.4f, %.4f), %.3f mm of travel%s",
+                    regDevice_, regRef_, target.x, target.y, target.z,
+                    h.x, h.y, h.z, travel,
+                    reg.verified ? "" : " - THE REGISTRATION IS UNVERIFIED");
+            driveTo(regDevice_, h);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(busy || !reg.hasImprintPose);
+        if (ImGui::Button("Back to imprint", ImVec2(140.0f, 0.0f)))
+            driveTo(regDevice_, reg.imprintPose);
+        ImGui::EndDisabled();
+        if (!jogArmed_)
+            ImGui::TextDisabled("arm jog (Jog window) - this drives a device");
+    }
+
     // ---- The fleet -----------------------------------------------------------
     ImGui::SeparatorText("All registered devices");
     for (const auto& [name, r] : workflow_.DeviceRegs()) {
         if (!r.valid) continue;
         ImGui::TextColored(r.verified ? kGood : kWarn, "%-12s", name.c_str());
         ImGui::SameLine();
+        // Same three states as the panel above, in one word each: a failed check
+        // has measured something and must not read like one that never ran.
+        char state[48];
+        if (r.verified) snprintf(state, sizeof(state), "verified");
+        else if (!r.checkedAt.empty())
+            snprintf(state, sizeof(state), "CHECK FAILED %.3f mm", r.checkResidualMm);
+        else snprintf(state, sizeof(state), "UNVERIFIED");
         ImGui::Text("-> %-12s t (%+.3f, %+.3f, %+.3f)  %s", r.refDevice.c_str(),
-                    r.t.x, r.t.y, r.t.z, r.verified ? "verified" : "UNVERIFIED");
+                    r.t.x, r.t.y, r.t.z, state);
     }
 
     ImGui::Spacing();

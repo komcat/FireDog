@@ -71,15 +71,19 @@ int App::Run()
         if (ui.runScanH      > 0.0f) runScanH_      = ui.runScanH;
         if (ui.runShotH      > 0.0f) runShotPanelH_ = ui.runShotH;
         if (ui.orgLibW       > 0.0f) orgLibW_       = ui.orgLibW;
+        if (ui.regCtlW       > 0.0f) regCtlW_       = ui.regCtlW;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
         showVisionMarks_ = ui.showVisionMarks;
         showPosLabels_   = ui.showPosLabels;
         posLabelsHidden_ = ui.posLabelsHidden;
+        showGripperMarks_ = ui.showGripperMarks;
+        auxPanelOpen_     = ui.auxPanelOpen;
         chartScope_      = ui.chartScope;
         runLastProgUid_  = ui.runProgUid;
         runLastSlot_     = ui.runSlot > 0 ? ui.runSlot : 0;
         lastProduct      = ui.lastProduct;
+        posPad_          = ui.posPad;
     }
     Theme::Apply(themeIndex_);
     host_.SetFont(kFonts[fontIndex_].path, uiFontSize_);
@@ -412,15 +416,19 @@ void App::SaveUiSettings()
     s.runScanH      = runScanH_;
     s.runShotH      = runShotPanelH_;
     s.orgLibW       = orgLibW_;
+    s.regCtlW       = regCtlW_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.showVisionMarks = showVisionMarks_;
     s.showPosLabels   = showPosLabels_;
     s.posLabelsHidden = posLabelsHidden_;
+    s.showGripperMarks = showGripperMarks_;
+    s.auxPanelOpen     = auxPanelOpen_;
     s.chartScope  = chartScope_;
     s.runProgUid  = runLastProgUid_;
     s.runSlot     = runLastSlot_;
     s.lastProduct = session_.Product().name;
+    s.posPad      = posPad_;
     s.Save(kUiSettingsPath);
 }
 

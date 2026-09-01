@@ -5,7 +5,9 @@
 // Tolerant load: a missing or malformed file yields defaults, never throws.
 #pragma once
 
+#include <map>
 #include <string>
+#include <vector>
 
 namespace firedog {
 
@@ -40,6 +42,11 @@ struct UiSettings {
     // layout with any page.
     float orgLibW = 0.0f;
 
+    // Device Registration page: width of its right-hand control column in px
+    // (0 = default). Same reasoning as the vision teach page — a takeover with
+    // its own layout.
+    float regCtlW = 0.0f;
+
     // Run page: height of the Scan band in px (0 = default). Its own field
     // rather than lowerH: the band carries the scan parameter forms, and how
     // much room those need has nothing to do with the log strip's height.
@@ -64,6 +71,13 @@ struct UiSettings {
     // names are noise the operator cannot act on.
     bool posLabelsHidden = true;
 
+    // Aux window: draw each registered device's tool tip on the image. A
+    // readout, so ON by default like the two above.
+    bool showGripperMarks = true;
+    // Aux window: is the control strip expanded? It covers part of the
+    // picture, so which state the operator left it in is worth keeping.
+    bool auxPanelOpen = true;
+
     // Keithley chart style: true = scope look (bare canvas, overlay legend +
     // live value), false = classic axes/ticks plot.
     bool chartScope  = true;
@@ -74,6 +88,16 @@ struct UiSettings {
     // that still contains the uid, otherwise the first program / first slot.
     std::string runProgUid;
     int         runSlot = 0;
+
+    // Jog window "Pos" tab: the 3x3 quick-move pad, device name -> nine saved
+    // position UIDs ("" = unassigned slot). Keyed by DEVICE NAME, not fleet
+    // index, so reordering hardware.json does not shuffle an operator's pad.
+    //
+    // Here rather than in the product document for the same reason runProgUid
+    // is: the pad is a station's own shortcut layout, and a uid that the loaded
+    // product does not contain simply fails to resolve — the button greys out
+    // instead of driving somewhere the operator did not mean.
+    std::map<std::string, std::vector<std::string>> posPad;
 
     // Last-loaded product name (folder under products/); empty = none.
     // Auto-reloaded at startup.

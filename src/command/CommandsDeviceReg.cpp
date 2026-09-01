@@ -95,13 +95,23 @@ CommandResult ExecDeviceReg(ExecutionContext& ctx, const ParamValues& p)
             "tip on the Registration page first. Until then nothing knows where its "
             "tool is relative to the camera.");
 
-    if (r.valid)
+    if (r.valid) {
+        // A check that ran and disagreed is not the same state as one that never
+        // ran, and the log is where a stale registration is usually noticed.
+        char state[128] = "";
+        if (!r.verified && !r.checkedAt.empty())
+            snprintf(state, sizeof(state),
+                     " (check FAILED %.4f mm on %s - not verified)",
+                     r.checkResidualMm, r.checkedAt.c_str());
+        else if (!r.verified)
+            snprintf(state, sizeof(state),
+                     " (UNVERIFIED - never checked away from the pose the tip was "
+                     "taught at)");
         FD_INFO("devreg", "'%s' registered to '%s': t=(%.4f, %.4f, %.4f) mm, rotation "
                           "from %s%s",
                 device.c_str(), r.refDevice.c_str(), r.t.x, r.t.y, r.t.z,
-                r.rotSource.c_str(),
-                r.verified ? "" : " (UNVERIFIED - never checked away from the pose "
-                                  "the tip was taught at)");
+                r.rotSource.c_str(), state);
+    }
     return CommandResult::Success();
 }
 

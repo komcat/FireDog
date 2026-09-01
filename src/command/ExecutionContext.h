@@ -119,6 +119,22 @@ public:
         double thetaRef = 0.0, thetaTol = 0.0;   // degrees
     };
 
+    // A predicted point the pick is asked to CHECK rather than aim at: the
+    // window shows the live residual against it every frame - the crosshair
+    // against x/y, the DEVICE's live Z against z - so an operator focusing or
+    // jogging by hand watches the number close before accepting, instead of
+    // learning what it was from the log after the run has already failed.
+    //
+    // Only the registration check sets it, because it is the only pick whose
+    // whole output IS a distance from a predicted point. A hint says where to
+    // look; this says how far off you still are, which is a different question.
+    struct PickTarget {
+        bool        have = false;
+        double      x = 0.0, y = 0.0, z = 0.0;   // reference-device axis mm
+        double      tolMm = 0.0;                 // 0 = show the number, no verdict
+        std::string device;                      // whose live Z the readout reads
+    };
+
     struct PickRequest {
         std::string message;
         std::string alignName;         // procedure being taught (window title)
@@ -151,6 +167,7 @@ public:
         std::string detectorUid;
         std::string autoError;
         PickBand    band;
+        PickTarget  target;
     };
     // The UI answers in camera pixels AND in millimetres: only the UI knows the
     // live pixel_to_mm calibration, so the conversion stays there and the worker

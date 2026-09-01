@@ -136,6 +136,13 @@ inline constexpr UserRole kRoleJog = UserRole::Technician;
 inline constexpr UserRole kRoleOrg = UserRole::Technician;
 inline constexpr UserRole kRoleAux = UserRole::Operator;
 
+// The Jog window's Pos tab: a fixed 3x3 pad of quick moves. Fixed, not
+// growable, because it is a reach-without-looking surface — a pad that grows a
+// row moves every button an operator had learned the place of.
+inline constexpr int kPosPadCols  = 3;
+inline constexpr int kPosPadRows  = 3;
+inline constexpr int kPosPadSlots = kPosPadCols * kPosPadRows;
+
 class App {
 public:
     int Run();
@@ -175,6 +182,10 @@ private:
     void DrawJogWindow();      // undocked Jog window (toggled from View menu)
     void DrawJogPanel();       // jog controls: device/velocity/step/direction/keys
     void DrawJogCameraTab();   // Jog window "Camera" tab: camera combo + exposure
+    void DrawJogPosTab();      // Jog window "Pos" tab: device + 3x3 quick-move pad
+    // The nine pad slots of one device, created (blank) on first ask. UI state,
+    // not the document — a Draw may call it.
+    std::vector<std::string>& PosPadSlots(const std::string& device);
     // Camera tab Autofocus button: runs the auto_focus command as a one-step
     // ad-hoc recipe on the engine worker (the sweep blocks; the UI must not).
     void StartQuickAutoFocus();
@@ -475,6 +486,9 @@ private:
     // position of that device. Bottom-left of the image box; pure readout,
     // drawn straight onto `dl` so it can never eat a click meant for the image.
     void DrawAuxPositionLabels(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail);
+    // The registered devices' tool tips, projected onto the live image.
+    void DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
+                             const ImVec2& center, float scale);
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
     void DrawImageOverlay();   // image + vision overlay
@@ -760,6 +774,13 @@ private:
     int jogStepIndex_ = 9;   // index into kSteps (default 100um)
     int jogRotAxis_   = 0;   // selected rotational axis (0 = first beyond XYZ)
 
+    // Jog window "Pos" tab: device name -> nine saved-position uids ("" = empty
+    // slot). Persisted through UiSettings, keyed by name so a fleet reorder
+    // does not shuffle the pad. A uid the loaded product does not contain is
+    // NOT cleared — the operator switched product, they did not unassign — the
+    // button just greys out until that product is back.
+    std::map<std::string, std::vector<std::string>> posPad_;
+
     // Per-device velocity selection, shared by the Jog panel and the Motion
     // page so both always show the same value for a device.
     std::map<int, int>    velIndex_;      // device index -> velocity-list index
@@ -867,6 +888,13 @@ private:
     int        regMarkCount_  = 4;    // 2 must be a true diameter; 4 is forgiving
     int        regMarkActive_ = 0;    // which corner the next click lands on
     float      regPx_ = 0.0f, regPy_ = 0.0f, regZoom_ = 1.0f;   // MarkPicker state
+    // Width of the right-hand control column, dragged by the splitter and
+    // persisted in UiSettings. Its own field rather than the main window's
+    // rightW_: this page is a takeover that replaces the five-region layout.
+    // The four steps carry long explanatory text and the operator's font size
+    // moves all of it, so no constant width is right on every station.
+    float      regCtlW_ = 430.0f;
+    bool       regCtlSplitting_ = false;   // edge-detect the drag END
     // The tool's known width. 0 = unchecked, and the page says so: a corner pick
     // that lands off the mark shifts the centre by half its error and looks
     // exactly like a good one, and this is the only number that can see it.
@@ -880,7 +908,21 @@ private:
     double regVTravel_  = 0.0;
     double regVJog_     = 0.0;
     int    regSettleMs_ = 300;
-    bool   regAutofocus_ = true;
+    // Off by default. The check measures Z as "the gantry Z that focuses on the
+    // tip", and the taught tip Z came from an operator focusing by hand: run the
+    // two halves through different focus methods and the residual reports the
+    // disagreement between the METHODS, which is not what is being checked.
+    // Off, the pick window shows the live dZ and the operator closes it by hand.
+    bool   regAutofocus_ = false;
+    // "Send the tool here": the consuming end of the registration, tried from
+    // the page that taught it. The Z offset is signed and in the REFERENCE
+    // device's axis Z, because which way that counts is a property of the
+    // machine (gantry-main's transform inverts Z) and this page must not
+    // pretend to know it. maxMm refuses the lunge a stale record turns a short
+    // approach into; allowUnverified is the same opt-in move_to_point demands.
+    double regSendZOff_    = 0.0;
+    double regSendMaxMm_   = 25.0;
+    bool   regSendUnver_   = false;
     std::string regStartErr_;   // why the last Check refused to start
     std::string regTeachMsg_;   // what the last teach step did, or would not do
 
@@ -1036,6 +1078,13 @@ private:
     bool       showVisionMarks_ = true;   // Aux checkbox, persisted
     bool       showPosLabels_   = true;   // Aux checkbox, persisted — stage names
     bool       posLabelsHidden_ = true;   // ...and whether `hidden` positions rank
+    // Where each registered device's TOOL TIP is, drawn on the Aux image.
+    // A readout like the two above, and the same rule as the tip topics: a
+    // tip that cannot be predicted draws NOTHING, never a stale cross.
+    bool       showGripperMarks_ = true;   // Aux checkbox, persisted
+    // Whether the Aux control strip is expanded. It sits over the picture,
+    // so the picture has to be able to win: collapsed it is one button.
+    bool       auxPanelOpen_ = true;       // Aux strip, persisted
     // Taught-patch thumbnails, one slot per surface that shows one. Each is
     // keyed by what it was built from (VisionModelPatchKey), so a model switch,
     // a re-teach or an anchor drag reloads it and nothing else does.

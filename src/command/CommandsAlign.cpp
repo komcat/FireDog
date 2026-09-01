@@ -789,6 +789,20 @@ CommandResult ExecPickPoint(ExecutionContext& ctx, const ParamValues& p)
         req.hints.push_back(std::move(h));
     }
 
+    // The live residual readout. Separate from the hint on purpose: a hint is
+    // where to LOOK, and is drawn on the image; this is how far off the mark
+    // still is, in numbers, including a Z the picture cannot show. The device
+    // travels with it because the window has to read that Z from somewhere and
+    // guessing "the gantry" would be wrong the day a second camera is added.
+    if (p.GetBool("target")) {
+        req.target.have   = true;
+        req.target.x      = p.GetDouble("target_x_mm");
+        req.target.y      = p.GetDouble("target_y_mm");
+        req.target.z      = p.GetDouble("target_z_mm");
+        req.target.tolMm  = p.GetDouble("target_tol_mm");
+        req.target.device = device;
+    }
+
     ExecutionContext::PickResult pick;
     if (!ctx.AwaitPick(req, &pick)) return CommandResult::Fail("cancelled by operator");
 
@@ -1210,6 +1224,15 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                        "arrow with its distance when it is outside the field of view"},
                       {"hint_x_mm", PT::Double, false, 0.0, 0, 0, {}, "aim point X, machine mm"},
                       {"hint_y_mm", PT::Double, false, 0.0, 0, 0, {}, "aim point Y, machine mm"},
+                      {"target", PT::Bool, false, false, 0, 0, {},
+                       "show the LIVE residual against target_x/y/z_mm while the "
+                       "window is open - dX/dY from the crosshair, dZ from the "
+                       "device's own Z, so a hand focus can be watched in"},
+                      {"target_x_mm", PT::Double, false, 0.0, 0, 0, {}, "predicted X, machine mm"},
+                      {"target_y_mm", PT::Double, false, 0.0, 0, 0, {}, "predicted Y, machine mm"},
+                      {"target_z_mm", PT::Double, false, 0.0, 0, 0, {}, "predicted Z, machine mm"},
+                      {"target_tol_mm", PT::Double, false, 0.0, 0, 0, {},
+                       "what counts as on target; 0 shows the number with no verdict"},
                       {"ctx_prefix", PT::String, false, "pick", 0, 0, {},
                        "ctx prefix for the captured point"},
                   },

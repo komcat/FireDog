@@ -42,6 +42,7 @@ Much of the apparently page-local state is **not** local:
 |---|---|
 | `xcan*` knobs | Motion Scanning tab **and** the Run page's Scan band |
 | `vel*` maps | Jog window **and** Motion page |
+| `jogDevice_` / `jogArmed_` | the Jog window's Jog tab **and** its Pos tab (and the Aux window's Z arrows) |
 | Keithley chart buffers | Keithley page **and** the Aux window |
 | `leftW_` / `rightW_` / `lowerH_` | every page, plus UiSettings persistence |
 
@@ -183,7 +184,7 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/pages/PageWatchEdit.cpp` / `PageTransformEdit.cpp` | the two full-page config editors | 135 / 131 |
 | `src/ui/pages/PageNeedle.cpp` | Needle page (takeover, F7): the camera→needle lever arm, its measurement, the run parameters and the bootstrap seed. Launches `needle_calibration.lua`; actuates nothing itself | 302 |
 | `src/ui/pages/PageDeviceReg.cpp` | Registration page (takeover, F8): a device's tip in camera space. Live image + `DrawMarkPicker` on the left; on the right the record, both dates, and the **four-step teach** — imprint pose, camera view, corner marks, compute. The teach is here rather than in a script because every step needs an operator at the machine; the page launches only `device_reg_check.lua` | 672 |
-| `src/ui/windows/WndJog.cpp` | Jog window + the shared velocity combo | 240 |
+| `src/ui/windows/WndJog.cpp` | Jog window (Jog / Camera / **Pos** tabs) + the shared velocity combo | 668 |
 | `src/ui/windows/WndAux.cpp` | Aux window (camera + chart, own OS window) | 170 |
 | `src/ui/windows/WndProgramOrganizer.cpp` | Program Organizer window (Run strip's Edit / View menu): recipe library \| slot tree with folders, loop counts, drag-drop; the ONLY program-editing surface | 520 |
 | `src/ui/windows/WndPrompts.cpp` | global `prompt` + `manual_adjust` + alignment crosshair-pick windows; sole `imgui_internal.h` user | 360 |

@@ -404,6 +404,13 @@ public:
     // False when there is no gantry or it does not report X/Y.
     bool GantryXY(double& x, double& y) const;
 
+    // CONFIG name of that same gantry, or empty when there is none. It exists
+    // so a caller can ask whether a record belongs to the camera's origin - a
+    // registration taught against another reference projects through this
+    // pose to nowhere - without hard-coding "gantry-main" in a UI file, which
+    // is exactly what GantryXY refuses to make callers do.
+    std::string GantryName() const;
+
     // Live axis values of a motion device, looked up by its CONFIG name. Same
     // rule as GantryXY one line up: layer 2 owns the fleet lookup so a UI
     // readout never walks the device list itself. False when no device carries

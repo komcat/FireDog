@@ -60,6 +60,15 @@ constexpr ImU32 kDetMissCol = IM_COL32(245, 110, 90, 255);
 constexpr ImU32 kE1Col      = IM_COL32(120, 190, 255, 255);
 constexpr ImU32 kE2Col      = IM_COL32(200, 140, 255, 255);
 
+// A registered device's tool tip. Amber rather than the E points' blue and the
+// detection's green: it is neither a measurement of this frame nor a point on
+// the part, it is where the machine BELIEVES a tool is - and a reader should
+// not be able to confuse the three at a glance.
+constexpr ImU32 kTipCol     = IM_COL32(255, 190, 70, 255);
+// How near the focused plane a tip counts as being AT it, in mm of the
+// reference device's Z. Only a label threshold - nothing acts on it.
+constexpr double kTipAtFocusMM = 0.050;
+
 // A small dark-plated label, kept inside the image box.
 void PlateText(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
                ImVec2 at, ImU32 col, const char* text)
@@ -195,6 +204,17 @@ void App::DrawAuxWindow()
             DrawAuxVisionMarks(dl, origin, avail, center, scale);
         }
 
+        // ---- Where the registered tools are ----
+        // Its own toggle, not part of "Vision marks": a detection and an E point
+        // are things that were SEEN, and a tip is a thing that was computed from
+        // a registration. Reading the second as the first is how a rotated
+        // hexapod goes on looking placed.
+        if (haveImg && showGripperMarks_) {
+            const float scale = fmaxf(avail.x / static_cast<float>(cameraW_),
+                                      avail.y / static_cast<float>(cameraH_));
+            DrawAuxGripperMarks(dl, origin, avail, center, scale);
+        }
+
         // ---- Where each stage stands, named ----
         // Bottom-left, clear of the control plate above and the chart opposite.
         if (showPosLabels_) DrawAuxPositionLabels(dl, origin, avail);
@@ -210,33 +230,64 @@ void App::DrawAuxWindow()
                           IM_COL32(0, 0, 0, 140), 4.0f);
         dl->AddText(ImVec2(origin.x + 10.0f, origin.y + 9.0f), IM_COL32(230, 230, 235, 255), camline);
 
-        // ---- Overlay: view toggles, just under the status plate ----
-        // A child window blocks the image input button beneath it, so ticking a
-        // box never triggers a click-to-move.
+        // ---- Overlay: the view strip, just under the status plate ----
+        // A vertical strip down the LEFT edge, one control per line, and
+        // collapsible to a single button. It sits on top of the picture, and
+        // the picture is the reason the window exists: a row of checkboxes
+        // wide enough to name six things covered the part being watched. One
+        // click puts it away, and the state is persisted, so an operator who
+        // wants the frame clean keeps it clean across sessions.
+        //
+        // Still a child window, for the reason it always was: a child blocks
+        // the image's input button beneath it, so ticking a box can never
+        // also command a click-to-move.
         ImGui::SetCursorScreenPos(ImVec2(origin.x + 6.0f, origin.y + 12.0f + cts.y + 8.0f));
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.06f, 0.08f, 0.78f));
         ImGui::BeginChild("AuxControls", ImVec2(0.0f, 0.0f),
-                          ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders,
+                          ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY |
+                              ImGuiChildFlags_Borders,
                           ImGuiWindowFlags_NoScrollbar);
+
+        // The handle. Collapsed it is the whole strip, so it has to say what
+        // it opens - an arrow alone over a camera image reads as a jog button.
+        if (ImGui::Button(auxPanelOpen_ ? "<  view###auxStrip" : ">###auxStrip")) {
+            auxPanelOpen_ = !auxPanelOpen_;
+            SaveUiSettings();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(auxPanelOpen_
+                                  ? "Collapse this strip - the picture is what this\n"
+                                    "window is for."
+                                  : "Chart, click-to-move, jog, and the three image\n"
+                                    "overlays.");
+
+        if (auxPanelOpen_) {
         if (ImGui::Checkbox("Chart", &showChart_)) SaveUiSettings();
-        ImGui::SameLine();
         // The Aux window is Operator-level because it MONITORS. Everything on
-        // it that MOVES is Technician, the same level as the Jog window — this
-        // plate would otherwise be a way around that gate, and it arms the very
+        // it that MOVES is Technician, the same level as the Jog window - this
+        // strip would otherwise be a way around that gate, and it arms the very
         // same jogArmed_ bit.
         if (CanUse(kRoleJog)) {
             if (ImGui::Checkbox("Click-to-move", &enableClickMove_)) SaveUiSettings();
-            ImGui::SameLine();
             ImGui::Checkbox("Arm jog", &jogArmed_);   // same flag the Jog window arms
-            ImGui::SameLine();
         }
+        ImGui::Separator();
         if (ImGui::Checkbox("Vision marks", &showVisionMarks_)) SaveUiSettings();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Overlay the last detection (20x20 camera-px box) and the\n"
                               "alignment's E1/E2 points, projected from machine mm through\n"
                               "the live gantry pose - so they stay on the feature as the\n"
                               "stage moves. Purely a readout; it changes nothing.");
-        ImGui::SameLine();
+        if (ImGui::Checkbox("Grippers", &showGripperMarks_)) SaveUiSettings();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Draw each REGISTERED device's tool tip where the record\n"
+                              "says it is, projected through the live gantry pose - with\n"
+                              "an edge arrow and its distance when the tip is outside the\n"
+                              "frame, and dZ against the plane in focus.\n"
+                              "A tip that cannot be predicted (no registration, or the\n"
+                              "device rotated away from where it was taught) draws\n"
+                              "NOTHING - never a stale cross. Teach one on the\n"
+                              "Registration page (F8).");
         if (ImGui::Checkbox("Positions", &showPosLabels_)) SaveUiSettings();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Name where each stage stands (bottom-left): the live pose of\n"
@@ -244,15 +295,18 @@ void App::DrawAuxWindow()
                               "saved position of that device. Green = sitting on it (within\n"
                               "%.3f mm); amber shows how far off the nearest one it is.",
                               kAuxPosAtTolMM);
-        ImGui::SameLine();
+        ImGui::Indent(14.0f);
         ImGui::BeginDisabled(!showPosLabels_);
         if (ImGui::Checkbox("+hidden", &posLabelsHidden_)) SaveUiSettings();
         ImGui::EndDisabled();
+        ImGui::Unindent(14.0f);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("Let hidden (system) positions - a procedure's private\n"
                               "algn_... stations - be named too. ON is the honest answer:\n"
                               "with it off the plate names the nearest VISIBLE position,\n"
                               "which may not be the one the stage is actually sitting on.");
+
+        ImGui::Separator();
 
         // ---- gantry-main Z + Autofocus: motion, so Technician and up -------
         // Both drive the same axis, so they stand or fall together. Absent
@@ -330,6 +384,7 @@ void App::DrawAuxWindow()
         }   // end of the Technician motion block opened above (Z + Autofocus).
             // Left un-indented deliberately: re-indenting ~60 lines would bury
             // the one line that changed in a diff nobody can read.
+        }   // end of the collapsed/expanded strip.
         ImGui::EndChild();
         ImGui::PopStyleColor();
 
@@ -438,6 +493,106 @@ void App::DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2&
     std::snprintf(lbl, sizeof(lbl), "%.1f, %.1f px   score %.3f   %.1f ms",
                   auxDet_.xPx, auxDet_.yPx, auxDet_.score, auxDet_.elapsedMs);
     PlateText(dl, origin, avail, ImVec2(p.x + arm + 4.0f, p.y + 6.0f), col, lbl);
+}
+
+// Where each registered device's TOOL TIP is, drawn on the live image.
+//
+// This is not a measurement and must not read like one. A detection is what
+// the camera saw this frame; an E point is a place on the part somebody
+// marked; a tip is COMPUTED - p = t + R*h, out of a registration whose
+// rotation is a typed permutation out of the transforms file. It gets its own
+// toggle, its own colour and the word 'reg' on its plate for that reason.
+//
+// The projection is the E marks' one, through the LIVE gantry pose, so the
+// cross stays on the tool as the stage moves. Two rules carry over unchanged
+// from the tip topics (see docs/device-registration-design.md):
+//
+//   * a tip that cannot be predicted draws NOTHING - no registration, not
+//     connected, or the device rotated away from where its tip was taught.
+//     A readout frozen at the last good number is how a rotated hexapod goes
+//     on looking placed. The reason belongs in the log, not on the picture
+//     once per frame.
+//   * a tip registered against a DIFFERENT reference is not drawn either.
+//     This image belongs to the camera's gantry, and a point in another
+//     origin projected through this pose is off by the whole distance
+//     between the two origins.
+//
+// Off-screen is the case that matters, and DrawWorldMark is what handles it:
+// a tip 8 mm to the left is not merely invisible - nothing on the picture
+// separates 'the gripper is over there' from 'the gripper is where I am
+// looking'. Same helper the pick window uses, so an edge arrow means the same
+// thing on both surfaces.
+void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
+                              const ImVec2& center, float scale)
+{
+    (void)center;   // the projection goes through the shared CameraView
+    (void)scale;    // ...which computes the same cover fit from the box
+    if (pixelToMmX_ <= 0.0f || pixelToMmY_ <= 0.0f) return;
+    double gx = 0.0, gy = 0.0;
+    if (!workflow_.GantryXY(gx, gy)) return;
+
+    // Which device this image's pose belongs to, asked of layer 2 rather than
+    // assumed: a UI overlay must not go hunting for a device called
+    // "gantry-main".
+    const std::string refName = workflow_.GantryName();
+    if (refName.empty()) return;
+    // ...and its Z, so a tip can say how far it stands from the plane in
+    // focus. That is the half of "where is the tool" a picture cannot show:
+    // two tips 3 mm apart in Z land on the same pixel.
+    double gz     = 0.0;
+    bool   haveGz = false;
+    {
+        std::map<std::string, double> refPose;
+        if (workflow_.DevicePose(refName, refPose)) {
+            const auto iz = refPose.find("Z");
+            if (iz != refPose.end()) { gz = iz->second; haveGz = true; }
+        }
+    }
+
+    // The same cover fit the image above was drawn with (MakeCameraView uses
+    // fmaxf too), centred on the image centre at zoom 1. Built from the shared
+    // helper rather than by hand: two copies of this arithmetic is how an
+    // overlay starts disagreeing with the picture under it.
+    WorldMarkView wv;
+    wv.view       = MakeCameraView(origin, avail, cameraW_, cameraH_,
+                                   static_cast<float>(cameraW_) * 0.5f,
+                                   static_cast<float>(cameraH_) * 0.5f, 1.0f);
+    wv.boxMin     = origin;
+    wv.boxMax     = ImVec2(origin.x + avail.x, origin.y + avail.y);
+    wv.gx         = gx;
+    wv.gy         = gy;
+    wv.pixelToMmX = pixelToMmX_;
+    wv.pixelToMmY = pixelToMmY_;
+    wv.imgW       = cameraW_;
+    wv.imgH       = cameraH_;
+
+    for (const auto& [name, r] : workflow_.DeviceRegs()) {
+        if (!r.valid || r.refDevice != refName) continue;
+        RegVec3     tip;
+        std::string why;
+        if (!workflow_.DeviceRegTip(name, tip, &why)) continue;   // says nothing
+
+        // The plate names the device and says 'reg', because a cross that only
+        // said 'hex-left' would read as an observation of one.
+        char lbl[96];
+        if (haveGz) {
+            const double dz = tip.z - gz;
+            if (std::fabs(dz) <= kTipAtFocusMM)
+                std::snprintf(lbl, sizeof(lbl), "%s reg  in focus", name.c_str());
+            else
+                std::snprintf(lbl, sizeof(lbl), "%s reg  dZ %+.3f", name.c_str(), dz);
+        } else {
+            std::snprintf(lbl, sizeof(lbl), "%s reg", name.c_str());
+        }
+
+        CameraMark cm;
+        cm.wx    = tip.x;
+        cm.wy    = tip.y;
+        cm.have  = true;
+        cm.label = lbl;
+        cm.col   = kTipCol;
+        DrawWorldMark(dl, wv, cm, 16.0f);
+    }
 }
 
 // Where each stage stands, named against the taught positions.

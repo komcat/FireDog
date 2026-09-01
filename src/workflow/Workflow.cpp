@@ -742,6 +742,13 @@ bool Workflow::GantryXY(double& x, double& y) const
     return true;
 }
 
+std::string Workflow::GantryName() const
+{
+    const std::size_t gi = GantryIndex();
+    if (gi >= hw_.MotionCount()) return std::string();
+    return hw_.MotionName(gi);
+}
+
 bool Workflow::DevicePose(const std::string& name, std::map<std::string, double>& out) const
 {
     for (std::size_t i = 0; i < hw_.MotionCount(); ++i) {

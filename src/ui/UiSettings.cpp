@@ -32,15 +32,30 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("run_scan_h")) s.runScanH = j["run_scan_h"].get<float>();
         if (j.contains("run_shot_h")) s.runShotH = j["run_shot_h"].get<float>();
         if (j.contains("org_lib_w"))  s.orgLibW  = j["org_lib_w"].get<float>();
+        if (j.contains("reg_ctl_w"))  s.regCtlW  = j["reg_ctl_w"].get<float>();
         if (j.contains("show_chart"))    s.showChart   = j["show_chart"].get<bool>();
         if (j.contains("click_to_move")) s.clickToMove = j["click_to_move"].get<bool>();
         if (j.contains("show_vision_marks")) s.showVisionMarks = j["show_vision_marks"].get<bool>();
         if (j.contains("show_pos_labels")) s.showPosLabels = j["show_pos_labels"].get<bool>();
         if (j.contains("pos_labels_hidden")) s.posLabelsHidden = j["pos_labels_hidden"].get<bool>();
+        if (j.contains("show_gripper_marks")) s.showGripperMarks = j["show_gripper_marks"].get<bool>();
+        if (j.contains("aux_panel_open")) s.auxPanelOpen = j["aux_panel_open"].get<bool>();
         if (j.contains("chart_scope"))   s.chartScope  = j["chart_scope"].get<bool>();
         if (j.contains("run_prog_uid")) s.runProgUid = j["run_prog_uid"].get<std::string>();
         if (j.contains("run_slot"))     s.runSlot    = j["run_slot"].get<int>();
         if (j.contains("last_product"))  s.lastProduct = j["last_product"].get<std::string>();
+        // Pos pad: tolerant on every axis — a non-object, a non-array value or
+        // a short/long row all degrade to blank slots rather than throwing away
+        // the whole settings file.
+        if (j.contains("pos_pad") && j["pos_pad"].is_object()) {
+            for (auto it = j["pos_pad"].begin(); it != j["pos_pad"].end(); ++it) {
+                if (!it.value().is_array()) continue;
+                std::vector<std::string> slots;
+                for (const auto& v : it.value())
+                    slots.push_back(v.is_string() ? v.get<std::string>() : std::string());
+                s.posPad[it.key()] = std::move(slots);
+            }
+        }
         FD_INFO("ui", "settings loaded from %s (font %d, %.0f px)",
                 path.c_str(), s.fontIndex, s.fontSize);
     } catch (const std::exception& e) {
@@ -67,15 +82,21 @@ bool UiSettings::Save(const std::string& path) const
     j["run_scan_h"]      = runScanH;
     j["run_shot_h"]      = runShotH;
     j["org_lib_w"]       = orgLibW;
+    j["reg_ctl_w"]       = regCtlW;
     j["show_chart"]    = showChart;
     j["click_to_move"] = clickToMove;
     j["show_vision_marks"] = showVisionMarks;
     j["show_pos_labels"]   = showPosLabels;
     j["pos_labels_hidden"]  = posLabelsHidden;
+    j["show_gripper_marks"] = showGripperMarks;
+    j["aux_panel_open"]     = auxPanelOpen;
     j["chart_scope"]   = chartScope;
     j["run_prog_uid"]  = runProgUid;
     j["run_slot"]      = runSlot;
     j["last_product"]  = lastProduct;
+    nlohmann::json pad = nlohmann::json::object();
+    for (const auto& kv : posPad) pad[kv.first] = kv.second;
+    j["pos_pad"] = pad;
 
     std::ofstream f(path);
     if (!f.is_open()) {

@@ -37,7 +37,7 @@
 --   reg_device           the registered device            (required)
 --   reg_check_dx/dy/dz_mm  check pose, offset from the taught pose (5, 5, 0)
 --   reg_tol_mm           residual that counts as verified (default 0.05)
---   reg_autofocus        focus on the tip                 (default true)
+--   reg_autofocus        focus on the tip                 (default false)
 --   reg_focus_range_mm   focus sweep at the check pose    (default 0.5)
 --   reg_v_travel         reference device velocity        (default 0 = as set)
 --   reg_v_jog            registered device velocity       (default 0 = as set)
@@ -48,7 +48,7 @@ local DX     = fd.param("reg_check_dx_mm", 5.0)
 local DY     = fd.param("reg_check_dy_mm", 5.0)
 local DZ     = fd.param("reg_check_dz_mm", 0.0)
 local TOL    = fd.param("reg_tol_mm", 0.05)
-local FOCUS  = fd.param("reg_autofocus", true)
+local FOCUS  = fd.param("reg_autofocus", false)
 local FRANGE = fd.param("reg_focus_range_mm", 0.5)
 local VTRAV  = fd.param("reg_v_travel", 0.0)
 local VJOG   = fd.param("reg_v_jog", 0.0)
@@ -113,13 +113,29 @@ if FOCUS then
     fd.auto_focus{ device = REF, axis = "Z", z_range_mm = FRANGE }
 end
 
+-- With the autofocus off, the operator sets Z by hand and the window's live
+-- readout is what they set it against - so the message has to say so. An
+-- autofocus that ran already put Z where the sweep peaked and the pick is only
+-- about XY.
+local how
+if FOCUS then
+    how = "Put the crosshair on the tool tip, then OK."
+else
+    how = "Focus on the tool tip by hand (jog Z, tick the live focus score), " ..
+          "watch dZ close, then put the crosshair on the tip and OK."
+end
+
 -- The hint is the prediction, so an operator who cannot see the tip is told how
 -- far off it is and in which direction - which IS the measurement, before it is
--- taken.
+-- taken. The TARGET is the same point again, and it is not the same thing: the
+-- hint is drawn on the picture, this is the residual in numbers, Z included -
+-- and Z is the half a camera cannot show. Without it a hand focus is blind.
 fd.pick_point{ device = REF, ctx_prefix = "tip",
                label = string.format("the tool tip of '%s'", DEV),
-               message = "Put the crosshair on the tool tip, then OK.",
-               hint = true, hint_x_mm = pred.x, hint_y_mm = pred.y }
+               message = how,
+               hint = true, hint_x_mm = pred.x, hint_y_mm = pred.y,
+               target = true, target_x_mm = pred.x, target_y_mm = pred.y,
+               target_z_mm = pred.z, target_tol_mm = TOL }
 fd.read_position{ device = REF, ctx_prefix = "g" }
 local meas = { x = fd.ctx.tip_wx, y = fd.ctx.tip_wy, z = fd.ctx.g_z }
 

@@ -344,7 +344,11 @@ void App::DrawAlignPickWindow()
                           (req.stepIcons ? ImGui::GetFrameHeight() : 0.0f) +
                           // the guard band's two readout lines, when there is one
                           (req.band.have ? ImGui::GetTextLineHeightWithSpacing() * 2.0f
-                                         : 0.0f);
+                                         : 0.0f) +
+                          // the live-residual readout: two lines and the focus row
+                          (req.target.have ? ImGui::GetTextLineHeightWithSpacing() * 2.0f +
+                                                 ImGui::GetFrameHeightWithSpacing()
+                                           : 0.0f);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImVec2 avail = ImGui::GetContentRegionAvail();
     avail.y = avail.y > footerH + 40.0f ? avail.y - footerH : 40.0f;
@@ -575,6 +579,65 @@ void App::DrawAlignPickWindow()
     } else if (req.band.have) {
         ImGui::TextDisabled("guard band not shown - no gantry pose or no pixel calibration");
         ImGui::TextDisabled(" ");
+    }
+
+    // ---- The live residual --------------------------------------------------
+    // Set only by the registration check, and it is the whole reason that check
+    // can be driven by hand: the operator is being asked to measure a distance,
+    // and until now that distance only existed in the log AFTER the run had
+    // already failed. It is recomputed every frame from the crosshair and the
+    // live pose, so nudging the mark or jogging Z closes the number while you
+    // watch it.
+    //
+    // dZ is the DEVICE Z, not anything read off the picture: a camera cannot
+    // show height, and the taught tip Z is simply the gantry Z that focuses on
+    // the tip. Focus by hand and the Z error IS the number.
+    if (req.target.have) {
+        double liveZ = 0.0;
+        bool   haveZ = false;
+        std::map<std::string, double> pose;
+        if (!req.target.device.empty() && workflow_.DevicePose(req.target.device, pose)) {
+            const auto iz = pose.find("Z");
+            if (iz != pose.end()) { liveZ = iz->second; haveZ = true; }
+        }
+        const double ex  = havePose ? (gxNow + dxMM) - req.target.x : 0.0;
+        const double ey  = havePose ? (gyNow + dyMM) - req.target.y : 0.0;
+        const double ez  = haveZ    ? liveZ - req.target.z          : 0.0;
+        const double res = std::sqrt(ex * ex + ey * ey + ez * ez);
+        // Neutral when no tolerance was given: a number wearing a colour is a
+        // verdict, and the caller has to have asked for one.
+        const bool   judge = req.target.tolMm > 0.0;
+        const ImVec4 tOk(0.4f, 0.9f, 0.5f, 1.0f);
+        const ImVec4 tBad(1.0f, 0.65f, 0.25f, 1.0f);
+        const ImVec4 tCol = !judge ? ImVec4(0.75f, 0.75f, 0.78f, 1.0f)
+                                   : (res <= req.target.tolMm ? tOk : tBad);
+        ImGui::TextColored(tCol,
+                           "off prediction  dX %+.4f  dY %+.4f  dZ %+.4f  =  %.4f mm%s",
+                           ex, ey, ez, res,
+                           judge ? (res <= req.target.tolMm ? "   ON TARGET" : "   OUT")
+                                 : "");
+        if (!havePose || !haveZ)
+            ImGui::TextDisabled("partial - %s%s",
+                                havePose ? "" : "no gantry pose or pixel calibration  ",
+                                haveZ ? "" : "no live Z from the device");
+        else if (judge)
+            ImGui::TextDisabled("tolerance %.4f mm - jog Z until dZ closes, then mark the "
+                                "tip and OK", req.target.tolMm);
+        else
+            ImGui::TextDisabled("jog Z until dZ closes, then mark the tip and OK");
+
+        // The focus score, here and not only in the Jog window: with the check's
+        // autofocus switched off this IS how Z gets set, and an operator should
+        // not have to keep a second window open to see the number they are
+        // maximising. Off by default - it costs a score per frame.
+        bool stream = workflow_.FocusStreaming();
+        if (ImGui::Checkbox("live focus score", &stream))
+            workflow_.SetFocusStreaming(stream, focusRoiPx_);
+        ImGui::SameLine();
+        const Workflow::FocusSample fs = workflow_.LatestFocus();
+        if (!stream)     ImGui::TextDisabled("not sampling");
+        else if (!fs.ok) ImGui::TextDisabled("waiting for frames...");
+        else             ImGui::Text("%.1f   luma %.0f", fs.score, fs.meanLuma);
     }
 
     const auto answer = [&](bool ok) {

@@ -224,6 +224,36 @@ Reading the residual is the point:
   The device is not square to the axes the transforms file claims. `t` cannot
   absorb an angle; correct the mount, or keep every approach short.
 
+### Focus the check the way the tip was taught
+
+`reg_autofocus` defaults to **false**, and that is not a convenience. The tip's Z
+is "the gantry Z that focuses on it", and step 2 sets it with an operator focusing
+by eye. Let the check set Z with a sweep instead and the residual reports the
+disagreement between the two *methods* — measured at 0.15 mm on a flat coupon,
+three times the default tolerance, reproducible to 2 um, and indistinguishable in
+the log from a tool that moved. Focus the check the same way the teach was
+focused, or focus both with the sweep; never one of each.
+
+With the autofocus off, the operator sets Z by hand while the pick window is open,
+and the pick window is what they set it against: `pick_point`'s **target**
+(`target_x/y/z_mm`, `target_tol_mm`) draws a live residual — dX and dY from the
+crosshair against the live pose, **dZ from the device's own Z** — recomputed every
+frame, plus the live focus score so the number being maximised is on the same
+window. A hint says where to look; a target says how far off you still are, and Z
+is the half the picture cannot show. Without it a hand focus is blind and the
+distance only exists in the log, after the run has already failed.
+
+### Three states, not two
+
+`verified` is a bool, but a check that **ran and disagreed** is not the same thing
+as a check that was **never run**: one has put a number on what the rotation costs
+and the other has measured nothing. The record already distinguishes them —
+`checkedAt` is stamped on a failed check too — so the page and the `device_reg`
+log line say *CHECK FAILED 0.1504 mm at 2.000 mm from the taught pose* rather than
+"nothing has measured the tip". Telling an operator who just watched the check
+drive, focus and pick that nothing measured anything reads as the software having
+missed it.
+
 ## 7. Two dates, not one
 
 `R` is a property of the **mount**; `t` is a property of the mount **and the
@@ -263,6 +293,41 @@ point get a tool close — nowhere near `place_tol_mm`'s 20 µm.
 is; the registration only means the loop lands on pass 1 instead of pass 2. A
 `move_to_point` is an **approach**, and it says so in its name, its help, its log
 line and on the page.
+
+### Seeing it on the picture
+
+The Aux window's **Grippers** toggle draws every registered tip on the live image,
+projected through the gantry pose exactly as the E marks are, with an edge arrow
+and a distance when the tip is outside the frame and `dZ` against the plane in
+focus — because two tips 3 mm apart in Z land on the same pixel. It is a readout
+and nothing acts on it, but it inherits both of the record's refusals verbatim: a
+tip that cannot be predicted (no registration, not connected, rotated away from
+where it was taught) draws **nothing**, and a tip registered against a different
+reference is not drawn at all, since a point in another origin projected through
+this pose is off by the whole distance between the two. The colour and the word
+`reg` on the plate exist to stop it reading as a detection: one is what the camera
+saw, the other is what the machine believes.
+
+### Trying it from the page
+
+The Registration page's **Send tool here** drives the registered device so its tip
+lands where the reference device is standing *now* — the point under the camera —
+through the same solve `move_to_point` performs, with the same three refusals in
+the same order: no registration, unverified (unless *allow unverified* is ticked,
+which logs the move as such), rotations outside `kDeviceRegRotTolDeg`. It adds a
+travel ceiling, because a stale record turns a short approach into a lunge, and a
+signed **Z offset** in the reference device's *axis* Z — signed and typed rather
+than derived, because which way that counts is a property of the machine and 0
+sends the tip to the focused surface itself, which is a touch. On this machine
+**negative lifts the tool away from the focused surface** (measured 2026-09-01 on
+`gantry-main`, whose transform inverts Z); the tooltip says so and dates it,
+because it is a measurement and not a rule — re-check it after any edit to the
+transforms file.
+
+It exists because a registration that has never been driven through has never been
+*seen* to work; reading a residual off a log is not the same as watching the tool
+arrive. It is still an APPROACH, and the button says so — nothing here closes a
+loop.
 
 ## 9. Composing with a placement: nominal → gripper
 
