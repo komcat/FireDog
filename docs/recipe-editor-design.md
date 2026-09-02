@@ -102,7 +102,7 @@ One function, `DrawParamWidget(const ParamSpec&, json& value)`, switched on
 
 | ParamType | Widget |
 |---|---|
-| `Bool` | checkbox |
+| `Bool` | checkbox when optional; **ON / OFF radio pair when required** — an unticked box and a never-answered one are the same pixels, and on a required bool the second is a validation error the operator cannot see. Neither radio is lit until a pick is made, and either pick stores the value |
 | `Int` / `Double` | drag/input scalar, clamped to `minVal..maxVal` when active |
 | `String` | text input (`{key}` substitution documented in the help text) |
 | `Value` | small type combo (bool / number / string) + matching field |

@@ -171,8 +171,24 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
 
     switch (p.type) {
     case ParamType::Bool: {
-        bool v = cur.is_boolean() && cur.get<bool>();
-        if (ImGui::Checkbox(label, &v)) { params[p.name] = v; changed = true; }
+        if (p.required) {
+            // A checkbox has only two pixels for THREE states: on, off, and
+            // never-answered. On a required bool the last two look identical
+            // while validation refuses the step ("missing required parameter"),
+            // so the operator stares at an unticked box that already says OFF.
+            // Two radio buttons make the answer explicit: neither is lit until
+            // a pick is made, and either pick STORES the value.
+            const bool has = params.contains(p.name) && params[p.name].is_boolean();
+            const bool v   = has && params[p.name].get<bool>();
+            if (ImGui::RadioButton("ON", has && v)) { params[p.name] = true;  changed = true; }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("OFF", has && !v)) { params[p.name] = false; changed = true; }
+            ImGui::SameLine();
+            ImGui::TextUnformatted(label);
+        } else {
+            bool v = cur.is_boolean() && cur.get<bool>();
+            if (ImGui::Checkbox(label, &v)) { params[p.name] = v; changed = true; }
+        }
         break;
     }
     case ParamType::Int: {
