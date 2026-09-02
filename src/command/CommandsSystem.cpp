@@ -18,6 +18,26 @@ namespace firedog {
 
 namespace {
 
+// The xcan "axes" choice -> hexapod_align.lua's align_axes descent order.
+// The set is a choice, the ORDER is not: coordinate descent on this machine
+// has always run Z, then Y, then X (the gap axis first, so the transverse
+// scans happen at a coupling that is already close), and a subset must not
+// silently reorder what a full scan does.
+//
+// "XYZ" returns "" — the step is not restricting anything, and the script's
+// own default is already Z,Y,X. Injecting it anyway would overwrite an
+// align_axes a recipe ctx_set beforehand, which is the one escape hatch these
+// typed wrappers promise for every align_* key they do not carry. An unknown
+// label lands here too: a full triad is recoverable, a scan that skips the
+// axis the recipe meant is not.
+const char* XcanAxisOrder(const std::string& choice)
+{
+    if (choice == "XY") return "Y,X";
+    if (choice == "XZ") return "Z,X";
+    if (choice == "YZ") return "Z,Y";
+    return "";
+}
+
 CommandResult ExecLog(ExecutionContext& ctx, const ParamValues& p)
 {
     const std::string level = p.GetString("level");
@@ -247,6 +267,9 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"device", PT::DeviceHexapod, true, {}, 0, 0, {}, "hexapod to scan"},
                       {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
                        "feedback signal"},
+                      {"axes", PT::Enum, false, "XYZ", 0, 0, {"XYZ", "XY", "XZ", "YZ"},
+                       "which axes the coordinate descent scans (order is always Z, "
+                       "then Y, then X)"},
                       {"steps_um", PT::String, false, "10,5,2,1", 0, 0, {},
                        "coarse -> fine step ladder (um); adaptive mode: the zone steps, far -> near"},
                       {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},
@@ -271,6 +294,8 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   [rp](ExecutionContext& c, const ParamValues& p) {
                       c.CtxSet("align_device", p.GetString("device"));
                       c.CtxSet("align_topic", p.GetString("topic"));
+                      if (const char* ax = XcanAxisOrder(p.GetString("axes")); *ax)
+                          c.CtxSet("align_axes", std::string(ax));
                       c.CtxSet("align_steps_um", p.GetString("steps_um"));
                       c.CtxSet("align_exit_threshold",
                                p.GetDouble("exit_target_ua") * 1e-6);

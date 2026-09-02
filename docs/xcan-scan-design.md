@@ -249,7 +249,7 @@ hook kills pure-Lua loops independently.
 |---|---|---|---|
 | `align_device` | `device` | — | hexapod name |
 | `align_topic` | `topic` | `keithley/ch1` | feedback stream |
-| `align_axes` | preset `axes` | `Z,Y,X` | coordinate-descent order |
+| `align_axes` | `axes` (`XYZ`/`XY`/`XZ`/`YZ`), preset `axes` | `Z,Y,X` | which axes descend; the command chooses the SET, the order is always Z, Y, X |
 | `align_steps_um` | `steps_um` | `10,5,2,1` | ladder (adaptive: the zone steps) |
 | `align_exit_threshold` | `exit_target_ua` ×1e-6 | 0 | stop-and-stay target |
 | `align_adaptive` | `adaptive` | false (Run band: on) | signal-zoned ladder |
@@ -271,6 +271,21 @@ hook kills pure-Lua loops independently.
 
 Outputs: `align_baseline`, `align_best`, `align_delta`, `align_gain` (0 unless both
 readings are positive), `align_exit_hit`.
+
+The `xcan` step's `axes` parameter is a **choice of four sets** (`XYZ`, `XY`, `XZ`,
+`YZ`), not the free-text order the script and the Motion-page band take. A recipe
+step says *which axes may move* — dropping Z once the gap is already closed, or
+scanning Z alone against X for a device that only couples in a plane — and that is
+a statement about what the machine is allowed to do, so a typo must not become an
+axis name the script only fails on halfway through a walk. The order stays Z, Y, X
+in every subset: the gap axis first, so the transverse scans run at a coupling that
+is already close, and a subset never quietly re-orders what the full scan does.
+
+`XYZ` injects **nothing** — the script's own default is already `Z,Y,X`, and the
+step is not restricting anything. That keeps `align_axes` in the same class as
+every other `align_*` key the wrapper does not carry: a `ctx_set "align_axes"`
+before the step still reaches `fd.param` untouched, which is where a different
+order or a rotational axis comes from.
 
 ---
 
