@@ -47,15 +47,14 @@ int App::Run()
 {
     FD_INFO("app", "FireDog starting");
     Logger::Instance().SetMinLevel(static_cast<LogLevel>(logMinLevel_));
-    if (!host_.Init("FireDog - Active Alignment", kWinW, kWinH)) {
-        FD_ERROR("app", "GlHost init failed");
-        return 1;
-    }
-    // Restore the saved theme + font choice + size (defaults to FireDog Dark /
-    // Segoe UI 26 px on first run), validated against the current tables.
+    // Read the settings BEFORE the window exists: where it goes and how big it
+    // is are arguments to its creation, not something to fix up afterwards —
+    // a created-then-moved window flashes at the default spot first.
+    // Defaults to FireDog Dark / Segoe UI 26 px on first run, and every index
+    // is validated against the current tables.
     std::string lastProduct;
+    const UiSettings ui = UiSettings::Load(kUiSettingsPath);
     {
-        const UiSettings ui = UiSettings::Load(kUiSettingsPath);
         fontIndex_  = (ui.fontIndex >= 0 && ui.fontIndex < kFontCount) ? ui.fontIndex : 0;
         uiFontSize_ = (ui.fontSize >= 8.0f && ui.fontSize <= 48.0f) ? ui.fontSize : 26.0f;
         themeIndex_ = (ui.themeIndex >= 0 && ui.themeIndex < Theme::Count()) ? ui.themeIndex : 0;
@@ -87,6 +86,16 @@ int App::Run()
         lastProduct      = ui.lastProduct;
         posPad_          = ui.posPad;
     }
+
+    WindowPlacement place;
+    place.x = ui.winX;  place.y = ui.winY;
+    place.w = ui.winW;  place.h = ui.winH;
+    place.maximized = ui.winMaximized;
+    if (!host_.Init("FireDog - Active Alignment", kWinW, kWinH, place)) {
+        FD_ERROR("app", "GlHost init failed");
+        return 1;
+    }
+
     Theme::Apply(themeIndex_);
     host_.SetFont(kFonts[fontIndex_].path, uiFontSize_);
 
@@ -433,6 +442,12 @@ void App::SaveUiSettings()
     s.runSlot     = runLastSlot_;
     s.lastProduct = session_.Product().name;
     s.posPad      = posPad_;
+    // The window's own geometry comes from the host, which is the only thing
+    // that knows it — App never tracks a size it does not set.
+    const WindowPlacement& place = host_.Placement();
+    s.winX = place.x;  s.winY = place.y;
+    s.winW = place.w;  s.winH = place.h;
+    s.winMaximized = place.maximized;
     s.Save(kUiSettingsPath);
 }
 

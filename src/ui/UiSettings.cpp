@@ -45,6 +45,11 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("chart_scope"))   s.chartScope  = j["chart_scope"].get<bool>();
         if (j.contains("run_prog_uid")) s.runProgUid = j["run_prog_uid"].get<std::string>();
         if (j.contains("run_slot"))     s.runSlot    = j["run_slot"].get<int>();
+        if (j.contains("win_x")) s.winX = j["win_x"].get<int>();
+        if (j.contains("win_y")) s.winY = j["win_y"].get<int>();
+        if (j.contains("win_w")) s.winW = j["win_w"].get<int>();
+        if (j.contains("win_h")) s.winH = j["win_h"].get<int>();
+        if (j.contains("win_max")) s.winMaximized = j["win_max"].get<bool>();
         if (j.contains("last_product"))  s.lastProduct = j["last_product"].get<std::string>();
         // Pos pad: tolerant on every axis — a non-object, a non-array value or
         // a short/long row all degrade to blank slots rather than throwing away
@@ -97,6 +102,11 @@ bool UiSettings::Save(const std::string& path) const
     j["chart_scope"]   = chartScope;
     j["run_prog_uid"]  = runProgUid;
     j["run_slot"]      = runSlot;
+    j["win_x"]   = winX;
+    j["win_y"]   = winY;
+    j["win_w"]   = winW;
+    j["win_h"]   = winH;
+    j["win_max"] = winMaximized;
     j["last_product"]  = lastProduct;
     nlohmann::json pad = nlohmann::json::object();
     for (const auto& kv : posPad) pad[kv.first] = kv.second;

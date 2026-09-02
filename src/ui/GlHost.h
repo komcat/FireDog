@@ -10,10 +10,35 @@ struct GLFWwindow;
 
 namespace firedog {
 
+// Where the main OS window sits. The rect is the CLIENT area in virtual-screen
+// pixels — the same coordinates GLFW reports and accepts, so it round-trips
+// without a conversion — and `maximized` is carried beside it rather than
+// folded into the rect, because a maximized window still has a restored size
+// to come back to.
+struct WindowPlacement {
+    int  x = 0, y = 0;
+    int  w = 0, h = 0;
+    bool maximized = false;
+
+    bool Valid() const { return w > 0 && h > 0; }
+};
+
 class GlHost {
 public:
-    bool Init(const char* title, int width, int height);
+    // `restore` is the placement a previous run was left at; an invalid one
+    // (the default) means first run — the window is created at width x height
+    // wherever the window manager puts it. A saved rect that no longer lands
+    // on any connected monitor is ignored for POSITION but still honoured for
+    // size: a screen can be unplugged between runs, and a window nobody can
+    // reach with the mouse is worse than one in the wrong place.
+    bool Init(const char* title, int width, int height,
+              const WindowPlacement& restore = WindowPlacement{});
     void Shutdown();
+
+    // The placement to save. While the window is maximized this reports the
+    // last un-maximized rect, so the restored geometry survives a run that was
+    // started, maximized and closed.
+    const WindowPlacement& Placement() const { return placement_; }
 
     bool ShouldClose() const;
     // Override the GLFW should-close flag: pass false to swallow an OS close
@@ -47,9 +72,11 @@ public:
     unsigned int EnsureTextureRGBA(unsigned int tex, int width, int height, const void* rgba);
 
 private:
-    void ApplyFont();   // apply pending size/typeface at a frame boundary
+    void ApplyFont();        // apply pending size/typeface at a frame boundary
+    void TrackPlacement();   // remember where the window is, each frame
 
-    GLFWwindow* window_ = nullptr;
+    GLFWwindow*     window_ = nullptr;
+    WindowPlacement placement_;
 
     std::string fontPath_;             // requested typeface; empty = built-in font
     std::string loadedPath_;           // typeface currently in the atlas

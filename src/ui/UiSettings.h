@@ -105,6 +105,17 @@ struct UiSettings {
     // instead of driving somewhere the operator did not mean.
     std::map<std::string, std::vector<std::string>> posPad;
 
+    // Main OS window placement: the client rect it was last left at, in
+    // virtual-screen px, plus whether it was maximized. Zero width/height
+    // means "never saved" -> the built-in default size, placed by Windows.
+    //
+    // The rect stored while maximized is the RESTORED one (GlHost keeps the
+    // last un-maximized geometry), so un-maximizing after a restart lands
+    // where the operator left it rather than filling the screen forever.
+    int  winX = 0, winY = 0;
+    int  winW = 0, winH = 0;
+    bool winMaximized = false;
+
     // Last-loaded product name (folder under products/); empty = none.
     // Auto-reloaded at startup.
     std::string lastProduct;

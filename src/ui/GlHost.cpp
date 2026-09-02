@@ -8,11 +8,36 @@
 
 #include <GLFW/glfw3.h>   // pulls in <GL/gl.h> for the base GL calls below
 
+#include <algorithm>
 #include <cstdio>
 
 namespace firedog {
 
-bool GlHost::Init(const char* title, int width, int height)
+namespace {
+// Does enough of this client rect land on a connected monitor's work area to
+// be grabbed with the mouse? A saved position is only as good as the desktop
+// it was saved on: unplug the second screen and the coordinates still parse
+// perfectly while pointing at nothing. The thresholds are "a piece of title
+// bar wide enough to drag", not an exact-fit test — a window half off the
+// right edge is where somebody deliberately put it.
+bool RectReachable(int x, int y, int w, int h)
+{
+    int count = 0;
+    GLFWmonitor** mons = glfwGetMonitors(&count);
+    if (!mons) return false;
+    for (int i = 0; i < count; ++i) {
+        int mx = 0, my = 0, mw = 0, mh = 0;
+        glfwGetMonitorWorkarea(mons[i], &mx, &my, &mw, &mh);
+        const int ovW = (std::min)(x + w, mx + mw) - (std::max)(x, mx);
+        const int ovH = (std::min)(y + h, my + mh) - (std::max)(y, my);
+        if (ovW >= 160 && ovH >= 64) return true;
+    }
+    return false;
+}
+} // namespace
+
+bool GlHost::Init(const char* title, int width, int height,
+                  const WindowPlacement& restore)
 {
     if (!glfwInit()) return false;
 
@@ -20,9 +45,30 @@ bool GlHost::Init(const char* title, int width, int height)
     // with on Windows; multi-viewport works fine on it.
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    // Born hidden: the restored position and the maximize below are applied
+    // before the window is ever painted, so a restore does not flash at the
+    // default spot and jump.
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
-    window_ = glfwCreateWindow(width, height, title, nullptr, nullptr);
+    const bool useSaved = restore.Valid();
+    window_ = glfwCreateWindow(useSaved ? restore.w : width,
+                               useSaved ? restore.h : height,
+                               title, nullptr, nullptr);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);   // hints are sticky: undo it now
     if (!window_) { glfwTerminate(); return false; }
+
+    if (useSaved && RectReachable(restore.x, restore.y, restore.w, restore.h))
+        glfwSetWindowPos(window_, restore.x, restore.y);
+
+    // Seed the restore rect from what the window actually got, BEFORE
+    // maximizing: a session that starts maximized and is closed maximized
+    // never observes an un-maximized frame, and would otherwise save nothing.
+    glfwGetWindowPos(window_, &placement_.x, &placement_.y);
+    glfwGetWindowSize(window_, &placement_.w, &placement_.h);
+    placement_.maximized = restore.maximized;
+    if (restore.maximized) glfwMaximizeWindow(window_);
+
+    glfwShowWindow(window_);
     glfwMakeContextCurrent(window_);
     glfwSwapInterval(1);   // vsync
 
@@ -69,9 +115,30 @@ void GlHost::SetShouldClose(bool close)
     if (window_) glfwSetWindowShouldClose(window_, close ? GLFW_TRUE : GLFW_FALSE);
 }
 
+// Sampled every frame rather than driven off GLFW's move/size callbacks: the
+// callbacks would need the same maximize/iconify filtering anyway, and two
+// cheap queries per frame cannot fall out of step with the window the way a
+// missed callback can.
+void GlHost::TrackPlacement()
+{
+    if (!window_) return;
+    placement_.maximized = glfwGetWindowAttrib(window_, GLFW_MAXIMIZED) != 0;
+    // A maximized or minimized window reports geometry that is not what the
+    // operator arranged — keep the last rect they did arrange.
+    if (placement_.maximized) return;
+    if (glfwGetWindowAttrib(window_, GLFW_ICONIFIED)) return;
+
+    int x = 0, y = 0, w = 0, h = 0;
+    glfwGetWindowPos(window_, &x, &y);
+    glfwGetWindowSize(window_, &w, &h);
+    if (w > 0 && h > 0) { placement_.x = x; placement_.y = y;
+                          placement_.w = w; placement_.h = h; }
+}
+
 void GlHost::BeginFrame()
 {
     glfwPollEvents();
+    TrackPlacement();
     // Apply any pending font change here — between frames, when no ImGui frame
     // is in progress and the previous one is fully rendered/swapped.
     if (fontDirty_) { ApplyFont(); fontDirty_ = false; }
