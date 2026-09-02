@@ -424,12 +424,21 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
         toolInBox = toolScr.x >= origin.x && toolScr.x <= origin.x + img.x &&
                     toolScr.y >= origin.y && toolScr.y <= origin.y + img.y;
 
-        if (mp.boxWmm && mp.boxHmm && mp.boxDragging && toolInBox) {
+        if (mp.boxWmm && mp.boxHmm && toolInBox) {
             // mm -> screen px: camera px per mm, times the view's magnification.
             boxHalfW = 0.5f * *mp.boxWmm / mp.pixelToMmX * view.scale;
             boxHalfH = 0.5f * *mp.boxHmm / mp.pixelToMmY * view.scale;
-            const ImVec2 m = ImGui::GetIO().MousePos;
-            const float  dx = fabsf(m.x - toolScr.x), dy = fabsf(m.y - toolScr.y);
+        }
+        // The corners answer the mouse only for a caller that owns the size.
+        if (mp.boxWmm && mp.boxHmm && mp.boxDragging && toolInBox) {
+            // The mouse in the BOX's frame: un-spun about the tip, so a turned
+            // box is grabbed at its real corners and a drag reads its real
+            // width and length rather than the screen-axis distances.
+            const ImVec2 m0 = ImGui::GetIO().MousePos;
+            const float  th = -mp.boxDeg * 3.14159265358979f / 180.0f;
+            const float  cs = cosf(th), sn = sinf(th);
+            const float  ux = m0.x - toolScr.x, uy = m0.y - toolScr.y;
+            const float  dx = fabsf(ux * cs - uy * sn), dy = fabsf(ux * sn + uy * cs);
             const bool   onCorner = fabsf(dx - boxHalfW) <= kBoxGrabPx &&
                                     fabsf(dy - boxHalfH) <= kBoxGrabPx;
             if (*mp.boxDragging) {
@@ -602,17 +611,34 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
             if (toolInBox && mp.boxWmm && mp.boxHmm && boxHalfW > 0.0f) {
                 const ImVec2 lo(toolScr.x - boxHalfW, toolScr.y - boxHalfH);
                 const ImVec2 hi(toolScr.x + boxHalfW, toolScr.y + boxHalfH);
-                dl->AddRect(lo, hi, kToolBox, 0.0f, 0, 1.6f);
-                // Corner handles, so the box looks draggable rather than drawn.
-                const float g = 5.0f;
-                const ImVec2 cs[4] = {lo, ImVec2(hi.x, lo.y), hi, ImVec2(lo.x, hi.y)};
-                for (const ImVec2& q : cs)
-                    dl->AddRectFilled(ImVec2(q.x - g, q.y - g), ImVec2(q.x + g, q.y + g),
-                                      kToolBox);
+                // Spun about the tip in screen space, the way the envelope is:
+                // the rotation stays a rotation only where the scale is the
+                // same on both axes.
+                const float th = mp.boxDeg * 3.14159265358979f / 180.0f;
+                const float cs = cosf(th), sn = sinf(th);
+                const auto spin = [&](float x, float y) {
+                    const float ux = x - toolScr.x, uy = y - toolScr.y;
+                    return ImVec2(toolScr.x + ux * cs - uy * sn, toolScr.y + ux * sn + uy * cs);
+                };
+                const ImVec2 q[4] = {spin(lo.x, lo.y), spin(hi.x, lo.y),
+                                     spin(hi.x, hi.y), spin(lo.x, hi.y)};
+                dl->AddQuad(q[0], q[1], q[2], q[3], kToolBox, 1.6f);
+                // Corner handles, so a box that CAN be dragged looks it - and a
+                // read-only one does not invite a drag it will not answer.
+                if (mp.boxDragging) {
+                    const float g = 5.0f;
+                    for (const ImVec2& k : q)
+                        dl->AddRectFilled(ImVec2(k.x - g, k.y - g),
+                                          ImVec2(k.x + g, k.y + g), kToolBox);
+                }
                 char bl[64];
                 std::snprintf(bl, sizeof(bl), "%.3f x %.3f mm", *mp.boxWmm, *mp.boxHmm);
                 const ImVec2 ts = ImGui::CalcTextSize(bl);
-                const ImVec2 at(hi.x - ts.x, lo.y - ts.y - 4.0f);
+                // Above the box's highest corner, whichever one that is once
+                // it has turned.
+                float top = q[0].y;
+                for (const ImVec2& k : q) top = fminf(top, k.y);
+                const ImVec2 at(toolScr.x + boxHalfW - ts.x, top - ts.y - 4.0f);
                 dl->AddRectFilled(ImVec2(at.x - 4.0f, at.y - 2.0f),
                                   ImVec2(at.x + ts.x + 4.0f, at.y + ts.y + 2.0f),
                                   IM_COL32(0, 0, 0, 165), 3.0f);

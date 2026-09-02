@@ -87,7 +87,8 @@ CommandResult ExecDeviceReg(ExecutionContext& ctx, const ParamValues& p)
     ctx.CtxSet(prefix + "_home_y", r.homePose.y);
     ctx.CtxSet(prefix + "_home_z", r.homePose.z);
     ctx.CtxSet(prefix + "_has_home", r.hasHomePose);
-    ctx.CtxSet(prefix + "_spread_mm", r.tipSpreadMm);
+    ctx.CtxSet(prefix + "_tool_w_mm", r.toolWmm);
+    ctx.CtxSet(prefix + "_tool_l_mm", r.toolLmm);
     ctx.CtxSet(prefix + "_at", r.regAt);
     ctx.CtxSet(prefix + "_tip_at", r.tipAt);
     ctx.CtxSet(prefix + "_checked_at", r.checkedAt);

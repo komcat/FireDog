@@ -244,33 +244,11 @@ void App::CompleteDeviceRegTip()
     }
     cx /= static_cast<double>(n);
     cy /= static_cast<double>(n);
-
-    // Twice the mean radius: the plain separation for two opposite picks, a
-    // diameter for four, so the number means the same thing however many were
-    // taken. Computed here, where the picks are — the record stores the answer.
-    double meanR = 0.0;
-    for (int i = 0; i < regMarkCount_; ++i) {
-        const double ex = regMark_[i].wx - cx, ey = regMark_[i].wy - cy;
-        meanR += std::sqrt(ex * ex + ey * ey);
-    }
-    const double spread = 2.0 * (meanR / static_cast<double>(n));
-
-    // A refusal, before anything is stored. A corner pick that lands off the mark
-    // does not fail loudly — it shifts the centre by about half its error and
-    // stores a confident, wrong number. The measured width is the only thing that
-    // can see it, and only if it has something to be compared against.
-    if (regTipExpectMm_ > 0.0 &&
-        std::fabs(spread - regTipExpectMm_) > regTipExpectTol_) {
-        char buf[224];
-        std::snprintf(buf, sizeof(buf),
-                      "the mark measures %.4f mm across but the tool is %.4f mm "
-                      "(tolerance %.4f). Nothing saved: either a corner landed off "
-                      "the mark - the centre would be out by about half the "
-                      "difference - or this is not the tool the record expects.",
-                      spread, regTipExpectMm_, regTipExpectTol_);
-        regTeachMsg_ = buf;
-        return;
-    }
+    // No width check. An earlier version measured the mark's width and refused
+    // the teach when it disagreed with a typed tool width; the width of an
+    // imprint is a fact about the coupon and the ink rather than the tool, so it
+    // refused good picks. The picks are the operator's judgement, and the
+    // footprint box on the image is where a bad one becomes visible.
 
     // The rotation. It is the permutation composed out of the axis transforms,
     // adopted explicitly here so `rotSource` records what it is: nothing measured
@@ -293,7 +271,7 @@ void App::CompleteDeviceRegTip()
     const RegVec3 before = DeviceRegPredict(r, r.imprintPose);
     const RegVec3 tip{cx, cy, r.tipView.z};
     if (const std::string why =
-            DeviceRegSetTip(r, r.imprintPose, tip, spread, n); !why.empty()) {
+            DeviceRegSetTip(r, r.imprintPose, tip, n); !why.empty()) {
         regTeachMsg_ = why;
         return;
     }
@@ -305,13 +283,13 @@ void App::CompleteDeviceRegTip()
 
     char buf[224];
     std::snprintf(buf, sizeof(buf),
-                  "tip taught: (%.4f, %.4f, %.4f), mark %.4f mm across from %d picks. "
-                  "UNVERIFIED until the check runs.",
-                  r.t.x, r.t.y, r.t.z, spread, n);
+                  "tip taught: (%.4f, %.4f, %.4f) from %d picks. UNVERIFIED until "
+                  "the check runs.",
+                  r.t.x, r.t.y, r.t.z, n);
     regTeachMsg_ = buf;
     FD_INFO("devreg", "'%s' tip taught by imprint: t=(%.4f, %.4f, %.4f), %.4f mm from "
-                      "where the old record put it; mark %.4f mm across from %d picks",
-            regDevice_, r.t.x, r.t.y, r.t.z, moved, spread, n);
+                      "where the old record put it; %d picks",
+            regDevice_, r.t.x, r.t.y, r.t.z, moved, n);
 
     for (int i = 0; i < kRegMarkMax; ++i) regMarkHave_[i] = false;
     regMarkActive_ = 0;
@@ -438,8 +416,52 @@ void App::DrawDeviceRegPanel()
         mp.px         = &regPx_;
         mp.py         = &regPy_;
         mp.zoom       = &regZoom_;
+
+        // The registered tip, projected through the same pose as the marks,
+        // with the tool's footprint drawn around it. The box is CENTRED on the
+        // tip by the widget, so a corner drag can only change its size - and
+        // that size is the record's, seeded here every frame the box is not
+        // being dragged and written back when a drag ends. A record with no
+        // footprint draws no box: the size is typed under Registration first.
+        RegVec3     tipNow;
+        std::string tipWhy;
+        if (workflow_.DeviceRegTip(regDevice_, tipNow, &tipWhy)) {
+            mp.toolHave  = true;
+            mp.toolWx    = tipNow.x;
+            mp.toolWy    = tipNow.y;
+            mp.toolLabel = "tip";
+            if (!regBoxDragging_) {
+                regBoxW_ = static_cast<float>(reg.toolWmm);
+                regBoxH_ = static_cast<float>(reg.toolLmm);
+            }
+            mp.boxWmm      = &regBoxW_;
+            mp.boxHmm      = &regBoxH_;
+            mp.boxDragging = &regBoxDragging_;
+            // The jaws turn with the device's U, so the box does. Live, like
+            // the tip it is centred on: a footprint drawn at the taught angle
+            // would describe the gripper as it was, not as it is.
+            std::map<std::string, double> devPose;
+            if (workflow_.DevicePose(regDevice_, devPose))
+                if (const auto iu = devPose.find("U"); iu != devPose.end())
+                    mp.boxDeg = static_cast<float>(iu->second);
+        }
+        const bool boxWasDragging = regBoxDragging_;
+
         const MarkPickerResult r =
             DrawMarkPicker("##drInput", ImGui::GetContentRegionAvail(), mp);
+
+        // A drag that just ended is an edit of the record, by the one route
+        // every edit of it takes.
+        if (boxWasDragging && !regBoxDragging_ &&
+            (static_cast<double>(regBoxW_) != reg.toolWmm ||
+             static_cast<double>(regBoxH_) != reg.toolLmm)) {
+            DeviceReg edited = reg;
+            edited.toolWmm = static_cast<double>(regBoxW_);
+            edited.toolLmm = static_cast<double>(regBoxH_);
+            workflow_.QueueDeviceReg(edited);
+            FD_INFO("devreg", "'%s': tool footprint %.3f x %.3f mm (dragged)",
+                    regDevice_, edited.toolWmm, edited.toolLmm);
+        }
         // Click-to-move is an armed action wherever it appears — the same rule
         // the Aux window and the two teach pages follow — and layer 2 owns it.
         if (r.moveRequested) {
@@ -534,9 +556,9 @@ void App::DrawDeviceRegPanel()
                 ImGui::TextDisabled("taught at U %.3f  V %.3f  W %.3f", reg.taughtRot.x,
                                     reg.taughtRot.y, reg.taughtRot.z);
         }
-        if (reg.tipSpreadMm > 0.0)
-            ImGui::TextDisabled("from a mark %.4f mm across, %d picks",
-                                reg.tipSpreadMm, reg.tipPoints);
+        if (reg.tipPoints > 0)
+            ImGui::TextDisabled("tip from %d corner picks", reg.tipPoints);
+
         // Three states, not two. A check that RAN and disagreed is not the same
         // thing as a check that was never run: one has measured what the rotation
         // costs and reported a number, the other has measured nothing. Saying
@@ -715,23 +737,56 @@ void App::DrawDeviceRegPanel()
     // ---- Step 4: complete ----------------------------------------------------
     ImGui::SeparatorText("4  Complete");
     {
-        ImGui::SetNextItemWidth(90.0f);
-        ImGui::InputDouble("tool width mm", &regTipExpectMm_, 0.0, 0.0, "%.3f");
-        if (regTipExpectMm_ < 0.0)  regTipExpectMm_ = 0.0;
-        if (regTipExpectMm_ > 50.0) regTipExpectMm_ = 50.0;
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(90.0f);
-        ImGui::InputDouble("width tol", &regTipExpectTol_, 0.0, 0.0, "%.3f");
-        if (regTipExpectTol_ < 0.001) regTipExpectTol_ = 0.001;
-        if (regTipExpectMm_ <= 0.0)
-            ImGui::TextColored(kWarn, "0 = unchecked. With the tool's real width here,\n"
-                                      "a pick off the mark fails instead of quietly\n"
-                                      "shifting the centre.");
-
+        ImGui::TextDisabled("The centre of the corners is the tip in XY; the view's");
+        ImGui::TextDisabled("focused Z is the tip in Z.");
         ImGui::BeginDisabled(busy || sameDev);
         if (ImGui::Button("Compute and save tip", ImVec2(180.0f, 0.0f)))
             CompleteDeviceRegTip();
         ImGui::EndDisabled();
+    }
+
+    // ---- The tool's footprint ------------------------------------------------
+    // Typed, not measured, and part of the RECORD: it describes the jaws on
+    // this device, which is machine state exactly like the tip they are centred
+    // on. Drawn around the tip on this image, the Gripped Object page and the
+    // Aux view, turned by the device's live U; nothing refuses on it. Its own
+    // section, below the four steps and above the check, and NOT gated on the
+    // record being valid: the size of the jaws is known before the tip is, and
+    // an operator setting up a new gripper types it while the coupon dries.
+    ImGui::SeparatorText("Tool footprint");
+    {
+        double w = reg.toolWmm, l = reg.toolLmm;
+        bool   changed = false;
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::InputDouble("##toolw", &w, 0.0, 0.0, "%.3f")) changed = true;
+        ImGui::SameLine();
+        ImGui::TextUnformatted("x");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::InputDouble("W x L mm", &l, 0.0, 0.0, "%.3f")) changed = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The jaws' outline, centred on the tip: width along %s's\n"
+                              "X, length along its Y, turned with the device's U. Drawn\n"
+                              "to scale on every camera view that shows the tip, so 'is\n"
+                              "the gripper standing on the part' is a picture. Its\n"
+                              "corners can be dragged on the image once it has a size.",
+                              regRef_);
+        if (w <= 0.0 || l <= 0.0)
+            ImGui::TextDisabled("0 draws nothing - enter the jaws' size to see the box");
+        if (changed) {
+            if (w < 0.0) w = 0.0;
+            if (l < 0.0) l = 0.0;
+            if (w > 500.0) w = 500.0;
+            if (l > 500.0) l = 500.0;
+            // The record may not exist yet (nothing taught): name it, exactly
+            // as CompleteDeviceRegTip does, or SetDeviceReg drops a nameless one.
+            DeviceReg edited = reg;
+            edited.device    = regDevice_;
+            edited.refDevice = regRef_;
+            edited.toolWmm   = w;
+            edited.toolLmm   = l;
+            workflow_.QueueDeviceReg(edited);
+        }
     }
 
     if (!regTeachMsg_.empty())

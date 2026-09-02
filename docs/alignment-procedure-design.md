@@ -507,8 +507,7 @@ Two or four is a real choice. Two opposite corners give the centre in one stroke
 and **cannot check themselves**: a mark that lands off its feature moves the
 centre by half its error and looks exactly like a good mark. Four give the same
 centre as the average of a ring, and `spanMm` — twice the mean distance from the
-centre, the identical construction `DeviceReg::tipSpreadMm` uses, and for the
-identical reason — is then a *width across the marks* that either matches the
+centre — is then a *width across the marks* that either matches the
 part or does not. `SolveAlignNominalN` takes 2 or 4 and refuses anything else: a
 three-mark ring has no centre worth the name, and averaging one anyway would put
 a nominal somewhere nobody chose. `points` on the record says which; files

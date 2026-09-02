@@ -922,11 +922,12 @@ private:
     // moves all of it, so no constant width is right on every station.
     float      regCtlW_ = 430.0f;
     bool       regCtlSplitting_ = false;   // edge-detect the drag END
-    // The tool's known width. 0 = unchecked, and the page says so: a corner pick
-    // that lands off the mark shifts the centre by half its error and looks
-    // exactly like a good one, and this is the only number that can see it.
-    double regTipExpectMm_  = 0.0;
-    double regTipExpectTol_ = 0.2;
+    // The footprint box on the page's image, as the MarkPicker edits it: seeded
+    // from the record every frame it is not being dragged, written back through
+    // QueueDeviceReg when a corner drag ends. Floats because the widget takes
+    // floats; the record is the double that matters.
+    float regBoxW_ = 0.0f, regBoxH_ = 0.0f;
+    bool  regBoxDragging_ = false;
     // Check parameters. The three offsets default non-zero on purpose: a check
     // at the pose the tip was taught at returns the measurement by construction
     // and can verify nothing, so the default has to be a check that tests it.

@@ -145,8 +145,8 @@ struct AlignNominal {
     int         points = 2;           // 2 or 4 — how many of the above are real
     double      mx = 0.0, my = 0.0;   // CENTRE, machine mm, AT TEACH TIME
     // Two marks: the separation. Four: twice the mean distance from the centre,
-    // so one number means the same thing either way — a width across the marks,
-    // exactly like DeviceReg::tipSpreadMm. Diagnostic, like AlignResult::spanMm.
+    // so one number means the same thing either way — a width across the marks.
+    // Diagnostic, like AlignResult::spanMm.
     double      spanMm = 0.0;
     std::string taughtAt;             // "2026-08-01T10:22:31"
     std::string frameAt;              // capturedAt of the frame it was converted through

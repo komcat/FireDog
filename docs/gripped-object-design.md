@@ -99,7 +99,7 @@ choosing manual for one run must not destroy it.
 | `auto` | 1 | the detection |
 
 **There is no width.** An earlier draft carried a `sizeMm` with a tolerance, on
-the argument `DeviceReg::tipSpreadMm` makes: a mark off the object shifts the
+the argument the registration's imprint width check once made: a mark off the object shifts the
 midpoint by half its error and the width is the only number that can see it.
 It was dropped because the number it would be compared against is not real.
 The two manual marks land on whatever edge the operator can *see* — a lens has

@@ -88,7 +88,8 @@ runtime-writable pair `config/device_reg.local.json` → `config/device_reg.json
 | `R`, `rotSource` | the rotation and where it came from; `"axis-transforms"` today |
 | `t` | the tip at device pose (0,0,0) |
 | `imprintPose`, `homePose`, `tipView` | **the three teachable poses**, §5 |
-| `tipMeas`, `tipSpreadMm`, `tipPoints` | the measurement behind `t`, and its width |
+| `tipMeas`, `tipPoints` | the measurement behind `t` |
+| `toolWmm`, `toolLmm` | the jaws' footprint, typed, drawn around the tip and never acted on |
 | `taughtRot`, `hasRot` | the rotations `t` is pinned to; refused past 0.05° |
 | `checkResidualMm`, `checkPose`, `checkedAt` | the last check |
 | `regAt`, `tipAt` | **two dates, not one** — §7 |
@@ -127,23 +128,33 @@ the reference Z of a point is *already defined* as the gantry Z that focuses on
 it, so the focused view hands the tip's Z straight back. It goes into the same
 measured point as X and Y — no extra field, no second concept.
 
-### The width is recorded, and it is a refusal
+### No width check — a typed footprint instead
 
-`tipSpreadMm` is **twice the mean distance from the centre** — the plain
-separation for two diametrically opposite picks, a diameter for four, so one
-number means the same thing however many were taken. It exists because the
-average of N corner picks is the centre only if they are placed symmetrically,
-and a pick that lands off the mark **shifts the centre by about half its error
-while looking exactly like a good one**. The measured width is the only thing that
-can see it.
+An earlier version measured the mark's width — twice the mean distance of the
+corner picks from their centre — and refused the teach when it disagreed with a
+typed tool width, on the argument that a pick off the mark shifts the centre by
+half its error while looking exactly like a good one. It was removed. The width
+of an *imprint* is a fact about the coupon and the ink, not about the tool: a
+gripper pressed into a soft coupon leaves a mark wider than its jaws, and a
+light touch leaves one narrower, so the refusal fired on good picks and was
+turned off at the first station. The corner picks are the operator's judgement
+and the record stores how many were averaged, nothing more.
 
-With the tool's real width entered, a disagreement is a **refusal before anything
-is stored** — not a warning, because there is nothing about a quietly shifted
-centre for a warning to catch later. With it left at 0 the page says, in orange,
-that nothing checked.
+What the record holds instead is the tool's **footprint**: `toolWmm` along the
+reference device's X and `toolLmm` along its Y, typed under *Registration* on
+the page and part of the machine-state record like the tip it is centred on.
+It is only ever **drawn** — a rectangle around the predicted tip, turned by the
+device's live **U** so it follows the jaws, on the page's own image (where its
+corners can be dragged to resize it, in the box's own frame), on the Gripped
+Object page, and on the Aux view. Nothing refuses on it and nothing moves by it;
+`0` draws nothing. The spin is screen-space, the same drawing convention the
+picker's envelope uses; if a station's camera is mounted so that +U reads the
+other way on screen, the sign lives in exactly two `spin` lambdas
+(`Widgets.cpp`, `WndAux.cpp`). Its purpose is the question a cross cannot answer: *is the
+gripper standing on the part?*
 
-The centre and the width are computed on the page, where the picks are. A second
-copy in C++ would be a second opinion about where the tool touches.
+The centre is computed on the page, where the picks are. A second copy in C++
+would be a second opinion about where the tool touches.
 
 ## 5. Why the teach is a page and not a procedure
 
@@ -360,14 +371,13 @@ elided, not a second wording of it. The colour and the word
 `reg` on the plate exist to stop it reading as a detection: one is what the camera
 saw, the other is what the machine believes.
 
-Around each cross is the tool's **width**, drawn to scale: a circle of
-`tipSpreadMm` in machine mm, so it grows and shrinks with the picture under it
-instead of staying a screen-sized glyph. A cross answers *where is the gripper*
-and never *is it standing on the part*, and at a 3 mm field of view those are the
-same cross. The width drawn is the one the imprint **measured** — not the `tool
-width mm` typed on the teach page, which is an expectation used once to refuse a
-bad pick and never enters the record — so a registration whose tip was taught
-without one draws no outline at all. It fades when the tip is off the focused
+Around each cross is the tool's **footprint**, drawn to scale: a rectangle of
+`toolWmm` × `toolLmm` in machine mm, so it grows and shrinks with the picture
+under it instead of staying a screen-sized glyph. A cross answers *where is the
+gripper* and never *is it standing on the part*, and at a 3 mm field of view
+those are the same cross. The size drawn is the one **typed** on the Registration
+page — the jaws as the operator knows them — so a registration with no
+footprint draws no outline at all. It fades when the tip is off the focused
 plane: both the position and the size go through a pixel->mm calibration that
 belongs to *that* plane, and the cross never had a size to be wrong about.
 

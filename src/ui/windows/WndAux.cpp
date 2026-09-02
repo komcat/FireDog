@@ -74,47 +74,51 @@ constexpr double kTipAtFocusMM = 0.050;
 constexpr ImU32 kTipGoneCol = IM_COL32(200, 170, 110, 220);
 
 // The tool's own footprint around that tip. Same amber, dimmer than the cross:
-// it is the SAME claim - one registration - drawn at its true size, not a
-// second thing that was measured.
-constexpr ImU32 kTipWidthCol    = IM_COL32(255, 190, 70, 150);
+// it is the SAME claim - one registration - drawn at the size the operator
+// typed for it, not a second thing that was measured.
+constexpr ImU32 kTipBoxCol    = IM_COL32(255, 190, 70, 150);
 // ...and dimmer again when the tip is not near the plane in focus. Position and
 // size both go through a pixel->mm calibration that belongs to THAT plane, so a
 // tip 3 mm above it is drawn the right shape at the wrong magnification. The
 // cross never had a size to be wrong about; the outline does.
-constexpr ImU32 kTipWidthFarCol = IM_COL32(255, 190, 70, 60);
-// Below this on-screen radius an outline is not a size, it is a slightly
-// fatter dot beside the cross's own 5 px ring - and two rings that mean
+constexpr ImU32 kTipBoxFarCol = IM_COL32(255, 190, 70, 60);
+// Below this on-screen half-size an outline is not a size, it is a slightly
+// fatter dot beside the cross's own 5 px ring - and two glyphs that mean
 // different things at the same scale is worse than one.
-constexpr float kTipWidthMinPx  = 7.0f;
+constexpr float kTipBoxMinPx  = 7.0f;
 
-// The tool's footprint on the part, centred on the predicted tip: a circle of
-// the width the imprint MEASURED (DeviceReg::tipSpreadMm), in machine mm, so it
-// grows and shrinks with the picture under it instead of staying a screen-sized
-// glyph.
+// The tool's footprint on the part, centred on the predicted tip: a rectangle
+// of the width and length the registration holds (DeviceReg::toolWmm/toolLmm),
+// in machine mm, so it grows and shrinks with the picture under it instead of
+// staying a screen-sized glyph.
 //
 // A cross says where a tool is and never says how much of the part it COVERS.
 // At a 3 mm field of view that is the whole question an operator is asking of
 // this overlay - a gripper clear of a feature and a gripper standing on it are
-// the same cross. The width drawn is the one the registration measured (twice
-// the mean distance of the corner picks from their centre: a diameter for four
-// picks, the separation for two), NOT the 'tool width mm' typed on the teach
-// page, which is an expectation used once to refuse a bad pick and is not part
-// of the record. A registration with no measured width draws no outline -
+// the same cross. The size drawn is the one TYPED on the Registration page: the
+// jaws' outline as the operator knows it, width along the reference device's X
+// and length along its Y. A registration with no footprint draws no outline -
 // absence is the signal here as it is everywhere else on this overlay.
 //
 // mm -> screen goes through pixelToMm on each axis SEPARATELY, because the two
-// need not be equal: on non-square pixels a round tool is an ellipse on screen,
-// and forcing a circle would draw a tool that is not the one on the machine.
-void DrawTipWidth(ImDrawList* dl, const WorldMarkView& wv,
-                  double wx, double wy, double widthMm, ImU32 col)
+// need not be equal: on non-square pixels a square tool is a rectangle on
+// screen, and forcing it square would draw a tool that is not the one on the
+// machine.
+//
+// `deg` spins it about the tip - the device's live U, so the outline turns with
+// the jaws. Screen-space, the same way the MarkPicker spins its boxes: a
+// rotation stays a rotation only where the scale is the same on both axes.
+void DrawTipBox(ImDrawList* dl, const WorldMarkView& wv,
+                double wx, double wy, double wMm, double lMm, double deg, ImU32 col)
 {
-    if (!dl || widthMm <= 0.0 || wv.pixelToMmX <= 0.0f || wv.pixelToMmY <= 0.0f) return;
+    if (!dl || wMm <= 0.0 || lMm <= 0.0 || wv.pixelToMmX <= 0.0f || wv.pixelToMmY <= 0.0f)
+        return;
 
-    const float rx = static_cast<float>(widthMm * 0.5 /
+    const float rx = static_cast<float>(wMm * 0.5 /
                                         static_cast<double>(wv.pixelToMmX)) * wv.view.scale;
-    const float ry = static_cast<float>(widthMm * 0.5 /
+    const float ry = static_cast<float>(lMm * 0.5 /
                                         static_cast<double>(wv.pixelToMmY)) * wv.view.scale;
-    if (rx < kTipWidthMinPx && ry < kTipWidthMinPx) return;
+    if (rx < kTipBoxMinPx && ry < kTipBoxMinPx) return;
 
     // The centre, through the same projection DrawWorldMark uses - a second
     // copy of it would put the outline off the cross it belongs to.
@@ -127,27 +131,23 @@ void DrawTipWidth(ImDrawList* dl, const WorldMarkView& wv,
     // Wholly outside the box: nothing to draw. The CROSS handles that case with
     // an edge arrow, and an arrow per outline as well would say the same thing
     // twice. A footprint whose centre is off screen while its rim is not still
-    // draws - that rim is exactly the news.
-    if (c.x + rx < wv.boxMin.x || c.x - rx > wv.boxMax.x ||
-        c.y + ry < wv.boxMin.y || c.y - ry > wv.boxMax.y) return;
+    // draws - that rim is exactly the news. Tested on the turned box's
+    // bounding radius, so a corner that swings into view is not culled.
+    const float rr = sqrtf(rx * rx + ry * ry);
+    if (c.x + rr < wv.boxMin.x || c.x - rr > wv.boxMax.x ||
+        c.y + rr < wv.boxMin.y || c.y - rr > wv.boxMax.y) return;
 
-    int steps = static_cast<int>(fmaxf(rx, ry) * 0.5f) + 20;
-    if (steps > 96) steps = 96;
-
-    std::vector<ImVec2> pts;
-    pts.reserve(static_cast<std::size_t>(steps));
-    for (int i = 0; i < steps; ++i) {
-        const double a = 6.28318530717958647692 * static_cast<double>(i) /
-                         static_cast<double>(steps);
-        pts.push_back(ImVec2(c.x + rx * static_cast<float>(std::cos(a)),
-                             c.y + ry * static_cast<float>(std::sin(a))));
-    }
+    const float th = static_cast<float>(deg) * 3.14159265358979f / 180.0f;
+    const float cs = cosf(th), sn = sinf(th);
+    const auto  spin = [&](float x, float y) {
+        return ImVec2(c.x + x * cs - y * sn, c.y + x * sn + y * cs);
+    };
 
     // Unlike the cross, this has EXTENT, and a tool wider than the field of view
     // would otherwise paint across the control strip and the chart. Clipped to
     // the image box, which is what it is a statement about.
     dl->PushClipRect(wv.boxMin, wv.boxMax, true);
-    dl->AddPolyline(pts.data(), steps, col, ImDrawFlags_Closed, 1.5f);
+    dl->AddQuad(spin(-rx, -ry), spin(rx, -ry), spin(rx, ry), spin(-rx, ry), col, 1.5f);
     dl->PopClipRect();
 }
 
@@ -609,7 +609,7 @@ void App::DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2&
 //     origin projected through this pose is off by the whole distance
 //     between the two origins.
 //
-// The tip also gets its WIDTH, drawn to scale by DrawTipWidth above - a cross
+// The tip also gets its FOOTPRINT, drawn to scale by DrawTipBox above - a cross
 // alone answers 'where is the gripper' and never 'is it standing on the part',
 // which at these fields of view is the question being asked.
 //
@@ -700,11 +700,18 @@ void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2
         else
             std::snprintf(lbl, sizeof(lbl), "%s reg  dZ %+.3f", name.c_str(), dz);
 
-        // How wide the tool is, before the cross that says where it is: the
+        // How big the tool is, before the cross that says where it is: the
         // outline is context for the mark, so the mark and its plate stay
-        // legible on top of it.
-        DrawTipWidth(dl, wv, tip.x, tip.y, r.tipSpreadMm,
-                     (haveGz && !atFocus) ? kTipWidthFarCol : kTipWidthCol);
+        // legible on top of it. Turned by the device's live U, as the jaws are.
+        double devU = 0.0;
+        {
+            std::map<std::string, double> devPose;
+            if (workflow_.DevicePose(name, devPose))
+                if (const auto iu = devPose.find("U"); iu != devPose.end())
+                    devU = iu->second;
+        }
+        DrawTipBox(dl, wv, tip.x, tip.y, r.toolWmm, r.toolLmm, devU,
+                   (haveGz && !atFocus) ? kTipBoxFarCol : kTipBoxCol);
 
         CameraMark cm;
         cm.wx    = tip.x;

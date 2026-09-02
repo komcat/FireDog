@@ -139,7 +139,7 @@ std::string DeviceRegSetRotation(DeviceReg& r, const RegVec3 cols[3],
 }
 
 std::string DeviceRegSetTip(DeviceReg& r, const RegVec3& h, const RegVec3& p,
-                            double spreadMm, int points)
+                            int points)
 {
     if (r.rotSource.empty())
         return "there is no rotation to hold fixed - adopt one for '" + r.device +
@@ -156,7 +156,6 @@ std::string DeviceRegSetTip(DeviceReg& r, const RegVec3& h, const RegVec3& p,
     r.imprintPose = h;
     r.hasImprintPose = true;
     r.tipMeas     = p;
-    r.tipSpreadMm = spreadMm;
     r.tipPoints   = points;
     r.valid       = true;
 
@@ -229,8 +228,10 @@ nlohmann::json DeviceRegToJson(const DeviceReg& r)
     j["poses"]["has_view"]    = r.hasTipView;
 
     j["tip"]["measured"]  = Vec3ToJson(r.tipMeas);
-    j["tip"]["spread_mm"] = r.tipSpreadMm;
     j["tip"]["points"]    = r.tipPoints;
+
+    j["tool"]["width_mm"]  = r.toolWmm;
+    j["tool"]["length_mm"] = r.toolLmm;
 
     j["check"]["residual_mm"] = r.checkResidualMm;
     j["check"]["pose"]        = Vec3ToJson(r.checkPose);
@@ -282,8 +283,13 @@ DeviceReg DeviceRegFromJson(const nlohmann::json& j)
     if (j.contains("tip") && j["tip"].is_object()) {
         const nlohmann::json& tp = j["tip"];
         if (tp.contains("measured")) r.tipMeas = Vec3FromJson(tp["measured"]);
-        r.tipSpreadMm = tp.value("spread_mm", 0.0);
-        r.tipPoints   = tp.value("points", 0);
+        r.tipPoints = tp.value("points", 0);
+    }
+    if (j.contains("tool") && j["tool"].is_object()) {
+        r.toolWmm = j["tool"].value("width_mm", 0.0);
+        r.toolLmm = j["tool"].value("length_mm", 0.0);
+        if (r.toolWmm < 0.0) r.toolWmm = 0.0;
+        if (r.toolLmm < 0.0) r.toolLmm = 0.0;
     }
 
     if (j.contains("check") && j["check"].is_object()) {

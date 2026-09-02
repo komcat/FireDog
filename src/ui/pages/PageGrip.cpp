@@ -228,6 +228,10 @@ void App::DrawGripPanel()
         // define - so it is drawn, unlike the registration page's four corners
         // where a centre of the imprint is what the maths produces later.
         mp.midpointLabel = "object";
+        // The footprint's size for the picker, seeded from the registration.
+        // Locals, not App state: the box is read-only here (no drag flag), so
+        // there is nothing to carry between frames.
+        float boxW = 0.0f, boxH = 0.0f;
         // ...and the TIP beside it, which is what the centre is measured
         // against. Drawn differently on purpose: a mark is a thing somebody
         // measured, a tip is a thing the machine computed out of a registration,
@@ -238,6 +242,18 @@ void App::DrawGripPanel()
             mp.toolWx    = tip.x;
             mp.toolWy    = tip.y;
             mp.toolLabel = g->device.c_str();
+            // ...and the jaws around it, at the size the registration holds.
+            // Read-only on this page: the footprint is machine state and is
+            // taught on the Registration page.
+            boxW      = static_cast<float>(reg.toolWmm);
+            boxH      = static_cast<float>(reg.toolLmm);
+            mp.boxWmm = &boxW;
+            mp.boxHmm = &boxH;
+            // ...turned by the device's live U, as the jaws are.
+            std::map<std::string, double> devPose;
+            if (workflow_.DevicePose(g->device, devPose))
+                if (const auto iu = devPose.find("U"); iu != devPose.end())
+                    mp.boxDeg = static_cast<float>(iu->second);
         }
         EnsureMarkIcons();
         mp.icons[0]   = markIcons_[0];

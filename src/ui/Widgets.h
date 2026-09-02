@@ -274,9 +274,11 @@ struct MarkPicker {
     const char* toolLabel = nullptr;
     // The tool's FOOTPRINT, centred on that tip: a rectangle in mm, drawn so an
     // operator can see the gripper's perimeter against the part before anything
-    // is placed. Non-null enables it AND receives corner drags — the box always
-    // re-centres on the tip, so dragging a corner can only change the size, and
-    // there is no position for it to drift into.
+    // is placed. Non-null size pointers draw it; a non-null `boxDragging` ALSO
+    // makes its corners draggable — the box always re-centres on the tip, so
+    // dragging a corner can only change the size, and there is no position for
+    // it to drift into. Without the flag the box is read-only, for a page that
+    // shows the footprint but does not own it.
     //
     // Both the size and the drag flag are the CALLER's state, as everything in
     // this file is: the widget keeps none. `boxDragging` latches a drag that
@@ -284,6 +286,11 @@ struct MarkPicker {
     float* boxWmm     = nullptr;
     float* boxHmm     = nullptr;
     bool*  boxDragging = nullptr;
+    // Spins the footprint about the tip, degrees: the device's live U, so the
+    // box turns with the jaws. A screen-space spin like `envelopeDeg`, and
+    // like it purely a drawing matter - the tip is the same point at every
+    // angle, and the corner drag measures its size in the box's own frame.
+    float  boxDeg = 0.0f;
     // Step diagrams, bottom-left. `activeMark` is the 0-based mark the operator
     // should place next; the other is dimmed.
     MarkIcon icons[2];

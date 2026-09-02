@@ -136,14 +136,21 @@ struct DeviceReg {
     // somewhere surprising, "which number is wrong" is the only useful question,
     // and re-teaching to find out throws the evidence away.
     RegVec3 tipMeas;                // the measured tip itself, reference space
-    // The measured width of the mark, and how many corner picks were averaged.
-    // Kept for the reason `spanMm` is kept on a frame: the average of N corner
-    // picks is the centre only if they are placed symmetrically, and a pick that
-    // lands off the mark shifts the centre by half its error while looking
-    // exactly like a good one. A width that does not match the tool you know you
-    // have is the only thing that shows it.
-    double  tipSpreadMm = 0.0;
-    int     tipPoints   = 0;
+    int     tipPoints = 0;          // how many corner picks were averaged
+
+    // ---- The tool's footprint ------------------------------------------------
+    // Width along the reference device's X and length along its Y, in mm,
+    // centred on the tip. TYPED, never measured: it is the perimeter of the
+    // jaws as the operator knows them, and it exists for one purpose - to be
+    // drawn around the tip on the Aux view and the teach pages, so "is the
+    // gripper standing on the part" is a picture rather than an estimate.
+    // Nothing refuses on it and nothing moves by it. 0 draws nothing.
+    //
+    // It replaced a measured mark width with a tolerance that refused the
+    // teach: the width of an imprint is a fact about the coupon and the ink,
+    // not about the tool, so the refusal fired on good picks and was turned off.
+    double  toolWmm = 0.0;
+    double  toolLmm = 0.0;
 
     // ---- The daily check ----------------------------------------------------
     double      checkResidualMm = 0.0;
@@ -178,14 +185,12 @@ std::string DeviceRegSetRotation(DeviceReg& r, const RegVec3 cols[3],
 // whatever the last check measured described tooling that may no longer be on
 // the machine.
 //
-// The imprint's CENTRE and its measured width are computed by the page that owns
-// the corner picks, not here — that is where the N points exist, and a second
-// copy of the formula would be a second opinion about where the tool touches.
-// `spreadMm` is twice the mean distance from the centre: the plain separation
-// for two opposite picks, a diameter for four, so one number means the same
-// thing however many were taken.
+// The imprint's CENTRE is computed by the page that owns the corner picks, not
+// here — that is where the N points exist, and a second copy of the formula
+// would be a second opinion about where the tool touches. `points` is how many
+// were averaged, kept as evidence.
 std::string DeviceRegSetTip(DeviceReg& r, const RegVec3& h, const RegVec3& p,
-                            double spreadMm, int points);
+                            int points);
 
 // Whether a live pose is close enough to the taught rotations to predict
 // through. `why` receives the reason when it is not.

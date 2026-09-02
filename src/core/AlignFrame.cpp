@@ -408,8 +408,7 @@ bool SolveAlignNominalN(const AlignResult& frame, const AlignPoint* pts, int n,
     // Two marks: the separation, which is what `spanMm` has always meant. Four:
     // twice the mean distance from the centre — the same figure for a ring that
     // the separation is for a pair, so one number reads the same either way.
-    // (DeviceReg::tipSpreadMm is the identical construction, for the identical
-    // reason: it is the only number that can see a mark placed off its feature.)
+    // It is the only number that can see a mark placed off its feature.
     if (n == 2) {
         const double dx = pts[1].wx - pts[0].wx;
         const double dy = pts[1].wy - pts[0].wy;
