@@ -45,9 +45,13 @@ void App::DrawRecipePromptWindow()
     if (newPrompt) promptInputBuf_[0] = '\0';
 
     // Operator-facing dialog: it defines its OWN high-contrast palette (opaque
-    // near-black body, pure-white text, amber accent frame, bright buttons) so
-    // it reads identically in every app theme, and runs at 1.5x the app font
-    // so it stands out from whatever page is behind it.
+    // near-black body, pure-white text, amber accent frame, dark grey buttons)
+    // so it reads identically in every app theme, and runs at 1.5x the app font
+    // so it stands out from whatever page is behind it. The buttons are grey
+    // rather than a saturated colour on purpose: they are the only things here
+    // that can be pressed, and a neutral fill leaves the amber frame as the
+    // one accent — a blue slab the width of the box competes with the sentence
+    // the operator is meant to read first.
     const float promptFont = ImGui::GetStyle().FontSizeBase * 1.5f;
     ImGui::PushFont(nullptr, promptFont);
     ImGui::PushStyleColor(ImGuiCol_WindowBg,      ImVec4(0.06f, 0.08f, 0.12f, 1.00f));
@@ -55,9 +59,9 @@ void App::DrawRecipePromptWindow()
     ImGui::PushStyleColor(ImGuiCol_TitleBg,       ImVec4(0.13f, 0.34f, 0.64f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.13f, 0.34f, 0.64f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(1.00f, 0.76f, 0.25f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.42f, 0.76f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.55f, 0.92f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.30f, 0.58f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.22f, 0.23f, 0.25f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.34f, 0.35f, 0.38f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.14f, 0.15f, 0.17f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_FrameBg,       ImVec4(0.14f, 0.17f, 0.24f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_Separator,     ImVec4(1.00f, 0.76f, 0.25f, 0.60f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
