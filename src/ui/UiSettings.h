@@ -47,6 +47,10 @@ struct UiSettings {
     // its own layout.
     float regCtlW = 0.0f;
 
+    // Gripped Object page: width of its right-hand control column in px
+    // (0 = default). Same reasoning as the Registration page beside it.
+    float gripCtlW = 0.0f;
+
     // Run page: height of the Scan band in px (0 = default). Its own field
     // rather than lowerH: the band carries the scan parameter forms, and how
     // much room those need has nothing to do with the log strip's height.

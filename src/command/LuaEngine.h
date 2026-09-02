@@ -78,6 +78,7 @@ public:
         std::vector<Recipe>    library;   // fd.run_recipe resolves against this
         std::vector<AlignProc> aligns;    // taught local frames (fd.align_*)
         std::vector<VisionModel> visionModels;   // taught detectors (fd.vision_*)
+        std::vector<GripProfile> grips;          // gripped-object profiles (grip_*)
         std::string              visionDir;      // where their template patches live
         std::string              scriptsDir;     // product scripts win over config/scripts
         // Seeded into the run's ctx before the script starts — the UI-side

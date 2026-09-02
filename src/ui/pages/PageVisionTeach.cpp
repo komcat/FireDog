@@ -110,6 +110,19 @@ std::string NominalDetectorName(const std::string& procUid, const std::string& n
     return "vdet_" + procUid + "_" + nomUid + "_p" + std::to_string(index);
 }
 
+// And once more for a gripped object. Private to the profile for the third
+// time and for the same reason: the patch is cut at the inspect pose, through
+// the camera standing over that tool, and it means nothing anywhere else.
+//
+// One model, not two, whatever the mode: a detector reports a point, and the
+// two-mark form is the MANUAL alternative to having one, never a pair of them.
+//
+// "vdet_grip_" + 8 = 18 chars.
+std::string GripDetectorName(const std::string& gripUid)
+{
+    return "vdet_grip_" + gripUid;
+}
+
 // The corner form's two halves, plus the diagram they share. File-scope helpers
 // rather than more branches inline: they hold no state (every value is a
 // CornerParams field), and the two modes share nothing below the reported corner
@@ -525,6 +538,83 @@ void App::DropNominalDetectors(const AlignProc& a, const AlignNominal& n)
         FD_INFO("vision", "'%s' nominal '%s': dropped %d object detector(s)",
                 a.name.c_str(), n.name.c_str(), dropped);
     }
+}
+
+// ---- A gripped object's detector -------------------------------------------
+
+const VisionModel* App::GripDetector(const GripProfile& g) const
+{
+    return FindVisionModel(session_.VisionModels(), GripDetectorName(g.uid));
+}
+
+// Third owner, same page, same lifecycle. What differs is the pose it is tuned
+// at: not a taught station position but the INSPECT pose, on the gripper - the
+// camera is put over the tool by move_camera_to_tool, so there is no single
+// saved pose on the CAMERA to drive to. visionOwnerPosUid_ is therefore left
+// empty and the page simply does not offer the drive: the operator sets the
+// scene with the profile page's own buttons, which is the only surface that
+// knows the two-device dance.
+void App::OpenVisionTeachForGrip(GripProfile& g)
+{
+    if (!CanAccess(Page::VisionTeach)) return;
+    ResetVisionTeachState();
+    visionOwnerDevice_.clear();
+    visionOwnerPosUid_.clear();
+
+    const std::string name = GripDetectorName(g.uid);
+    VisionModel* m = FindVisionModel(session_.VisionModels(), name);
+    if (!m) {
+        VisionModel fresh;
+        fresh.uid  = GenerateUid();
+        fresh.name = name;
+        session_.VisionModels().push_back(std::move(fresh));
+        m = &session_.VisionModels().back();
+        session_.SaveVision();   // the profile's reference below must outlive a crash
+    }
+    visionSelUid_ = m->uid;
+
+    g.detector = m->uid;      // grip_mark resolves by uid
+    g.mode     = "auto";      // teaching one is asking to use it
+    session_.SaveGrips();
+
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "gripped object '%s'  -  held by %s",
+                  g.name.c_str(), g.device.empty() ? "(no gripper)" : g.device.c_str());
+    visionOwnerLabel_ = buf;
+
+    visionFocusX_ = static_cast<float>(cameraW_) * 0.5f;
+    visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
+    visionTmpl_.key.clear();
+
+    visionReturnPage_ = Page::Grip;
+    SwitchPage(Page::VisionTeach);
+}
+
+// Deleting a profile takes its detector with it - nothing lists these models,
+// so an orphan is something nobody would ever go looking for.
+void App::DropGripDetector(const GripProfile& g)
+{
+    const VisionModel* m = GripDetector(g);
+    if (!m) return;
+    const std::string uid = m->uid;
+    if (visionSelUid_ == uid) visionSelUid_.clear();
+    workflow_.InvalidateDetector(uid);
+    if (session_.DeleteVisionModel(uid)) {
+        session_.SaveVision();
+        FD_INFO("vision", "'%s': dropped its object detector", g.name.c_str());
+    }
+}
+
+// ...and duplicating one copies it, patch file included, so the copy is
+// self-contained rather than sharing a row the original's Delete would take
+// away.
+void App::CopyGripDetector(const GripProfile& src, GripProfile& dst)
+{
+    const VisionModel* m = GripDetector(src);
+    dst.detector.clear();
+    if (!m) return;
+    dst.detector = CopyVisionModelAs(*m, GripDetectorName(dst.uid));
+    session_.SaveVision();
 }
 
 // The key carries everything the picture and the reported point depend on, so a

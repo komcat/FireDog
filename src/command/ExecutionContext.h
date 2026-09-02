@@ -13,6 +13,7 @@
 #pragma once
 
 #include "core/AlignFrame.h"
+#include "core/GripProfile.h"
 #include "vision/VisionModel.h"
 #include "core/MotionMap.h"
 #include "core/SavedPositions.h"
@@ -68,6 +69,15 @@ std::string CtxValueToString(const CtxValue& v);
 // copy would produce. They also carry the quality gates a fit is refused on —
 // or rather they call the command that does, which is why those gates live in
 // core/DeviceReg.cpp and not in the script.
+//
+// grip_measure.lua is on the list for a fourth reason, and it is the one that
+// distinguishes this list from a policy about machine state. WHAT it measures
+// is per-product to its bones - the lens, the gripper, the tolerance all live
+// in the product's own profile - but HOW it measures is not: pose the tool,
+// look at the tip, mark, subtract. A product that forked it would keep whatever
+// order of legs it was copied at, and the failure would look like a bad grip
+// rather than like a missing step. The product's business is entirely in the
+// record the script reads.
 bool IsSystemScript(const std::string& pathOrFile);
 
 // "config/scripts/<file>" for a system script, "" for anything else. The one
@@ -194,6 +204,7 @@ public:
                      SavedPosMap& positions, const MotionMapSet& maps,
                      const std::vector<AlignProc>& aligns,
                      const std::vector<VisionModel>& visionModels,
+                     const std::vector<GripProfile>& grips,
                      std::string visionDir, std::string scriptsDir, Hooks hooks);
     ExecutionContext(const ExecutionContext&) = delete;
     ExecutionContext& operator=(const ExecutionContext&) = delete;
@@ -228,6 +239,7 @@ public:
     const MotionMapSet& Maps() const { return maps_; }
     const std::vector<AlignProc>& Aligns() const { return aligns_; }
     const std::vector<VisionModel>& VisionModels() const { return visionModels_; }
+    const std::vector<GripProfile>& Grips() const { return grips_; }
     // Where the models' taught template patches live, for this run's document.
     const std::string& VisionDir() const { return visionDir_; }
     // The scripts directory this run resolves against — the product's when it
@@ -255,6 +267,8 @@ public:
     const AlignProc* FindAlign(const std::string& uidOrName) const;
     // Vision detection model by uid, else by name (see FindVisionModel).
     const VisionModel* FindVisionModel(const std::string& uidOrName) const;
+    // Gripped-object profile by uid, else by name. Same rule again.
+    const GripProfile* FindGrip(const std::string& uidOrName) const;
 
     // Teach: record `vals` as the device's saved position `name` — update by
     // name (uid kept stable) or create. Mutates the RUN's copy, so later steps
@@ -277,6 +291,7 @@ private:
     const MotionMapSet& maps_;        // stable for the whole run
     const std::vector<AlignProc>& aligns_;   // ditto
     const std::vector<VisionModel>& visionModels_;   // ditto
+    const std::vector<GripProfile>& grips_;          // ditto
     std::string         visionDir_;                  // by value: they are paths,
     std::string         scriptsDir_;                  // not live documents
     Hooks               hooks_;

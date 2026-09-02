@@ -473,6 +473,18 @@ std::vector<std::pair<std::string, AlignResult>> Workflow::TakeAlignResults()
     return std::exchange(alignQueue_, {});
 }
 
+void Workflow::QueueGripResult(const GripMeasurement& m)
+{
+    const std::lock_guard<std::mutex> lock(gripMu_);
+    gripQueue_.push_back(m);
+}
+
+std::vector<Workflow::GripMeasurement> Workflow::TakeGripResults()
+{
+    const std::lock_guard<std::mutex> lock(gripMu_);
+    return std::exchange(gripQueue_, {});
+}
+
 void Workflow::QueueVisionReliability(const std::string& uid, const VisionReliability& r)
 {
     const std::lock_guard<std::mutex> lock(visionRelMu_);

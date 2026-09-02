@@ -258,6 +258,7 @@ struct ValidateEnv {
     const MotionMapSet&    maps;
     const std::vector<AlignProc>& aligns;
     const std::vector<VisionModel>& visionModels;
+    const std::vector<GripProfile>& grips;
     const std::vector<Recipe>& library;
     bool requireConnected = false;
     std::vector<RecipeIssue>* issues = nullptr;
@@ -379,6 +380,15 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             // unable to even open a recipe that mentions vision.
             if (!FindVisionModel(env.visionModels, v))
                 Issue(env, where, path, "detection model '" + v + "' not found");
+            break;
+        }
+        case ParamType::GripUid: {
+            // Uid or name, existence only - like VisionUid, and for a related
+            // reason: whether the profile's GRIPPER is registered is a run-time
+            // question about machine state, and a recipe must stay openable on a
+            // machine whose registration has not been taught yet.
+            if (!FindGripProfile(env.grips, v))
+                Issue(env, where, path, "grip profile '" + v + "' not found");
             break;
         }
         case ParamType::MapName: {
@@ -524,11 +534,12 @@ std::vector<RecipeIssue> ValidateRecipe(const Recipe& r, const CommandRegistry& 
                                         const MotionMapSet& maps,
                                         const std::vector<AlignProc>& aligns,
                                         const std::vector<VisionModel>& visionModels,
+                                        const std::vector<GripProfile>& grips,
                                         const std::vector<Recipe>& library,
                                         bool requireConnected)
 {
     std::vector<RecipeIssue> issues;
-    ValidateEnv env{reg, hw, positions, maps, aligns, visionModels, library,
+    ValidateEnv env{reg, hw, positions, maps, aligns, visionModels, grips, library,
                     requireConnected, &issues};
     if (r.steps.empty()) issues.push_back({"(root)", "recipe has no steps", {}});
     ValidateSteps(env, r.steps, "", {}, false, 1);

@@ -451,6 +451,42 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             ImGui::TextColored(kStaleRed, "unknown alignment procedure - re-pick");
         break;
     }
+    case ParamType::GripUid: {
+        // Not device-scoped, for a reason worth stating: the profile NAMES the
+        // gripper it belongs to, so scoping the picker to a step's "device"
+        // would be a second answer to which device is holding the object.
+        const std::string v = cur.is_string() ? cur.get<std::string>() : "";
+        std::string preview = v.empty() ? "(pick)" : v;
+        bool resolved       = v.empty();
+        if (const GripProfile* g = FindGripProfile(session_.Grips(), v)) {
+            preview  = g->name;
+            resolved = true;
+        }
+        if (!resolved) pushStale();
+        ImGui::SetNextItemWidth(w);
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        if (!resolved) ImGui::PopStyleColor(4);
+        if (open) {
+            if (session_.Grips().empty())
+                ImGui::TextDisabled("(no grip profiles - see the Gripped Object page)");
+            else
+                for (const GripProfile& g : session_.Grips()) {
+                    // The device it measures against, because two profiles for
+                    // the same lens in two grippers are a normal thing to have
+                    // and the names alone would not separate them.
+                    std::string row = g.name;
+                    if (!g.device.empty()) row += "   (" + g.device + ")";
+                    if (ImGui::Selectable(row.c_str(), g.uid == v)) {
+                        params[p.name] = g.uid;
+                        changed = true;
+                    }
+                }
+            ImGui::EndCombo();
+        }
+        if (!resolved)
+            ImGui::TextColored(kStaleRed, "unknown grip profile - re-pick");
+        break;
+    }
     case ParamType::NominalUid: {
         // Scoped to the step's OWN "alignment", the way PositionUid is scoped to
         // its "device": a nominal is a point on one procedure's part, and the

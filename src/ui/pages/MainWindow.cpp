@@ -320,6 +320,9 @@ void App::DrawMainWindow()
                 if (CanAccess(Page::DeviceReg) &&
                     ImGui::MenuItem("Registration", "F8", currentPage_ == Page::DeviceReg))
                     ToggleEditorPage(Page::DeviceReg);
+                if (CanAccess(Page::Grip) &&
+                    ImGui::MenuItem("Gripped object", "F9", currentPage_ == Page::Grip))
+                    ToggleEditorPage(Page::Grip);
                 if (CanAccess(Page::Scripts) &&
                     ImGui::MenuItem("Scripts", "F4", currentPage_ == Page::Scripts))
                     ToggleEditorPage(Page::Scripts);
@@ -342,7 +345,8 @@ void App::DrawMainWindow()
         }
 
         // Global page shortcuts: F1 Run, F2 Recipe Editor, F3 Motion, F4
-        // Scripts, F5 Alignment, F6 Placement, F7 Needle. Activate (not toggle)
+        // Scripts, F5 Alignment, F6 Placement, F7 Needle, F8 Registration,
+        // F9 Gripped object. Activate (not toggle)
         // — pressing the key on its own page is a no-op.
         if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && currentPage_ != Page::Run)
             ToggleEditorPage(Page::Run);
@@ -364,6 +368,8 @@ void App::DrawMainWindow()
             ToggleEditorPage(Page::Needle);
         if (ImGui::IsKeyPressed(ImGuiKey_F8, false) && currentPage_ != Page::DeviceReg)
             ToggleEditorPage(Page::DeviceReg);
+        if (ImGui::IsKeyPressed(ImGuiKey_F9, false) && currentPage_ != Page::Grip)
+            ToggleEditorPage(Page::Grip);
 
         // Quick-access strip (all pages): one-click jump to the operator pages.
         // Same guarded routing as the F-keys (activate, not toggle — clicking
@@ -414,6 +420,7 @@ void App::DrawMainWindow()
             }
             pageBtn("Needle (F7)", Page::Needle, true);
             pageBtn("Registration (F8)", Page::DeviceReg, true);
+            pageBtn("Gripped object (F9)", Page::Grip, true);
             if (anyBtn) ImGui::Separator();
         }
 
@@ -435,7 +442,8 @@ void App::DrawMainWindow()
             currentPage_ == Page::DutView || currentPage_ == Page::Run ||
             currentPage_ == Page::Align || currentPage_ == Page::VisionTeach ||
             currentPage_ == Page::AlignNominal || currentPage_ == Page::AlignPlace ||
-            currentPage_ == Page::Needle || currentPage_ == Page::DeviceReg) {
+            currentPage_ == Page::Needle || currentPage_ == Page::DeviceReg ||
+            currentPage_ == Page::Grip) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
@@ -447,6 +455,7 @@ void App::DrawMainWindow()
                                 : currentPage_ == Page::AlignPlace    ? "Place on nominal"
                                 : currentPage_ == Page::Needle        ? "Dispense needle"
                                 : currentPage_ == Page::DeviceReg     ? "Device registration"
+                                : currentPage_ == Page::Grip          ? "Gripped object"
                                                                       : "Run";
             // Vision teach and the two alignment teach pages are only ever
             // reached FROM the Alignment page, and a takeover -> takeover switch
@@ -487,6 +496,7 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::AlignPlace)    DrawAlignPlacePanel();
             else if (currentPage_ == Page::Needle)        DrawNeedlePanel();
             else if (currentPage_ == Page::DeviceReg)     DrawDeviceRegPanel();
+            else if (currentPage_ == Page::Grip)          DrawGripPanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();

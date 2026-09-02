@@ -49,6 +49,7 @@ public:
         std::vector<Recipe>    library;
         std::vector<AlignProc> aligns;   // taught local frames (align_* commands)
         std::vector<VisionModel> visionModels;   // taught detectors (vision_* commands)
+        std::vector<GripProfile> grips;          // gripped-object profiles (grip_*)
         std::string              visionDir;      // where their template patches live
         std::string              scriptsDir;     // product scripts win over config/scripts
     };

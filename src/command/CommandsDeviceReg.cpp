@@ -9,6 +9,7 @@
 //   device_reg_check_save  record what the check pass measured
 //   move_to_point          command a reference-space point to a registered device
 //   move_tool_to_camera    ...that point being wherever the camera is looking now
+//   move_camera_to_tool    the inverse: drive the camera over a tool's tip
 //   tool_travel_to_camera  lift off, cross, then move_tool_to_camera
 //   device_reg_check_run   run the daily check as one recipe step
 //
@@ -25,6 +26,7 @@
 #include "command/ExecutionContext.h"
 #include "command/LuaEngine.h"     // RunLuaFile (the check launcher)
 #include "command/MotionWaits.h"   // ResolveMotion, MoveWithApproach, kMoveTolMM
+#include "command/RegApproach.h"   // the shared halves, declared for CommandsGrip
 #include "core/DeviceReg.h"
 #include "core/Log.h"
 #include "core/Product.h"          // NowStamp
@@ -145,6 +147,8 @@ CommandResult ExecDeviceRegCheckSave(ExecutionContext& ctx, const ParamValues& p
     return CommandResult::Success();
 }
 
+}   // namespace
+
 // ---- the two halves both point commands share -------------------------------
 //
 // A registration may only be driven through under conditions the record
@@ -152,14 +156,26 @@ CommandResult ExecDeviceRegCheckSave(ExecutionContext& ctx, const ParamValues& p
 // command that forgot the rotation guard would produce a plausible pose that
 // is simply wrong, which is the failure this whole record exists to avoid.
 //
+// Outside the anonymous namespace, declared in command/RegApproach.h: the grip
+// family's grip_move_to_camera is this approach with an offset subtracted, and
+// it must not carry a second copy of these refusals.
+//
 // `expectedRef` is the space a caller CLAIMS its point is in; empty trusts
 // the record. A gantry coordinate interpreted against a registration taught
 // to a different reference is wrong by the whole distance between two origins,
 // and that is not a detail a recipe author may leave to chance.
+//
+// `requireVerified` is the ONE knob, passed explicitly by every caller rather
+// than defaulted, because it is the one refusal that is not about whether the
+// record can be predicted through at all: it is about whether a record nothing
+// has ever checked may MOVE A TOOL. Sending the camera to look at a tip is not
+// that, and gating it would hide the very disagreement the picture exists to
+// show - see move_camera_to_tool.
 CommandResult PrepareRegMove(ExecutionContext& ctx, const ParamValues& p,
                              const std::string& device,
                              const std::string& expectedRef, DeviceReg* regOut,
-                             IMotionController** mOut, int* idxOut)
+                             IMotionController** mOut, int* idxOut,
+                             bool requireVerified)
 {
     std::string err;
     int idx = -1;
@@ -178,7 +194,7 @@ CommandResult PrepareRegMove(ExecutionContext& ctx, const ParamValues& p,
                                    r.refDevice + "', but the point was given in '" +
                                    expectedRef + "' space");
 
-    if (!r.verified && !p.GetBool("allow_unverified"))
+    if (requireVerified && !r.verified && !p.GetBool("allow_unverified"))
         return CommandResult::Fail(
             "'" + device + "' is registered but not verified - run the check first, "
             "or set allow_unverified. Its rotation came from the axis transforms, "
@@ -204,18 +220,24 @@ CommandResult PrepareRegMove(ExecutionContext& ctx, const ParamValues& p,
     return CommandResult::Success();
 }
 
-// The other half: drive the tip to a point in the REFERENCE device's axis
-// space, once the record has been found and its refusals have passed. Every
-// command that moves a registered device ends here, so the travel ceiling, the
+// The other half: drive a device to a point in ITS OWN axis space, once the
+// record has been found and its refusals have passed. Every command in this
+// family ends here, whichever device it is moving, so the travel ceiling, the
 // two-speed approach and the log line are the same wherever the point came
-// from - a second implementation of 'drive a registered device to a point' is
-// precisely what this family exists to not have.
-CommandResult ApproachRefPoint(ExecutionContext& ctx, const ParamValues& p,
-                               const std::string& device, const DeviceReg& r,
-                               IMotionController* m, int idx, const RegVec3& target)
+// from - a second implementation of 'drive a device to a point' is precisely
+// what this family exists to not have.
+//
+// `ceiling` is the caller's account of where the point CAME FROM, appended to
+// the refusal when the move is too long: 'a stale registration turned a short
+// approach into a lunge' is only actionable if the message says which numbers
+// produced it, and only the caller knows whether that was a solve, a camera
+// pose or a predicted tip.
+CommandResult ApproachAxisPoint(ExecutionContext& ctx, const ParamValues& p,
+                                const std::string& device, IMotionController* m,
+                                int idx, const RegVec3& h, const char* ceiling,
+                                const char* what)
 {
     const std::map<std::string, double> live = m->Positions();
-    const RegVec3 h = DeviceRegSolve(r, target);
 
     const std::string axes = p.GetString("axes");
     if (axes.empty()) return CommandResult::Fail("axes is empty - name the axes to command");
@@ -253,13 +275,9 @@ CommandResult ApproachRefPoint(ExecutionContext& ctx, const ParamValues& p,
     const double maxMM  = p.GetDouble("max_mm");
     const double travel = std::sqrt(travelSq);
     if (maxMM > 0.0 && travel > maxMM) {
-        char buf[224];
-        std::snprintf(buf, sizeof(buf),
-                      "move of %.4f mm exceeds max_mm %.4f - the point (%.4f, %.4f, "
-                      "%.4f) in '%s' space solves to (%.4f, %.4f, %.4f) on '%s', "
-                      "which is a long way from where it is",
-                      travel, maxMM, target.x, target.y, target.z,
-                      r.refDevice.c_str(), h.x, h.y, h.z, device.c_str());
+        char buf[320];
+        std::snprintf(buf, sizeof(buf), "move of %.4f mm exceeds max_mm %.4f - %s",
+                      travel, maxMM, ceiling);
         return CommandResult::Fail(buf);
     }
 
@@ -267,12 +285,30 @@ CommandResult ApproachRefPoint(ExecutionContext& ctx, const ParamValues& p,
     if (vel > 0.0 && !ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx), vel))
         return CommandResult::Fail("velocity change rejected");
 
-    FD_INFO("devreg", "'%s' approaching (%.4f, %.4f, %.4f) in '%s' space -> pose "
-                      "(%.4f, %.4f, %.4f), %.4f mm of travel",
-            device.c_str(), target.x, target.y, target.z, r.refDevice.c_str(),
-            h.x, h.y, h.z, travel);
-    return MoveWithApproach(ctx, m, idx, targets, p, "the registered point");
+    FD_INFO("devreg", "'%s' approaching pose (%.4f, %.4f, %.4f), %.4f mm of travel",
+            device.c_str(), h.x, h.y, h.z, travel);
+    return MoveWithApproach(ctx, m, idx, targets, p, what);
 }
+
+// Drive a REGISTERED device so its tip lands on a point in the reference
+// device's axis space: the solve, and then the shared approach above.
+CommandResult ApproachRefPoint(ExecutionContext& ctx, const ParamValues& p,
+                               const std::string& device, const DeviceReg& r,
+                               IMotionController* m, int idx, const RegVec3& target)
+{
+    const RegVec3 h = DeviceRegSolve(r, target);
+    char ceiling[288];
+    std::snprintf(ceiling, sizeof(ceiling),
+                  "the point (%.4f, %.4f, %.4f) in '%s' space solves to (%.4f, %.4f, "
+                  "%.4f) on '%s', which is a long way from where it is",
+                  target.x, target.y, target.z, r.refDevice.c_str(), h.x, h.y, h.z,
+                  device.c_str());
+    FD_INFO("devreg", "'%s' aiming at (%.4f, %.4f, %.4f) in '%s' space",
+            device.c_str(), target.x, target.y, target.z, r.refDevice.c_str());
+    return ApproachAxisPoint(ctx, p, device, m, idx, h, ceiling, "the registered point");
+}
+
+namespace {
 
 // ---- move_to_point ---------------------------------------------------------
 
@@ -283,7 +319,7 @@ CommandResult ExecMoveToPoint(ExecutionContext& ctx, const ParamValues& p)
     IMotionController* m   = nullptr;
     int                idx = -1;
     const CommandResult ready = PrepareRegMove(ctx, p, device, p.GetString("ref_device"),
-                                               &r, &m, &idx);
+                                               &r, &m, &idx, true);
     if (!ready.ok) return ready;
 
     return ApproachRefPoint(ctx, p, device, r, m, idx,
@@ -316,7 +352,7 @@ CommandResult ExecMoveToolToCamera(ExecutionContext& ctx, const ParamValues& p)
     DeviceReg          r;
     IMotionController* m   = nullptr;
     int                idx = -1;
-    const CommandResult ready = PrepareRegMove(ctx, p, device, "", &r, &m, &idx);
+    const CommandResult ready = PrepareRegMove(ctx, p, device, "", &r, &m, &idx, true);
     if (!ready.ok) return ready;
 
     // Where the camera stands. Read through layer 2 by the record's OWN
@@ -337,6 +373,76 @@ CommandResult ExecMoveToolToCamera(ExecutionContext& ctx, const ParamValues& p)
             device.c_str(), r.refDevice.c_str(), ix->second, iy->second, iz->second,
             p.GetDouble("z_offset_mm"));
     return ApproachRefPoint(ctx, p, device, r, m, idx, target);
+}
+
+// ---- move_camera_to_tool ----------------------------------------------------
+//
+// The other direction, and the cheap one: leave the tool where it is and drive
+// the CAMERA until its centre lands on the tip. Same record, same refusals, read
+// backwards - p = R*h + t predicts where the tip is from the device's live pose,
+// and the reference device's own X/Y is by definition the point its camera is
+// looking at, which is what makes the inverse a plain move rather than a solve.
+//
+// It is worth having for two different reasons:
+//
+//   * LOOKING IS NOT PLACING. Every other command here moves a tool through a
+//     registration that is a typed rotation plus one measured point, so each one
+//     is an approach with a ceiling and an unverified refusal. This one moves the
+//     camera over its own workspace to take a picture; when the record is wrong
+//     the picture is of the wrong place, and that is the whole point - it is how
+//     an operator SEES what the registration costs, next to the overlay's cross.
+//   * It is the step a vision check needs. 'Photograph the gripper' had no way to
+//     say where the gripper was, so it needed a taught position per tool per
+//     station - which describes where the tool was PARKED, not where it is.
+//
+// Z DEFAULTS TO BEING LEFT ALONE (axes 'XY'). The tip's reference Z is by
+// construction the gantry Z that FOCUSES on the tip, so commanding it is the
+// useful thing - and it is also the leg that drives the camera down toward a
+// tool of unknown height, so it is opt-in and never a side effect of asking to
+// look at something.
+CommandResult ExecMoveCameraToTool(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    DeviceReg          r;
+    IMotionController* m   = nullptr;
+    int                idx = -1;
+    // The registered device is not moved, but the refusals about whether this
+    // record may be PREDICTED through are exactly the question being asked, so
+    // they are shared rather than restated - a second opinion about that is how
+    // two surfaces start disagreeing about where a tool is. The verified gate is
+    // the one that does not apply: it asks whether an unchecked record may move
+    // a tool, and this moves a camera. The Registration page's 'Look at the
+    // tool' button makes the identical judgement, which is the point - one
+    // answer, on both surfaces.
+    const CommandResult ready = PrepareRegMove(ctx, p, device, "", &r, &m, &idx, false);
+    if (!ready.ok) return ready;
+
+    const std::map<std::string, double> live = m->Positions();
+    const auto ix = live.find("X"), iy = live.find("Y"), iz = live.find("Z");
+    if (ix == live.end() || iy == live.end() || iz == live.end())
+        return CommandResult::Fail("'" + device + "' does not report X/Y/Z, so there "
+                                   "is no pose to predict its tip from");
+    const RegVec3 tip = DeviceRegPredict(r, RegVec3{ix->second, iy->second, iz->second});
+
+    // The camera is what moves here, so the camera is what has to be resolvable
+    // - and it is named by the RECORD, never assumed to be some device called
+    // "gantry-main".
+    std::string err;
+    int         refIdx = -1;
+    IMotionController* rm = ResolveMotion(ctx, r.refDevice, &refIdx, &err);
+    if (!rm) return CommandResult::Fail(err);
+
+    const RegVec3 target{tip.x, tip.y, tip.z + p.GetDouble("z_offset_mm")};
+    char ceiling[288];
+    std::snprintf(ceiling, sizeof(ceiling),
+                  "'%s' tip is predicted at (%.4f, %.4f, %.4f) in '%s' space, which is "
+                  "a long way from where the camera is standing",
+                  device.c_str(), tip.x, tip.y, tip.z, r.refDevice.c_str());
+    FD_INFO("devreg", "'%s' to the '%s' tip at (%.4f, %.4f, %.4f), z_offset %+.4f",
+            r.refDevice.c_str(), device.c_str(), tip.x, tip.y, tip.z,
+            p.GetDouble("z_offset_mm"));
+    return ApproachAxisPoint(ctx, p, r.refDevice, rm, refIdx, target, ceiling,
+                             "the predicted tip");
 }
 
 // ---- tool_travel_to_camera --------------------------------------------------
@@ -375,7 +481,7 @@ CommandResult ExecToolTravelToCamera(ExecutionContext& ctx, const ParamValues& p
     // The registration is checked FIRST, before anything moves: a lift off
     // followed by a refusal to descend leaves the tool parked mid-air for a
     // fault that was knowable before the first millimetre.
-    const CommandResult ready = PrepareRegMove(ctx, p, device, "", &r, &m, &idx);
+    const CommandResult ready = PrepareRegMove(ctx, p, device, "", &r, &m, &idx, true);
     if (!ready.ok) return ready;
 
     // One velocity for the whole trip, set once. MoveWithApproach only RESTORES
@@ -528,6 +634,45 @@ void RegisterDeviceRegCommands(CommandRegistry& reg, Workflow& wf, HardwareManag
                       ApproachPctParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToolToCamera});
+
+    // The inverse, and the only command in this family that does not move a
+    // TOOL: the camera goes to look at one. Everything about it follows from
+    // that - a wider ceiling, because a camera crossing to a parked tool is a
+    // longer trip than a tool descending to the point beneath it; XY only,
+    // because Z is what drives the lens toward a tool of unknown height; and NO
+    // allow_unverified, because there is no verified gate to opt out of. That
+    // gate asks whether an unchecked record may move a tool, and looking is how
+    // an operator finds out what an unchecked record costs.
+    reg.Register({"move_camera_to_tool", "Registration",
+                  "Drive the REFERENCE device so its camera centre lands on a "
+                  "registered tool's tip - the inverse of move_tool_to_camera",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {},
+                       "the registered device whose TIP the camera is being sent to. "
+                       "It does not move; the reference device named by its "
+                       "registration does"},
+                      {"axes", PT::String, false, "XY", 0, 0, {},
+                       "which axes of the REFERENCE device to command. XY leaves the "
+                       "camera's height alone; adding Z drives it to the height that "
+                       "FOCUSES on the tip, which is also the leg that moves the lens "
+                       "toward a tool of unknown height"},
+                      {"z_offset_mm", PT::Double, false, 0.0, -100.0, 100.0, {},
+                       "added to that focused Z, and only used when axes names Z. 0 "
+                       "focuses on the tip itself; negative stands the camera off it "
+                       "on this machine, where gantry-main's transform inverts Z"},
+                      {"max_mm", PT::Double, false, 60.0, 0.0, 500.0, {},
+                       "refuse a move longer than this; 0 disables the ceiling. Wider "
+                       "than the tool commands' 10 mm because this crosses the "
+                       "workspace to a parked tool, not the last few mm to a point"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
+                      {"velocity_mm_s", PT::Double, false, 0.0, 0, 0, {},
+                       "optional velocity for this move; 0 = keep current"},
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                  },
+                  CommandSpec::Needs::None, ExecMoveCameraToTool});
 
     // Retreat, cross, descend - one step, because a path that lives only in the
     // author's head is the one the next recipe leaves out.

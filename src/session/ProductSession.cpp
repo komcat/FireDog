@@ -25,6 +25,7 @@ bool ProductSession::LoadInitial(const std::string& lastProduct)
     if (!product_.Loaded()) LoadProgramsFromDisk();
     if (!product_.Loaded()) LoadAlignsFromDisk();
     if (!product_.Loaded()) LoadVisionFromDisk();
+    if (!product_.Loaded()) LoadGripsFromDisk();
     LoadScriptsList();   // .lua programs (product dir, else config/scripts)
     if (product_.Loaded())   // DUT records live under the product's data/
         DutSession::Instance().SetProduct(product_.name, product_.uid,
@@ -53,10 +54,12 @@ bool ProductSession::LoadProduct(const std::string& name)
     // is load time, never draw time.
     EnsureManifestRole(product_, "alignments");
     EnsureManifestRole(product_, "vision");
+    EnsureManifestRole(product_, "grips");
     LoadRecipesFromDisk();   // product recipes replace the config-fallback set
     LoadProgramsFromDisk();  // product programs likewise
     LoadAlignsFromDisk();    // product alignment procedures likewise
     LoadVisionFromDisk();    // product vision detection models likewise
+    LoadGripsFromDisk();     // product gripped-object profiles likewise
     LoadScriptsList();       // product scripts likewise (config fallback)
     DutSession::Instance().SetProduct(product_.name, product_.uid,
                                       product_.DataDir());   // auto-closes any DUT
@@ -89,6 +92,21 @@ void ProductSession::NewProduct(const char* name)
         CopyVisionTemplates(oldVisionDir, VisionDir());
         SaveVision();
     }
+
+    // Grip profiles carry over with them: HOW to measure an object is a
+    // parameter of the object, and the models they point at have just been
+    // copied. What does NOT carry is the reference offset - it describes one
+    // object in one gripper, and a new product is a new object until somebody
+    // says otherwise. The measurement evidence goes with it; a stale "last
+    // measured" would be read as this product's.
+    for (GripProfile& g : grips_) {
+        g.haveRef = false;
+        g.refDx = g.refDy = 0.0;
+        g.taughtAt.clear();
+        g.lastDx = g.lastDy = 0.0;
+        g.measuredAt.clear();
+    }
+    if (!grips_.empty()) SaveGrips();
 }
 
 void ProductSession::SaveProduct()
@@ -107,6 +125,8 @@ void ProductSession::SaveProduct()
             SaveAlignsTo(path, e.uid);
         } else if (e.role == "vision") {
             SaveVisionTo(path, e.uid);
+        } else if (e.role == "grips") {
+            SaveGripsTo(path, e.uid);
         } else {
             FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
         }
@@ -380,6 +400,89 @@ bool ProductSession::ApplyAlignResult(const std::string& uid, const AlignResult&
     return true;
 }
 
+// ---- Gripped-object profiles - the same document conventions again --------
+
+void ProductSession::LoadGripsFromDisk()
+{
+    if (product_.Loaded()) {
+        const ManifestFile* e = product_.Entry("grips");
+        if (e) {
+            grips_ = LoadGripProfilesFile(product_.FilePath("grips"), &gripsUid_);
+            if (!grips_.empty()) {
+                if (!gripsUid_.empty() && gripsUid_ != e->uid)
+                    FD_WARN("product", "grips uid mismatch: manifest %s vs file '%s'",
+                            e->uid.c_str(), gripsUid_.c_str());
+                gripsBaseline_ = GripsDump();
+                return;
+            }
+            // Same reason alignments do this: a product with an empty seed file
+            // adopts the manifest uid, so the first Save lands in the product
+            // and not in config/.
+            gripsUid_      = e->uid;
+            grips_.clear();
+            gripsBaseline_ = GripsDump();
+            return;
+        }
+        FD_WARN("product", "'%s' has no grips entry; using config grip profiles",
+                product_.name.c_str());
+    }
+    gripsUid_.clear();
+    grips_ = LoadGripProfiles();   // config/grips.local.json -> grips.json
+    gripsBaseline_ = GripsDump();
+}
+
+void ProductSession::SaveGrips()
+{
+    std::string path = "config/grips.local.json";
+    std::string uid  = gripsUid_;
+    if (product_.Loaded()) {
+        if (const ManifestFile* e = product_.Entry("grips")) {
+            path = product_.FilePath("grips");
+            uid  = e->uid;
+        }
+    }
+    if (uid.empty()) uid = GenerateUid();
+    gripsUid_ = uid;
+    if (SaveGripProfilesFile(path, grips_, uid)) {
+        gripsBaseline_ = GripsDump();
+        FD_INFO("grip", "saved %zu grip profile(s) to %s", grips_.size(), path.c_str());
+    } else {
+        FD_WARN("grip", "could not save grip profiles to %s", path.c_str());
+    }
+}
+
+void ProductSession::SaveGripsTo(const std::string& path, const std::string& uid)
+{
+    SaveGripProfilesFile(path, grips_, uid);
+    gripsUid_      = uid;
+    gripsBaseline_ = GripsDump();
+}
+
+std::string ProductSession::GripsDump() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const GripProfile& g : grips_) arr.push_back(GripProfileToJson(g));
+    return arr.dump();
+}
+
+// What the last run measured, by the route a taught frame takes. It is
+// EVIDENCE and never a reference: adopting an offset is a decision an operator
+// makes on the page, looking at the number, and a run that quietly promoted its
+// own measurement to the standard would make every grip a good grip.
+bool ProductSession::ApplyGripResult(const std::string& uid, double dx, double dy)
+{
+    GripProfile* g = FindGripProfile(grips_, uid);
+    if (!g) {
+        FD_WARN("grip", "measurement for unknown profile '%s' (dropped)", uid.c_str());
+        return false;
+    }
+    g->lastDx     = dx;
+    g->lastDy     = dy;
+    g->measuredAt = NowStamp();
+    SaveGrips();
+    return true;
+}
+
 // ---- Vision detection models — same conventions as alignment procedures ----
 
 std::string ProductSession::VisionDir() const
@@ -491,6 +594,7 @@ RecipeEngine::Env ProductSession::MakeRecipeEnv() const
     env.library   = recipes_;
     env.aligns    = aligns_;
     env.visionModels = vision_;
+    env.grips        = grips_;
     env.visionDir    = VisionDir();
     // The dir actually SCANNED, not the ideal one: a product with no scripts
     // folder falls back to config/scripts, and a run must resolve against the
@@ -507,6 +611,7 @@ LuaEngine::Env ProductSession::MakeLuaEnv() const
     env.library   = recipes_;   // fd.run_recipe / sub_recipe resolve against this
     env.aligns    = aligns_;
     env.visionModels = vision_;
+    env.grips        = grips_;
     env.visionDir    = VisionDir();
     // The dir actually SCANNED, not the ideal one: a product with no scripts
     // folder falls back to config/scripts, and a run must resolve against the

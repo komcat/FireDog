@@ -55,7 +55,7 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
     // referenced actually Connected. Recipes never connect hardware.
     const std::vector<RecipeIssue> issues = ValidateRecipe(
         recipe, reg_, hw_, env.positions, env.maps, env.aligns, env.visionModels,
-        env.library, true);
+        env.grips, env.library, true);
     if (!issues.empty()) {
         std::string msg = issues.front().where + ": " + issues.front().message;
         if (issues.size() > 1)
@@ -271,7 +271,7 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
 {
     ExecutionContext ctx(
         wf_, hw_, env.positions, env.maps, env.aligns,
-        env.visionModels, env.visionDir, env.scriptsDir,
+        env.visionModels, env.grips, env.visionDir, env.scriptsDir,
         ExecutionContext::Hooks{
             [this] { return stopReq_.load() || SafetyAborted(); },
             [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },

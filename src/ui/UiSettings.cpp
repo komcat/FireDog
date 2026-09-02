@@ -33,6 +33,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("run_shot_h")) s.runShotH = j["run_shot_h"].get<float>();
         if (j.contains("org_lib_w"))  s.orgLibW  = j["org_lib_w"].get<float>();
         if (j.contains("reg_ctl_w"))  s.regCtlW  = j["reg_ctl_w"].get<float>();
+        if (j.contains("grip_ctl_w")) s.gripCtlW = j["grip_ctl_w"].get<float>();
         if (j.contains("show_chart"))    s.showChart   = j["show_chart"].get<bool>();
         if (j.contains("click_to_move")) s.clickToMove = j["click_to_move"].get<bool>();
         if (j.contains("show_vision_marks")) s.showVisionMarks = j["show_vision_marks"].get<bool>();
@@ -90,6 +91,7 @@ bool UiSettings::Save(const std::string& path) const
     j["run_shot_h"]      = runShotH;
     j["org_lib_w"]       = orgLibW;
     j["reg_ctl_w"]       = regCtlW;
+    j["grip_ctl_w"]      = gripCtlW;
     j["show_chart"]    = showChart;
     j["click_to_move"] = clickToMove;
     j["show_vision_marks"] = showVisionMarks;

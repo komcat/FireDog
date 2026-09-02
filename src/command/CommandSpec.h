@@ -47,6 +47,10 @@ enum class ParamType {
                     // level down: a nominal only means anything on its procedure
     VisionUid,      // Vision detection-model uid (or name); like AlignUid, NOT
                     // device-scoped — a model belongs to the camera, not a stage
+    GripUid,        // Gripped-object profile uid (or name); like AlignUid, not
+                    // device-scoped — the profile NAMES the gripper it belongs
+                    // to, so scoping it to a step's "device" would be a second
+                    // answer to which device is holding the object
     MapName,        // MotionMap name (resolved against the step's "device")
     PinName,        // IO pin name (resolved against the step's "device")
     TopicName,      // DataBus topic (no validation — topics create on demand)

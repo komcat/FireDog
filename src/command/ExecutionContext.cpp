@@ -33,10 +33,11 @@ ExecutionContext::ExecutionContext(Workflow& wf, HardwareManager& hw,
                                    const MotionMapSet& maps,
                                    const std::vector<AlignProc>& aligns,
                                    const std::vector<VisionModel>& visionModels,
+                                   const std::vector<GripProfile>& grips,
                                    std::string visionDir, std::string scriptsDir,
                                    Hooks hooks)
     : wf_(wf), hw_(hw), positions_(positions), maps_(maps), aligns_(aligns),
-      visionModels_(visionModels), visionDir_(std::move(visionDir)),
+      visionModels_(visionModels), grips_(grips), visionDir_(std::move(visionDir)),
       scriptsDir_(std::move(scriptsDir)), hooks_(std::move(hooks))
 {
 }
@@ -46,7 +47,7 @@ bool IsSystemScript(const std::string& pathOrFile)
     const std::string file = std::filesystem::path(pathOrFile).filename().string();
     return file == "alignment_procedure.lua" || file == "placement_procedure.lua" ||
            file == "needle_calibration.lua" || file == "alignment_repeat.lua" ||
-           file == "device_reg_check.lua";
+           file == "device_reg_check.lua" || file == "grip_measure.lua";
 }
 
 std::string SystemScriptPath(const std::string& pathOrFile)
@@ -257,6 +258,11 @@ const AlignProc* ExecutionContext::FindAlign(const std::string& uidOrName) const
 const VisionModel* ExecutionContext::FindVisionModel(const std::string& uidOrName) const
 {
     return firedog::FindVisionModel(visionModels_, uidOrName);
+}
+
+const GripProfile* ExecutionContext::FindGrip(const std::string& uidOrName) const
+{
+    return firedog::FindGripProfile(grips_, uidOrName);
 }
 
 bool ExecutionContext::AwaitPrompt(const std::string& message)

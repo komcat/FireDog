@@ -369,7 +369,8 @@ void App::DrawDeviceRegPanel()
 
     // Driving to a pose the operator taught is still driving: gated on the jog
     // arm like every other surface that moves something, and issued by layer 2.
-    const auto driveTo = [&](const char* devName, const RegVec3& p) {
+    const auto driveAxes = [&](const char* devName,
+                               const std::vector<std::pair<std::string, double>>& targets) {
         if (!jogArmed_) {
             regTeachMsg_ = "arm jog first - this drives a device";
             return;
@@ -380,8 +381,10 @@ void App::DrawDeviceRegPanel()
             return;
         }
         regTeachMsg_.clear();
-        workflow_.MoveToPosition(static_cast<std::size_t>(idx),
-                                 {{"X", p.x}, {"Y", p.y}, {"Z", p.z}});
+        workflow_.MoveToPosition(static_cast<std::size_t>(idx), targets);
+    };
+    const auto driveTo = [&](const char* devName, const RegVec3& p) {
+        driveAxes(devName, {{"X", p.x}, {"Y", p.y}, {"Z", p.z}});
     };
 
     // The control column is draggable: its four steps carry long explanatory
@@ -940,6 +943,117 @@ void App::DrawDeviceRegPanel()
         ImGui::BeginDisabled(busy || !reg.hasImprintPose);
         if (ImGui::Button("Back to imprint", ImVec2(140.0f, 0.0f)))
             driveTo(regDevice_, reg.imprintPose);
+        ImGui::EndDisabled();
+        if (!jogArmed_)
+            ImGui::TextDisabled("arm jog (Jog window) - this drives a device");
+    }
+
+    // ---- Look at the tool ----------------------------------------------------
+    // The inverse of the button above, and the one that costs nothing: leave the
+    // tool where it is and drive the CAMERA until its centre is on the tip.
+    //
+    // It belongs on this page because it is how a registration is READ. The
+    // overlay draws a cross where the record says the tip is; this puts the
+    // camera there, so the operator sees the tool itself next to the cross that
+    // claims to be on it. A registration that is out by half a millimetre is
+    // invisible in a residual and obvious in that picture.
+    //
+    // The tip comes from Workflow::DeviceRegTip - the SAME predictor the overlay
+    // and the tip topics use, refusals and all - never a second prediction here.
+    ImGui::SeparatorText("Look at the tool");
+    {
+        ImGui::TextWrapped("Drives '%s' so the camera centre lands on '%s's tip, "
+                           "predicted from where it is standing now. The tool does "
+                           "not move. Same step as a recipe's move_camera_to_tool.",
+                           regRef_, regDevice_);
+
+        RegVec3     tip;
+        std::string refuse;
+        const bool  haveTip = workflow_.DeviceRegTip(regDevice_, tip, &refuse);
+        if (haveTip) refuse.clear();
+
+        // Where the camera stands, and so how far it would go. XY only unless Z
+        // is asked for, which is also exactly what gets commanded.
+        double cx = 0.0, cy = 0.0, cz = 0.0;
+        bool   haveCam = false;
+        {
+            std::map<std::string, double> refPose;
+            if (workflow_.DevicePose(regRef_, refPose)) {
+                const auto ix = refPose.find("X"), iy = refPose.find("Y"),
+                           iz = refPose.find("Z");
+                if (ix != refPose.end() && iy != refPose.end() && iz != refPose.end()) {
+                    cx = ix->second; cy = iy->second; cz = iz->second;
+                    haveCam = true;
+                }
+            }
+        }
+
+        // Z is opt-in. The tip's reference Z is by construction the height that
+        // FOCUSES on it, so commanding it is the useful thing - and it is also
+        // the leg that drives the lens down toward a tool of unknown height, so
+        // it must never be a side effect of asking to look at something.
+        ImGui::Checkbox("focus Z too", &regLookZ_);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Off: only X and Y move, and whatever the camera is\n"
+                              "focused on now stays in focus.\n"
+                              "On: Z goes to the height that focuses ON THE TIP -\n"
+                              "which is the camera moving toward the tool. Watch it.");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.0f);
+        ImGui::InputDouble("look max mm", &regLookMaxMm_, 0.0, 0.0, "%.1f");
+        if (regLookMaxMm_ < 0.0) regLookMaxMm_ = 0.0;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Refuses a move longer than this. Wider than the tool's\n"
+                              "ceiling above, because this crosses the workspace to a\n"
+                              "parked tool rather than descending the last few mm.\n"
+                              "0 = no ceiling.");
+
+        double travel     = 0.0;
+        bool   haveTravel = false;
+        if (haveTip && haveCam) {
+            const double dx = tip.x - cx, dy = tip.y - cy;
+            const double dz = regLookZ_ ? tip.z - cz : 0.0;
+            travel     = std::sqrt(dx * dx + dy * dy + dz * dz);
+            haveTravel = true;
+        }
+        if (refuse.empty() && !haveCam)
+            refuse = std::string("no live X/Y/Z from '") + regRef_ + "'";
+        if (refuse.empty() && haveTravel && regLookMaxMm_ > 0.0 && travel > regLookMaxMm_) {
+            char b[128];
+            std::snprintf(b, sizeof(b), "%.3f mm of travel exceeds the %.1f mm ceiling",
+                          travel, regLookMaxMm_);
+            refuse = b;
+        }
+
+        if (haveTip) {
+            ImGui::Text("tip at (%.4f, %.4f, %.4f) in '%s' space", tip.x, tip.y, tip.z,
+                        regRef_);
+            if (haveTravel)
+                ImGui::TextDisabled("%.3f mm of travel%s", travel,
+                                    regLookZ_ ? "" : " (XY only)");
+        }
+        // No verified gate, deliberately - and move_camera_to_tool makes the
+        // identical judgement, so the two surfaces still answer as one. That
+        // gate asks whether a record nothing has checked may move a TOOL;
+        // nothing here touches the part, the camera crosses its own workspace,
+        // and LOOKING is how an operator finds out what an unverified record
+        // costs. Refusing it would hide the very error the picture exists to
+        // show. The rotation guard and the ceiling still apply: a tip that
+        // cannot be predicted has no position to drive to.
+        if (!refuse.empty()) ImGui::TextColored(kWarn, "%s", refuse.c_str());
+        else if (!reg.verified)
+            ImGui::TextDisabled("unverified - so the cross may not land on the tool;\n"
+                                "that disagreement is what this is for");
+
+        ImGui::BeginDisabled(busy || sameDev || !refuse.empty());
+        if (ImGui::Button("Look at the tool", ImVec2(180.0f, 0.0f))) {
+            FD_INFO("devreg", "'%s' to the '%s' tip at (%.4f, %.4f, %.4f), %s, "
+                              "%.3f mm of travel",
+                    regRef_, regDevice_, tip.x, tip.y, tip.z,
+                    regLookZ_ ? "XYZ" : "XY only", travel);
+            if (regLookZ_) driveAxes(regRef_, {{"X", tip.x}, {"Y", tip.y}, {"Z", tip.z}});
+            else           driveAxes(regRef_, {{"X", tip.x}, {"Y", tip.y}});
+        }
         ImGui::EndDisabled();
         if (!jogArmed_)
             ImGui::TextDisabled("arm jog (Jog window) - this drives a device");

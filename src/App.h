@@ -43,7 +43,7 @@ namespace firedog {
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
                   Align, VisionTeach, AlignNominal, AlignPlace, Needle,
-                  DeviceReg };
+                  DeviceReg, Grip };
 
 // One XCAN launch preset (a button on the Run page's Scan band): the step
 // ladder + the hexapod_align.lua tunables injected at launch. Five slots;
@@ -354,6 +354,17 @@ private:
     void CaptureDeviceRegPose(RegPoseSlot slot);            // from the live pose
     void AdoptDeviceRegPose(RegPoseSlot slot, const SavedPos& pos);
     void CompleteDeviceRegTip();
+
+    // Gripped Object page (View menu, full-page): where the object in a
+    // gripper's jaws sits, relative to that gripper's registered tip. The
+    // measuring is a recipe step; this page exists to TEACH what a good grip
+    // looks like and to SHOW the marks against the tip, which is the one thing
+    // a log line cannot do.
+    void DrawGripPanel();
+    void StartGripMeasureRun(const GripProfile& g);   // launches grip_measure.lua
+    // The private pose sweep, by the convention the alignment procedures set:
+    // the position is named after its owner, so deleting the owner drops it.
+    void DropGripPositions(const GripProfile& g);
     // Vision detection teach window (GLOBAL, non-modal — a big live image does
     // not fit the Alignment page's middle column). Opened from a station card;
     // tunes that station's detection model until it finds the feature reliably.
@@ -378,6 +389,13 @@ private:
     void OpenVisionTeachForNominal(AlignProc& a, AlignNominal& n, int index);
     const VisionModel* NominalDetector(const AlignProc& a, const AlignNominal& n,
                                        int index) const;
+    // The same three, one owner further out: a gripped-object profile's private
+    // detector. Auto-named vdet_grip_<uid>, so the name is the ownership record
+    // exactly as it is for a station and for a nominal's object points.
+    const VisionModel* GripDetector(const GripProfile& g) const;
+    void OpenVisionTeachForGrip(GripProfile& g);
+    void DropGripDetector(const GripProfile& g);
+    void CopyGripDetector(const GripProfile& src, GripProfile& dst);
     void DropNominalDetectors(const AlignProc& a, const AlignNominal& n);
     // Copy a model under a new private name, patch file included; "" on failure.
     std::string CopyVisionModelAs(const VisionModel& src, const std::string& newName);
@@ -932,8 +950,45 @@ private:
     double regSendZOff_    = 0.0;
     double regSendMaxMm_   = 25.0;
     bool   regSendUnver_   = false;
+    // "Look at the tool": the same record read backwards - the camera driven to
+    // where the tip is predicted to be. Its own ceiling because it is a
+    // different trip (across the workspace to a parked tool, not the last few mm
+    // onto a point), and Z opt-in because the tip's reference Z is the height
+    // that FOCUSES on it, which is the camera descending toward a tool whose
+    // height nothing here knows.
+    bool   regLookZ_       = false;
+    double regLookMaxMm_   = 60.0;
     std::string regStartErr_;   // why the last Check refused to start
     std::string regTeachMsg_;   // what the last teach step did, or would not do
+
+    // ---- Gripped Object page ------------------------------------------------
+    // The profile list is the document's (session_.Grips()); everything here is
+    // the page's own view of it, per the rule that page state lives on App.
+    int   gripSel_ = -1;              // index into session_.Grips()
+    float gripCtlW_ = 430.0f;         // control column width, persisted
+    bool  gripCtlSplitting_ = false;  // edge-detect the drag END
+    // The two marks, in MACHINE mm, each latched with the pose it was taken at
+    // so the operator may jog between them. Session state, never persisted -
+    // only the computed answer is worth keeping, and a mark describes one pick
+    // of one part. The same bargain the registration's corner marks make.
+    static constexpr int kGripMarkMax = 2;
+    AlignPoint gripMark_[kGripMarkMax];
+    bool       gripMarkHave_[kGripMarkMax] = {false, false};
+    int        gripMarkActive_ = 0;
+    float      gripPx_ = 0.0f, gripPy_ = 0.0f, gripZoom_ = 1.5f;
+    // Whether the "Camera to tool" button commands Z as well. Off by default,
+    // for the reason move_camera_to_tool's axes defaults to XY: that is the leg
+    // that drives the lens toward a tool of unknown height.
+    bool   gripFocusZ_ = false;
+    // What the page's Measure button injects. They are RUN options, not
+    // properties of the object, which is why they live here and not in the
+    // profile: a recipe step carries its own.
+    bool   gripRunInspect_ = true;
+    bool   gripRunLook_    = true;
+    bool   gripAutofocus_  = false;
+    double gripFocusRangeMm_ = 0.5;
+    std::string gripStartErr_;   // why the last Measure refused to start
+    std::string gripTeachMsg_;   // what the last teach step did, or would not do
 
     // Nominal teach page state — the nominals themselves live in session_.
     // Page::AlignNominal IS the "open" flag; nomProcUid_ says which procedure.

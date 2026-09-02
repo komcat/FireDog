@@ -284,6 +284,20 @@ public:
     void QueueAlignResult(const std::string& uid, const AlignResult& r);
     std::vector<std::pair<std::string, AlignResult>> TakeAlignResults();
 
+    // ---- Grip measurement hand-back (grip_apply command) --------------------
+    // The same route again, carrying what a run MEASURED rather than what it
+    // decided: the verdict is computed where the profile is (GripVerdict), and
+    // shipping a pass/fail across this boundary would be a second copy of it.
+    // The record it lands in treats the number as evidence, never as a new
+    // reference - promoting a measurement to the standard is a decision an
+    // operator makes on the page, looking at it.
+    struct GripMeasurement {
+        std::string uid;
+        double      dx = 0.0, dy = 0.0;
+    };
+    void QueueGripResult(const GripMeasurement& m);
+    std::vector<GripMeasurement> TakeGripResults();
+
     // ---- Captured view hand-back (capture_view / dut_capture_image) ---------
     // One frame, parked for the Run page's image box. Same worker->UI route as
     // the two above and for the same reason — a command runs on an engine
@@ -463,6 +477,9 @@ private:
     // Taught-frame queue (same producer/consumer split).
     std::mutex alignMu_;
     std::vector<std::pair<std::string, AlignResult>> alignQueue_;
+
+    std::mutex gripMu_;
+    std::vector<GripMeasurement> gripQueue_;
 
     // Reliability-result queue (same producer/consumer split).
     std::mutex visionRelMu_;

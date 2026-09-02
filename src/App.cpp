@@ -39,7 +39,8 @@ bool IsTakeoverPage(Page p)
            p == Page::RecipeEdit || p == Page::Scripts ||
            p == Page::DutView || p == Page::Run || p == Page::Align ||
            p == Page::VisionTeach || p == Page::AlignNominal ||
-           p == Page::AlignPlace || p == Page::Needle || p == Page::DeviceReg;
+           p == Page::AlignPlace || p == Page::Needle || p == Page::DeviceReg ||
+           p == Page::Grip;
 }
 } // namespace
 
@@ -71,6 +72,7 @@ int App::Run()
         if (ui.runShotH      > 0.0f) runShotPanelH_ = ui.runShotH;
         if (ui.orgLibW       > 0.0f) orgLibW_       = ui.orgLibW;
         if (ui.regCtlW       > 0.0f) regCtlW_       = ui.regCtlW;
+        if (ui.gripCtlW      > 0.0f) gripCtlW_      = ui.gripCtlW;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
         showVisionMarks_ = ui.showVisionMarks;
@@ -235,6 +237,13 @@ void App::Update(float dt)
     // reason. One difference: the file holds the WHOLE fleet, so the live map is
     // updated first and then written as a unit — writing only the record that
     // changed would drop every other device's registration on the first save.
+    // What a grip run measured, by the same route and for the same reason as a
+    // taught frame: the document is UI-thread state. Evidence only - the record
+    // stores it as "last measured" and never as a new reference, because
+    // promoting a measurement to the standard is an operator's decision.
+    for (const Workflow::GripMeasurement& m : workflow_.TakeGripResults())
+        session_.ApplyGripResult(m.uid, m.dx, m.dy);
+
     if (const std::vector<DeviceReg> regs = workflow_.TakeDeviceRegs(); !regs.empty()) {
         for (const DeviceReg& r : regs) workflow_.SetDeviceReg(r);
         if (SaveDeviceRegsFile(DeviceRegLocalPath(), workflow_.DeviceRegs()))
@@ -428,6 +437,7 @@ void App::SaveUiSettings()
     s.runShotH      = runShotPanelH_;
     s.orgLibW       = orgLibW_;
     s.regCtlW       = regCtlW_;
+    s.gripCtlW      = gripCtlW_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.showVisionMarks = showVisionMarks_;
@@ -460,6 +470,14 @@ void App::ResetDocumentSelections()
     RestoreDeckSelection();
     runStartErr_.clear();
     alignSel_ = session_.Aligns().empty() ? -1 : 0;
+    // The grip profiles are a different document too, and the page's marks
+    // describe a pick of the OLD product's part: clearing them is the same
+    // rule that clears a live frame at a product load.
+    gripSel_ = session_.Grips().empty() ? -1 : 0;
+    gripMarkHave_[0] = gripMarkHave_[1] = false;
+    gripMarkActive_  = 0;
+    gripStartErr_.clear();
+    gripTeachMsg_.clear();
     alignNameBuf_[0] = '\0';
     alignStartErr_.clear();
     alignView_ = 0;          // the step pane lands on E1 for a new document

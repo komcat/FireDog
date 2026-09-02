@@ -24,6 +24,7 @@
 #include "command/Recipe.h"
 #include "command/RecipeEngine.h"
 #include "core/AlignFrame.h"
+#include "core/GripProfile.h"
 #include "core/MotionMap.h"
 #include "core/Product.h"
 #include "core/SavedPositions.h"
@@ -50,6 +51,9 @@ public:
 
     std::vector<VisionModel>&       VisionModels()       { return vision_; }
     const std::vector<VisionModel>& VisionModels() const { return vision_; }
+
+    std::vector<GripProfile>&       Grips()       { return grips_; }
+    const std::vector<GripProfile>& Grips() const { return grips_; }
 
     // Scripts are scanned from disk, never edited here (authoring is external).
     const std::vector<ScriptInfo>& Scripts()        const { return scripts_; }
@@ -109,6 +113,22 @@ public:
     // worker, drained on the UI thread): store the freshly taught frame against
     // the procedure `uid` and persist. False when the uid is unknown.
     bool ApplyAlignResult(const std::string& uid, const AlignResult& result);
+
+    // Gripped-object profiles — the same document conventions again: how to
+    // measure where the object in a gripper's jaws actually sits. Product state
+    // rather than machine state, because a lens is part of a product and its
+    // detection model is cut from a picture of that product's part.
+    void LoadGripsFromDisk();
+    void SaveGrips();
+    void SaveGripsTo(const std::string& path, const std::string& uid);
+    std::string GripsDump() const;
+    bool GripsDirty() const { return GripsDump() != gripsBaseline_; }
+
+    // Hand-back from a grip_apply step, by the route align results take: the
+    // worker queues, the UI thread drains. It records what the last run
+    // MEASURED (evidence, never a reference) and persists. False when the uid
+    // is unknown.
+    bool ApplyGripResult(const std::string& uid, double dx, double dy);
 
     // Vision detection models — same persistence conventions as recipes and
     // alignment procedures: a tuned detector is a document, so explicit Save
@@ -186,6 +206,10 @@ private:
     std::vector<VisionModel> vision_;
     std::string              visionUid_;
     std::string              visionBaseline_;
+
+    std::vector<GripProfile> grips_;
+    std::string              gripsUid_;
+    std::string              gripsBaseline_;
 
     std::vector<ScriptInfo> scripts_;
     std::string             scriptsDirUsed_;   // the dir the list came from

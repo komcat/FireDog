@@ -298,6 +298,27 @@ measured described tooling that may no longer be on the machine.
   is the direction *away* from the surface on this machine (measured 2026-09-01;
   `gantry-main`'s transform inverts Z), stated and dated in the parameter help
   rather than asserted as a rule;
+* `move_camera_to_tool{device, axes, z_offset_mm}` — the inverse, and the only
+  command in the family that does not move a tool: the **camera** goes to look at
+  one. `p = R*h + t` predicts the tip from the device's live pose, and the
+  reference device's own X/Y is by definition the point its camera is looking at,
+  so the inverse is a plain move rather than a solve. Two things make it worth
+  having: it is how an operator *sees* what a registration costs — the tool
+  itself, next to the overlay's cross that claims to be on it — and it is what a
+  vision check of a gripper needed, since "photograph the tool" previously had no
+  way to say where the tool was and fell back on a taught position per tool per
+  station, which describes where it was *parked*. **Z defaults to being left
+  alone** (`axes` = `XY`): the tip's reference Z is by construction the height
+  that focuses on it, so commanding it is the useful thing *and* the leg that
+  drives the lens toward a tool of unknown height, which must never be a side
+  effect of asking to look at something. Its ceiling defaults wider (60 mm) for
+  the same reason its risk is lower — it crosses the workspace to a parked tool
+  rather than descending the last few mm onto a point — and it takes **no**
+  `allow_unverified`, because it has no verified gate to opt out of: that gate
+  asks whether an unchecked record may move a *tool*, and looking is how you find
+  out what an unchecked record costs. `PrepareRegMove` therefore takes
+  `requireVerified` explicitly from every caller rather than defaulting it, so
+  that one exception is stated at the call site instead of hidden;
 * `tool_travel_to_camera{device, lift_mm, via_position, z_offset_mm}` — retreat,
   cross, descend, as one step. It exists because of the "not in scope" bullet
   below: `move_tool_to_camera` is ONE coordinated move straight through whatever
@@ -339,6 +360,17 @@ elided, not a second wording of it. The colour and the word
 `reg` on the plate exist to stop it reading as a detection: one is what the camera
 saw, the other is what the machine believes.
 
+Around each cross is the tool's **width**, drawn to scale: a circle of
+`tipSpreadMm` in machine mm, so it grows and shrinks with the picture under it
+instead of staying a screen-sized glyph. A cross answers *where is the gripper*
+and never *is it standing on the part*, and at a 3 mm field of view those are the
+same cross. The width drawn is the one the imprint **measured** — not the `tool
+width mm` typed on the teach page, which is an expectation used once to refuse a
+bad pick and never enters the record — so a registration whose tip was taught
+without one draws no outline at all. It fades when the tip is off the focused
+plane: both the position and the size go through a pixel->mm calibration that
+belongs to *that* plane, and the cross never had a size to be wrong about.
+
 ### Trying it from the page
 
 The Registration page's **Send tool here** drives the registered device so its tip
@@ -359,6 +391,18 @@ It exists because a registration that has never been driven through has never be
 *seen* to work; reading a residual off a log is not the same as watching the tool
 arrive. It is still an APPROACH, and the button says so — nothing here closes a
 loop.
+
+Beside it, **Look at the tool** is the same record read backwards: leave the tool
+where it is and drive the *camera* until its centre lands on the predicted tip —
+`move_camera_to_tool` from a button. The tip comes from `Workflow::DeviceRegTip`,
+the same predictor the overlay and the tip topics use, so there is no second
+prediction on this page. It is how a registration is *read*: the overlay draws a
+cross where the record says the tip is, and this puts the camera there, so the
+operator sees the tool next to the cross claiming to be on it. Half a millimetre
+of error is invisible in a residual and obvious in that picture — which is why
+this one button has **no verified gate**, exactly like the command; the rotation
+guard, the jog arm and its own (wider) ceiling still apply. **Z is opt-in**
+(*focus Z too*), for the reason the command's `axes` defaults to `XY`.
 
 ## 9. Composing with a placement: nominal → gripper
 
@@ -451,7 +495,7 @@ every move command agree about it by construction.
 |---|---|
 | record, predict/solve, the two setters, the pivot switch, JSON, load/save | `src/core/DeviceReg.{h,cpp}` |
 | live records, queue, seed columns, tip publish | `src/workflow/Workflow.{h,cpp}` |
-| `device_reg`, `device_reg_check_save`, `move_to_point`, `move_tool_to_camera`, `tool_travel_to_camera`, `device_reg_check_run` | `src/command/CommandsDeviceReg.cpp` (`PrepareRegMove` + `ApproachRefPoint` are the one shared refusal/approach pair) |
+| `device_reg`, `device_reg_check_save`, `move_to_point`, `move_tool_to_camera`, `move_camera_to_tool`, `tool_travel_to_camera`, `device_reg_check_run` | `src/command/CommandsDeviceReg.cpp` (`PrepareRegMove` is the one shared refusal; `ApproachAxisPoint` the one approach, whichever device is moving, with `ApproachRefPoint` the solve in front of it — all three declared in `command/RegApproach.h` so `grip_move_to_camera` can use them rather than copy them) |
 | the four-step teach and the page | `src/ui/pages/PageDeviceReg.cpp` (F8) |
 | the check (STANDARD) | `config/scripts/device_reg_check.lua` |
 | `nominal_point` | `src/command/CommandsAlign.cpp` |

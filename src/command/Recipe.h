@@ -12,6 +12,7 @@
 #pragma once
 
 #include "core/AlignFrame.h"
+#include "core/GripProfile.h"
 #include "vision/VisionModel.h"
 #include "core/MotionMap.h"
 #include "core/SavedPositions.h"
@@ -102,6 +103,7 @@ std::vector<RecipeIssue> ValidateRecipe(const Recipe& r, const CommandRegistry& 
                                         const MotionMapSet& maps,
                                         const std::vector<AlignProc>& aligns,
                                         const std::vector<VisionModel>& visionModels,
+                                        const std::vector<GripProfile>& grips,
                                         const std::vector<Recipe>& library,
                                         bool requireConnected);
 
