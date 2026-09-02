@@ -114,7 +114,7 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
   mis-click. The slot row and individual recipes are click-selectable — the
   selection drives both Execute's scope and the middle panel's idle view.
   Live per-recipe status marks during a run (done / running / pending /
-  failed), whichever granularity started it. **Recipe rows are three text-lines
+  failed), whichever granularity started it. **Recipe rows are 2.25 text-lines
   tall** (`kDeckRowScale`, scaled off the text line so the font picker keeps
   working): this is the list an operator picks from between parts, often with a
   glove on, so the row is a touch target first and a line of text second. The

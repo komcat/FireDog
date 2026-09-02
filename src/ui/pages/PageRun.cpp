@@ -993,13 +993,13 @@ void App::DrawRunPanel()
     // the program under a part. The Edit checkbox in the strip opens the
     // organizer; it no longer grows buttons here.
     //
-    // Rows are three text-lines tall. This is the list an operator picks from
+    // Rows are 2.25 text-lines tall. This is the list an operator picks from
     // between parts, often with a glove on: the row is a touch target first and
     // a line of text second. It scales off the text line rather than a fixed
     // pixel count so the font-size picker keeps working — and yes, fewer rows
     // fit at once; the deck scrolls, and the whole point of showing ONE slot is
     // that the list is short.
-    constexpr float kDeckRowScale = 3.0f;
+    constexpr float kDeckRowScale = 2.25f;
     const float deckRowH = ImGui::GetTextLineHeightWithSpacing() * kDeckRowScale;
 
     if (!haveProg) {
