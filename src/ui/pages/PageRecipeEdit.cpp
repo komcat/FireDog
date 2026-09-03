@@ -276,7 +276,9 @@ void App::DrawRecipeEditPanel()
     // negative width as "available minus this" and scramble the layout.
     const float midW = fmaxf(80.0f, avail.x - leftW - rightW -
                                         ImGui::GetStyle().ItemSpacing.x - kSplitW);
-    const float palW = 200.0f;
+    // 300, up from 200: the long command names (grip_camera_to_object,
+    // grip_move_to_camera) were clipped at the old width.
+    const float palW = 300.0f;
     ImGui::BeginChild("edMiddle", ImVec2(midW, paneH));
     if (haveSel) {
         Recipe& r = session_.Recipes()[recipeSel_];

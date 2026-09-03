@@ -13,6 +13,8 @@
 //   grip_measure   drive to the object, look at it, measure it (grip_measure.lua)
 //   grip_move_to_camera   put the OBJECT under the camera: move_tool_to_camera
 //                         with that offset subtracted from the tip's target
+//   grip_camera_to_object the other direction: the CAMERA over the object,
+//                         move_camera_to_tool with that offset added to the tip
 //
 // TEACHING IS NOT HERE, for the reason it is not in the device-registration
 // family either: adopting a reference offset means an operator looking at a
@@ -591,8 +593,8 @@ CommandResult ExecGripMoveToCamera(ExecutionContext& ctx, const ParamValues& p)
     const double dy = CtxNumber(ctx, prefix + "_dy", &fy);
     if (!fx || !fy)
         return CommandResult::Fail(
-            "no grip offset under prefix '" + prefix + "' - run grip_measure (or "
-            "grip_apply) for '" + g->name + "' earlier in this recipe. The step "
+            "no grip offset under prefix '" + prefix + "' - run grip_detect (or "
+            "grip_measure) for '" + g->name + "' earlier in this recipe. The step "
             "moves on what THIS run measured, never on an earlier one");
 
     // The registration's own refusals, verified gate included: this MOVES a
@@ -624,6 +626,96 @@ CommandResult ExecGripMoveToCamera(ExecutionContext& ctx, const ParamValues& p)
 }
 
 }   // namespace
+
+// ---- grip_camera_to_object -------------------------------------------------
+//
+// The cheap direction, as move_camera_to_tool is for the tip: leave the gripper
+// where it is and drive the CAMERA until its centre lands on the OBJECT in the
+// jaws - the predicted tip plus the grip offset, both in the reference device's
+// axis space, which is by definition the point its camera looks at. Looking is
+// not placing, so the verified gate does not apply (the rotation guard and the
+// travel ceiling still do), and a wrong record shows as the wrong picture -
+// which is what the picture is for.
+//
+// WHICH offset is the choice, and it is explicit rather than defaulted through
+// a fallback: `this_run` is what a grip_detect / grip_measure step measured
+// earlier in THIS recipe, the same key grip_move_to_camera moves on;
+// `reference` is the profile's adopted good grip, the EXPECTED place before
+// anything has been measured; `last` is an earlier run's number, a different
+// pick, kept as evidence. Missing is a failure that names the source, never a
+// silent slide to the next one - a look at the wrong offset is a picture of
+// the wrong place with nothing on it saying so.
+CommandResult ExecGripCameraToObject(ExecutionContext& ctx, const ParamValues& p)
+{
+    const GripProfile* g = nullptr;
+    const CommandResult ready = PrepareGrip(ctx, p.GetString("profile"), &g, nullptr, nullptr);
+    if (!ready.ok) return ready;
+
+    double            dx = 0.0, dy = 0.0;
+    const std::string src = p.GetString("offset");
+    if (src == "this_run") {
+        const std::string prefix = p.GetString("ctx_prefix");
+        bool fx = false, fy = false;
+        dx = CtxNumber(ctx, prefix + "_dx", &fx);
+        dy = CtxNumber(ctx, prefix + "_dy", &fy);
+        if (!fx || !fy)
+            return CommandResult::Fail(
+                "no grip offset under prefix '" + prefix + "' - run grip_detect (or "
+                "grip_measure) earlier in this recipe, or ask for the 'reference' offset");
+    } else if (src == "reference") {
+        if (!g->haveRef)
+            return CommandResult::Fail("'" + g->name + "' has no reference offset adopted - "
+                                       "adopt one on the Gripped Object page, or measure "
+                                       "first and use 'this_run'");
+        dx = g->refDx;
+        dy = g->refDy;
+    } else if (src == "last") {
+        if (g->measuredAt.empty())
+            return CommandResult::Fail("'" + g->name + "' has never been measured, so there "
+                                       "is no 'last' offset");
+        dx = g->lastDx;
+        dy = g->lastDy;
+    } else {
+        return CommandResult::Fail("offset must be this_run, reference or last");
+    }
+
+    // The tip, through the registration's own refusals - the same judgement
+    // move_camera_to_tool makes, unverified allowed for the same reason.
+    DeviceReg          r;
+    IMotionController* m   = nullptr;
+    int                idx = -1;
+    const CommandResult reg = PrepareRegMove(ctx, p, g->device, "", &r, &m, &idx, false);
+    if (!reg.ok) return reg;
+
+    const std::map<std::string, double> live = m->Positions();
+    const auto ix = live.find("X"), iy = live.find("Y"), iz = live.find("Z");
+    if (ix == live.end() || iy == live.end() || iz == live.end())
+        return CommandResult::Fail("'" + g->device + "' does not report X/Y/Z, so there "
+                                   "is no pose to predict its tip from");
+    const RegVec3 tip = DeviceRegPredict(r, RegVec3{ix->second, iy->second, iz->second});
+
+    std::string        err;
+    int                refIdx = -1;
+    IMotionController* rm = ResolveMotion(ctx, r.refDevice, &refIdx, &err);
+    if (!rm) return CommandResult::Fail(err);
+
+    // The object is assumed at the tip's height: the offset is XY, in the plane
+    // the camera measures, and z_offset_mm is the operator's word on the rest.
+    const RegVec3 target{tip.x + dx, tip.y + dy, tip.z + p.GetDouble("z_offset_mm")};
+    char ceiling[320];
+    std::snprintf(ceiling, sizeof(ceiling),
+                  "'%s' is predicted at (%.4f, %.4f) in '%s' space - the '%s' tip plus "
+                  "the %s offset (%+.4f, %+.4f) - which is a long way from where the "
+                  "camera is standing",
+                  g->name.c_str(), target.x, target.y, r.refDevice.c_str(),
+                  g->device.c_str(), src.c_str(), dx, dy);
+    FD_INFO("grip", "'%s' to '%s': tip (%.4f, %.4f, %.4f) + %s offset (%+.4f, %+.4f), "
+                    "z_offset %+.4f",
+            r.refDevice.c_str(), g->name.c_str(), tip.x, tip.y, tip.z, src.c_str(), dx, dy,
+            p.GetDouble("z_offset_mm"));
+    return ApproachAxisPoint(ctx, p, r.refDevice, rm, refIdx, target, ceiling,
+                             "the gripped object");
+}
 
 void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
 {
@@ -682,6 +774,47 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                        "that carries on would place the part with that grip"},
                   },
                   CommandSpec::Needs::None, ExecGripApply});
+
+    // The other direction: the camera over the object. Same parameters as
+    // move_camera_to_tool less the device (the profile names it) plus WHICH
+    // offset, so an author who knows one knows both.
+    reg.Register({"grip_camera_to_object", "Grip",
+                  "Drive the CAMERA so its centre lands on the object in the jaws - "
+                  "move_camera_to_tool with the grip offset added. The gripper does "
+                  "not move",
+                  {
+                      {"profile", PT::GripUid, true, {}, 0, 0, {},
+                       "the gripped-object profile; its gripper's tip is the base"},
+                      {"offset", PT::Enum, false, "this_run", 0, 0,
+                       {"this_run", "reference", "last"},
+                       "which grip offset to add to the tip: this_run = what a "
+                       "grip_detect / grip_measure step measured earlier in THIS "
+                       "recipe (<prefix>_dx/_dy); reference = the profile's adopted "
+                       "good grip, the expected place before measuring; last = an "
+                       "earlier run's evidence. A missing one fails, never slides to "
+                       "the next"},
+                      {"ctx_prefix", PT::String, false, "grip", 0, 0, {},
+                       "the prefix this_run reads the offset from"},
+                      {"axes", PT::String, false, "XY", 0, 0, {},
+                       "which axes of the camera device to command. XY leaves its "
+                       "height alone; adding Z drives it to the height that FOCUSES "
+                       "on the tip, plus z_offset_mm"},
+                      {"z_offset_mm", PT::Double, false, 0.0, -100.0, 100.0, {},
+                       "added to the tip's focused Z, only when axes names Z. The "
+                       "object is assumed to sit at the tip's height; this is the "
+                       "operator's word on the rest. NEGATIVE raises the camera on "
+                       "this machine"},
+                      {"max_mm", PT::Double, false, 60.0, 0.0, 500.0, {},
+                       "refuse a move longer than this; 0 disables the ceiling"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
+                      {"velocity_mm_s", PT::Double, false, 0.0, 0, 0, {},
+                       "optional velocity for this move; 0 = keep current"},
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                  },
+                  CommandSpec::Needs::None, ExecGripCameraToObject});
 
     CommandRegistry* rp = &reg;
 
@@ -745,7 +878,7 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                       {"profile", PT::GripUid, true, {}, 0, 0, {},
                        "the gripped-object profile; its gripper is what moves"},
                       {"ctx_prefix", PT::String, false, "grip", 0, 0, {},
-                       "reads <prefix>_dx/_dy, the offset a grip_measure or grip_apply "
+                       "reads <prefix>_dx/_dy, the offset a grip_detect or grip_measure "
                        "step left earlier in THIS recipe. Fails when there is none: "
                        "the step never moves on an earlier run's number"},
                       {"z_offset_mm", PT::Double, false, -2.0, -100.0, 100.0, {},

@@ -153,6 +153,33 @@ void App::DrawGripPanel()
     // Whether the picker got an outline to draw this frame; step 6 says so.
     bool objBoxShown = false;
 
+    // Where the OBJECT is, as this page knows it: the marks' midpoint while one
+    // is being taught (the measurement in progress), else the last run's point
+    // off the tip, else the reference's. One answer, because two things hang
+    // off it - the outline on the picker and the 'Camera to object' button -
+    // and they must not disagree about where the object is.
+    bool        haveObjPt = false;
+    double      objX = 0.0, objY = 0.0;
+    const char* objSrc = "";
+    if (g && haveTip) {
+        if (g->mode != "auto" && gripMarkHave_[0] && gripMarkHave_[1]) {
+            objX = (gripMark_[0].wx + gripMark_[1].wx) * 0.5;
+            objY = (gripMark_[0].wy + gripMark_[1].wy) * 0.5;
+            objSrc    = "the marks";
+            haveObjPt = true;
+        } else if (!g->measuredAt.empty()) {
+            objX = tip.x + g->lastDx;
+            objY = tip.y + g->lastDy;
+            objSrc    = "the last run";
+            haveObjPt = true;
+        } else if (g->haveRef) {
+            objX = tip.x + g->refDx;
+            objY = tip.y + g->refDy;
+            objSrc    = "the reference";
+            haveObjPt = true;
+        }
+    }
+
     // The pose the marks are measured against: the device carrying the CAMERA,
     // which the registration names. A mark is a feature seen through a lens, so
     // it is relative to where the lens is.
@@ -278,25 +305,10 @@ void App::DrawGripPanel()
         // reference's. Read-only here as everywhere: the size is typed under
         // step 6, and this is what it looks like.
         MarkPicker::WorldBox objBox;
-        if (g && GripHasOutline(*g) && haveTip && gripShowOutline_) {
-            bool   haveAnchor = false;
-            double ax = 0.0, ay = 0.0;
-            if (g->mode != "auto" && gripMarkHave_[0] && gripMarkHave_[1]) {
-                ax = (gripMark_[0].wx + gripMark_[1].wx) * 0.5;
-                ay = (gripMark_[0].wy + gripMark_[1].wy) * 0.5;
-                haveAnchor = true;
-            } else if (!g->measuredAt.empty()) {
-                ax = tip.x + g->lastDx;
-                ay = tip.y + g->lastDy;
-                haveAnchor = true;
-            } else if (g->haveRef) {
-                ax = tip.x + g->refDx;
-                ay = tip.y + g->refDy;
-                haveAnchor = true;
-            }
-            if (haveAnchor) {
-                objBox.ax  = ax;
-                objBox.ay  = ay;
+        if (g && GripHasOutline(*g) && gripShowOutline_) {
+            if (haveObjPt) {
+                objBox.ax  = objX;
+                objBox.ay  = objY;
                 objBox.adx = g->anchorDx;
                 objBox.ady = g->anchorDy;
                 objBox.wMm = g->outWmm;
@@ -632,6 +644,26 @@ void App::DrawGripPanel()
         ImGui::BeginDisabled(busy || camName.empty());
         if (ImGui::Button("Autofocus", ImVec2(120.0f, 0.0f))) StartQuickAutoFocus();
         ImGui::EndDisabled();
+
+        // ...and the camera onto the OBJECT rather than the tool: the same move
+        // a recipe's grip_camera_to_object step makes, on the same point the
+        // outline hangs off. Same Z rule as the tool button, since the object
+        // is taken to sit at the tip's height.
+        ImGui::BeginDisabled(busy || !haveObjPt || camName.empty());
+        if (ImGui::Button("Camera to object", ImVec2(140.0f, 0.0f))) {
+            FD_INFO("grip", "'%s' to '%s' at (%.4f, %.4f) from %s, %s, Z offset %+.3f",
+                    camName.c_str(), g->name.c_str(), objX, objY, objSrc,
+                    takeZ ? "XYZ" : "XY only", gripZOffsetMm_);
+            if (takeZ)
+                driveAxes(camName, {{"X", objX}, {"Y", objY},
+                                    {"Z", tip.z + gripZOffsetMm_}});
+            else
+                driveAxes(camName, {{"X", objX}, {"Y", objY}});
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (haveObjPt) ImGui::TextDisabled("from %s", objSrc);
+        else           ImGui::TextDisabled("nothing marked, measured or adopted yet");
         // The refusal driveAxes writes lands at the foot of the column, which on
         // a short window is below the fold - so the one reason a click here
         // does nothing is said right next to the button, as on Registration.
