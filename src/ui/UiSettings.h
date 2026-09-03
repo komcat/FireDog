@@ -11,6 +11,16 @@
 
 namespace firedog {
 
+// One row of the Jog window's IO tab: an output the operator wants under a
+// thumb, and how a press treats it. `pin` is the output's NAME from
+// hardware.json, or its decimal index when the pin is unnamed - a name
+// survives a re-pinned config, an index is all an unnamed pin has.
+struct QuickIoRow {
+    std::string device;        // IO device name ("" = row not assigned yet)
+    std::string pin;
+    int         dwellMs = 0;   // 0 = toggle; > 0 = ON for this long, then OFF
+};
+
 struct UiSettings {
     int   fontIndex  = 0;       // index into App's kFonts table
     float fontSize   = 26.0f;   // UI font size in px
@@ -108,6 +118,11 @@ struct UiSettings {
     // product does not contain simply fails to resolve — the button greys out
     // instead of driving somewhere the operator did not mean.
     std::map<std::string, std::vector<std::string>> posPad;
+
+    // Jog window "IO" tab: the quick-output rows, in display order. A station
+    // layout like the pad above, and kept for the same reason: which pins an
+    // operator reaches for is a property of the bench, not of the product.
+    std::vector<QuickIoRow> quickIo;
 
     // Main OS window placement: the client rect it was last left at, in
     // virtual-screen px, plus whether it was maximized. Zero width/height

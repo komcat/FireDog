@@ -13,6 +13,7 @@
 
 #include "ui/GlHost.h"
 #include "ui/Widgets.h"        // MarkIcon (the pt1/pt2 step diagrams)
+#include "ui/UiSettings.h"     // QuickIoRow (the Jog window's IO tab rows)
 #include "command/CommandRegistry.h"   // ParamSpec (schema forms)
 #include "command/LuaEngine.h"         // ScriptInfo (Scripts page)
 #include "command/Orchestration.h"     // registry + engines + runner, one unit
@@ -183,6 +184,7 @@ private:
     void DrawJogPanel();       // jog controls: device/velocity/step/direction/keys
     void DrawJogCameraTab();   // Jog window "Camera" tab: camera combo + exposure
     void DrawJogPosTab();      // Jog window "Pos" tab: device + 3x3 quick-move pad
+    void DrawJogIoTab();       // Jog window "IO" tab: quick output rows (toggle / pulse)
     // The nine pad slots of one device, created (blank) on first ask. UI state,
     // not the document — a Draw may call it.
     std::vector<std::string>& PosPadSlots(const std::string& device);
@@ -807,6 +809,9 @@ private:
     // NOT cleared — the operator switched product, they did not unassign — the
     // button just greys out until that product is back.
     std::map<std::string, std::vector<std::string>> posPad_;
+    // Jog window "IO" tab: the quick-output rows (UiSettings quick_io). A row
+    // names device + pin, never a fleet index - see QuickIoRow.
+    std::vector<QuickIoRow> quickIo_;
 
     // Per-device velocity selection, shared by the Jog panel and the Motion
     // page so both always show the same value for a device.

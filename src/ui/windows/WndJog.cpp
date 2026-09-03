@@ -1,11 +1,12 @@
 // WndJog.cpp : the Jog window (View menu) and the velocity combo it shares
 // with the Motion page. Definitions of App members — see App.h.
 //
-// The window has three tabs: "Jog" (the motion fleet), "Camera" (the camera
+// The window has four tabs: "Jog" (the motion fleet), "Camera" (the camera
 // fleet — device combo + the Camera page's exposure controls, reused rather
 // than copied so the seed/apply rule lives in one place, plus the live focus
-// score and the Autofocus button) and "Pos" (a 3x3 pad of quick moves to
-// taught positions, assigned by right-click).
+// score and the Autofocus button), "Pos" (a 3x3 pad of quick moves to
+// taught positions, assigned by right-click) and "IO" (a growable list of
+// output rows — one button that toggles or pulses the pin, one dwell field).
 //
 // The Autofocus button does NOT sweep inline: it starts the `auto_focus`
 // command as a one-step ad-hoc recipe on the engine worker, because the sweep
@@ -26,6 +27,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <utility>
@@ -58,9 +60,10 @@ void App::DrawJogWindow()
                             ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(250.0f, 640.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Jog", &showJog_)) {
-        // Three tabs so the window covers "move the stage", "see it" and
-        // "go somewhere taught": Jog = the motion fleet, Camera = the camera
-        // fleet (device + exposure), Pos = the quick-move pad.
+        // Four tabs so the window covers "move the stage", "see it", "go
+        // somewhere taught" and "switch something": Jog = the motion fleet,
+        // Camera = the camera fleet (device + exposure), Pos = the quick-move
+        // pad, IO = the quick-output rows.
         // BeginTabItem pushes the tab's ID, so the Arm checkbox and STOP button
         // repeated on the Pos tab do not collide with the Jog tab's.
         if (ImGui::BeginTabBar("JogTabs")) {
@@ -74,6 +77,10 @@ void App::DrawJogWindow()
             }
             if (ImGui::BeginTabItem("Pos")) {
                 DrawJogPosTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("IO")) {
+                DrawJogIoTab();
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -395,6 +402,216 @@ std::vector<std::string>& App::PosPadSlots(const std::string& device)
     if (v.size() != static_cast<std::size_t>(kPosPadSlots))
         v.resize(static_cast<std::size_t>(kPosPadSlots));
     return v;
+}
+
+// ---------------------------------------------------------------------------
+// IO tab: a growable list of output rows. Each row is one button — press it
+// and the pin toggles, or, with a dwell typed beside it, goes ON for that many
+// ms and OFF again — over one output the operator keeps reaching for (a vacuum,
+// a light, a clamp). The IO page shows EVERY pin of ONE device; this shows the
+// handful that matter, from any device, in the window already under the hand.
+//
+// A row names its pin by device NAME + pin NAME (or index when unnamed), never
+// by fleet position, and a row the fleet cannot resolve greys out rather than
+// vanishing: the config changed, the operator did not unassign it. Rows are
+// added with the button at the bottom and assigned/removed through a
+// right-click POPUP — never a modal, for the reason the Pos tab gives.
+//
+// Writes gate on ioArmed_, the IO page's own "Enable" — one kill switch for
+// IO outputs, whichever surface throws them. They do NOT gate on
+// orch_.Busy(): the IO page's toggles never did, and switching a light on
+// while a recipe waits for a prompt is exactly what this tab is for. The dwell
+// never blocks: Workflow::PulseIoOutput sets ON and its Update() tick issues
+// the OFF, so the UI thread waits on nothing. A click during the dwell turns
+// the pin OFF now (and cancels the timed OFF) — the way out of a pulse that
+// was too long.
+void App::DrawJogIoTab()
+{
+    // --- Enable, the IO page's own switch ------------------------------------
+    ImGui::TextUnformatted("Outputs");
+    ImGui::SameLine();
+    ImGui::Checkbox("Enable##qio", &ioArmed_);
+    ImGui::SameLine();
+    if (ioArmed_) ImGui::TextColored(StateColor(ConnState::Connecting), "LIVE");
+    else          ImGui::TextDisabled("disabled");
+    ImGui::Separator();
+
+    // Resolve a row against the live fleet. -1 device or pin = unresolved.
+    struct Target {
+        int        dev = -1;
+        int        pin = -1;
+        IIoDevice* d   = nullptr;
+    };
+    const auto resolve = [&](const QuickIoRow& r) {
+        Target t;
+        if (r.device.empty()) return t;
+        for (std::size_t i = 0; i < hardware_.IoCount(); ++i) {
+            if (hardware_.IoName(i) != r.device) continue;
+            t.d = hardware_.IoDevice(i);
+            if (!t.d) break;
+            t.dev = static_cast<int>(i);
+            int pin = t.d->OutputPinByName(r.pin);
+            if (pin < 0 && !r.pin.empty()) {
+                // Unnamed pins are stored by index; refuse anything that is
+                // not purely digits so "3x" cannot read as pin 3.
+                bool digits = true;
+                for (const char c : r.pin) digits = digits && (c >= '0' && c <= '9');
+                if (digits) pin = std::atoi(r.pin.c_str());
+            }
+            if (pin >= 0 && pin < t.d->OutputCount()) t.pin = pin;
+            break;
+        }
+        return t;
+    };
+
+    const float msW   = ImGui::CalcTextSize("00000").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float unitW = ImGui::CalcTextSize("ms").x;
+    const float gap   = ImGui::GetStyle().ItemSpacing.x;
+    const float bh    = ImGui::GetTextLineHeight() * 1.8f;
+
+    int removeRow = -1;   // deferred: erasing inside the loop shifts the ids
+    for (int row = 0; row < static_cast<int>(quickIo_.size()); ++row) {
+        QuickIoRow& r = quickIo_[static_cast<std::size_t>(row)];
+        ImGui::PushID(row);
+
+        const Target   t        = resolve(r);
+        const bool     assigned = !r.device.empty();
+        const bool     dangling = assigned && t.pin < 0;
+        const ConnState st      = t.dev >= 0 ? hardware_.IoState(static_cast<std::size_t>(t.dev))
+                                             : ConnState::Disconnected;
+        const bool     conn     = t.pin >= 0 && st == ConnState::Connected;
+        const IIoDevice::IoStatus s = t.d ? t.d->Status() : IIoDevice::IoStatus{};
+        const bool     on       = conn && s.valid && ((s.outputs >> t.pin) & 1ull) != 0;
+        const int      left     = conn ? workflow_.PendingPulseMs(static_cast<std::size_t>(t.dev), t.pin)
+                                       : -1;
+        const bool     canWrite = ioArmed_ && conn;
+
+        // Label: the pin's name (or "dev:#n"), then its state. "###" keeps the
+        // button's ID fixed while the countdown rewrites the text every frame,
+        // or the press would release the moment the label changed under it.
+        char label[96];
+        if (!assigned) {
+            std::snprintf(label, sizeof(label), "--###btn");
+        } else if (dangling) {
+            std::snprintf(label, sizeof(label), "?###btn");
+        } else {
+            const std::string name = t.d->OutputPinName(t.pin);
+            char pinTxt[48];
+            if (name.empty()) std::snprintf(pinTxt, sizeof(pinTxt), "%s:#%d", r.device.c_str(), t.pin);
+            else              std::snprintf(pinTxt, sizeof(pinTxt), "%s", name.c_str());
+            if (left >= 0)    std::snprintf(label, sizeof(label), "%s  %d ms###btn", pinTxt, left);
+            else if (on)      std::snprintf(label, sizeof(label), "%s  ON###btn", pinTxt);
+            else              std::snprintf(label, sizeof(label), "%s  off###btn", pinTxt);
+        }
+
+        // Colour is the state, so the row reads at a glance: green ON, amber
+        // while a pulse is timing out, frame-grey for an empty row, rust for
+        // one the fleet cannot resolve.
+        int pushed = 0;
+        if (!assigned) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
+            pushed = 1;
+        } else if (dangling) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.30f, 0.20f, 1.0f));
+            pushed = 1;
+        } else if (left >= 0) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.70f, 0.50f, 0.12f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.60f, 0.18f, 1.0f));
+            pushed = 2;
+        } else if (on) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.18f, 0.55f, 0.30f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.65f, 0.36f, 1.0f));
+            pushed = 2;
+        }
+        ImGui::BeginDisabled(!canWrite);
+        const bool hit = ImGui::Button(label, ImVec2(ImGui::GetContentRegionAvail().x - msW - unitW - gap * 2.0f, bh));
+        ImGui::EndDisabled();
+        if (pushed) ImGui::PopStyleColor(pushed);
+
+        if (hit && canWrite) {
+            const std::size_t di = static_cast<std::size_t>(t.dev);
+            if (left >= 0)           workflow_.SetIoOutput(di, t.pin, false);          // cut the pulse short
+            else if (r.dwellMs > 0)  workflow_.PulseIoOutput(di, t.pin, r.dwellMs);    // ON, then OFF after dwell
+            else                     workflow_.SetIoOutput(di, t.pin, !on);            // plain toggle
+        }
+
+        // AllowWhenDisabled on both: the tooltip and the assign menu are wanted
+        // exactly when the button is grey (unassigned, disabled, disconnected).
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (!assigned) {
+                ImGui::SetTooltip("empty row - right-click to assign an output");
+            } else if (dangling) {
+                ImGui::SetTooltip("'%s' / '%s' is not in the IO fleet\nright-click to reassign",
+                                  r.device.c_str(), r.pin.c_str());
+            } else {
+                std::string tip = r.device + "  output " + std::to_string(t.pin) + "\n";
+                tip += r.dwellMs > 0 ? "press: ON, then OFF after " + std::to_string(r.dwellMs) + " ms"
+                                     : "press: toggle";
+                if (!ioArmed_)                       tip += "\noutputs disabled (Enable above)";
+                else if (st != ConnState::Connected) tip += "\ndevice not connected";
+                else if (left >= 0)                  tip += "\npress to switch OFF now";
+                tip += "\nright-click to reassign";
+                ImGui::SetTooltip("%s", tip.c_str());
+            }
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) ImGui::OpenPopup("qioassign");
+        }
+
+        // Dwell. 0 = toggle. Saved when the field is left, not per keystroke.
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(msW);
+        int ms = r.dwellMs;
+        if (ImGui::InputInt("##ms", &ms, 0, 0)) r.dwellMs = ms < 0 ? 0 : ms;
+        if (ImGui::IsItemDeactivatedAfterEdit()) SaveUiSettings();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("dwell in ms: 0 = toggle,\n> 0 = ON for this long, then OFF");
+        ImGui::SameLine();
+        ImGui::TextDisabled("ms");
+
+        if (ImGui::BeginPopup("qioassign")) {
+            ImGui::TextDisabled("Assign row %d", row + 1);
+            ImGui::Separator();
+            bool any = false;
+            for (std::size_t i = 0; i < hardware_.IoCount(); ++i) {
+                IIoDevice* d = hardware_.IoDevice(i);
+                if (!d) continue;
+                any = true;
+                const std::string& devName = hardware_.IoName(i);
+                if (ImGui::BeginMenu(devName.c_str())) {
+                    for (int pin = 0; pin < d->OutputCount(); ++pin) {
+                        const std::string name = d->OutputPinName(pin);
+                        char item[80];
+                        if (name.empty()) std::snprintf(item, sizeof(item), "#%d", pin);
+                        else              std::snprintf(item, sizeof(item), "#%d  %s", pin, name.c_str());
+                        ImGui::PushID(pin);
+                        const bool cur = t.dev == static_cast<int>(i) && t.pin == pin;
+                        if (ImGui::Selectable(item, cur)) {
+                            r.device = devName;
+                            r.pin    = name.empty() ? std::to_string(pin) : name;
+                            SaveUiSettings();
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::EndMenu();
+                }
+            }
+            if (!any) ImGui::TextDisabled("no IO devices configured");
+            ImGui::Separator();
+            if (ImGui::Selectable("Remove row")) removeRow = row;
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+    if (removeRow >= 0) {
+        quickIo_.erase(quickIo_.begin() + removeRow);
+        SaveUiSettings();
+    }
+
+    if (quickIo_.empty()) ImGui::TextDisabled("no rows - add one below");
+    ImGui::Spacing();
+    if (ImGui::Button("+ Add row", ImVec2(-FLT_MIN, 0.0f))) {
+        quickIo_.emplace_back();
+        SaveUiSettings();
+    }
+    if (!ioArmed_) ImGui::TextDisabled("outputs disabled");
 }
 
 // Build the one-step recipe and hand it to the engine — the same "Run Step"

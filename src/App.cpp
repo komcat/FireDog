@@ -87,6 +87,7 @@ int App::Run()
         runLastSlot_     = ui.runSlot > 0 ? ui.runSlot : 0;
         lastProduct      = ui.lastProduct;
         posPad_          = ui.posPad;
+        quickIo_         = ui.quickIo;
     }
 
     WindowPlacement place;
@@ -452,6 +453,7 @@ void App::SaveUiSettings()
     s.runSlot     = runLastSlot_;
     s.lastProduct = session_.Product().name;
     s.posPad      = posPad_;
+    s.quickIo     = quickIo_;
     // The window's own geometry comes from the host, which is the only thing
     // that knows it — App never tracks a size it does not set.
     const WindowPlacement& place = host_.Placement();
