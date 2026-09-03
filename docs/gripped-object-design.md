@@ -114,6 +114,34 @@ comparison that cancels the picture out.
 still reports its measurement; `ok` is false and `_why` says why. A default pass
 is how an unchecked profile ends up trusted.
 
+### The outline: drawn, never judged
+
+A profile may carry the object's footprint as a rectangle (`outWmm` x
+`outLmm`, reference X by Y at the inspect pose) and an **anchor**: where the
+measured point sits on it, as point minus centre in the rectangle's own frame
+(`anchorDx/Dy`; 0,0 is the centre, half the width is an edge). It is product
+state like the rest of the profile, saved under `"outline"` in the grips file.
+
+It is placed on the **picture**, not typed: the picker draws the box with
+corner handles, its body drags to move it about the measured point (the anchor
+point never moves; the offset does) and a corner drags to resize it with the
+opposite corner held, and the release saves the profile. Width and length can
+still be typed; the anchor cannot, because nobody can guess an offset against a
+live image. The drag arithmetic and the drawing share one `ResolveWorldBox`.
+
+It exists to be **seen**. The page draws it on the picker hung off the marks'
+midpoint while a grip is being taught, else off tip + last offset, else off
+tip + reference; the Aux window draws it off tip + offset for every profile on
+a registered device, turned by the device's live U exactly as the tool's
+footprint is — so as the gripper carries the object, the box rides along with
+the tip. Both go through one `DrawWorldBox` (`ui/Widgets`), which applies the
+anchor in screen space after the same spin as the corners, so the point stays
+on the rim it was measured at whatever the axes' signs.
+
+Nothing reads it back. The size rule above still holds: the picture cannot
+measure the part's width, so the outline is the operator's statement of it, and
+the only thing the profile judges is the offset.
+
 ### A constant registration error cancels
 
 Worth knowing, because it decides how much the registration's `verified` flag
@@ -136,8 +164,26 @@ here can detect that. It is the reason `tipAt` is on screen.
 | `grip_profile` | the record into ctx, including which device carries the camera — a script must not guess that |
 | `grip_mark` | one point: detected, or a crosshair pick, or a crosshair pick as a **logged** fallback from a failed detection. A near-twin of `place_mark`, deliberately: an operator who has learned one window has learned both |
 | `grip_apply` | the arithmetic and the verdict. No motion. Queues the measurement back to the document as evidence |
-| `grip_measure` | the composite a recipe uses: inspect pose → camera onto the tool → optional focus → marks → apply |
+| `grip_detect` | the finding composite: every mark the profile's saved mode needs (one detection, or two picks), then `grip_apply`. It goes through `ExecGripMark`/`ExecGripApply`, not a third reading of them. The mode is a property of the profile, so a recipe spelling out two `grip_mark` steps has copied that choice — and breaks when the profile is switched to detect. Its moves are opt-in: `go_to_inspect` drives the gripper to the profile's taught inspect pose first through the registry's own `move_to_position` (a profile without one is measured where it stands, with a warning), `look` drives the camera onto the tip through the registry's own `move_camera_to_tool` (that command's defaults, not a copy), `focus_z` lets it take Z, and `z_offset_mm` is a manual Z offset on the tip's focused height — non-zero takes Z by itself, so a typed number never silently does nothing. The same three ride `grip_measure` and the page's step 3 |
+| `grip_measure` | the composite a recipe uses when it wants the moves too: inspect pose → camera onto the tool → optional focus → `grip_detect` |
 | `grip_move_to_camera` | the consuming move: `move_tool_to_camera` with the offset subtracted from the tip's target, so the **object** lands under the camera |
+
+### The Aux window keeps the last one
+
+A run's offset goes to the log and to the profile's `measuredAt`/`last*`, and
+both are somewhere the operator is not looking. So `App::Update`'s drain of
+`TakeGripResults` also fills `auxGrip_`, and the Aux window draws it: the
+object's cross where it was **found** (`cx`/`cy` ride in `GripMeasurement` for
+exactly this — an offset cannot be put on a picture), projected through the live
+gantry pose like the tips, and a plate in the bottom-right corner with the offset
+and the verdict. The verdict is recomputed there by `GripVerdict` against the
+document's profile, never shipped across the boundary as a second copy.
+
+It **holds** until the next measurement replaces it or the strip's *Clear grip
+result* drops it, and is cleared with the product (the profile it names is the
+product's). A detection marker fades because it describes one frame; this
+describes one grip, and the grip is still in the jaws. It is a readout and
+nothing else: clearing it touches no record.
 
 `grip_measure` runs `config/scripts/grip_measure.lua`, which is a **STANDARD**
 script (`IsSystemScript`). That list is not a policy about machine state: *what*

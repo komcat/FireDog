@@ -7,6 +7,9 @@
 //   grip_profile   put a profile into ctx (and where its tool is)
 //   grip_mark      one point on the object - detected, or marked by hand
 //   grip_apply     centre - tip = the offset, plus the verdict
+//   grip_detect    every mark the profile's mode needs, then apply; the gripper
+//                  to its inspect pose and the camera onto the tool first only
+//                  when asked (go_to_inspect, look)
 //   grip_measure   drive to the object, look at it, measure it (grip_measure.lua)
 //   grip_move_to_camera   put the OBJECT under the camera: move_tool_to_camera
 //                         with that offset subtracted from the tip's target
@@ -413,7 +416,7 @@ CommandResult ExecGripApply(ExecutionContext& ctx, const ParamValues& p)
     // Evidence back to the document, by the route a taught frame takes: the
     // worker queues, App::Update stores. Never a new reference - see
     // ProductSession::ApplyGripResult.
-    ctx.Wf().QueueGripResult(Workflow::GripMeasurement{g->uid, dx, dy});
+    ctx.Wf().QueueGripResult(Workflow::GripMeasurement{g->uid, dx, dy, cx, cy});
 
     if (ok) {
         FD_INFO("grip", "'%s': object at (%.4f, %.4f), tip at (%.4f, %.4f), offset "
@@ -431,6 +434,125 @@ CommandResult ExecGripApply(ExecutionContext& ctx, const ParamValues& p)
     if (!ok && p.GetBool("require_ok"))
         return CommandResult::Fail("'" + g->name + "': " + reason);
     return CommandResult::Success();
+}
+
+// ---- grip_detect -----------------------------------------------------------
+//
+// Find the object, with the camera already on it. Every mark the profile's MODE
+// asks for - one detection in auto, two crosshair picks in manual - then the
+// arithmetic, in one step. No motion.
+//
+// It exists because the choice of mode is SAVED IN THE PROFILE, on the Gripped
+// Object page, and a recipe that has to spell out "grip_mark 1, grip_mark 2,
+// grip_apply" has copied that choice into the recipe: switch the profile to
+// detect and the second grip_mark step fails on its index. grip_measure hides
+// the same thing, but it also drives the gripper and the camera - this is the
+// step for a recipe that has framed the object itself, or that wants to look
+// again without moving anything.
+//
+// It is a composite of the two commands, not a third reading of them: the marks
+// go through ExecGripMark (the fallback, the hints, the pick window) and the
+// verdict through ExecGripApply, with the same ctx keys, so what a single
+// grip_mark step writes and what this writes cannot drift apart.
+//
+// `look` is the one move it can make, and it is opt-in: the camera onto the
+// tool's tip first, through the registry's own move_camera_to_tool with that
+// command's defaults (the 60 mm ceiling, the tolerance) rather than a copy of
+// them. Z stays where it is unless `focus_z` says otherwise, for the reason
+// that command's axes default to XY.
+// Run another registered command with ITS defaults for everything not given:
+// the ceilings, tolerances and timeouts belong to that command, and a copy of
+// them here would be the one that goes stale.
+static CommandResult RunRegistered(ExecutionContext& ctx, const CommandRegistry& reg,
+                            const char* name, const nlohmann::json& args)
+{
+    const CommandSpec* spec = reg.Find(name);
+    if (!spec) return CommandResult::Fail(std::string(name) + " is not registered");
+    nlohmann::json merged;
+    const std::string ve = ValidateParams(*spec, args, &merged);
+    if (!ve.empty()) return CommandResult::Fail(std::string(name) + ": " + ve);
+    const CommandResult r = spec->execute(ctx, ParamValues(std::move(merged)));
+    if (!r.ok) return CommandResult::Fail(std::string(name) + ": " + r.error);
+    return r;
+}
+
+CommandResult ExecGripDetect(ExecutionContext& ctx, const ParamValues& p,
+                             const CommandRegistry& reg)
+{
+    const GripProfile* g = nullptr;
+    const CommandResult ready = PrepareGrip(ctx, p.GetString("profile"), &g, nullptr, nullptr);
+    if (!ready.ok) return ready;
+
+    const std::string profile = p.GetString("profile");
+    const std::string prefix  = p.GetString("ctx_prefix");
+    const int         marks   = MarksFor(*g);
+
+    FD_INFO("grip", "grip detect: '%s' in %s mode - %s%s%d mark(s), then apply",
+            g->name.c_str(), g->mode.c_str(),
+            p.GetBool("go_to_inspect") ? "gripper to its inspect pose, " : "",
+            p.GetBool("look") ? "camera onto the tool, " : "", marks);
+
+    // The gripper to its inspect pose first, when asked. That pose carries the
+    // ROTATIONS the reference offset was taught at, which is what makes two
+    // measurements comparable; a profile without one is measured where it
+    // stands, and says so - the same leg, and the same words, as
+    // grip_measure.lua.
+    if (p.GetBool("go_to_inspect")) {
+        if (g->inspectUid.empty()) {
+            FD_WARN("grip", "'%s' has no inspect pose taught - measuring %s where it "
+                            "stands. A reference offset taught at another rotation will "
+                            "not compare.",
+                    g->name.c_str(), g->device.c_str());
+        } else {
+            const CommandResult r = RunRegistered(
+                ctx, reg, "move_to_position",
+                {{"device", g->device}, {"position", g->inspectUid}});
+            if (!r.ok) return r;
+        }
+    }
+
+    if (p.GetBool("look")) {
+        // Z is commanded when asked for by name OR by an offset: an offset
+        // typed against a move that then leaves Z alone is a number that did
+        // nothing, silently. The height is the tip's focused Z plus it.
+        const double zoff  = p.GetDouble("z_offset_mm");
+        const bool   takeZ = p.GetBool("focus_z") || zoff != 0.0;
+        if (takeZ)
+            FD_INFO("grip", "grip detect: camera Z to the tip's focused height %+.4f mm",
+                    zoff);
+        const CommandResult r = RunRegistered(
+            ctx, reg, "move_camera_to_tool",
+            {{"device", g->device}, {"axes", takeZ ? "XYZ" : "XY"}, {"z_offset_mm", zoff}});
+        if (!r.ok) return r;
+    }
+
+    // Settle after whichever moves were made, before looking.
+    if (p.GetBool("go_to_inspect") || p.GetBool("look")) {
+        const int settle = p.GetInt("settle_ms");
+        if (settle > 0 && !ctx.Sleep(settle)) return CommandResult::Fail("stopped");
+    }
+
+    // Every key the sub-command reads is supplied: a hand-built ParamValues
+    // carries no spec defaults, and a missing one reads as 0 / "".
+    for (int i = 1; i <= marks; ++i) {
+        nlohmann::json m = {
+            {"profile", profile},
+            {"index", i},
+            {"ctx_prefix", prefix},
+            {"fresh_frames", p.GetInt("fresh_frames")},
+            {"label", p.GetString("label")},
+            {"message", p.GetString("message")},
+        };
+        const CommandResult r = ExecGripMark(ctx, ParamValues(std::move(m)));
+        if (!r.ok) return r;
+    }
+
+    nlohmann::json a = {
+        {"profile", profile},
+        {"ctx_prefix", prefix},
+        {"require_ok", p.GetBool("require_ok")},
+    };
+    return ExecGripApply(ctx, ParamValues(std::move(a)));
 }
 
 // ---- grip_move_to_camera ---------------------------------------------------
@@ -561,6 +683,58 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                   },
                   CommandSpec::Needs::None, ExecGripApply});
 
+    CommandRegistry* rp = &reg;
+
+    // The composite that finds: every mark the profile's saved mode needs, then
+    // the verdict - and, on request, the camera onto the tool first. A recipe
+    // that has framed the object itself uses this bare; one that wants the
+    // gripper posed as well uses grip_measure.
+    reg.Register({"grip_detect", "Grip",
+                  "Find the object in the jaws - one detection or two crosshair marks, "
+                  "per the profile's saved mode - and apply. Moves nothing unless "
+                  "'go_to_inspect' or 'look' is on",
+                  {
+                      {"profile", PT::GripUid, true, {}, 0, 0, {},
+                       "the gripped-object profile; its mode (manual / detect) decides "
+                       "how the object is found"},
+                      {"go_to_inspect", PT::Bool, false, false, 0, 0, {},
+                       "first drive the GRIPPER to the profile's taught inspect pose "
+                       "(move_to_position, with its defaults). That pose carries the "
+                       "rotations the reference offset was taught at. A profile with "
+                       "no pose taught is measured where it stands, with a warning"},
+                      {"look", PT::Bool, false, false, 0, 0, {},
+                       "first drive the camera onto the tool's tip (move_camera_to_tool, "
+                       "with its defaults). Off expects the object to be in view already"},
+                      {"focus_z", PT::Bool, false, false, 0, 0, {},
+                       "let that move command Z as well, to the height that focuses on "
+                       "the tip. Off by default: it is the leg that drives the lens "
+                       "toward a tool of unknown height"},
+                      {"z_offset_mm", PT::Double, false, 0.0, -100.0, 100.0, {},
+                       "manual offset for the camera's Z on that move, added to the "
+                       "tip's focused height - for an object that sits above or below "
+                       "the tip. Non-zero commands Z even with focus_z off. NEGATIVE "
+                       "raises the camera on this machine (gantry-main's Z is inverted)"},
+                      {"settle_ms", PT::Int, false, 300, 0, 60000, {},
+                       "pause after the moves before looking; nothing when neither "
+                       "is on"},
+                      {"ctx_prefix", PT::String, false, "grip", 0, 0, {},
+                       "writes <prefix>_p<N>_* for the marks and everything grip_apply "
+                       "writes (_dx/_dy/_hx/_hy/_ok/_why ..)"},
+                      {"require_ok", PT::Bool, false, true, 0, 0, {},
+                       "fail the step on a bad grip (see grip_apply)"},
+                      {"fresh_frames", PT::Int, false, 2, 0, 10, {},
+                       "camera frames to wait for before detecting, so the picture "
+                       "is post-move; 0 detects on whatever is there"},
+                      {"label", PT::String, false, "", 0, 0, {},
+                       "title for the pick window; empty names the profile and the point"},
+                      {"message", PT::String, false, "", 0, 0, {},
+                       "instruction shown with the crosshair; empty uses the default"},
+                  },
+                  CommandSpec::Needs::None,
+                  [rp](ExecutionContext& c, const ParamValues& p) {
+                      return ExecGripDetect(c, p, *rp);
+                  }});
+
     // The consuming move: the object under the camera. Same parameters as
     // move_tool_to_camera less the device (the profile names it) plus the ctx
     // prefix the offset is read from, so an author who knows one knows both.
@@ -596,8 +770,6 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                   },
                   CommandSpec::Needs::None, ExecGripMoveToCamera});
 
-    CommandRegistry* rp = &reg;
-
     // The composite: drive to the object, look at it, measure it. One step,
     // because the path is not something a recipe author should have to
     // remember - the same argument tool_travel_to_camera makes, and the same
@@ -621,6 +793,10 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                        "let that move command Z as well, to the height that focuses "
                        "on the tip. Off by default: it is the leg that drives the "
                        "lens toward a tool of unknown height"},
+                      {"z_offset_mm", PT::Double, false, 0.0, -100.0, 100.0, {},
+                       "manual offset for the camera's Z on that move, added to the "
+                       "tip's focused height. Non-zero commands Z even with focus_z "
+                       "off. NEGATIVE raises the camera on this machine"},
                       {"autofocus", PT::Bool, false, false, 0, 0, {},
                        "sweep for focus once the camera is over the object"},
                       {"focus_range_mm", PT::Double, false, 0.5, 0.01, 20.0, {},
@@ -642,6 +818,7 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                       c.CtxSet("grip_go_to_inspect", p.GetBool("go_to_inspect"));
                       c.CtxSet("grip_look", p.GetBool("look"));
                       c.CtxSet("grip_focus_z", p.GetBool("focus_z"));
+                      c.CtxSet("grip_z_offset_mm", p.GetDouble("z_offset_mm"));
                       c.CtxSet("grip_autofocus", p.GetBool("autofocus"));
                       c.CtxSet("grip_focus_range_mm", p.GetDouble("focus_range_mm"));
                       c.CtxSet("grip_settle_ms", static_cast<double>(p.GetInt("settle_ms")));

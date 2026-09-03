@@ -98,6 +98,21 @@ struct GripProfile {
     // silent — the fallback logs a warning naming what failed.
     bool autoFallbackManual = true;
 
+    // ---- outline -------------------------------------------------------------
+    // The object's footprint as a rectangle: width along the reference device's
+    // X and length along its Y at the inspect pose, in mm. DRAWN ONLY - on the
+    // page while it is taught and on the Aux window as the gripper carries it -
+    // and never judged: see the note on size just below. 0 x 0 draws nothing.
+    //
+    // The MEASURED point (two marks' midpoint, or the detection) is the ANCHOR.
+    // It may sit anywhere on the rectangle - a lens found by its edge, a die
+    // by one corner - and `anchorDx/Dy` says where, as point minus centre in
+    // the rectangle's own frame. The outline is hung off that point wherever
+    // the point is, which is how it follows the tool: the point is tip + offset,
+    // and the tip moves with the device.
+    double outWmm = 0.0, outLmm = 0.0;
+    double anchorDx = 0.0, anchorDy = 0.0;
+
     // ---- what counts as right -------------------------------------------------
     // NO SIZE. The two manual marks have a separation and a circle model has a
     // radius, but neither is the object's real width: a mark lands on whatever
@@ -128,6 +143,11 @@ const GripProfile* FindGripProfile(const std::vector<GripProfile>& list,
                                    const std::string& uidOrName);
 GripProfile*       FindGripProfile(std::vector<GripProfile>& list,
                                    const std::string& uidOrName);
+
+// ---- the outline -----------------------------------------------------------
+// Whether there is a rectangle to draw. Both sides positive: a width with no
+// length is a line, and a line is not the shape of anything in the jaws.
+bool GripHasOutline(const GripProfile& g);
 
 // ---- the verdict -----------------------------------------------------------
 // Whether a measured offset is acceptable for this profile, with the reason

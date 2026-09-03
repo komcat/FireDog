@@ -21,6 +21,24 @@
 
 namespace firedog {
 
+namespace {
+
+// A tooltip that WRAPS. ImGui::SetTooltip lays its text out on one line, and a
+// parameter's help is a paragraph: on a wide monitor it runs the full width of
+// the screen and off both edges, which is exactly where nobody can read it.
+// Width in font units so the operator's font size moves it too.
+void HelpTooltip(const std::string& text)
+{
+    if (text.empty()) return;
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+    ImGui::TextUnformatted(text.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+
+} // namespace
+
 // Step inspector: common fields + the schema-driven parameter form. Editable
 // unless a run is active (then everything renders disabled).
 void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
@@ -697,15 +715,14 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
                     params[p.name] = si.path;
                     changed = true;
                 }
-                if (ImGui::IsItemHovered() && !si.description.empty())
-                    ImGui::SetTooltip("%s", si.description.c_str());
+                if (ImGui::IsItemHovered()) HelpTooltip(si.description);
             }
             ImGui::EndCombo();
         }
         break;
     }
     }
-    if (!p.help.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", p.help.c_str());
+    if (ImGui::IsItemHovered()) HelpTooltip(p.help);
     ImGui::PopID();
     return changed;
 }

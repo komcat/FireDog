@@ -73,6 +73,15 @@ constexpr double kTipAtFocusMM = 0.050;
 // from an overlay that is broken - which is exactly how it was read.
 constexpr ImU32 kTipGoneCol = IM_COL32(200, 170, 110, 220);
 
+// The object a grip run MEASURED in the jaws. Its own hue - not the tip's
+// amber (a belief), not the detection's green (this frame): it is a point
+// that was found on an earlier frame and is held until the next run or a
+// Clear, so it must read as neither.
+constexpr ImU32 kGripObjCol   = IM_COL32(90, 220, 235, 255);
+constexpr ImU32 kGripOkCol    = IM_COL32(120, 240, 150, 255);
+constexpr ImU32 kGripBadCol   = IM_COL32(245, 120, 100, 255);
+constexpr ImU32 kGripPlateCol = IM_COL32(220, 225, 235, 255);
+
 // The tool's own footprint around that tip. Same amber, dimmer than the cross:
 // it is the SAME claim - one registration - drawn at the size the operator
 // typed for it, not a second thing that was measured.
@@ -82,74 +91,18 @@ constexpr ImU32 kTipBoxCol    = IM_COL32(255, 190, 70, 150);
 // tip 3 mm above it is drawn the right shape at the wrong magnification. The
 // cross never had a size to be wrong about; the outline does.
 constexpr ImU32 kTipBoxFarCol = IM_COL32(255, 190, 70, 60);
-// Below this on-screen half-size an outline is not a size, it is a slightly
-// fatter dot beside the cross's own 5 px ring - and two glyphs that mean
-// different things at the same scale is worse than one.
-constexpr float kTipBoxMinPx  = 7.0f;
 
-// The tool's footprint on the part, centred on the predicted tip: a rectangle
-// of the width and length the registration holds (DeviceReg::toolWmm/toolLmm),
-// in machine mm, so it grows and shrinks with the picture under it instead of
-// staying a screen-sized glyph.
+// The tool's footprint on the part is a DrawWorldBox (ui/Widgets) centred on
+// the predicted tip: the size TYPED on the Registration page, width along the
+// reference device's X and length along its Y, turned by the device's live U.
+// A cross says where a tool is and never how much of the part it COVERS, which
+// at a 3 mm field of view is the whole question this overlay is asked. A
+// registration with no footprint draws no outline - absence is the signal here
+// as everywhere else on this overlay.
 //
-// A cross says where a tool is and never says how much of the part it COVERS.
-// At a 3 mm field of view that is the whole question an operator is asking of
-// this overlay - a gripper clear of a feature and a gripper standing on it are
-// the same cross. The size drawn is the one TYPED on the Registration page: the
-// jaws' outline as the operator knows it, width along the reference device's X
-// and length along its Y. A registration with no footprint draws no outline -
-// absence is the signal here as it is everywhere else on this overlay.
-//
-// mm -> screen goes through pixelToMm on each axis SEPARATELY, because the two
-// need not be equal: on non-square pixels a square tool is a rectangle on
-// screen, and forcing it square would draw a tool that is not the one on the
-// machine.
-//
-// `deg` spins it about the tip - the device's live U, so the outline turns with
-// the jaws. Screen-space, the same way the MarkPicker spins its boxes: a
-// rotation stays a rotation only where the scale is the same on both axes.
-void DrawTipBox(ImDrawList* dl, const WorldMarkView& wv,
-                double wx, double wy, double wMm, double lMm, double deg, ImU32 col)
-{
-    if (!dl || wMm <= 0.0 || lMm <= 0.0 || wv.pixelToMmX <= 0.0f || wv.pixelToMmY <= 0.0f)
-        return;
-
-    const float rx = static_cast<float>(wMm * 0.5 /
-                                        static_cast<double>(wv.pixelToMmX)) * wv.view.scale;
-    const float ry = static_cast<float>(lMm * 0.5 /
-                                        static_cast<double>(wv.pixelToMmY)) * wv.view.scale;
-    if (rx < kTipBoxMinPx && ry < kTipBoxMinPx) return;
-
-    // The centre, through the same projection DrawWorldMark uses - a second
-    // copy of it would put the outline off the cross it belongs to.
-    const float px = static_cast<float>((wx - wv.gx) / static_cast<double>(wv.pixelToMmX)) +
-                     static_cast<float>(wv.imgW) * 0.5f;
-    const float py = static_cast<float>((wy - wv.gy) / static_cast<double>(wv.pixelToMmY)) +
-                     static_cast<float>(wv.imgH) * 0.5f;
-    const ImVec2 c = wv.view.ToScreen(px, py);
-
-    // Wholly outside the box: nothing to draw. The CROSS handles that case with
-    // an edge arrow, and an arrow per outline as well would say the same thing
-    // twice. A footprint whose centre is off screen while its rim is not still
-    // draws - that rim is exactly the news. Tested on the turned box's
-    // bounding radius, so a corner that swings into view is not culled.
-    const float rr = sqrtf(rx * rx + ry * ry);
-    if (c.x + rr < wv.boxMin.x || c.x - rr > wv.boxMax.x ||
-        c.y + rr < wv.boxMin.y || c.y - rr > wv.boxMax.y) return;
-
-    const float th = static_cast<float>(deg) * 3.14159265358979f / 180.0f;
-    const float cs = cosf(th), sn = sinf(th);
-    const auto  spin = [&](float x, float y) {
-        return ImVec2(c.x + x * cs - y * sn, c.y + x * sn + y * cs);
-    };
-
-    // Unlike the cross, this has EXTENT, and a tool wider than the field of view
-    // would otherwise paint across the control strip and the chart. Clipped to
-    // the image box, which is what it is a statement about.
-    dl->PushClipRect(wv.boxMin, wv.boxMax, true);
-    dl->AddQuad(spin(-rx, -ry), spin(rx, -ry), spin(rx, ry), spin(-rx, ry), col, 1.5f);
-    dl->PopClipRect();
-}
+// A gripped object's outline is the same call hung off tip + offset. Same
+// projection, same spin, so the two boxes cannot drift apart.
+constexpr ImU32 kGripObjBoxCol = IM_COL32(90, 220, 235, 170);
 
 // A small dark-plated label, kept inside the image box.
 void PlateText(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
@@ -291,10 +244,16 @@ void App::DrawAuxWindow()
         // are things that were SEEN, and a tip is a thing that was computed from
         // a registration. Reading the second as the first is how a rotated
         // hexapod goes on looking placed.
+        // ---- The last grip measurement, held until replaced or cleared ----
+        // Drawn before the tips because it owns the bottom-right corner: the
+        // tips' "no tip:" lines stack above its plate.
+        float gripPlateH = 0.0f;
+        if (haveImg) gripPlateH = DrawAuxGripResult(dl, origin, avail);
+
         if (haveImg && showGripperMarks_) {
             const float scale = fmaxf(avail.x / static_cast<float>(cameraW_),
                                       avail.y / static_cast<float>(cameraH_));
-            DrawAuxGripperMarks(dl, origin, avail, center, scale);
+            DrawAuxGripperMarks(dl, origin, avail, center, scale, gripPlateH);
         }
 
         // ---- Where each stage stands, named ----
@@ -377,6 +336,15 @@ void App::DrawAuxWindow()
                               "cross - never a stale one - and a dim \"no tip:\" line in the\n"
                               "bottom-right corner saying which and why.\n"
                               "Teach one on the Registration page (F8).");
+        if (auxGrip_.have) {
+            if (ImGui::Button("Clear grip result")) {
+                FD_INFO("grip", "Aux readout of '%s' cleared", auxGrip_.name.c_str());
+                auxGrip_ = AuxGripReadout{};
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Drop the last grip measurement from the picture. It is\n"
+                                  "a readout only - the profile keeps what was measured.");
+        }
         if (ImGui::Checkbox("Positions", &showPosLabels_)) SaveUiSettings();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Name where each stage stands (bottom-left): the live pose of\n"
@@ -609,7 +577,7 @@ void App::DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2&
 //     origin projected through this pose is off by the whole distance
 //     between the two origins.
 //
-// The tip also gets its FOOTPRINT, drawn to scale by DrawTipBox above - a cross
+// The tip also gets its FOOTPRINT, drawn to scale by DrawWorldBox - a cross
 // alone answers 'where is the gripper' and never 'is it standing on the part',
 // which at these fields of view is the question being asked.
 //
@@ -619,7 +587,7 @@ void App::DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2&
 // looking'. Same helper the pick window uses, so an edge arrow means the same
 // thing on both surfaces.
 void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
-                              const ImVec2& center, float scale)
+                              const ImVec2& center, float scale, float bottomInset)
 {
     (void)center;   // the projection goes through the shared CameraView
     (void)scale;    // ...which computes the same cover fit from the box
@@ -710,8 +678,24 @@ void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2
                 if (const auto iu = devPose.find("U"); iu != devPose.end())
                     devU = iu->second;
         }
-        DrawTipBox(dl, wv, tip.x, tip.y, r.toolWmm, r.toolLmm, devU,
-                   (haveGz && !atFocus) ? kTipBoxFarCol : kTipBoxCol);
+        DrawWorldBox(dl, wv, tip.x, tip.y, 0.0, 0.0, r.toolWmm, r.toolLmm, devU,
+                     (haveGz && !atFocus) ? kTipBoxFarCol : kTipBoxCol);
+
+        // What the tool is HOLDING, where the profile says it sits: the object's
+        // outline hung off tip + offset, so it rides along as the device moves.
+        // The offset is the last run's when there is one - this pick - else the
+        // reference; a profile with neither has no point to hang a box off.
+        // Drawn, never judged: it is the operator's picture of the part in the
+        // jaws, and the only thing the profile judges is the offset.
+        for (const GripProfile& gp : session_.Grips()) {
+            if (gp.device != name || !GripHasOutline(gp)) continue;
+            double dx = 0.0, dy = 0.0;
+            if (!gp.measuredAt.empty()) { dx = gp.lastDx; dy = gp.lastDy; }
+            else if (gp.haveRef)        { dx = gp.refDx;  dy = gp.refDy;  }
+            else continue;
+            DrawWorldBox(dl, wv, tip.x + dx, tip.y + dy, gp.anchorDx, gp.anchorDy,
+                         gp.outWmm, gp.outLmm, devU, kGripObjBoxCol);
+        }
 
         CameraMark cm;
         cm.wx    = tip.x;
@@ -725,7 +709,7 @@ void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2
     // Bottom-right, stacked upward: the opposite corner from the position plate,
     // and out of the way of a mark that is on screen.
     const float lineH = ImGui::GetTextLineHeightWithSpacing();
-    float       y     = origin.y + avail.y - 8.0f - lineH;
+    float       y     = origin.y + avail.y - 8.0f - bottomInset - lineH;
     for (const std::string& g : gone) {
         char line[192];
         std::snprintf(line, sizeof(line), "no tip: %s", g.c_str());
@@ -738,6 +722,91 @@ void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2
         dl->AddText(at, kTipGoneCol, line);
         y -= lineH;
     }
+}
+
+// The last grip measurement, on the picture and in words.
+//
+// A grip run reports where the object sat relative to the tool that held it,
+// and the number goes to the log and to the profile's "last measured" - both
+// of which are somewhere else. This keeps it in front of the operator: the
+// object's cross where it was FOUND (projected through the live pose, so it
+// stays on the spot as the stage moves and gets an edge arrow when it leaves
+// the frame), and a plate with the offset and the verdict. It holds until the
+// next measurement replaces it or the strip's Clear drops it - unlike a
+// detection marker, which fades: a detection describes one frame, this
+// describes one grip, and the grip is still in the jaws.
+//
+// The cross is drawn only when the picture's pose belongs to the device the
+// measurement was made through, for the same reason as the tips: a point in
+// gantry-main's axis space means nothing on a picture posed by another device.
+float App::DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail)
+{
+    if (!auxGrip_.have) return 0.0f;
+    const AuxGripReadout& g = auxGrip_;
+
+    // ---- The plate, bottom-right ----
+    char l1[160], l2[160], l3[160];
+    std::snprintf(l1, sizeof(l1), "%s in %s", g.name.c_str(), g.device.c_str());
+    std::snprintf(l2, sizeof(l2), "offset %+.4f, %+.4f mm  (%.4f)", g.dx, g.dy,
+                  std::sqrt(g.dx * g.dx + g.dy * g.dy));
+    if (g.ok) std::snprintf(l3, sizeof(l3), "OK  %s", g.at.c_str());
+    else      std::snprintf(l3, sizeof(l3), "%s  %s", g.why.c_str(), g.at.c_str());
+
+    const float lineH = ImGui::GetTextLineHeightWithSpacing();
+    const float pad   = 6.0f;
+    float w = 0.0f;
+    for (const char* s : {l1, l2, l3}) w = fmaxf(w, ImGui::CalcTextSize(s).x);
+    const float boxW = w + pad * 2.0f;
+    const float boxH = lineH * 3.0f + pad * 2.0f;
+    const float x1   = origin.x + avail.x - 6.0f;
+    const float y1   = origin.y + avail.y - 6.0f;
+    const float x0   = x1 - boxW;
+    const float y0   = y1 - boxH;
+    if (x0 < origin.x + 4.0f) return 0.0f;   // narrower than the text: say nothing
+
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(0, 0, 0, 165), 4.0f);
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), g.ok ? kGripOkCol : kGripBadCol, 4.0f);
+    float y = y0 + pad;
+    dl->AddText(ImVec2(x0 + pad, y), kGripObjCol, l1);   y += lineH;
+    dl->AddText(ImVec2(x0 + pad, y), kGripPlateCol, l2); y += lineH;
+    dl->AddText(ImVec2(x0 + pad, y), g.ok ? kGripOkCol : kGripBadCol, l3);
+    const float plateH = boxH + 6.0f;
+
+    // ---- The cross, where the object was found ----
+    if (pixelToMmX_ <= 0.0f || pixelToMmY_ <= 0.0f) return plateH;
+    double gx = 0.0, gy = 0.0;
+    if (!workflow_.GantryXY(gx, gy)) return plateH;
+    const std::string refName = workflow_.GantryName();
+    if (refName.empty()) return plateH;
+    // The measurement is in the axis space of the device that CARRIES the
+    // camera - the gripper's registration names it - and the picture is posed
+    // by the gantry. If those are not one device the cross has no meaning here.
+    const DeviceReg reg = workflow_.DeviceRegFor(g.device);
+    if (!reg.valid || reg.refDevice != refName) return plateH;
+
+    WorldMarkView wv;
+    wv.view       = MakeCameraView(origin, avail, cameraW_, cameraH_,
+                                   static_cast<float>(cameraW_) * 0.5f,
+                                   static_cast<float>(cameraH_) * 0.5f, 1.0f);
+    wv.boxMin     = origin;
+    wv.boxMax     = ImVec2(origin.x + avail.x, origin.y + avail.y);
+    wv.gx         = gx;
+    wv.gy         = gy;
+    wv.pixelToMmX = pixelToMmX_;
+    wv.pixelToMmY = pixelToMmY_;
+    wv.imgW       = cameraW_;
+    wv.imgH       = cameraH_;
+
+    char lbl[96];
+    std::snprintf(lbl, sizeof(lbl), "%s  %+.3f %+.3f", g.name.c_str(), g.dx, g.dy);
+    CameraMark cm;
+    cm.wx    = g.cx;
+    cm.wy    = g.cy;
+    cm.have  = true;
+    cm.label = lbl;
+    cm.col   = kGripObjCol;
+    DrawWorldMark(dl, wv, cm, 14.0f);
+    return plateH;
 }
 
 // Where each stage stands, named against the taught positions.

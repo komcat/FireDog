@@ -32,6 +32,8 @@
 --   grip_go_to_inspect  drive to the inspect pose first  (default true)
 --   grip_look           drive the camera onto the tip    (default true)
 --   grip_focus_z        let that move command Z too      (default false)
+--   grip_z_offset_mm    manual Z offset on that move, added to the tip's
+--                       focused height; non-zero commands Z by itself (default 0)
 --   grip_autofocus      sweep for focus after the move   (default false)
 --   grip_focus_range_mm sweep range                      (default 0.5)
 --   grip_settle_ms      pause before looking             (default 300)
@@ -42,6 +44,7 @@ local PROFILE = fd.param("grip_profile_uid", "")
 local GOTO    = fd.param("grip_go_to_inspect", true)
 local LOOK    = fd.param("grip_look", true)
 local FOCUSZ  = fd.param("grip_focus_z", false)
+local ZOFF    = fd.param("grip_z_offset_mm", 0)
 local AF      = fd.param("grip_autofocus", false)
 local AFRANGE = fd.param("grip_focus_range_mm", 0.5)
 local SETTLE  = fd.param("grip_settle_ms", 300)
@@ -81,9 +84,12 @@ if GOTO then
     end
 end
 
--- 2  The camera onto the tool. XY only unless asked otherwise; see the command.
+-- 2  The camera onto the tool. XY only unless asked otherwise - by name, or by
+-- an offset, which would otherwise be a number that silently did nothing.
 if LOOK then
-    fd.move_camera_to_tool{ device = DEV, axes = FOCUSZ and "XYZ" or "XY" }
+    local takeZ = FOCUSZ or ZOFF ~= 0
+    fd.move_camera_to_tool{ device = DEV, axes = takeZ and "XYZ" or "XY",
+                            z_offset_mm = ZOFF }
 end
 
 -- 3  Focus. After the crossing, never before it: a sweep at the old pose
@@ -94,16 +100,12 @@ end
 
 if SETTLE > 0 then fd.sleep(SETTLE) end
 
--- 4  The marks. One in auto mode (a detector reports the centre), two in manual
--- (their midpoint is the centre). The count comes from the profile so the
--- script never disagrees with grip_apply about it.
-for i = 1, MARKS do
-    fd.grip_mark{ profile = PROFILE, index = i, ctx_prefix = PREFIX }
-end
-
--- 5  The arithmetic and the verdict, in one place that both the page and this
--- run read the same way.
-fd.grip_apply{ profile = PROFILE, ctx_prefix = PREFIX, require_ok = NEEDOK }
+-- 4 + 5  The marks and the verdict. One mark in auto mode (a detector reports
+-- the centre), two in manual (their midpoint is the centre), then the
+-- arithmetic - grip_detect reads the count off the profile, so neither this
+-- script nor a recipe using that step alone can disagree with grip_apply
+-- about it.
+fd.grip_detect{ profile = PROFILE, ctx_prefix = PREFIX, require_ok = NEEDOK }
 
 fd.logf("grip: '%s' sits (%+.4f, %+.4f) mm from the %s tip - %s",
         NAME, fd.ctx[PREFIX .. "_dx"], fd.ctx[PREFIX .. "_dy"], DEV,

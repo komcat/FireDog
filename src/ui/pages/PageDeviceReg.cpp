@@ -359,7 +359,16 @@ void App::DrawDeviceRegPanel()
             return;
         }
         regTeachMsg_.clear();
-        workflow_.MoveToPosition(static_cast<std::size_t>(idx), targets);
+        // A refused move must SAY so: layer 2 returns false for a device that
+        // is not connected, an axis it does not have, or a safety block, and a
+        // button that simply does nothing reads as a button that is broken.
+        if (!workflow_.MoveToPosition(static_cast<std::size_t>(idx), targets)) {
+            const IMotionController* m = hardware_.MotionDevice(static_cast<std::size_t>(idx));
+            const std::string why = m ? m->LastError() : std::string();
+            regTeachMsg_ = std::string("'") + devName + "' refused the move" +
+                           (why.empty() ? std::string(" - is it connected?") : ": " + why);
+            FD_WARN("devreg", "%s", regTeachMsg_.c_str());
+        }
     };
     const auto driveTo = [&](const char* devName, const RegVec3& p) {
         driveAxes(devName, {{"X", p.x}, {"Y", p.y}, {"Z", p.z}});

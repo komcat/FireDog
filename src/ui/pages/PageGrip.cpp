@@ -40,6 +40,7 @@
 #include "ui/Widgets.h"
 #include "vision/HalconDetector.h"      // Available() - detection needs a licence
 
+#include <algorithm>   // std::clamp
 #include <cstdio>
 #include <map>
 #include <string>
@@ -53,6 +54,9 @@ namespace {
 const ImVec4 kGood(0.35f, 0.85f, 0.45f, 1.0f);
 const ImVec4 kWarn(0.98f, 0.72f, 0.32f, 1.0f);
 const ImVec4 kBad (0.95f, 0.45f, 0.35f, 1.0f);
+
+// The object's outline on the picker: the same hue the Aux window draws it in.
+constexpr unsigned int kObjBoxCol = IM_COL32(90, 220, 235, 200);
 
 // The private inspect pose, named after its owner and hidden — the third user of
 // the convention `algn_<procUid>_<n>` established (PageAlign.cpp). The name IS
@@ -107,6 +111,7 @@ void App::StartGripMeasureRun(const GripProfile& g)
         {"grip_go_to_inspect", gripRunInspect_},
         {"grip_look",          gripRunLook_},
         {"grip_focus_z",       gripFocusZ_},
+        {"grip_z_offset_mm",   gripZOffsetMm_},
         {"grip_autofocus",     gripAutofocus_},
         {"grip_focus_range_mm", gripFocusRangeMm_},
         {"grip_settle_ms",     static_cast<double>(300)},
@@ -145,6 +150,8 @@ void App::DrawGripPanel()
         reg = workflow_.DeviceRegFor(g->device);
         haveTip = workflow_.DeviceRegTip(g->device, tip, &tipWhy);
     }
+    // Whether the picker got an outline to draw this frame; step 6 says so.
+    bool objBoxShown = false;
 
     // The pose the marks are measured against: the device carrying the CAMERA,
     // which the registration names. A mark is a feature seen through a lens, so
@@ -169,7 +176,8 @@ void App::DrawGripPanel()
     const auto driveAxes = [&](const std::string& devName,
                                const std::vector<std::pair<std::string, double>>& targets) {
         if (!jogArmed_) {
-            gripTeachMsg_ = "arm jog first - this drives a device";
+            gripTeachMsg_     = "arm jog first - this drives a device";
+            gripOpenArmPopup_ = true;   // the modal, drawn beside the button
             return;
         }
         // Layer 2 owns every move and it takes an INDEX, while this page's
@@ -184,7 +192,16 @@ void App::DrawGripPanel()
             return;
         }
         gripTeachMsg_.clear();
-        workflow_.MoveToPosition(static_cast<std::size_t>(idx), targets);
+        // A refused move must SAY so: layer 2 returns false for a device that
+        // is not connected, an axis it does not have, or a safety block, and a
+        // button that simply does nothing reads as a button that is broken.
+        if (!workflow_.MoveToPosition(static_cast<std::size_t>(idx), targets)) {
+            const IMotionController* m = hardware_.MotionDevice(static_cast<std::size_t>(idx));
+            const std::string why = m ? m->LastError() : std::string();
+            gripTeachMsg_ = "'" + devName + "' refused the move" +
+                            (why.empty() ? std::string(" - is it connected?") : ": " + why);
+            FD_WARN("grip", "%s", gripTeachMsg_.c_str());
+        }
     };
 
     // ---- Layout: image left, controls right, draggable splitter -------------
@@ -255,6 +272,53 @@ void App::DrawGripPanel()
                 if (const auto iu = devPose.find("U"); iu != devPose.end())
                     mp.boxDeg = static_cast<float>(iu->second);
         }
+        // The object's outline, hung off the point it is anchored to: the
+        // marks' midpoint while one is being taught (the measurement in
+        // progress), else the last run's point off the tip, else the
+        // reference's. Read-only here as everywhere: the size is typed under
+        // step 6, and this is what it looks like.
+        MarkPicker::WorldBox objBox;
+        if (g && GripHasOutline(*g) && haveTip && gripShowOutline_) {
+            bool   haveAnchor = false;
+            double ax = 0.0, ay = 0.0;
+            if (g->mode != "auto" && gripMarkHave_[0] && gripMarkHave_[1]) {
+                ax = (gripMark_[0].wx + gripMark_[1].wx) * 0.5;
+                ay = (gripMark_[0].wy + gripMark_[1].wy) * 0.5;
+                haveAnchor = true;
+            } else if (!g->measuredAt.empty()) {
+                ax = tip.x + g->lastDx;
+                ay = tip.y + g->lastDy;
+                haveAnchor = true;
+            } else if (g->haveRef) {
+                ax = tip.x + g->refDx;
+                ay = tip.y + g->refDy;
+                haveAnchor = true;
+            }
+            if (haveAnchor) {
+                objBox.ax  = ax;
+                objBox.ay  = ay;
+                objBox.adx = g->anchorDx;
+                objBox.ady = g->anchorDy;
+                objBox.wMm = g->outWmm;
+                objBox.lMm = g->outLmm;
+                objBox.deg = mp.boxDeg;   // turned with the jaws, as the tool box is
+                objBox.col = kObjBoxCol;
+                // ...and draggable, straight into the profile: the body to
+                // move it about the measured point, a corner to size it. The
+                // record is the operator's, so a drag edits it directly and
+                // the release below saves it.
+                if (!busy && gripEditOutline_) {
+                    objBox.editW   = &g->outWmm;
+                    objBox.editL   = &g->outLmm;
+                    objBox.editAdx = &g->anchorDx;
+                    objBox.editAdy = &g->anchorDy;
+                    objBox.drag    = &gripBoxDrag_;
+                }
+                mp.boxes    = &objBox;
+                mp.boxCount = 1;
+                objBoxShown = true;
+            }
+        }
         EnsureMarkIcons();
         mp.icons[0]   = markIcons_[0];
         mp.icons[1]   = markIcons_[1];
@@ -263,11 +327,19 @@ void App::DrawGripPanel()
         mp.py         = &gripPy_;
         mp.zoom       = &gripZoom_;
 
+        const bool boxWasDragging = gripBoxDrag_ >= 0;
         const MarkPickerResult r =
             DrawMarkPicker("##gripInput", ImGui::GetContentRegionAvail(), mp);
         if (r.moveRequested) {
             if (jogArmed_) workflow_.MoveGantryRelativeMM(r.dxMM, r.dyMM);
             else FD_WARN("grip", "click-to-move ignored - arm jog first");
+        }
+        // The release edge of an outline drag: one save per drag, not per
+        // frame - the same rule the Registration page's footprint drag keeps.
+        if (boxWasDragging && gripBoxDrag_ < 0 && g) {
+            session_.SaveGrips();
+            FD_INFO("grip", "'%s': outline %.3f x %.3f mm, anchor (%+.3f, %+.3f) (dragged)",
+                    g->name.c_str(), g->outWmm, g->outLmm, g->anchorDx, g->anchorDy);
         }
     }
     ImGui::EndChild();
@@ -474,6 +546,11 @@ void App::DrawGripPanel()
                 gripTeachMsg_ = "'" + g->device + "' is not connected";
             } else {
                 g->inspectUid = uid;
+                // BOTH files: the pose is a row in the product's positions and
+                // the profile only holds its uid. Saving the profile alone left
+                // a uid that pointed at a row which existed until the next
+                // restart - "none taught", with the teach in the log.
+                session_.SavePositions();
                 session_.SaveGrips();
                 gripTeachMsg_.clear();
                 FD_INFO("grip", "'%s': inspect pose taught on %s", g->name.c_str(),
@@ -526,11 +603,27 @@ void App::DrawGripPanel()
             ImGui::SetTooltip("Off: only X and Y move.\n"
                               "On: Z goes to the height that focuses ON THE TIP,\n"
                               "which is the camera moving toward the tool. Watch it.");
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputDouble("Z offset mm", &gripZOffsetMm_, 0.0, 0.0, "%.3f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Manual offset for the camera's Z on that move, added to\n"
+                              "the tip's focused height - for an object that sits above\n"
+                              "or below the tip. Non-zero moves Z even with 'focus Z'\n"
+                              "off. NEGATIVE raises the camera on this machine.\n"
+                              "Used by Camera to tool AND by Measure now.");
+        gripZOffsetMm_ = std::clamp(gripZOffsetMm_, -100.0, 100.0);
 
+        // Z is taken when asked for by name OR by an offset: same rule as the
+        // grip_detect / grip_measure steps, so the page drives where a run does.
+        const bool takeZ = gripFocusZ_ || gripZOffsetMm_ != 0.0;
         ImGui::BeginDisabled(busy || !haveTip || camName.empty());
         if (ImGui::Button("Camera to tool", ImVec2(140.0f, 0.0f))) {
-            if (gripFocusZ_)
-                driveAxes(camName, {{"X", tip.x}, {"Y", tip.y}, {"Z", tip.z}});
+            FD_INFO("grip", "'%s' to the '%s' tip at (%.4f, %.4f, %.4f), %s, Z offset %+.3f",
+                    camName.c_str(), g->device.c_str(), tip.x, tip.y, tip.z,
+                    takeZ ? "XYZ" : "XY only", gripZOffsetMm_);
+            if (takeZ)
+                driveAxes(camName, {{"X", tip.x}, {"Y", tip.y},
+                                    {"Z", tip.z + gripZOffsetMm_}});
             else
                 driveAxes(camName, {{"X", tip.x}, {"Y", tip.y}});
         }
@@ -539,6 +632,39 @@ void App::DrawGripPanel()
         ImGui::BeginDisabled(busy || camName.empty());
         if (ImGui::Button("Autofocus", ImVec2(120.0f, 0.0f))) StartQuickAutoFocus();
         ImGui::EndDisabled();
+        // The refusal driveAxes writes lands at the foot of the column, which on
+        // a short window is below the fold - so the one reason a click here
+        // does nothing is said right next to the button, as on Registration.
+        if (!jogArmed_)
+            ImGui::TextDisabled("arm jog (Jog window) - this drives '%s'",
+                                camName.empty() ? "the camera device" : camName.c_str());
+
+        // And said out loud: a click with jog unarmed raises this alert rather
+        // than a status line the operator has to go looking for. Arming here is
+        // the same flag the Jog window's checkbox sets (the Alignment page
+        // already offers it inline); the move is NOT issued from the alert -
+        // an OK button that drives the gantry is not an alert.
+        if (gripOpenArmPopup_) { ImGui::OpenPopup("Jog not armed"); gripOpenArmPopup_ = false; }
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                                ImVec2(0.5f, 0.5f));
+        if (ImGui::BeginPopupModal("Jog not armed", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextColored(kWarn, "Camera to tool drives '%s'.",
+                               camName.empty() ? "the camera device" : camName.c_str());
+            ImGui::Text("Jog is not armed, so nothing moved.");
+            ImGui::TextDisabled("Arm jog (the Arm checkbox in the Jog window, or the\n"
+                                "button below), then click Camera to tool again.");
+            ImGui::Spacing();
+            if (ImGui::Button("Arm jog", ImVec2(120.0f, 0.0f))) {
+                jogArmed_ = true;
+                gripTeachMsg_.clear();
+                FD_INFO("grip", "jog armed from the Camera to tool alert");
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Close", ImVec2(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
     }
 
     // ---- 4  How the object is found ------------------------------------------
@@ -702,6 +828,67 @@ void App::DrawGripPanel()
         if (!g->measuredAt.empty())
             ImGui::TextDisabled("last run (%+.4f, %+.4f) mm, %s", g->lastDx, g->lastDy,
                                 g->measuredAt.c_str());
+    }
+
+    // ---- 6  The outline -------------------------------------------------------
+    ImGui::SeparatorText("6  Outline");
+    {
+        ImGui::TextWrapped("The object's footprint as a rectangle, hung off the "
+                           "measured point. Drawn here and on the Aux window, where "
+                           "it follows the tool - and only ever drawn: nothing judges "
+                           "it. Width is along %s's X, length along its Y.",
+                           camName.empty() ? "the camera device" : camName.c_str());
+        bool edited = false;
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputDouble("width mm", &g->outWmm, 0.0, 0.0, "%.3f");
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputDouble("length mm", &g->outLmm, 0.0, 0.0, "%.3f");
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+        // The anchor is placed on the PICTURE, not typed: drag the box's body
+        // to move it about the measured point, a corner to size it. The
+        // numbers are shown so a drag can be read back, never edited here.
+        ImGui::Text("anchor  %+.3f  %+.3f mm", g->anchorDx, g->anchorDy);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Where the MEASURED point sits on the rectangle, as\n"
+                              "point minus centre, mm, in the rectangle's own frame.\n"
+                              "0, 0 is the centre; half the width is an edge.");
+        ImGui::SameLine();
+        if (ImGui::Button("Centre")) {
+            g->anchorDx = g->anchorDy = 0.0;
+            edited = true;
+        }
+        // Shown and edited are two switches, because a box that can be
+        // dragged owns every click on its body - and its body is where the
+        // marks go. Editing off leaves it a picture the crosshair sees through.
+        ImGui::Checkbox("show on image", &gripShowOutline_);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!gripShowOutline_);
+        ImGui::Checkbox("edit by dragging", &gripEditOutline_);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("On: drag the box's body to move it, a corner to resize\n"
+                              "it; clicks on the box then belong to the box.\n"
+                              "Off: the box is a picture, and a click inside it\n"
+                              "places the crosshair as anywhere else - turn it off\n"
+                              "to mark points 1 and 2 under the outline.");
+        if (!gripEditOutline_) gripBoxDrag_ = -1;   // a drag cannot outlive its switch
+        if (gripShowOutline_ && gripEditOutline_)
+            ImGui::TextDisabled("on the image: drag the box to move it,\n"
+                                "drag a corner to resize it");
+        if (edited) {
+            if (g->outWmm < 0.0) g->outWmm = 0.0;
+            if (g->outLmm < 0.0) g->outLmm = 0.0;
+            session_.SaveGrips();
+            FD_INFO("grip", "'%s': outline %.3f x %.3f mm, anchor (%+.3f, %+.3f)",
+                    g->name.c_str(), g->outWmm, g->outLmm, g->anchorDx, g->anchorDy);
+        }
+        if (!GripHasOutline(*g))
+            ImGui::TextDisabled("0 x 0 - nothing drawn");
+        else if (!objBoxShown)
+            ImGui::TextDisabled("drawn once the object is marked or measured");
     }
 
     // ---- Measure now ----------------------------------------------------------

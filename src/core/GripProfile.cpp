@@ -113,6 +113,13 @@ nlohmann::json GripProfileToJson(const GripProfile& g)
     ref["at"]     = g.taughtAt;
     j["reference"] = std::move(ref);
 
+    nlohmann::json out;
+    out["w_mm"]      = g.outWmm;
+    out["l_mm"]      = g.outLmm;
+    out["anchor_dx"] = g.anchorDx;
+    out["anchor_dy"] = g.anchorDy;
+    j["outline"] = std::move(out);
+
     // The last measurement is evidence, not state a run reads: kept so "which
     // number is wrong" survives a re-teach, exactly like DeviceReg::tipMeas.
     nlohmann::json last;
@@ -145,6 +152,13 @@ GripProfile GripProfileFromJson(const nlohmann::json& j)
         g.tolMm    = r.value("tol_mm", 0.05);
         g.taughtAt = r.value("at", "");
     }
+    if (j.contains("outline") && j["outline"].is_object()) {
+        const auto& o = j["outline"];
+        g.outWmm   = o.value("w_mm", 0.0);
+        g.outLmm   = o.value("l_mm", 0.0);
+        g.anchorDx = o.value("anchor_dx", 0.0);
+        g.anchorDy = o.value("anchor_dy", 0.0);
+    }
     if (j.contains("last") && j["last"].is_object()) {
         const auto& l = j["last"];
         g.lastDx     = l.value("dx", 0.0);
@@ -152,6 +166,11 @@ GripProfile GripProfileFromJson(const nlohmann::json& j)
         g.measuredAt = l.value("at", "");
     }
     return g;
+}
+
+bool GripHasOutline(const GripProfile& g)
+{
+    return g.outWmm > 0.0 && g.outLmm > 0.0;
 }
 
 std::vector<GripProfile> LoadGripProfiles()

@@ -304,6 +304,10 @@ public:
     struct GripMeasurement {
         std::string uid;
         double      dx = 0.0, dy = 0.0;
+        // Where the object WAS, in the reference device's axis space: what the
+        // Aux window's readout draws the cross at. The offset alone cannot be
+        // put on a picture.
+        double      cx = 0.0, cy = 0.0;
     };
     void QueueGripResult(const GripMeasurement& m);
     std::vector<GripMeasurement> TakeGripResults();

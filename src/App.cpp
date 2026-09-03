@@ -242,8 +242,25 @@ void App::Update(float dt)
     // taught frame: the document is UI-thread state. Evidence only - the record
     // stores it as "last measured" and never as a new reference, because
     // promoting a measurement to the standard is an operator's decision.
-    for (const Workflow::GripMeasurement& m : workflow_.TakeGripResults())
+    for (const Workflow::GripMeasurement& m : workflow_.TakeGripResults()) {
         session_.ApplyGripResult(m.uid, m.dx, m.dy);
+        // ...and the Aux window's readout of it. The verdict is computed HERE,
+        // against the profile the document holds, by the same GripVerdict the
+        // command used - not shipped across the boundary as a second copy.
+        const GripProfile* g = FindGripProfile(session_.Grips(), m.uid);
+        if (!g) continue;   // already warned by ApplyGripResult
+        AuxGripReadout r;
+        r.have   = true;
+        r.name   = g->name;
+        r.device = g->device;
+        r.cx     = m.cx;
+        r.cy     = m.cy;
+        r.dx     = m.dx;
+        r.dy     = m.dy;
+        r.ok     = GripVerdict(*g, m.dx, m.dy, &r.why);
+        r.at     = g->measuredAt;
+        auxGrip_ = std::move(r);
+    }
 
     if (const std::vector<DeviceReg> regs = workflow_.TakeDeviceRegs(); !regs.empty()) {
         for (const DeviceReg& r : regs) workflow_.SetDeviceReg(r);
@@ -518,6 +535,8 @@ void App::ResetDocumentSelections()
     // re-seeds them from the new selection on the next frame.
     alignMarkHave_[0] = alignMarkHave_[1] = false;
     auxDetAge_ = 1.0e6f;
+    // The grip readout names a profile of the old product.
+    auxGrip_ = AuxGripReadout{};
     // A different product is a different part: no taught frame survives it.
     // This also covers app start, since Run() calls us before the first frame.
     workflow_.ClearLiveFrames("product loaded");
