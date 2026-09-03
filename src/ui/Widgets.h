@@ -164,6 +164,23 @@ struct WorldMarkView {
 void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
                    float crossLen);
 
+// A rectangle in machine mm through the same projection - a tool's footprint,
+// a gripped object's outline. `ax/ay` is a point ON it that somebody measured
+// (a tip, an object's centre) and `adx/ady` where that point sits relative to
+// the rectangle's centre, in the rectangle's own frame: 0,0 says the point IS
+// the centre. `wMm` x `lMm` is its size, `deg` its spin about the centre. The
+// anchor offset turns with the box, so a corner-anchored outline stays hung off
+// its corner as the jaws turn.
+//
+// Clipped to the box, and drawn only while its rim is in it - the CROSS that
+// goes with it carries the edge arrow, and an arrow per outline would say the
+// same thing twice. Nothing is drawn below a few screen px of half-size: at
+// that scale an outline is a fatter dot beside the cross's ring, and two glyphs
+// that mean different things at the same size is worse than one.
+void DrawWorldBox(ImDrawList* dl, const WorldMarkView& wv, double ax, double ay,
+                  double adx, double ady, double wMm, double lMm, double deg,
+                  unsigned int col, float handlePx = 0.0f);
+
 // An annulus SECTOR in machine mm: everywhere a point may be, given a distance
 // range and a direction range from a centre. The Alignment Procedure's guard
 // band is exactly that shape — E2 must be `span +/- tol` away from E1, in the
@@ -291,6 +308,33 @@ struct MarkPicker {
     // like it purely a drawing matter - the tip is the same point at every
     // angle, and the corner drag measures its size in the box's own frame.
     float  boxDeg = 0.0f;
+    // Read-only outlines in machine mm, drawn through the same projection as
+    // the marks: a gripped object's, hung off the point that was measured on
+    // it. Each is a DrawWorldBox; see it for the anchor. Read-only by design -
+    // the size is typed on the page that owns it, and the box shows it.
+    struct WorldBox {
+        double       ax = 0.0, ay = 0.0;     // the anchor point, machine mm
+        double       adx = 0.0, ady = 0.0;   // point - centre, in the box's frame
+        double       wMm = 0.0, lMm = 0.0;
+        float        deg = 0.0f;
+        unsigned int col = 0;                // 0 = the default outline colour
+        // All five non-null make the box EDITABLE on the image: its BODY drags
+        // to move it and a CORNER drags to resize it with the opposite corner
+        // held, the way a rectangle is drawn in any drawing tool. Typing an
+        // anchor offset and guessing where the box lands was the alternative,
+        // and nobody can do that against a live picture. Written back as the
+        // caller's own size and anchor offset (mm, the box's frame) - the
+        // anchor POINT never moves, the box moves around it. `drag` latches
+        // which handle a press took (-1 none, 0..3 a corner, 4 the body) so the
+        // same press does not also place the crosshair. Read-only otherwise.
+        double* editW   = nullptr;
+        double* editL   = nullptr;
+        double* editAdx = nullptr;
+        double* editAdy = nullptr;
+        int*    drag    = nullptr;
+    };
+    const WorldBox* boxes    = nullptr;
+    int             boxCount = 0;
     // Step diagrams, bottom-left. `activeMark` is the 0-based mark the operator
     // should place next; the other is dimmed.
     MarkIcon icons[2];

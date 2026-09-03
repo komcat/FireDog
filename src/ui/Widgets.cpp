@@ -77,6 +77,12 @@ constexpr ImU32 kToolBox = IM_COL32(255, 190, 70, 190);  // ...and its footprint
 // Grab radius for the footprint box's corners, screen px. Generous: the
 // corner is a handle on a live camera image, not a window edge.
 constexpr float kBoxGrabPx = 12.0f;
+// Below this on-screen half-size a DrawWorldBox outline is not a size, it is a
+// slightly fatter dot beside the cross's own 5 px ring - and two glyphs that
+// mean different things at the same scale is worse than one.
+constexpr float kBoxMinPx = 7.0f;
+// A read-only outline the picker is handed with no colour of its own.
+constexpr ImU32 kObjBox = IM_COL32(90, 220, 235, 200);
 
 // A labelled cross. `len` is what distinguishes the live crosshair from the
 // latched marks at a glance, so the overlay needs no legend. `ring` is off for
@@ -105,6 +111,92 @@ bool LoadPngRGBA(const char* path, std::vector<unsigned char>* rgba,
     *width  = w;
     *height = h;
     return true;
+}
+
+namespace {
+
+// A world box on screen: its centre, half-sizes and spin, from the anchor and
+// the offset. ONE place, because DrawWorldBox draws from it and the picker's
+// drag handling hit-tests and edits against it - a second copy of this
+// arithmetic is how a corner handle ends up beside the corner it moves.
+//
+// mm -> screen goes through pixelToMm on each axis SEPARATELY, because the two
+// calibrations differ: a square drawn with one of them comes out a rectangle.
+// The anchor offset is applied in SCREEN space, after the same conversion and
+// the same spin as the corners, so the point stays on the rim it was measured
+// at whatever the axes' scales.
+struct WorldBoxGeom {
+    ImVec2 c{};                 // centre, screen
+    float  rx = 0.0f, ry = 0.0f; // half-sizes, screen px
+    float  cs = 1.0f, sn = 0.0f; // the spin
+    float  sx = 0.0f, sy = 0.0f; // screen px per mm, each axis
+    // Box frame (px) -> screen, and back.
+    ImVec2 Turn(float x, float y) const { return ImVec2(x * cs - y * sn, x * sn + y * cs); }
+    ImVec2 Unturn(float x, float y) const { return ImVec2(x * cs + y * sn, -x * sn + y * cs); }
+    ImVec2 Corner(int k) const {
+        const float kx = (k == 1 || k == 2) ? 1.0f : -1.0f;
+        const float ky = (k >= 2) ? 1.0f : -1.0f;
+        const ImVec2 t = Turn(kx * rx, ky * ry);
+        return ImVec2(c.x + t.x, c.y + t.y);
+    }
+};
+
+bool ResolveWorldBox(const WorldMarkView& wv, double ax, double ay, double adx, double ady,
+                     double wMm, double lMm, double deg, WorldBoxGeom* g)
+{
+    if (wMm <= 0.0 || lMm <= 0.0 || wv.pixelToMmX <= 0.0f || wv.pixelToMmY <= 0.0f)
+        return false;
+    g->sx = wv.view.scale / wv.pixelToMmX;
+    g->sy = wv.view.scale / wv.pixelToMmY;
+    g->rx = static_cast<float>(wMm) * 0.5f * g->sx;
+    g->ry = static_cast<float>(lMm) * 0.5f * g->sy;
+
+    // The anchor, through the same projection DrawWorldMark uses - a second
+    // copy of it would put the outline off the cross it belongs to.
+    const float px = static_cast<float>((ax - wv.gx) / static_cast<double>(wv.pixelToMmX)) +
+                     static_cast<float>(wv.imgW) * 0.5f;
+    const float py = static_cast<float>((ay - wv.gy) / static_cast<double>(wv.pixelToMmY)) +
+                     static_cast<float>(wv.imgH) * 0.5f;
+    const ImVec2 a = wv.view.ToScreen(px, py);
+
+    const float th = static_cast<float>(deg) * 3.14159265358979f / 180.0f;
+    g->cs = cosf(th);
+    g->sn = sinf(th);
+    // The centre: the anchor less its offset, the offset turned as the box is.
+    const ImVec2 od = g->Turn(static_cast<float>(adx) * g->sx, static_cast<float>(ady) * g->sy);
+    g->c = ImVec2(a.x - od.x, a.y - od.y);
+    return true;
+}
+
+} // namespace
+
+void DrawWorldBox(ImDrawList* dl, const WorldMarkView& wv, double ax, double ay,
+                  double adx, double ady, double wMm, double lMm, double deg,
+                  unsigned int col, float handlePx)
+{
+    WorldBoxGeom g;
+    if (!dl || !ResolveWorldBox(wv, ax, ay, adx, ady, wMm, lMm, deg, &g)) return;
+    if (g.rx < kBoxMinPx && g.ry < kBoxMinPx) return;
+
+    // Wholly outside the box: nothing to draw. Tested on the turned box's
+    // bounding radius, so a corner that swings into view is not culled.
+    const float rr = sqrtf(g.rx * g.rx + g.ry * g.ry);
+    if (g.c.x + rr < wv.boxMin.x || g.c.x - rr > wv.boxMax.x ||
+        g.c.y + rr < wv.boxMin.y || g.c.y - rr > wv.boxMax.y) return;
+
+    // Unlike the cross, this has EXTENT, and a box wider than the field of view
+    // would otherwise paint across whatever sits beside the image. Clipped to
+    // the image box, which is what it is a statement about.
+    dl->PushClipRect(wv.boxMin, wv.boxMax, true);
+    const ImVec2 q[4] = {g.Corner(0), g.Corner(1), g.Corner(2), g.Corner(3)};
+    dl->AddQuad(q[0], q[1], q[2], q[3], col, 1.5f);
+    // Corner handles, so a box that CAN be dragged looks it - and a read-only
+    // one does not invite a drag it will not answer.
+    if (handlePx > 0.0f)
+        for (const ImVec2& k : q)
+            dl->AddRectFilled(ImVec2(k.x - handlePx, k.y - handlePx),
+                              ImVec2(k.x + handlePx, k.y + handlePx), col);
+    dl->PopClipRect();
 }
 
 void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
@@ -461,6 +553,90 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
         }
     }
 
+    // ---- Editable outlines: drag the body to move, a corner to resize -------
+    // Resolved before the crosshair click for the reason the tool box is. A
+    // body drag keeps the size and moves the box - the anchor POINT stays where
+    // it was measured, so what changes is the offset between them. A corner
+    // drag holds the OPPOSITE corner and pulls this one to the object's edge,
+    // which changes both the size and, since the centre moved, the offset.
+    // Everything is done in the box's own frame in screen px and converted
+    // back to mm by the same per-axis scale the box was drawn with.
+    if (haveImg && mp.havePose && mp.pixelToMmX > 0.0f && mp.pixelToMmY > 0.0f) {
+        WorldMarkView wvd;
+        wvd.view       = view;
+        wvd.boxMin     = origin;
+        wvd.boxMax     = ImVec2(origin.x + img.x, origin.y + img.y);
+        wvd.gx         = mp.gx;
+        wvd.gy         = mp.gy;
+        wvd.pixelToMmX = mp.pixelToMmX;
+        wvd.pixelToMmY = mp.pixelToMmY;
+        wvd.imgW       = mp.imgW;
+        wvd.imgH       = mp.imgH;
+        for (int i = 0; i < mp.boxCount && mp.boxes; ++i) {
+            const MarkPicker::WorldBox& b = mp.boxes[i];
+            if (!b.editW || !b.editL || !b.editAdx || !b.editAdy || !b.drag) continue;
+            WorldBoxGeom g;
+            if (!ResolveWorldBox(wvd, b.ax, b.ay, b.adx, b.ady, b.wMm, b.lMm, b.deg, &g))
+                continue;
+            const bool wasDrag = *b.drag >= 0;
+            if (wasDrag) boxGrabbed = true;   // the release is the click ImGui reports
+
+            // What the mouse is over: a corner first (they sit on the body),
+            // then the body.
+            const ImVec2 m = ImGui::GetIO().MousePos;
+            int over = -1;
+            for (int k = 0; k < 4 && over < 0; ++k) {
+                const ImVec2 q = g.Corner(k);
+                if (fabsf(m.x - q.x) <= kBoxGrabPx && fabsf(m.y - q.y) <= kBoxGrabPx) over = k;
+            }
+            if (over < 0) {
+                const ImVec2 l = g.Unturn(m.x - g.c.x, m.y - g.c.y);
+                if (fabsf(l.x) <= g.rx && fabsf(l.y) <= g.ry) over = 4;
+            }
+
+            if (wasDrag) {
+                if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                    if (*b.drag == 4) {
+                        // The box moves by the mouse's delta; the anchor does
+                        // not, so the offset shrinks by the same amount.
+                        const ImVec2 d = ImGui::GetIO().MouseDelta;
+                        const ImVec2 dl_ = g.Unturn(d.x, d.y);
+                        *b.editAdx -= static_cast<double>(dl_.x / g.sx);
+                        *b.editAdy -= static_cast<double>(dl_.y / g.sy);
+                    } else {
+                        // The opposite corner is fixed; the box is whatever
+                        // rectangle spans from it to the mouse. Floored rather
+                        // than allowed to reach zero, so a box dragged shut can
+                        // still be grabbed and opened again.
+                        const int   k  = *b.drag;
+                        const float kx = (k == 1 || k == 2) ? 1.0f : -1.0f;
+                        const float ky = (k >= 2) ? 1.0f : -1.0f;
+                        const ImVec2 o(-kx * g.rx, -ky * g.ry);             // box frame
+                        const ImVec2 l = g.Unturn(m.x - g.c.x, m.y - g.c.y); // the mouse
+                        const float  minPx = 0.01f;
+                        const float hx = fmaxf(fabsf(l.x - o.x) * 0.5f, minPx * g.sx);
+                        const float hy = fmaxf(fabsf(l.y - o.y) * 0.5f, minPx * g.sy);
+                        // The new centre, in the box frame: where it moved to
+                        // is what the anchor offset loses.
+                        const float ncx = o.x + kx * hx, ncy = o.y + ky * hy;
+                        *b.editW   = static_cast<double>(2.0f * hx / g.sx);
+                        *b.editL   = static_cast<double>(2.0f * hy / g.sy);
+                        *b.editAdx -= static_cast<double>(ncx / g.sx);
+                        *b.editAdy -= static_cast<double>(ncy / g.sy);
+                    }
+                } else {
+                    *b.drag = -1;
+                }
+            } else if (hovered && over >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                *b.drag    = over;
+                boxGrabbed = true;
+            }
+            const int cue = (*b.drag >= 0) ? *b.drag : over;
+            if (cue == 4)      ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            else if (cue >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+        }
+    }
+
     // A click that belonged to the box is not a mark. `wasDragging` covers the
     // RELEASE, which is the edge ImGui reports as the click.
     if (haveImg && clicked && !boxGrabbed) view.ToCamera(ImGui::GetIO().MousePos, mp.px, mp.py);
@@ -651,6 +827,15 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
             tm.label = mp.toolLabel;
             tm.col   = kToolCol;
             DrawWorldMark(dl, wv, tm, 14.0f);
+        }
+
+        // The caller's read-only outlines, under the live crosshair like
+        // everything else that is not being placed.
+        for (int i = 0; i < mp.boxCount && mp.boxes; ++i) {
+            const MarkPicker::WorldBox& b = mp.boxes[i];
+            const bool editable = b.editW && b.editL && b.editAdx && b.editAdy && b.drag;
+            DrawWorldBox(dl, wv, b.ax, b.ay, b.adx, b.ady, b.wMm, b.lMm, b.deg,
+                         b.col ? b.col : kObjBox, editable ? 5.0f : 0.0f);
         }
 
         DrawCross(dl, view.ToScreen(*mp.px, *mp.py), kCurCol, 22.0f, nullptr, false);

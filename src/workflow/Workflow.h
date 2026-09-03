@@ -13,6 +13,7 @@
 #include "vision/VisionResult.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -247,6 +248,15 @@ public:
     bool SetIoOutput(std::size_t devIdx, int pin, bool on);
     bool SetIoOutputByName(const std::string& device, const std::string& pinName, bool on);
     bool ClearIoLatch(std::size_t devIdx, uint64_t mask);
+    // ON now, OFF after `ms` — WITHOUT blocking: the OFF is issued by Update()
+    // on the UI thread once the deadline passes. Backs the Jog window's IO tab
+    // (a recipe uses `pulse_output`, which sleeps on its own worker instead).
+    // A second pulse on the same pin restarts its clock; SetIoOutput on that
+    // pin cancels it, because an operator switching a pin off mid-pulse means
+    // off, not "off again later". ms <= 0 is a plain ON.
+    bool PulseIoOutput(std::size_t devIdx, int pin, int ms);
+    // Milliseconds left on a pending pulse, or -1 when none is pending.
+    int  PendingPulseMs(std::size_t devIdx, int pin) const;
 
     // ---- Pneumatic slide commands (Pneumatics page; non-blocking) -----------
     // idx indexes the HardwareManager slide fleet.
@@ -294,6 +304,10 @@ public:
     struct GripMeasurement {
         std::string uid;
         double      dx = 0.0, dy = 0.0;
+        // Where the object WAS, in the reference device's axis space: what the
+        // Aux window's readout draws the cross at. The offset alone cannot be
+        // put on a picture.
+        double      cx = 0.0, cy = 0.0;
     };
     void QueueGripResult(const GripMeasurement& m);
     std::vector<GripMeasurement> TakeGripResults();
@@ -469,6 +483,21 @@ private:
         float       legTime = 0.0f;   // seconds spent on the current leg
     };
     void TickPath(float dt);   // called from Update()
+
+    // Pending output pulses (PulseIoOutput): pushed by the IO tab, drained by
+    // TickIoPulses from Update(); the OFF goes through SetIoOutput so it is
+    // logged and refused exactly like a manual one. Mutex-guarded rather than
+    // UI-thread-only because SetIoOutput also runs on an engine worker (the
+    // set_output / pulse_output commands) and every write cancels the pin's
+    // pending pulse.
+    struct IoPulse {
+        std::size_t dev = 0;
+        int         pin = 0;
+        std::chrono::steady_clock::time_point off;
+    };
+    mutable std::mutex   ioPulseMu_;
+    std::vector<IoPulse> ioPulses_;
+    void TickIoPulses();       // called from Update()
 
     // Taught-position queue (worker producers, UI-thread consumer).
     std::mutex teachMu_;

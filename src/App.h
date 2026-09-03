@@ -13,6 +13,7 @@
 
 #include "ui/GlHost.h"
 #include "ui/Widgets.h"        // MarkIcon (the pt1/pt2 step diagrams)
+#include "ui/UiSettings.h"     // QuickIoRow (the Jog window's IO tab rows)
 #include "command/CommandRegistry.h"   // ParamSpec (schema forms)
 #include "command/LuaEngine.h"         // ScriptInfo (Scripts page)
 #include "command/Orchestration.h"     // registry + engines + runner, one unit
@@ -183,6 +184,7 @@ private:
     void DrawJogPanel();       // jog controls: device/velocity/step/direction/keys
     void DrawJogCameraTab();   // Jog window "Camera" tab: camera combo + exposure
     void DrawJogPosTab();      // Jog window "Pos" tab: device + 3x3 quick-move pad
+    void DrawJogIoTab();       // Jog window "IO" tab: quick output rows (toggle / pulse)
     // The nine pad slots of one device, created (blank) on first ask. UI state,
     // not the document — a Draw may call it.
     std::vector<std::string>& PosPadSlots(const std::string& device);
@@ -513,9 +515,15 @@ private:
     // position of that device. Bottom-left of the image box; pure readout,
     // drawn straight onto `dl` so it can never eat a click meant for the image.
     void DrawAuxPositionLabels(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail);
-    // The registered devices' tool tips, projected onto the live image.
+    // The registered devices' tool tips, projected onto the live image. Its
+    // "no tip:" lines stack up from the bottom-right corner, `bottomInset`
+    // above it - the grip readout's plate sits in that corner.
     void DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
-                             const ImVec2& center, float scale);
+                             const ImVec2& center, float scale, float bottomInset);
+    // The last grip measurement (auxGrip_): the object's cross on the image
+    // and a plate in the bottom-right corner. Returns the plate's height so
+    // the "no tip:" lines can stack above it; 0 when there is nothing shown.
+    float DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail);
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
     void DrawImageOverlay();   // image + vision overlay
@@ -807,6 +815,9 @@ private:
     // NOT cleared — the operator switched product, they did not unassign — the
     // button just greys out until that product is back.
     std::map<std::string, std::vector<std::string>> posPad_;
+    // Jog window "IO" tab: the quick-output rows (UiSettings quick_io). A row
+    // names device + pin, never a fleet index - see QuickIoRow.
+    std::vector<QuickIoRow> quickIo_;
 
     // Per-device velocity selection, shared by the Jog panel and the Motion
     // page so both always show the same value for a device.
@@ -981,6 +992,15 @@ private:
     // for the reason move_camera_to_tool's axes defaults to XY: that is the leg
     // that drives the lens toward a tool of unknown height.
     bool   gripFocusZ_ = false;
+    // Manual offset for the camera's Z on that move, added to the tip's focused
+    // height: for an object that sits above or below the tip. Non-zero commands
+    // Z on its own, so a typed number never silently does nothing.
+    double gripZOffsetMm_ = 0.0;
+    // "Camera to tool" was clicked with jog unarmed: raise the alert modal on
+    // the next draw. A flag, not an OpenPopup in the lambda, so the popup is
+    // opened and drawn in one ID scope. Safe as a modal: the button that sets
+    // it is disabled while orch_.Busy(), so no worker is behind a prompt.
+    bool   gripOpenArmPopup_ = false;
     // What the page's Measure button injects. They are RUN options, not
     // properties of the object, which is why they live here and not in the
     // profile: a recipe step carries its own.
@@ -1164,6 +1184,30 @@ private:
     // A readout like the two above, and the same rule as the tip topics: a
     // tip that cannot be predicted draws NOTHING, never a stale cross.
     bool       showGripperMarks_ = true;   // Aux checkbox, persisted
+    // The last grip measurement, held on the Aux image until the next one
+    // replaces it or the strip's Clear drops it. It is a readout of one run,
+    // never the document: the profile's last* is the evidence and this is the
+    // picture of it - the object cross, the offset and the verdict. Filled by the App::Update drain (UI thread), and
+    // cleared with the product: the profile it names is the product's.
+    struct AuxGripReadout {
+        bool        have = false;
+        std::string name, device, at, why;
+        double      cx = 0.0, cy = 0.0, dx = 0.0, dy = 0.0;
+        bool        ok = false;
+    };
+    AuxGripReadout auxGrip_;
+    // Which handle of the object's outline a press on the picker took: -1
+    // none, 0..3 a corner, 4 the body. The picker latches it here (it keeps no
+    // state) so the same press does not also place the crosshair, and the
+    // page saves the profile on the release edge.
+    int gripBoxDrag_ = -1;
+    // Whether the outline is drawn on the page, and whether it answers the
+    // mouse. Editing is OFF by default: a box that can be dragged swallows
+    // every click on its body, and its body is exactly where the marks the
+    // profile is measured by have to be placed. Session-only, like the run
+    // options beside them.
+    bool gripShowOutline_ = true;
+    bool gripEditOutline_ = false;
     // Whether the Aux control strip is expanded. It sits over the picture,
     // so the picture has to be able to win: collapsed it is one button.
     bool       auxPanelOpen_ = true;       // Aux strip, persisted

@@ -64,6 +64,20 @@ UiSettings UiSettings::Load(const std::string& path)
                 s.posPad[it.key()] = std::move(slots);
             }
         }
+        // Quick IO rows: same tolerance - a malformed entry becomes a blank
+        // row the operator can reassign, never a thrown-away file.
+        if (j.contains("quick_io") && j["quick_io"].is_array()) {
+            for (const auto& e : j["quick_io"]) {
+                QuickIoRow r;
+                if (e.is_object()) {
+                    if (e.contains("device") && e["device"].is_string()) r.device  = e["device"].get<std::string>();
+                    if (e.contains("pin") && e["pin"].is_string())       r.pin     = e["pin"].get<std::string>();
+                    if (e.contains("ms") && e["ms"].is_number())         r.dwellMs = e["ms"].get<int>();
+                    if (r.dwellMs < 0) r.dwellMs = 0;
+                }
+                s.quickIo.push_back(std::move(r));
+            }
+        }
         FD_INFO("ui", "settings loaded from %s (font %d, %.0f px)",
                 path.c_str(), s.fontIndex, s.fontSize);
     } catch (const std::exception& e) {
@@ -113,6 +127,10 @@ bool UiSettings::Save(const std::string& path) const
     nlohmann::json pad = nlohmann::json::object();
     for (const auto& kv : posPad) pad[kv.first] = kv.second;
     j["pos_pad"] = pad;
+    nlohmann::json qio = nlohmann::json::array();
+    for (const QuickIoRow& r : quickIo)
+        qio.push_back({{"device", r.device}, {"pin", r.pin}, {"ms", r.dwellMs}});
+    j["quick_io"] = qio;
 
     std::ofstream f(path);
     if (!f.is_open()) {

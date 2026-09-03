@@ -1171,6 +1171,7 @@ void Workflow::Update(float dt)
 
     PublishTips();  // registered devices' tool tips, in the camera device's space
 
+    TickIoPulses(); // timed output OFFs (no-op unless a pulse is pending)
     TickPath(dt);   // mapped-path executor (no-op unless a path is running)
 }
 
@@ -1766,6 +1767,13 @@ bool Workflow::MoveToPosition(std::size_t devIdx,
 
 bool Workflow::SetIoOutput(std::size_t devIdx, int pin, bool on)
 {
+    // A manual write supersedes a pending pulse on the same pin either way:
+    // an OFF is the cancel, and an ON that then timed out would be a surprise.
+    {
+        std::lock_guard<std::mutex> lk(ioPulseMu_);
+        std::erase_if(ioPulses_, [&](const IoPulse& p) { return p.dev == devIdx && p.pin == pin; });
+    }
+
     if (devIdx >= hw_.IoCount()) return false;
     if (hw_.IoState(devIdx) != ConnState::Connected) return false;
     IIoDevice* d = hw_.IoDevice(devIdx);
@@ -1792,6 +1800,51 @@ bool Workflow::SetIoOutputByName(const std::string& device, const std::string& p
     }
     FD_WARN("io", "unknown IO device '%s'", device.c_str());
     return false;
+}
+
+bool Workflow::PulseIoOutput(std::size_t devIdx, int pin, int ms)
+{
+    // SetIoOutput drops any pulse already pending on the pin, so a re-click
+    // restarts the clock rather than stacking a second, earlier OFF.
+    if (!SetIoOutput(devIdx, pin, true)) return false;
+    if (ms <= 0) return true;
+    IoPulse p;
+    p.dev = devIdx;
+    p.pin = pin;
+    p.off = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    std::lock_guard<std::mutex> lk(ioPulseMu_);
+    ioPulses_.push_back(p);
+    return true;
+}
+
+int Workflow::PendingPulseMs(std::size_t devIdx, int pin) const
+{
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lk(ioPulseMu_);
+    for (const IoPulse& p : ioPulses_) {
+        if (p.dev != devIdx || p.pin != pin) continue;
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(p.off - now).count();
+        return left > 0 ? static_cast<int>(left) : 0;
+    }
+    return -1;
+}
+
+void Workflow::TickIoPulses()
+{
+    const auto now = std::chrono::steady_clock::now();
+    // Collect the due ones under the lock, write outside it: SetIoOutput takes
+    // the same mutex to drop the entry it is acting on.
+    std::vector<IoPulse> due;
+    {
+        std::lock_guard<std::mutex> lk(ioPulseMu_);
+        for (const IoPulse& p : ioPulses_)
+            if (p.off <= now) due.push_back(p);
+    }
+    for (const IoPulse& p : due) {
+        if (!SetIoOutput(p.dev, p.pin, false))
+            FD_WARN("io", "pulse OFF rejected on io device %zu pin %d (disconnected?)",
+                    p.dev, p.pin);
+    }
 }
 
 bool Workflow::ClearIoLatch(std::size_t devIdx, uint64_t mask)
