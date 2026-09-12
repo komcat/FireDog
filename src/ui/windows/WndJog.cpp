@@ -49,6 +49,31 @@ const SavedPos* FindPosByUid(const std::vector<SavedPos>* list, const std::strin
         if (p.uid == uid) return &p;
     return nullptr;
 }
+
+// One line of text drawn as large as `box` allows and centred in it, from the
+// current cursor. The font is sized off the box height and shrunk to fit the
+// width, so a short "10um" and a long device name both fill the space without
+// clipping. Sizes come off the base font, so the label follows the UI scale.
+void DrawBigLabel(const char* text, const ImVec2& box, const ImVec4& color)
+{
+    const float base = ImGui::GetStyle().FontSizeBase;
+    float size = (std::max)(base, box.y * 0.62f);
+    ImGui::PushFont(nullptr, size);
+    ImVec2 ts = ImGui::CalcTextSize(text);
+    ImGui::PopFont();
+    const float maxW = box.x - 6.0f;
+    if (ts.x > maxW && ts.x > 0.0f) {
+        size = (std::max)(base, size * maxW / ts.x);
+        ImGui::PushFont(nullptr, size);
+        ts = ImGui::CalcTextSize(text);
+        ImGui::PopFont();
+    }
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImGui::PushFont(nullptr, size);
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + (box.x - ts.x) * 0.5f, pos.y + (box.y - ts.y) * 0.5f));
+    ImGui::TextColored(color, "%s", text);
+    ImGui::PopFont();
+}
 } // namespace
 
 void App::DrawJogWindow()
@@ -720,7 +745,30 @@ void App::DrawJogPanel()
                           "(Laser, PSU and IO outputs are not touched.)");
     ImGui::Separator();
 
-    DrawVelocityCombo(di);
+    // --- Velocity (left) + the current step size, big (right) ---
+    // The step is what every key press moves by, so it gets a readout an
+    // operator can check from a step back at the bench, beside the velocity
+    // block it shares a row with. The left child has no padding, so the combo
+    // lays out exactly as it does on the Motion page.
+    {
+        const float rowW  = ImGui::GetContentRegionAvail().x;
+        const float bigW  = std::floor(rowW * 0.38f);
+        const float leftW = rowW - bigW - ImGui::GetStyle().ItemSpacing.x;
+        const float boxH  = ImGui::GetTextLineHeightWithSpacing()
+                          + ImGui::GetFrameHeightWithSpacing()
+                          + ImGui::GetFrameHeight();
+        ImGui::BeginChild("jogvel", ImVec2(leftW, boxH), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        DrawVelocityCombo(di);
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.30f, 0.76f, 0.32f, 1.0f));
+        ImGui::BeginChild("jogstepbig", ImVec2(bigW, boxH), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        DrawBigLabel(kSteps[jogStepIndex_].label, ImVec2(bigW, boxH), ImVec4(1.0f, 0.92f, 0.12f, 1.0f));
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+    }
 
     // --- Step size button array ---
     ImGui::TextUnformatted("Step size");
@@ -746,6 +794,7 @@ void App::DrawJogPanel()
     const double step = kSteps[jogStepIndex_].mm;
     const ImVec2 jb(58.0f, 0.0f);   // auto height -> fits the two-line "In\nW" labels
     ImGui::BeginDisabled(!jogArmed_);
+    ImGui::BeginGroup();
     ImGui::Dummy(ImVec2(jb.x + 8.0f, 0.0f)); ImGui::SameLine();
     if (ImGui::Button("In\nW", jb))    workflow_.JogGlobal(di, 0.0f, -1.0f, 0.0f, step);
     if (ImGui::Button("Left\nA", jb))  workflow_.JogGlobal(di, -1.0f, 0.0f, 0.0f, step); ImGui::SameLine();
@@ -753,6 +802,29 @@ void App::DrawJogPanel()
     if (ImGui::Button("Right\nD", jb)) workflow_.JogGlobal(di, 1.0f,  0.0f, 0.0f, step);
     if (ImGui::Button("Up\nR", jb))    workflow_.JogGlobal(di, 0.0f,  0.0f, 1.0f, step); ImGui::SameLine();
     if (ImGui::Button("Down\nF", jb))  workflow_.JogGlobal(di, 0.0f,  0.0f, -1.0f, step);
+    ImGui::EndGroup();
+    ImGui::EndDisabled();
+
+    // The device those keys drive, big, in the space beside the cluster: the
+    // list above scrolls out of view on a short window, and pressing W on the
+    // wrong hexapod is the mistake this readout exists to prevent. It sits
+    // outside the arm gate so it stays legible while disarmed.
+    {
+        const float nameH = ImGui::GetItemRectSize().y;
+        ImGui::SameLine();
+        const float nameW = ImGui::GetContentRegionAvail().x;
+        if (nameW > 40.0f) {
+            ImGui::BeginChild("jogdevname", ImVec2(nameW, nameH), ImGuiChildFlags_Borders,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            const ImVec2 pad = ImGui::GetStyle().WindowPadding;
+            DrawBigLabel(dev->Name().c_str(), ImVec2(nameW - pad.x * 2.0f, nameH - pad.y * 2.0f),
+                         jogArmed_ ? ImVec4(1.0f, 0.75f, 0.20f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            ImGui::EndChild();
+        } else {
+            ImGui::NewLine();
+        }
+    }
+    ImGui::BeginDisabled(!jogArmed_);
 
     // --- Rotational cluster (GLOBAL U/V/W = theta x/y/z), only if the device
     // has rotational axes. Routed through JogGlobalRot so the transform's
