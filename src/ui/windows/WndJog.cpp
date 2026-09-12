@@ -817,13 +817,37 @@ void App::DrawJogPanel()
             ImGui::BeginChild("jogdevname", ImVec2(nameW, nameH), ImGuiChildFlags_Borders,
                               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
             const ImVec2 pad = ImGui::GetStyle().WindowPadding;
-            DrawBigLabel(dev->Name().c_str(), ImVec2(nameW - pad.x * 2.0f, nameH - pad.y * 2.0f),
-                         jogArmed_ ? ImVec4(1.0f, 0.75f, 0.20f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            // Small row above the name: hold + Upd + the taught position the
+            // device is on. The status of the last Upd takes a line under the
+            // name while there is one; the big label gets what is left.
+            DrawJogPositionRow(*dev, axes);   // may stage jogUpd_; the modal is below
+            const float lineH  = ImGui::GetTextLineHeightWithSpacing();
+            const float usedH  = ImGui::GetCursorPosY() - pad.y;
+            // The status is a brief notice, not a readout: it shows for a few
+            // seconds after Update and then gives the line back to the name.
+            // The log keeps the permanent record.
+            const double left   = jogPosStatusUntil_ - ImGui::GetTime();
+            const bool  showSt  = !jogPosStatus_.empty() && left > 0.0;
+            const float statH   = showSt ? lineH : 0.0f;
+            const float bigH    = nameH - pad.y * 2.0f - usedH - statH;
+            if (bigH > ImGui::GetTextLineHeight())
+                DrawBigLabel(dev->Name().c_str(), ImVec2(nameW - pad.x * 2.0f, bigH),
+                             jogArmed_ ? ImVec4(1.0f, 0.75f, 0.20f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            if (showSt) {
+                // Fades over its last second so it leaves instead of blinking out.
+                const float a = static_cast<float>(left < 1.0 ? left : 1.0);
+                ImGui::TextColored(ImVec4(0.47f, 0.92f, 0.59f, a), "%s", jogPosStatus_.c_str());
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", jogPosStatusFull_.c_str());
+            }
             ImGui::EndChild();
         } else {
             ImGui::NewLine();
         }
     }
+    // Raised here, not inside the name box: a popup is addressed through the
+    // ID stack it was opened on, and the box's child is skipped on a narrow
+    // window. Its own function so the row above stays about the row.
+    DrawJogUpdatePosModal();
     ImGui::BeginDisabled(!jogArmed_);
 
     // --- Rotational cluster (GLOBAL U/V/W = theta x/y/z), only if the device
@@ -897,6 +921,187 @@ void App::DrawJogPanel()
             if (ImGui::IsKeyPressed(ImGuiKey_F, false)) workflow_.JogGlobal(di, 0.0f, 0.0f, -1.0f, step);  // Down  Z-
         }
     }
+}
+
+// Where the selected device is, by taught position (VISIBLE positions only:
+// the algn_... system names mean nothing to an operator jogging by hand, so
+// here a hidden neighbour is skipped and the answer may read "+0.3 mm" from
+// the nearest visible one), and the hold that turns that name into a re-teach.
+//
+// The hold exists because Upd on the Motion page needs the operator to know
+// WHICH row they are at before they move: once the stage has left the taught
+// point the name is gone from every readout. Taking the hold while still ON
+// the position pins the record; the jog happens; Upd writes the live pose into
+// it and reports from/to/delta so a slip of the wrong step size shows up as a
+// number. Same write as the Motion page's Upd, same gate (that page's), same
+// save.
+void App::DrawJogPositionRow(IMotionController& dev, const std::vector<std::string>& axes)
+{
+    const std::string devName = dev.Name();
+    if (!jogHoldUid_.empty() && jogHoldDev_ != devName) {
+        jogHoldUid_.clear();   // the hold named a record on the OTHER device
+        jogPosStatus_.clear();
+    }
+
+    const std::map<std::string, double> live = dev.Positions();
+    SavedPosMap& all = session_.Positions();
+    const auto  it   = all.find(devName);
+    double dist = 0.0;
+    const SavedPos* nearest = (it != all.end())
+                               ? NearestSavedPos(it->second, live, &dist, /*includeHidden=*/false)
+                               : nullptr;
+    const bool at = nearest && dist <= kSavedPosAtTolMM;
+
+    SavedPos* held = nullptr;
+    if (!jogHoldUid_.empty() && it != all.end()) {
+        for (SavedPos& p : it->second) if (p.uid == jogHoldUid_) { held = &p; break; }
+        if (!held) {   // product switched under the hold: nothing to write into
+            jogHoldUid_.clear();
+            jogPosStatus_      = "held position is gone";
+            jogPosStatusFull_  = "The held position is no longer in the loaded product.";
+            jogPosStatusUntil_ = ImGui::GetTime() + kJogPosStatusSec;
+        }
+    }
+
+    const bool canTeach = CanAccess(Page::Motion);   // the Motion page's Upd gate
+    bool hold = held != nullptr;
+    ImGui::BeginDisabled(!canTeach || (!hold && !at));
+    if (ImGui::Checkbox("##poshold", &hold)) {
+        if (hold && nearest) {
+            jogHoldUid_ = nearest->uid;
+            jogHoldDev_ = devName;
+            jogPosStatus_.clear();
+        } else {
+            jogHoldUid_.clear();   // unchecked by hand: nothing written
+        }
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (!canTeach)   ImGui::SetTooltip("Re-teaching a position needs the Motion page's level.");
+        else if (!hold && !at) ImGui::SetTooltip("Move onto a taught position first, then check\n"
+                                                 "to hold its name while you jog away from it.");
+        else ImGui::SetTooltip("Holding: jog to the new spot, then Upd writes it\n"
+                               "into this position. Uncheck to drop the hold.");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!held);
+    if (ImGui::SmallButton("Upd") && held) {
+        // Stage only — the modal shows this table and writes on confirm.
+        jogUpd_      = JogPosUpdate{};
+        jogUpd_.dev  = devName;
+        jogUpd_.uid  = held->uid;
+        jogUpd_.name = held->name;
+        double sq = 0.0;
+        for (const std::string& a : axes) {
+            const auto li = live.find(a);
+            if (li == live.end()) continue;
+            const auto oi = held->vals.find(a);
+            const double o = (oi != held->vals.end()) ? oi->second : li->second;
+            const double d = li->second - o;
+            // Distance over the linear axes only: a degree of U added to a
+            // millimetre of X is not a length.
+            if (a == "X" || a == "Y" || a == "Z" || a == "x" || a == "y" || a == "z") sq += d * d;
+            jogUpd_.rows.push_back({a, o, li->second});
+        }
+        jogUpd_.deltaMM = std::sqrt(sq);
+        jogOpenUpdPos_  = true;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Review and write the device's current position into the held position.");
+    ImGui::SameLine();
+
+    if (held) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.20f, 1.0f), "%s  (held)", held->name);
+        if (nearest && ImGui::IsItemHovered())
+            ImGui::SetTooltip("now: %s%s", nearest->name, at ? "" : " (away)");
+    } else if (!nearest) {
+        ImGui::TextDisabled("(no taught position)");
+    } else if (at) {
+        ImGui::TextColored(ImVec4(0.47f, 0.92f, 0.59f, 1.0f), "%s", nearest->name);
+    } else {
+        ImGui::TextColored(ImVec4(0.88f, 0.78f, 0.51f, 1.0f), "%s  +%.3f mm", nearest->name, dist);
+    }
+}
+
+// The confirmation for the Jog box's Upd: one row per axis, before / after /
+// delta, and the XYZ distance. Writes the STAGED values, then saves, reports
+// and drops the hold. Cancel leaves the hold in place — the operator may just
+// want one more nudge.
+void App::DrawJogUpdatePosModal()
+{
+    if (jogOpenUpdPos_) { ImGui::OpenPopup("Update Position"); jogOpenUpdPos_ = false; }
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("Update Position", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    const JogPosUpdate& u = jogUpd_;
+    ImGui::Text("Overwrite position '%s' on %s with the current position?", u.name.c_str(), u.dev.c_str());
+    ImGui::Spacing();
+    if (ImGui::BeginTable("updrows", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                            ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("Axis");
+        ImGui::TableSetupColumn("Before");
+        ImGui::TableSetupColumn("After");
+        ImGui::TableSetupColumn("Delta");
+        ImGui::TableHeadersRow();
+        for (const JogPosUpdate::Row& r : u.rows) {
+            const double d = r.after - r.before;
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(r.axis.c_str());
+            ImGui::TableSetColumnIndex(1); ImGui::Text("%10.4f", r.before);
+            ImGui::TableSetColumnIndex(2); ImGui::Text("%10.4f", r.after);
+            ImGui::TableSetColumnIndex(3);
+            // An unchanged axis stays quiet; a changed one is coloured so the
+            // eye lands on what the jog actually moved.
+            if (std::fabs(d) < 5e-5) ImGui::TextDisabled("%+10.4f", d);
+            else ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.30f, 1.0f), "%+10.4f", d);
+        }
+        ImGui::EndTable();
+    }
+    ImGui::Text("XYZ distance: %.4f mm", u.deltaMM);
+    if (u.deltaMM < 5e-5)
+        ImGui::TextDisabled("(no change on X/Y/Z)");
+    ImGui::Spacing();
+
+    if (ImGui::Button("Update", ImVec2(110.0f, 0.0f))) {
+        // The record is found again by uid: it may have gone (product switched
+        // while the dialog was up), in which case nothing is written.
+        SavedPos* rec = nullptr;
+        const auto it = session_.Positions().find(u.dev);
+        if (it != session_.Positions().end())
+            for (SavedPos& p : it->second) if (p.uid == u.uid) { rec = &p; break; }
+        if (rec) {
+            std::string from, to;
+            for (const JogPosUpdate::Row& r : u.rows) {
+                rec->vals[r.axis] = r.after;
+                char b[48];
+                std::snprintf(b, sizeof(b), "%s%.4f", from.empty() ? "" : " ", r.before); from += b;
+                std::snprintf(b, sizeof(b), "%s%.4f", to.empty()   ? "" : " ", r.after);  to += b;
+            }
+            char line[128], full[320];
+            std::snprintf(line, sizeof(line), "'%s' updated, delta %.4f mm", rec->name, u.deltaMM);
+            std::snprintf(full, sizeof(full), "position '%s' on %s updated\nfrom  %s\nto    %s\ndelta %.4f mm",
+                          rec->name, u.dev.c_str(), from.c_str(), to.c_str(), u.deltaMM);
+            jogPosStatus_      = line;
+            jogPosStatusFull_  = full;
+            jogPosStatusUntil_ = ImGui::GetTime() + kJogPosStatusSec;
+            FD_INFO("saved", "jog: updated '%s' on %s from [%s] to [%s] (delta %.4f mm)",
+                    rec->name, u.dev.c_str(), from.c_str(), to.c_str(), u.deltaMM);
+            session_.SavePositions();
+        } else {
+            jogPosStatus_      = "position not updated: record is gone";
+            jogPosStatusFull_  = "The held position is no longer in the loaded product; nothing was written.";
+            jogPosStatusUntil_ = ImGui::GetTime() + kJogPosStatusSec;
+            FD_WARN("saved", "jog: update of '%s' on %s skipped - record gone", u.name.c_str(), u.dev.c_str());
+        }
+        jogHoldUid_.clear();   // the hold is spent either way
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(110.0f, 0.0f))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 void App::DrawVelocityCombo(std::size_t di)

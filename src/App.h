@@ -808,6 +808,33 @@ private:
     int jogDevice_    = -1;  // index into the motion fleet
     int jogStepIndex_ = 9;   // index into kSteps (default 100um)
     int jogRotAxis_   = 0;   // selected rotational axis (0 = first beyond XYZ)
+    // The Jog box's position row: the taught position the device is sitting
+    // on, and a HOLD on it. Checking the box while at a position keeps its
+    // name while the operator jogs away; Upd then writes the live pose into
+    // that record and drops the hold. The hold is a uid (a rename survives it)
+    // plus the device it was taken on (switching device drops it) — never an
+    // index, and never persisted: it describes an edit in progress.
+    std::string jogHoldUid_;
+    std::string jogHoldDev_;
+    std::string jogPosStatus_;       // last Upd, one line for the box
+    std::string jogPosStatusFull_;   // the same with from/to, for its tooltip
+    double      jogPosStatusUntil_ = 0.0;   // ImGui time the notice leaves the box
+    static constexpr double kJogPosStatusSec = 6.0;
+    // Upd does not write on the click: it snapshots before/after per axis
+    // here and raises the "Update Position" modal, which shows the table and
+    // writes on confirm. The snapshot is what gets written — not a fresh
+    // read at confirm time — so the numbers the operator approved are the
+    // numbers that land.
+    struct JogPosUpdate {
+        std::string dev, uid, name;
+        struct Row { std::string axis; double before, after; };
+        std::vector<Row> rows;
+        double deltaMM = 0.0;   // XYZ distance
+    };
+    JogPosUpdate jogUpd_;
+    bool jogOpenUpdPos_ = false;   // row -> panel-level OpenPopup handoff
+    void DrawJogPositionRow(IMotionController& dev, const std::vector<std::string>& axes);
+    void DrawJogUpdatePosModal();
 
     // Jog window "Pos" tab: device name -> nine saved-position uids ("" = empty
     // slot). Persisted through UiSettings, keyed by name so a fleet reorder

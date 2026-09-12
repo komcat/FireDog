@@ -24,6 +24,12 @@ struct SavedPos {
 // Device name -> ordered list of taught positions.
 using SavedPosMap = std::map<std::string, std::vector<SavedPos>>;
 
+// How close (Euclidean, over the axes the pose and the record share) a device
+// must sit to a taught position to be said to be AT it. One number for every
+// readout that names where a device is (the Aux plate, the Jog box), so two
+// panels never disagree about whether the stage has arrived.
+inline constexpr double kSavedPosAtTolMM = 0.050;
+
 // Reads config/positions.local.json, falling back to config/positions.json.
 SavedPosMap LoadSavedPositions();
 

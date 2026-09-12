@@ -128,7 +128,7 @@ constexpr int kAuxPosDeviceCount = static_cast<int>(sizeof(kAuxPosDevices) / siz
 // How close counts as "at" that position. Deliberately much looser than the
 // move layer's kMoveTolMM: this labels where the stage IS, with encoder noise
 // and whatever drift a jog left behind, not whether a commanded move finished.
-constexpr double kAuxPosAtTolMM = 0.050;
+constexpr double kAuxPosAtTolMM = kSavedPosAtTolMM;   // core/SavedPositions.h
 
 constexpr ImU32 kPosAtCol   = IM_COL32(120, 235, 150, 255);   // sitting on it
 constexpr ImU32 kPosNearCol = IM_COL32(225, 200, 130, 255);   // nearest, but away
