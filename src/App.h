@@ -835,6 +835,30 @@ private:
     // Selected step as a numeric path into the nested step tree; components
     // >= kElsePathBase (App.cpp) address an if-step's else branch.
     std::vector<std::size_t> edStepSel_;
+    // Further selected rows beyond edStepSel_ (the ANCHOR: the inspector's
+    // step, the palette's insert point). Ctrl-click toggles a row in and out,
+    // Shift-click takes the visible range from the anchor. Copy and Delete
+    // act on anchor + these; the single-row moves (^ v > <) are disabled while
+    // any exist. Cleared by every plain click and every edit — a path is an
+    // index into the tree and means nothing once the tree changes under it.
+    std::vector<std::vector<std::size_t>> edStepMulti_;
+    // A Shift-click is resolved AFTER the tree has drawn (edTreeRows_ is
+    // complete only then): the clicked row waits here for one frame.
+    std::vector<std::size_t> edShiftTo_;
+    bool edShiftPending_ = false;
+    void ClearStepSel() { edStepSel_.clear(); edStepMulti_.clear(); }
+    void ClickStepRow(const std::vector<std::size_t>& path);   // plain/Ctrl/Shift
+    // Anchor + multi in tree order, with any row whose ancestor is also selected
+    // dropped (a container carries its subtree; both would copy it twice).
+    std::vector<std::vector<std::size_t>> SelectedStepPaths() const;
+    // Insert at the palette's target (after the anchor / into it / its else
+    // branch / root when nothing is selected) and select what went in.
+    void InsertStepsAtSelection(Recipe& r, std::vector<RecipeStep> steps);
+    void CopySelectedSteps(const Recipe& r);   // JSON {"steps":[...]} to the OS clipboard
+    void PasteSteps(Recipe& r);                // accepts that, a recipe, an array, one step
+    // Remove the selection (subtrees included) and clear it; the Delete
+    // modal's and Cut's one implementation. Returns how many rows went.
+    std::size_t DeleteSelectedSteps(Recipe& r);
     // Visible tree rows in draw order (rebuilt every frame) — arrow-key
     // navigation walks this list; collapsed children never appear in it.
     std::vector<std::vector<std::size_t>> edTreeRows_;
@@ -853,6 +877,11 @@ private:
     // thing from a hardware info panel.
     float edInspectW_ = 320.0f;
     bool  edInspectSplitting_ = false;   // edge-detect the drag END
+    // Width of the editor's command palette column, dragged by the splitter
+    // between the palette and the step tree. Persisted like the inspector: a
+    // long command name wants it wide, a long step list wants it narrow.
+    float edPaletteW_ = 300.0f;
+    bool  edPaletteSplitting_ = false;
     bool edOpenRenameRecipe_  = false;
     bool edOpenDeleteRecipe_  = false;
     bool edOpenDeleteStep_    = false;

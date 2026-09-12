@@ -80,6 +80,12 @@ bool SaveRecipesFile(const std::string& path, const std::vector<Recipe>& recipes
 
 nlohmann::json RecipeToJson(const Recipe& r);
 Recipe         RecipeFromJson(const nlohmann::json& j);   // tolerant
+// One step (subtree included) — the editor's step clipboard round-trips
+// through these. A step has no identity of its own (only a recipe carries a
+// uid; a sub_recipe step's `uid` param names the recipe it CALLS), so a
+// pasted copy needs nothing regenerated.
+nlohmann::json StepToJson(const RecipeStep& s);
+RecipeStep     StepFromJson(const nlohmann::json& j);     // tolerant
 
 // ---- Validation -------------------------------------------------------------
 // Numeric step-path convention (shared with the editor UI): a component

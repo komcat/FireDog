@@ -27,6 +27,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("vision_param_w")) s.visionParamW = j["vision_param_w"].get<float>();
         if (j.contains("vision_result_w")) s.visionResultW = j["vision_result_w"].get<float>();
         if (j.contains("ed_inspect_w")) s.edInspectW = j["ed_inspect_w"].get<float>();
+        if (j.contains("ed_palette_w")) s.edPaletteW = j["ed_palette_w"].get<float>();
         if (j.contains("run_deck_w")) s.runDeckW = j["run_deck_w"].get<float>();
         if (j.contains("run_dut_w"))  s.runDutW  = j["run_dut_w"].get<float>();
         if (j.contains("run_scan_h")) s.runScanH = j["run_scan_h"].get<float>();
@@ -99,6 +100,7 @@ bool UiSettings::Save(const std::string& path) const
     j["vision_param_w"]  = visionParamW;
     j["vision_result_w"] = visionResultW;
     j["ed_inspect_w"]    = edInspectW;
+    j["ed_palette_w"]    = edPaletteW;
     j["run_deck_w"]      = runDeckW;
     j["run_dut_w"]       = runDutW;
     j["run_scan_h"]      = runScanH;

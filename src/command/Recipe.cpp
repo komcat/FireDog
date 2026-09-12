@@ -27,8 +27,6 @@ bool IsStructuralStep(const std::string& type)
 
 // ---- JSON <-> model ---------------------------------------------------------
 
-namespace {
-
 nlohmann::json StepToJson(const RecipeStep& s)
 {
     nlohmann::json j;
@@ -84,8 +82,6 @@ RecipeStep StepFromJson(const nlohmann::json& j)
     }
     return s;
 }
-
-} // namespace
 
 nlohmann::json RecipeToJson(const Recipe& r)
 {

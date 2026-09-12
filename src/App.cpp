@@ -66,6 +66,7 @@ int App::Run()
         if (ui.visionParamW  > 0.0f) visionParamW_  = ui.visionParamW;
         if (ui.visionResultW > 0.0f) visionResultW_ = ui.visionResultW;
         if (ui.edInspectW    > 0.0f) edInspectW_    = ui.edInspectW;
+        if (ui.edPaletteW    > 0.0f) edPaletteW_    = ui.edPaletteW;
         if (ui.runDeckW      > 0.0f) runDeckW_      = ui.runDeckW;
         if (ui.runDutW       > 0.0f) runDutW_       = ui.runDutW;
         if (ui.runScanH      > 0.0f) runScanH_      = ui.runScanH;
@@ -449,6 +450,7 @@ void App::SaveUiSettings()
     s.visionParamW  = visionParamW_;
     s.visionResultW = visionResultW_;
     s.edInspectW    = edInspectW_;
+    s.edPaletteW    = edPaletteW_;
     s.runDeckW      = runDeckW_;
     s.runDutW       = runDutW_;
     s.runScanH      = runScanH_;

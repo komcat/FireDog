@@ -783,7 +783,7 @@ void App::DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool runnin
             deckNode_ = n.uid;
             for (int k = 0; k < static_cast<int>(session_.Recipes().size()); ++k)
                 if (session_.Recipes()[k].uid == n.recipeUid) { recipeSel_ = k; break; }
-            edStepSel_.clear();
+            ClearStepSel();
             // Takeover -> takeover leaves prevPage_ alone, so the return page is
             // named here; the switch itself still routes through SwitchPage like
             // every other one.

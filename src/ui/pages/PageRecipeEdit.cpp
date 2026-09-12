@@ -19,6 +19,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <iterator>
 #include <string>
 
 namespace firedog {
@@ -192,7 +193,7 @@ void App::DrawRecipeEditPanel()
         r.name = "new recipe";
         session_.Recipes().push_back(std::move(r));
         recipeSel_ = static_cast<int>(session_.Recipes().size()) - 1;
-        edStepSel_.clear();
+        ClearStepSel();
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!haveSel);
@@ -202,7 +203,7 @@ void App::DrawRecipeEditPanel()
         r.name += " copy";
         session_.Recipes().push_back(std::move(r));
         recipeSel_ = static_cast<int>(session_.Recipes().size()) - 1;
-        edStepSel_.clear();
+        ClearStepSel();
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("Ren")) {
@@ -246,7 +247,7 @@ void App::DrawRecipeEditPanel()
         }
         if (added > 0) {
             recipeSel_ = static_cast<int>(session_.Recipes().size()) - 1;
-            edStepSel_.clear();
+            ClearStepSel();
             FD_INFO("recipe", "pasted %d recipe(s) from clipboard", added);
         } else {
             FD_WARN("recipe", "paste: clipboard has no recipe JSON");
@@ -262,7 +263,7 @@ void App::DrawRecipeEditPanel()
         ImGui::PushID(i);
         if (ImGui::Selectable(session_.Recipes()[i].name.c_str(), recipeSel_ == i)) {
             recipeSel_ = i;
-            edStepSel_.clear();
+            ClearStepSel();
         }
         ImGui::PopID();
     }
@@ -276,16 +277,30 @@ void App::DrawRecipeEditPanel()
     // negative width as "available minus this" and scramble the layout.
     const float midW = fmaxf(80.0f, avail.x - leftW - rightW -
                                         ImGui::GetStyle().ItemSpacing.x - kSplitW);
-    // 300, up from 200: the long command names (grip_camera_to_object,
-    // grip_move_to_camera) were clipped at the old width.
-    const float palW = 300.0f;
+    // The palette's width is dragged (splitter between it and the tree) and
+    // persisted: the long command names (grip_camera_to_object) want it wide,
+    // a deep step tree wants it narrow, and no constant serves both.
+    constexpr float kMinPalW  = 120.0f;
+    constexpr float kMinTreeW = 120.0f;
+    if (edPaletteW_ < kMinPalW) edPaletteW_ = kMinPalW;
+    const float maxPalW = midW - kSplitW - kMinTreeW;
+    if (edPaletteW_ > maxPalW) edPaletteW_ = maxPalW > kMinPalW ? maxPalW : kMinPalW;
+    const float palW = edPaletteW_;
     ImGui::BeginChild("edMiddle", ImVec2(midW, paneH));
     if (haveSel) {
         Recipe& r = session_.Recipes()[recipeSel_];
         ImGui::BeginChild("edPalette", ImVec2(palW, 0.0f), ImGuiChildFlags_Borders);
         DrawRecipePalette(r, !busy);
         ImGui::EndChild();
-        ImGui::SameLine();
+        ImGui::SameLine(0.0f, 0.0f);
+        if (Splitter("##edpalsplit", true, kSplitW, paneH)) {
+            edPaletteW_ += ImGui::GetIO().MouseDelta.x;
+            edPaletteSplitting_ = true;
+        } else if (edPaletteSplitting_) {
+            edPaletteSplitting_ = false;
+            SaveUiSettings();   // persist on drag END, like the inspector's
+        }
+        ImGui::SameLine(0.0f, 0.0f);
         ImGui::BeginChild("edTree", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
         DrawRecipeTreeToolbar(r, !busy);
         ImGui::Separator();
@@ -315,12 +330,34 @@ void App::DrawRecipeEditPanel()
                             : cur + d;
                 if (next >= 0 && next < static_cast<int>(edTreeRows_.size())) {
                     edStepSel_     = edTreeRows_[next];
+                    edStepMulti_.clear();
                     edScrollToSel_ = true;
                 }
             }
             if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) && edStepSel_.size() > 1) {
                 edStepSel_.pop_back();   // parent (also from an else-branch child)
+                edStepMulti_.clear();
                 edScrollToSel_ = true;
+            }
+        }
+        // A Shift-click from this frame's draw: the range is every VISIBLE row
+        // between the anchor and the clicked one, the anchor staying put. An
+        // anchor inside a collapsed node is not in the list; the click then
+        // just selects the row, like a plain one.
+        if (edShiftPending_) {
+            edShiftPending_ = false;
+            int a = -1, b = -1;
+            for (int k = 0; k < static_cast<int>(edTreeRows_.size()); ++k) {
+                if (edTreeRows_[k] == edStepSel_) a = k;
+                if (edTreeRows_[k] == edShiftTo_) b = k;
+            }
+            edStepMulti_.clear();
+            if (a < 0 || b < 0) {
+                edStepSel_ = edShiftTo_;
+            } else {
+                const int lo = a < b ? a : b, hi = a < b ? b : a;
+                for (int k = lo; k <= hi; ++k)
+                    if (k != a) edStepMulti_.push_back(edTreeRows_[k]);
             }
         }
         ImGui::EndChild();   // ##edTreeRows
@@ -377,8 +414,10 @@ void App::DrawRecipeEditPanel()
             const RecipeIssue& is = issues[k];
             ImGui::PushID(static_cast<int>(k));
             if (ImGui::Selectable((is.where + ": " + is.message).c_str()) &&
-                !is.path.empty())
+                !is.path.empty()) {
                 edStepSel_ = is.path;
+                edStepMulti_.clear();
+            }
             ImGui::PopID();
         }
         ImGui::EndChild();
@@ -441,7 +480,7 @@ void App::DrawRecipeEditPanel()
         if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveSel) {
             session_.Recipes().erase(session_.Recipes().begin() + recipeSel_);
             recipeSel_ = -1;
-            edStepSel_.clear();
+            ClearStepSel();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -450,18 +489,19 @@ void App::DrawRecipeEditPanel()
     }
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("Delete Step", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        const RecipeStep* ds = (haveSel && !edStepSel_.empty())
-                                   ? FindStepByPath(&session_.Recipes()[recipeSel_].steps, edStepSel_)
+        // The whole selection, not just the anchor: rows highlighted as
+        // selected and left behind by Delete would be a lie.
+        const std::vector<std::vector<std::size_t>> paths = SelectedStepPaths();
+        const RecipeStep* ds = (haveSel && paths.size() == 1)
+                                   ? FindStepByPath(&session_.Recipes()[recipeSel_].steps, paths[0])
                                    : nullptr;
-        ImGui::Text("Delete step '%s'%s?", ds ? ds->type.c_str() : "?",
-                    ds && !ds->children.empty() ? " and its children" : "");
-        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveSel && ds) {
-            std::size_t idx = 0;
-            if (std::vector<RecipeStep>* parent =
-                    FindStepParent(&session_.Recipes()[recipeSel_].steps, edStepSel_, &idx)) {
-                parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(idx));
-                edStepSel_.clear();
-            }
+        if (paths.size() > 1)
+            ImGui::Text("Delete %zu steps (children included)?", paths.size());
+        else
+            ImGui::Text("Delete step '%s'%s?", ds ? ds->type.c_str() : "?",
+                        ds && !ds->children.empty() ? " and its children" : "");
+        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveSel && !paths.empty()) {
+            DeleteSelectedSteps(session_.Recipes()[recipeSel_]);
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -693,7 +733,9 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
         path.push_back(elseBranch ? kElsePathBase + i : i);
 
         const bool structural = IsStructuralStep(s.type) && s.type != "stop_recipe";
-        const bool selected   = (path == edStepSel_);
+        const bool anchor     = (path == edStepSel_);
+        const bool selected   = anchor ||
+            std::find(edStepMulti_.begin(), edStepMulti_.end(), path) != edStepMulti_.end();
         const bool executing  = running && path == runPath;
 
         // Every row is three pieces — number, icon, text — so the icon can sit
@@ -727,12 +769,12 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
                                ImGui::GetTreeNodeToLabelSpacing();
             const bool open = ImGui::TreeNodeEx("##node", flags, "%zu", i + 1);
             edTreeRows_.push_back(path);
-            if (selected && edScrollToSel_) {
+            if (anchor && edScrollToSel_) {
                 ImGui::SetScrollHereY(0.35f);
                 edScrollToSel_ = false;
             }
             if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
-                edStepSel_ = path;
+                ClickStepRow(path);
             ImGui::SameLine(0.0f, 0.0f);
             ImGui::SetCursorPosX(lblX + numW);
             DrawStepIconInline(StepIcon(s.type.c_str()));
@@ -750,9 +792,9 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
             // with the number, the icon and the text laid back over it.
             const float x0 = ImGui::GetCursorPosX();
             if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowOverlap))
-                edStepSel_ = path;
+                ClickStepRow(path);
             edTreeRows_.push_back(path);
-            if (selected && edScrollToSel_) {
+            if (anchor && edScrollToSel_) {
                 ImGui::SetScrollHereY(0.35f);
                 edScrollToSel_ = false;
             }
@@ -791,8 +833,13 @@ void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
     const bool canIndent =
         prev && IsStructuralStep(prev->type) && prev->type != "stop_recipe";
     const bool canOutdent = parent && edStepSel_.size() >= 2;
+    // The four moves are single-row operations addressed through the anchor;
+    // with more rows selected they would move one and leave the rest looking
+    // as if they had gone too.
+    const bool multi = !edStepMulti_.empty();
 
     ImGui::BeginDisabled(!canEdit);
+    ImGui::BeginDisabled(multi);
     ImGui::BeginDisabled(!parent || idx == 0);
     if (ImGui::SmallButton("^")) {
         std::swap((*parent)[idx - 1], (*parent)[idx]);
@@ -838,11 +885,196 @@ void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Move out of the container, to just after it.");
+    ImGui::EndDisabled();   // multi
     ImGui::SameLine();
-    ImGui::BeginDisabled(!parent);
+    ImGui::BeginDisabled(!parent && !multi);
     if (ImGui::SmallButton("Delete")) edOpenDeleteStep_ = true;
     ImGui::EndDisabled();
+    ImGui::EndDisabled();   // canEdit (reopened below Copy)
+    ImGui::SameLine();
+    // Copy is a read: it stays live while a run blocks editing, so steps can be
+    // lifted out of a running recipe into another one.
+    ImGui::BeginDisabled(!parent && !multi);
+    if (ImGui::SmallButton("Copy")) CopySelectedSteps(r);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Copy the selected step(s) as JSON to the clipboard.\n"
+                          "Ctrl-click adds a row, Shift-click takes a range.");
+    ImGui::BeginDisabled(!canEdit);
+    ImGui::SameLine();
+    // No confirm on Cut, unlike Delete: the rows are on the clipboard and
+    // Paste puts them back.
+    ImGui::BeginDisabled(!parent && !multi);
+    if (ImGui::SmallButton("Cut")) {
+        CopySelectedSteps(r);
+        DeleteSelectedSteps(r);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Copy the selected step(s) to the clipboard and remove them.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Paste")) PasteSteps(r);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Paste steps from the clipboard at the palette's target\n"
+                          "(after the selection / into it / its else branch).");
     ImGui::EndDisabled();   // canEdit
+}
+
+// Plain click: this row alone. Ctrl: toggle it in the multi set (the anchor
+// hands over to the first extra row if it is the one toggled off). Shift:
+// deferred to the end of the draw, where the visible rows are all known.
+void App::ClickStepRow(const std::vector<std::size_t>& path)
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.KeyShift && !edStepSel_.empty()) {
+        edShiftTo_      = path;
+        edShiftPending_ = true;
+    } else if (io.KeyCtrl && !edStepSel_.empty()) {
+        if (path == edStepSel_) {
+            if (!edStepMulti_.empty()) {
+                edStepSel_ = edStepMulti_.front();
+                edStepMulti_.erase(edStepMulti_.begin());
+            }
+            return;   // sole selected row: a Ctrl-click leaves it selected
+        }
+        const auto it = std::find(edStepMulti_.begin(), edStepMulti_.end(), path);
+        if (it == edStepMulti_.end()) edStepMulti_.push_back(path);
+        else                          edStepMulti_.erase(it);
+    } else {
+        edStepSel_ = path;
+        edStepMulti_.clear();
+    }
+}
+
+// Lexicographic order on the numeric path IS tree order: a container sorts
+// before its children, and the else-branch offset puts an else row after
+// every then row. A descendant of a kept row is dropped — the container's
+// subtree already carries it.
+std::vector<std::vector<std::size_t>> App::SelectedStepPaths() const
+{
+    std::vector<std::vector<std::size_t>> all;
+    if (!edStepSel_.empty()) all.push_back(edStepSel_);
+    all.insert(all.end(), edStepMulti_.begin(), edStepMulti_.end());
+    std::sort(all.begin(), all.end());
+    all.erase(std::unique(all.begin(), all.end()), all.end());
+    std::vector<std::vector<std::size_t>> kept;
+    for (const auto& p : all) {
+        bool covered = false;
+        for (const auto& k : kept) {
+            if (k.size() < p.size() && std::equal(k.begin(), k.end(), p.begin())) {
+                covered = true;
+                break;
+            }
+        }
+        if (!covered) kept.push_back(p);
+    }
+    return kept;
+}
+
+// The palette's one insert rule, for a batch: after the anchor as siblings,
+// or appended to its children / else branch. What went in becomes the
+// selection — first row the anchor, the rest in the multi set — so a paste
+// reads back as exactly the rows it added.
+void App::InsertStepsAtSelection(Recipe& r, std::vector<RecipeStep> steps)
+{
+    if (steps.empty()) return;
+    const std::size_t n = steps.size();
+    std::vector<std::vector<std::size_t>> added;
+    if (edAddMode_ == 1) {          // children of the selected structural step
+        RecipeStep* p = FindStepByPathMut(&r.steps, edStepSel_);
+        if (!p) return;
+        const std::size_t base = p->children.size();
+        for (RecipeStep& s : steps) p->children.push_back(std::move(s));
+        for (std::size_t k = 0; k < n; ++k) {
+            added.push_back(edStepSel_);
+            added.back().push_back(base + k);
+        }
+    } else if (edAddMode_ == 2) {   // else-branch of the selected if
+        RecipeStep* p = FindStepByPathMut(&r.steps, edStepSel_);
+        if (!p) return;
+        const std::size_t base = p->elseChildren.size();
+        for (RecipeStep& s : steps) p->elseChildren.push_back(std::move(s));
+        for (std::size_t k = 0; k < n; ++k) {
+            added.push_back(edStepSel_);
+            added.back().push_back(kElsePathBase + base + k);
+        }
+    } else if (!edStepSel_.empty()) {   // siblings after the anchor
+        std::size_t i = 0;
+        std::vector<RecipeStep>* pl = FindStepParent(&r.steps, edStepSel_, &i);
+        if (!pl) return;
+        pl->insert(pl->begin() + static_cast<std::ptrdiff_t>(i) + 1,
+                   std::make_move_iterator(steps.begin()),
+                   std::make_move_iterator(steps.end()));
+        for (std::size_t k = 0; k < n; ++k) {
+            added.push_back(edStepSel_);
+            added.back().back() += 1 + k;
+        }
+    } else {                        // nothing selected: append at root
+        const std::size_t base = r.steps.size();
+        for (RecipeStep& s : steps) r.steps.push_back(std::move(s));
+        for (std::size_t k = 0; k < n; ++k) added.push_back({base + k});
+    }
+    edStepSel_ = added.front();
+    edStepMulti_.assign(added.begin() + 1, added.end());
+    edScrollToSel_ = true;
+}
+
+void App::CopySelectedSteps(const Recipe& r)
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& p : SelectedStepPaths()) {
+        if (const RecipeStep* s = FindStepByPath(&r.steps, p)) arr.push_back(StepToJson(*s));
+    }
+    if (arr.empty()) return;
+    const std::size_t n = arr.size();
+    nlohmann::json j;
+    j["steps"] = std::move(arr);
+    ImGui::SetClipboardText(j.dump(2).c_str());
+    FD_INFO("recipe", "copied %zu step(s) to clipboard", n);
+}
+
+// Accepts the shape Copy writes ({"steps":[...]}), which is also a whole
+// recipe's shape (so a recipe copied from the list pastes as its steps), a bare
+// array of steps, or a single step object. Anything without a `type` is not a
+// step and is skipped rather than pasted as an empty row.
+void App::PasteSteps(Recipe& r)
+{
+    const char* clip = ImGui::GetClipboardText();
+    nlohmann::json j = clip ? nlohmann::json::parse(clip, nullptr, false) : nlohmann::json();
+    nlohmann::json arr = nlohmann::json::array();
+    if (j.is_array()) arr = j;
+    else if (j.is_object() && j.contains("steps") && j["steps"].is_array()) arr = j["steps"];
+    else if (j.is_object() && j.contains("type")) arr.push_back(j);
+    std::vector<RecipeStep> steps;
+    for (const auto& sj : arr) {
+        if (!sj.is_object() || !sj.contains("type")) continue;
+        RecipeStep s = StepFromJson(sj);
+        if (!s.type.empty()) steps.push_back(std::move(s));
+    }
+    if (steps.empty()) {
+        FD_WARN("recipe", "paste: clipboard has no step JSON");
+        return;
+    }
+    const std::size_t n = steps.size();
+    InsertStepsAtSelection(r, std::move(steps));
+    FD_INFO("recipe", "pasted %zu step(s) from clipboard", n);
+}
+
+// Last in tree order first: erasing a later row never shifts an earlier one,
+// and SelectedStepPaths holds no ancestor of another.
+std::size_t App::DeleteSelectedSteps(Recipe& r)
+{
+    const std::vector<std::vector<std::size_t>> paths = SelectedStepPaths();
+    std::size_t gone = 0;
+    for (auto it = paths.rbegin(); it != paths.rend(); ++it) {
+        std::size_t idx = 0;
+        if (std::vector<RecipeStep>* parent = FindStepParent(&r.steps, *it, &idx)) {
+            parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(idx));
+            ++gone;
+        }
+    }
+    ClearStepSel();
+    return gone;
 }
 
 // Searchable add-step palette — its own scrolling column (the command list
@@ -872,29 +1104,11 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
     ImGui::EndDisabled();
     ImGui::Separator();
 
+    // Same target rule as Paste (InsertStepsAtSelection), one step at a time.
     const auto insert = [this, &r](const char* type) {
-        RecipeStep ns = MakeStep(type, orch_.registry);
-        if (edAddMode_ == 1) {          // child of the selected structural step
-            if (RecipeStep* p = FindStepByPathMut(&r.steps, edStepSel_)) {
-                p->children.push_back(std::move(ns));
-                edStepSel_.push_back(p->children.size() - 1);
-            }
-        } else if (edAddMode_ == 2) {   // else-branch of the selected if
-            if (RecipeStep* p = FindStepByPathMut(&r.steps, edStepSel_)) {
-                p->elseChildren.push_back(std::move(ns));
-                edStepSel_.push_back(kElsePathBase + p->elseChildren.size() - 1);
-            }
-        } else if (!edStepSel_.empty()) {   // sibling after the selection
-            std::size_t i = 0;
-            if (std::vector<RecipeStep>* pl = FindStepParent(&r.steps, edStepSel_, &i)) {
-                pl->insert(pl->begin() + static_cast<std::ptrdiff_t>(i) + 1,
-                           std::move(ns));
-                edStepSel_.back() += 1;
-            }
-        } else {                        // nothing selected: append at root
-            r.steps.push_back(std::move(ns));
-            edStepSel_ = {r.steps.size() - 1};
-        }
+        std::vector<RecipeStep> one;
+        one.push_back(MakeStep(type, orch_.registry));
+        InsertStepsAtSelection(r, std::move(one));
     };
 
     ImGui::BeginChild("##palList");   // scrolls independently of the tree

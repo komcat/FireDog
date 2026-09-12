@@ -42,6 +42,8 @@ struct UiSettings {
     // Recipe editor: width of its inspector column in px (0 = default). Same
     // reasoning — a takeover page with its own layout.
     float edInspectW = 0.0f;
+    // Recipe editor: width of its command palette column in px (0 = default).
+    float edPaletteW = 0.0f;
 
     // Run page: widths of its deck (left) and DUT (right) columns in px
     // (0 = default). Same reasoning again — a takeover page with its own layout.
