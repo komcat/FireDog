@@ -180,6 +180,7 @@ int App::Run()
             if (showAux_   && CanUse(kRoleAux)) DrawAuxWindow();
             if (showJog_   && CanUse(kRoleJog)) DrawJogWindow();
             if (orgOpen_   && CanUse(kRoleOrg)) DrawProgramOrganizer();
+            if (showData_  && CanUse(kRoleData)) DrawViewDataWindow();
             if (showUsers_) DrawEmployeeManager();   // checks Admin itself
         }
         host_.EndFrame();

@@ -136,6 +136,19 @@ UserRole MinRoleFor(Page p);
 inline constexpr UserRole kRoleJog = UserRole::Technician;
 inline constexpr UserRole kRoleOrg = UserRole::Technician;
 inline constexpr UserRole kRoleAux = UserRole::Operator;
+//   View Data reads the same records as the DUT Records page, so it sits with it.
+inline constexpr UserRole kRoleData = UserRole::Technician;
+
+// One DUT record flattened for the View Data window: the identity columns plus
+// the LAST value written under each non-event key. The append-only log may
+// write a key twice (a re-run); a table has one cell per key, and the value
+// the part left with is the one that describes it. Values stay json so a
+// string, a number and an object all land in the same column honestly.
+struct DutDataRow {
+    std::string serial, opened, closed, status;
+    std::vector<std::string> runs;                 // "kind 'name' - result" lines
+    std::map<std::string, nlohmann::json> vals;    // key -> last value
+};
 
 // The Jog window's Pos tab: a fixed 3x3 pad of quick moves. Fixed, not
 // growable, because it is a reach-without-looking surface — a pad that grows a
@@ -442,6 +455,12 @@ private:
     // DUT Records viewer (View menu, full-page, read-only) — Phase D2.
     void DrawDutViewPanel();          // serial list | entries table | summary
     void LoadDutList();               // scan the product's data/ for records
+    // View Data window (View menu, read-only): every record of the loaded
+    // product as ONE table, a row per serial and a column per recorded key,
+    // plus a chart of one key across the parts. WndViewData.cpp.
+    void DrawViewDataWindow();
+    void LoadDataRows();              // scan + flatten every dut.json under data/
+    void SortDataRows();              // by dataSortCol_/dataSortAsc_ (header click, reload)
     // Run page (View menu, full-page) — programs = slots of recipes. R1.
     void DrawRunPanel();              // deck | execution + Scan band + log | DUT
     void StartDeckRun(RunScope scope);   // granularity follows the deck selection
@@ -1447,6 +1466,24 @@ private:
     int                      dutSel_ = -1;
     std::string              dutRecSerial_;   // which serial dutRec_ holds
     nlohmann::json           dutRec_;         // loaded dut.json (view only)
+
+    // View Data window state. dataDir_ is the folder dataRows_ was scanned
+    // from: it differs from the loaded product's the moment another product
+    // loads, which is how the window knows to rescan without a callback from
+    // the session. Not persisted — a viewer is opened on demand. The selection
+    // is a SERIAL, not an index: a header-click re-sorts the rows under it.
+    bool                     showData_ = false;
+    std::string              dataDir_;
+    std::vector<DutDataRow>  dataRows_;
+    std::vector<std::string> dataKeys_;       // union of keys, first-seen order
+    int                      dataKeySel_  = -1;  // series A (index into dataKeys_)
+    int                      dataKeySel2_ = -1;  // series B overlay (-1 = none)
+    int                      dataPlotMode_ = 0;  // 0 series, 1 daily / 2 weekly / 3 monthly box
+    int                      dataTimeSel_  = 0;  // 0 all, 1 this month, 2 last month, 3 YTD
+    std::string              dataSelSerial_;
+    char                     dataFilter_[64] = "";
+    int                      dataSortCol_ = 0;     // table column the rows are ordered by
+    bool                     dataSortAsc_ = true;  // (kept so a Reload keeps the order)
     std::string              scriptSrcPath_;    // which file scriptSrc_ holds
     std::vector<std::string> scriptSrc_;        // source lines (view only)
     std::string              scriptStartErr_;   // last Start() rejection
