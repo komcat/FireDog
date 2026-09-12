@@ -125,6 +125,9 @@ void App::LogOut()
     // whoever signs in next it is the opposite of that. showAux_ is left alone —
     // it only displays, and its motion controls carry their own level check.
     jogArmed_ = false;
+    // Same rule for teach mode: the next person to sign in must not find a
+    // machine that teaches instead of runs.
+    teachMode_ = false;
     loginId_[0] = '\0';
     loginPw_[0] = '\0';
     loginErr_.clear();

@@ -12,7 +12,7 @@ namespace firedog {
 
 bool ProgramRunner::Start(std::string kind, std::string label, std::string uid,
                           std::vector<Item> queue, RecipeEngine::Env env,
-                          std::string* err)
+                          std::string* err, RecipeEngine::StartOpts opts)
 {
     if (active_) {
         if (err) *err = "a run is already active";
@@ -32,6 +32,7 @@ bool ProgramRunner::Start(std::string kind, std::string label, std::string uid,
     uid_     = std::move(uid);
     queue_   = std::move(queue);
     env_     = std::move(env);
+    opts_    = std::move(opts);
     idx_     = 0;
     stopReq_ = false;
     waitingEngine_ = false;
@@ -42,6 +43,7 @@ bool ProgramRunner::Start(std::string kind, std::string label, std::string uid,
     status_.kind   = kind_;
     status_.label  = label_;
     status_.total  = queue_.size();
+    status_.teach  = opts_.teach;
     status_.items.reserve(queue_.size());
     for (const Item& it : queue_) {
         ItemStatus st;
@@ -55,8 +57,8 @@ bool ProgramRunner::Start(std::string kind, std::string label, std::string uid,
         status_.items.push_back(std::move(st));
     }
 
-    FD_INFO("program", "%s '%s' started (%zu recipe run(s))", kind_.c_str(),
-            label_.c_str(), queue_.size());
+    FD_INFO("program", "%s '%s' started (%zu recipe run(s))%s", kind_.c_str(),
+            label_.c_str(), queue_.size(), opts_.teach ? " [TEACH]" : "");
     Tick();   // start the first item immediately
     return active_;
 }
@@ -103,7 +105,7 @@ void ProgramRunner::Tick()
     status_.items[idx_].mark = Mark::Running;
     std::string err;
     RecipeEngine::Env env = env_;   // fresh copy per recipe run
-    if (!engine_.Start(queue_[idx_].recipe, std::move(env), &err)) {
+    if (!engine_.Start(queue_[idx_].recipe, std::move(env), &err, opts_)) {
         status_.items[idx_].mark = Mark::Failed;
         Finish("Failed", queue_[idx_].recipe.name + ": " + err);
         return;
@@ -125,8 +127,9 @@ void ProgramRunner::Finish(const char* result, const std::string& detail)
             kind_.c_str(), label_.c_str(), status_.result.c_str(), done,
             queue_.size());
     // Program/slot runs get their own traceability event; a single-recipe run
-    // is already covered by the recipe's own $run.
-    if (kind_ != "recipe") {
+    // is already covered by the recipe's own $run. A teach run is not a run of
+    // the part and leaves no trace on it.
+    if (kind_ != "recipe" && !opts_.teach) {
         DutSession::Instance().RecordRun(kind_, label_, result, uid_,
                                          static_cast<int>(done));
     }

@@ -393,6 +393,46 @@ public:
 - Pause/step-mode/breakpoints: not in v1, but the design point where they slot
   in is the step-boundary check (a condition_variable wait, as bobcat does).
 
+## 6.1 Teach mode — a recipe transform, not an engine mode
+
+After a fixture shift every saved position a product's recipes visit has to be
+re-taught, and nothing but the recipes themselves says which positions those
+are, or in what order. **Teach mode** (the Run strip's toggle, `App::teachMode_`,
+never persisted, cleared at sign-out) makes a run walk exactly that list.
+
+It is built from two small pieces, and the engine knows nothing about it:
+
+- **A `teach` Bool param on every saved-position mover** (`move_to_position`,
+  `move_to_position_offset`, `move_to_position_approach`, `move_path`;
+  `MotionWaits.h` `TeachParam`). When set, the command arrives as usual, then
+  blocks on the Manual Adjust window (`AdjustRequest::teach`), whose buttons
+  read **Save position / Skip (keep saved)**. Save reads the live pose (fast
+  poll + one settle slice, the `save_position` recipe) and writes it INTO the
+  position the step drove to, **by uid** (`ExecutionContext::RecordPositionByUid`
+  → the run's own copy, so a following `move_path` start check sees it → the
+  Workflow teach queue → `ProductSession::MergeTaughtPositions`, uid first).
+  Skip writes nothing and the run continues; Stop is the only abort. An offset
+  move saves the BASE position (live minus offset); `move_path` teaches only its
+  `to`. The param is ordinary: a hand-written recipe may set it.
+- **`MakeTeachRecipe` (`command/TeachMode.h`)**, applied by `RecipeEngine::Start`
+  to its private copy when `StartOpts::teach` is set — before validation and
+  again after sub-recipes are inlined. Every leaf that is not a mover is
+  DISABLED (not removed: step paths keep their indices, so the editor's
+  highlight stays right), every mover gets `teach = true`, loops become
+  `count 1`, an `if` becomes a group of then-children followed by else-children
+  (its condition reads values the skipped commands never wrote), and
+  `stop_recipe` is disabled. The untouched `StepRunner`, `ValidateRecipe`
+  (which skips disabled steps, so a disconnected instrument behind a skipped
+  step does not refuse the run while the movers' devices, positions and maps
+  are still checked) and `CountLeafSteps` then do the rest for free.
+
+A teach run is not a run of the part: it writes no `$run` DUT event (engine and
+`ProgramRunner` both check the flag), sets no deck marks and does not advance
+the deck cycle (`ProgramRunner::Status::teach` outlives the run so the
+going-idle frame can tell). The flag travels App → `StartOpts` → engine; the
+runner carries its own copy and re-applies it to every queue item, because it
+goes idle between items and the toggle is disabled only while `orch_.Busy()`.
+
 ## 7. Minimal test hook (not the editor)
 
 To exercise the core before any editor exists, one temporary addition to the

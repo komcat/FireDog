@@ -1355,6 +1355,15 @@ private:
     // closes or is reordered. Empty = slot scope.
     std::string deckNode_;
     bool runEdit_       = false;   // mirrors orgOpen_: the strip's Edit checkbox
+    // Teach mode (the Run strip's toggle). While on, EVERY recipe launch is a
+    // teach run: the recipe is rewritten to its saved-position moves and each
+    // arrival prompts fine-tune-and-Save (command/TeachMode.h). Deliberately
+    // NOT in UiSettings - a mode that survives a restart would make every
+    // launch silently teach - and cleared on LogOut like jogArmed_.
+    bool teachMode_     = false;
+    // The ONE place a launch's StartOpts pick up the toggle; every Run/Execute
+    // surface builds its opts from this, or one of them forgets the flag.
+    RecipeEngine::StartOpts RecipeStartOpts() const;
     // Per-node outcome of the current part's cycle, cleared ONLY by running the
     // start state (App::StartDeckRun). Not in the document and not in
     // UiSettings — see NodeMark above.

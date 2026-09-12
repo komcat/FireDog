@@ -115,6 +115,25 @@ void ExecutionContext::RecordPosition(const std::string& device,
             vals.size());
 }
 
+bool ExecutionContext::RecordPositionByUid(const std::string& device,
+                                           const std::string& uid,
+                                           const std::map<std::string, double>& vals)
+{
+    const auto it = positions_.find(device);
+    if (it == positions_.end()) return false;
+    for (SavedPos& sp : it->second) {
+        if (sp.uid != uid) continue;
+        for (const auto& [axis, v] : vals) sp.vals[axis] = v;
+        wf_.QueueSavedPosition(device, sp);
+        FD_INFO("recipe", "taught '%s' on %s by uid (%zu axes)", sp.name, device.c_str(),
+                vals.size());
+        return true;
+    }
+    FD_WARN("recipe", "teach: position uid '%s' not found on %s - nothing written",
+            uid.c_str(), device.c_str());
+    return false;
+}
+
 bool ExecutionContext::ShouldStop() const
 {
     return hooks_.shouldStop && hooks_.shouldStop();

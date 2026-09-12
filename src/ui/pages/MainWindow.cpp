@@ -380,6 +380,10 @@ void App::DrawMainWindow()
         // closes up with no gaps whichever ones are missing.
         {
             bool anyBtn = false;
+            // Twice frame height, like the Run strip's Execute: this is the
+            // row a gloved hand reaches for to change page, and a text-high
+            // button is a target to aim at rather than hit.
+            const ImVec2 stripBtn(0.0f, ImGui::GetFrameHeight() * 2.0f);
             const auto pageBtn = [&](const char* label, Page p, bool takeover) {
                 if (!CanAccess(p)) return;
                 if (anyBtn) ImGui::SameLine();
@@ -387,7 +391,7 @@ void App::DrawMainWindow()
                 const bool active = (currentPage_ == p);
                 if (active)
                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.85f, 1.0f));
-                if (ImGui::Button(label) && !active) {
+                if (ImGui::Button(label, stripBtn) && !active) {
                     if (takeover) ToggleEditorPage(p);
                     else          SwitchPage(p);
                 }
@@ -412,7 +416,7 @@ void App::DrawMainWindow()
                 if (active)
                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.85f, 1.0f));
                 ImGui::BeginDisabled(!haveProc);
-                if (ImGui::Button("Placement (F6)")) openPlacement();
+                if (ImGui::Button("Placement (F6)", stripBtn)) openPlacement();
                 ImGui::EndDisabled();
                 if (active) ImGui::PopStyleColor();
                 if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))

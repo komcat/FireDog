@@ -12,6 +12,7 @@
 #include "imgui.h"
 
 #include "ui/Widgets.h"
+#include "ui/Theme.h"   // kTeachOrange
 #include "core/Log.h"
 #include "core/DutSession.h"
 
@@ -1241,6 +1242,15 @@ void App::DrawRecipeRunStrip(float height)
         ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.16f, 1.0f),
                            "| program run - drive it from the Run page (F1)");
     }
+    // Teach mode is a Run-page toggle, but it applies to Run here too: say so
+    // where the button is, or "Run" quietly does something else.
+    if (teachMode_ || st.teach) {
+        ImGui::SameLine();
+        ImGui::TextColored(kTeachOrange, running && st.teach ? "| TEACH RUN" : "| TEACH");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Teach mode is on (Run page): Run executes only the moves to\n"
+                              "saved positions and prompts to Save each one.");
+    }
 
     ImGui::SameLine(rightEdge - ctrlW);
     // Step mode: Run starts paused at the selected step; Next executes one
@@ -1261,7 +1271,7 @@ void App::DrawRecipeRunStrip(float height)
     ImGui::BeginDisabled(!canRun);
     if (IconButton(UiIcon("run_execute"), "Run", ImVec2(btnW, 0.0f))) {
         RecipeEngine::Env env = session_.MakeRecipeEnv();
-        RecipeEngine::StartOpts opts;
+        RecipeEngine::StartOpts opts = RecipeStartOpts();   // carries teach
         opts.stepMode = edStepMode_;
         if (edStepMode_) opts.startPath = edStepSel_;   // from the selection
         recipeStartErr_.clear();
@@ -1288,12 +1298,16 @@ void App::DrawRecipeRunStrip(float height)
         // Full Env, not just this step: sub_recipe references still resolve.
         RecipeEngine::Env env = session_.MakeRecipeEnv();
         recipeStartErr_.clear();
-        if (!orch_.recipe.Start(one, std::move(env), &recipeStartErr_))
+        if (!orch_.recipe.Start(one, std::move(env), &recipeStartErr_, RecipeStartOpts()))
             FD_WARN("recipe", "step run rejected: %s", recipeStartErr_.c_str());
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Run only the selected step (its children included)");
+        ImGui::SetTooltip(teachMode_
+                              ? "Run only the selected step (its children included).\n"
+                                "Teach mode: a step that is not a move to a saved\n"
+                                "position does nothing."
+                              : "Run only the selected step (its children included)");
     ImGui::SameLine();
     ImGui::BeginDisabled(!st.stepPaused || progRun);
     if (ImGui::Button("Next", ImVec2(btnW, 0.0f))) orch_.recipe.StepAdvance();

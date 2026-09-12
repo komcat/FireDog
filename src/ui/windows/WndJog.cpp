@@ -49,31 +49,8 @@ const SavedPos* FindPosByUid(const std::vector<SavedPos>* list, const std::strin
         if (p.uid == uid) return &p;
     return nullptr;
 }
-
-// One line of text drawn as large as `box` allows and centred in it, from the
-// current cursor. The font is sized off the box height and shrunk to fit the
-// width, so a short "10um" and a long device name both fill the space without
-// clipping. Sizes come off the base font, so the label follows the UI scale.
-void DrawBigLabel(const char* text, const ImVec2& box, const ImVec4& color)
-{
-    const float base = ImGui::GetStyle().FontSizeBase;
-    float size = (std::max)(base, box.y * 0.62f);
-    ImGui::PushFont(nullptr, size);
-    ImVec2 ts = ImGui::CalcTextSize(text);
-    ImGui::PopFont();
-    const float maxW = box.x - 6.0f;
-    if (ts.x > maxW && ts.x > 0.0f) {
-        size = (std::max)(base, size * maxW / ts.x);
-        ImGui::PushFont(nullptr, size);
-        ts = ImGui::CalcTextSize(text);
-        ImGui::PopFont();
-    }
-    const ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImGui::PushFont(nullptr, size);
-    ImGui::SetCursorScreenPos(ImVec2(pos.x + (box.x - ts.x) * 0.5f, pos.y + (box.y - ts.y) * 0.5f));
-    ImGui::TextColored(color, "%s", text);
-    ImGui::PopFont();
-}
+// DrawBigLabel (the step-size and device-name readouts below) lives in
+// ui/Widgets now: the Manual Adjust window draws the same device box.
 } // namespace
 
 void App::DrawJogWindow()

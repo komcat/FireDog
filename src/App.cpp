@@ -206,8 +206,11 @@ void App::Update(float dt)
     // as the dutOpenKey_ detector below. Design: docs/deck-cycle-design.md.
     DrainDeckMarks();
     {
+        // A teach run proves nothing about a part: it neither marks nodes nor
+        // advances the cycle (Status.teach outlives the run for this frame).
         const bool runActive = orch_.programs.Active();
-        if (runWasActive_ && !runActive) AdvanceDeckCycle();
+        if (runWasActive_ && !runActive && !orch_.programs.GetStatus().teach)
+            AdvanceDeckCycle();
         runWasActive_ = runActive;
     }
     UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)

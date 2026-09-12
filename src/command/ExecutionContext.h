@@ -96,6 +96,13 @@ public:
         std::string device;            // motion fleet device name
         double      stepUm = 10.0;     // initial jog step (presets override)
         bool        enableX = true, enableY = true, enableZ = true;
+        // A TEACH prompt (a mover's `teach` param, or a teach-mode run): the
+        // window offers Save / Skip instead of OK / Cancel, and shows the
+        // position it would write beside the live pose. The answer travels the
+        // same bool channel: true = save, false = keep the saved value.
+        bool        teach = false;
+        std::string positionName;              // display only
+        std::map<std::string, double> target;  // the saved values, display only
     };
 
     // Crosshair pick (the Alignment Procedure's manual mode): the run pauses
@@ -276,6 +283,13 @@ public:
     // for the UI thread to merge into the app set and persist.
     void RecordPosition(const std::string& device, const std::string& name,
                         const std::map<std::string, double>& vals);
+    // Teach INTO an existing position by uid (the mover's `teach` param and
+    // teach-mode runs). Never creates: a uid the run's copy does not hold means
+    // the product changed under the run, and a fresh row under an old name
+    // would be a second answer to where that position is. Same run-copy
+    // mutation and Workflow hand-off as RecordPosition. False if unknown.
+    bool RecordPositionByUid(const std::string& device, const std::string& uid,
+                             const std::map<std::string, double>& vals);
 
     // ---- Operator prompts (block; false = cancelled or stopped) -------------
     bool AwaitPrompt(const std::string& message);

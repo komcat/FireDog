@@ -645,11 +645,26 @@ void ProductSession::MergeTaughtPositions(
     for (const auto& [dev, sp] : taught) {
         std::vector<SavedPos>& list = positions_[dev];
         bool found = false;
-        for (SavedPos& e : list) {
-            if (std::string(e.name) == sp.name) {
-                e.vals = sp.vals;
-                found  = true;
-                break;
+        // Uid first: a teach INTO a row (the movers' `teach` param) must land on
+        // that row even if it was renamed while the run held its copy. The name
+        // pass is save_position's contract - it may name a row it created, whose
+        // fresh uid no session row carries yet.
+        if (!sp.uid.empty()) {
+            for (SavedPos& e : list) {
+                if (e.uid == sp.uid) {
+                    e.vals = sp.vals;
+                    found  = true;
+                    break;
+                }
+            }
+        }
+        if (!found) {
+            for (SavedPos& e : list) {
+                if (std::string(e.name) == sp.name) {
+                    e.vals = sp.vals;
+                    found  = true;
+                    break;
+                }
             }
         }
         if (!found) list.push_back(sp);

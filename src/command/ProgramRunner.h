@@ -44,8 +44,12 @@ public:
     // kind: "slot" | "folder" | "recipe" (controls the $run event; "recipe"
     // writes none — the recipe's own $run already covers a single-recipe run).
     // `uid` = program uid ("" for ad-hoc recipe runs).
+    // `opts` is re-applied to EVERY queue item's engine Start: the runner goes
+    // idle between items, so it carries its own copy rather than reading a
+    // toggle that may have moved. A teach run (opts.teach) writes no $run.
     bool Start(std::string kind, std::string label, std::string uid,
-               std::vector<Item> queue, RecipeEngine::Env env, std::string* err);
+               std::vector<Item> queue, RecipeEngine::Env env, std::string* err,
+               RecipeEngine::StartOpts opts = {});
     void Tick();    // call every frame from App::Update
     void Stop();    // kill the queue + stop the running recipe
 
@@ -62,6 +66,9 @@ public:
         std::size_t index = 0, total = 0; // current item / queue size
         std::string result;               // terminal summary ("" while active)
         std::vector<ItemStatus> items;
+        // Outlives the run (like the rest of this struct), so the frame that
+        // sees the runner go idle can still tell a teach run from a real one.
+        bool        teach = false;
     };
     const Status& GetStatus() const { return status_; }   // UI-thread only
 
@@ -77,6 +84,7 @@ private:
     std::string kind_, label_, uid_;
     std::vector<Item>  queue_;
     RecipeEngine::Env  env_;
+    RecipeEngine::StartOpts opts_;
     Status status_;
 };
 

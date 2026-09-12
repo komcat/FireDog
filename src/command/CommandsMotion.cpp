@@ -243,6 +243,65 @@ std::vector<std::pair<std::string, double>> TargetsOf(const SavedPos& p,
     return targets;
 }
 
+ParamSpec TeachParam()
+{
+    return {kTeachParamName, ParamType::Bool, false, false, 0, 0, {},
+            "after arriving, open Manual Adjust so the operator can fine-tune and "
+            "Save this position (Skip keeps the saved value)"};
+}
+
+CommandResult TeachAfterMove(ExecutionContext& ctx, IMotionController* m,
+                             const std::string& device, const SavedPos& pos,
+                             const std::map<std::string, double>& subtract)
+{
+    ExecutionContext::AdjustRequest req;
+    req.message = "Teach '" + std::string(pos.name) + "' on " + device +
+                  ": jog onto the exact spot, then Save. Skip keeps the saved value.";
+    req.device       = device;
+    req.stepUm       = 10.0;
+    req.teach        = true;
+    req.positionName = pos.name;
+    req.target       = pos.vals;
+    if (!subtract.empty()) {
+        // Show the point the operator is actually standing on (base + offset),
+        // not the base they are teaching - that is where the crosshair is.
+        for (const auto& [axis, off] : subtract) {
+            const auto it = req.target.find(axis);
+            if (it != req.target.end()) it->second += off;
+        }
+        req.message += " (offset move: the base position is saved, offset removed)";
+    }
+
+    const bool save = ctx.AwaitAdjust(req);
+    if (ctx.ShouldStop()) return CommandResult::Fail("stopped");
+    if (!save) {
+        FD_INFO("recipe", "teach '%s' on %s: skipped, saved value kept", pos.name,
+                device.c_str());
+        return CommandResult::Success();
+    }
+
+    // Same recipe as save_position: reopen the fast-poll window and outlast one
+    // cycle, so the pose read is the one the last jog left, not a stale cache.
+    m->RequestFastPoll();
+    if (!ctx.Sleep(120)) return CommandResult::Fail("stopped");
+    const std::map<std::string, double> live = m->Positions();
+    std::map<std::string, double> vals;
+    for (const auto& kv : pos.vals) {
+        const std::string& axis = kv.first;
+        const auto li = live.find(axis);
+        if (li == live.end()) continue;   // axis the device does not report
+        double v = li->second;
+        const auto si = subtract.find(axis);
+        if (si != subtract.end()) v -= si->second;
+        vals[axis] = v;
+    }
+    if (vals.empty()) return CommandResult::Fail("teach: device reports none of the position's axes");
+    if (!ctx.RecordPositionByUid(device, pos.uid, vals))
+        return CommandResult::Fail("teach: position '" + std::string(pos.name) +
+                                   "' is no longer in the run's positions");
+    return CommandResult::Success();
+}
+
 // ---- File-local from here on ------------------------------------------------
 namespace {
 
@@ -289,7 +348,10 @@ CommandResult ExecMoveToPosition(ExecutionContext& ctx, const ParamValues& p)
 
     const CommandResult pre = ApplyPreMove(ctx, idx, p);
     if (!pre.ok) return pre;
-    return MoveWithApproach(ctx, m, idx, targets, p, "'" + std::string(pos->name) + "'");
+    const CommandResult mv =
+        MoveWithApproach(ctx, m, idx, targets, p, "'" + std::string(pos->name) + "'");
+    if (!mv.ok || !p.GetBool(kTeachParamName)) return mv;
+    return TeachAfterMove(ctx, m, device, *pos);
 }
 
 CommandResult ExecMovePath(ExecutionContext& ctx, const ParamValues& p)
@@ -351,7 +413,13 @@ CommandResult ExecMovePath(ExecutionContext& ctx, const ParamValues& p)
         FD_INFO("recipe", "%s: reached '%s' (%zu/%zu)", device.c_str(),
                 leg.label.c_str(), i + 1, legs.size());
     }
-    return WaitSettle(ctx, m, idx);
+    const CommandResult settled = WaitSettle(ctx, m, idx);
+    if (!settled.ok || !p.GetBool(kTeachParamName)) return settled;
+    // Only the destination is taught: the intermediate nodes are the map's,
+    // each reached by its own step somewhere else.
+    const SavedPos* toPos = ctx.FindPosition(device, p.GetString("to"));
+    if (!toPos) return CommandResult::Fail("'to' position uid not found");
+    return TeachAfterMove(ctx, m, device, *toPos);
 }
 
 CommandResult ExecMoveRelativeGlobal(ExecutionContext& ctx, const ParamValues& p)
@@ -561,8 +629,14 @@ CommandResult ExecMoveToPositionOffset(ExecutionContext& ctx, const ParamValues&
 
     const CommandResult pre = ApplyPreMove(ctx, idx, p);
     if (!pre.ok) return pre;
-    return MoveWithApproach(ctx, m, idx, targets, p,
-                            "'" + std::string(pos->name) + "' + offset");
+    const CommandResult mv = MoveWithApproach(ctx, m, idx, targets, p,
+                                              "'" + std::string(pos->name) + "' + offset");
+    if (!mv.ok || !p.GetBool(kTeachParamName)) return mv;
+    // The operator stands at base + offset; the BASE is what gets saved.
+    std::map<std::string, double> sub;
+    for (const auto& [axis, off] : offsets)
+        if (off != 0.0) sub[axis] = off;
+    return TeachAfterMove(ctx, m, device, *pos, sub);
 }
 
 // Kept because recipes on disk name it, and because a REQUIRED approach velocity
@@ -730,6 +804,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       ApproachPctParam(),
                       PreDelayParam(),
                       PostDelayParam(),
+                      TeachParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToPosition});
 
@@ -750,6 +825,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       ApproachPctParam(),
                       PreDelayParam(),
                       PostDelayParam(),
+                      TeachParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToPositionOffset});
 
@@ -770,6 +846,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       ExposureParam(),
                       PreDelayParam(),
                       PostDelayParam(),
+                      TeachParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToPositionApproach});
 
@@ -787,6 +864,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       ExposureParam(),
                       PreDelayParam(),
                       PostDelayParam(),
+                      TeachParam(),
                   },
                   CommandSpec::Needs::None, ExecMovePath});
 

@@ -4,6 +4,7 @@
 
 #include "command/CommandRegistry.h"
 #include "command/StepRunner.h"
+#include "command/TeachMode.h"
 #include "core/DutSession.h"
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"
@@ -51,10 +52,22 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
     }
     if (worker_.joinable()) worker_.join();   // reap the previous finished run
 
+    // A teach run executes a REWRITTEN copy (command/TeachMode.h): only the
+    // saved-position moves stay enabled, each with teach = true. Applied
+    // before validation - so a disconnected instrument behind a skipped step
+    // does not refuse the run, while the movers' devices, positions and maps
+    // are still checked - and again after inlining, for the sub-recipe bodies.
+    Recipe run = recipe;
+    if (opts.teach) {
+        const std::size_t movers = MakeTeachRecipe(run, reg_);
+        FD_INFO("recipe", "teach run: %zu move(s) to teach in '%s'", movers,
+                run.name.c_str());
+    }
+
     // Run-start validation: structure + params + references + everything
     // referenced actually Connected. Recipes never connect hardware.
     const std::vector<RecipeIssue> issues = ValidateRecipe(
-        recipe, reg_, hw_, env.positions, env.maps, env.aligns, env.visionModels,
+        run, reg_, hw_, env.positions, env.maps, env.aligns, env.visionModels,
         env.grips, env.library, true);
     if (!issues.empty()) {
         std::string msg = issues.front().where + ": " + issues.front().message;
@@ -66,13 +79,13 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
         return false;
     }
 
-    Recipe run = recipe;
     std::string inlineErr;
     if (!InlineSubRecipes(run, env.library, &inlineErr)) {
         FD_WARN("recipe", "start rejected: %s", inlineErr.c_str());
         if (err) *err = inlineErr;
         return false;
     }
+    if (opts.teach) MakeTeachRecipe(run, reg_);   // the inlined bodies, same rule
 
     {
         const std::scoped_lock lock(mu_);
@@ -96,9 +109,10 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
             startPath_.push_back(c >= kElseBranchBase ? c - kElseBranchBase : c);
     }
     stepMode_.store(opts.stepMode);
+    teach_.store(opts.teach);
     stopReq_.store(false);
     running_.store(true);
-    FD_INFO("recipe", "run started: '%s'", run.name.c_str());
+    FD_INFO("recipe", "run started: '%s'%s", run.name.c_str(), opts.teach ? " [TEACH]" : "");
     worker_ = std::thread(&RecipeEngine::ThreadMain, this, std::move(run), std::move(env));
     return true;
 }
@@ -181,6 +195,7 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.pendingPick        = pickPending_;
     s.pickReq            = pickReq_;
     s.stepMode           = stepMode_.load();
+    s.teach              = teach_.load();
     s.stepPaused         = stepPaused_;
     s.nextStep           = nextStep_;
     s.nextPath           = nextPath_;
@@ -347,7 +362,9 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
         FD_INFO("recipe", "run '%s' finished: %s%s%s", recipeName_.c_str(),
                 StateName(state_), error_.empty() ? "" : " - ", error_.c_str());
         // Traceability: attribute this run to the open DUT (soft no-op if none).
-        DutSession::Instance().RecordRun("recipe", recipeName_, StateName(state_));
+        // A teach run drove the machine but proved nothing about a part.
+        if (!teach_.load())
+            DutSession::Instance().RecordRun("recipe", recipeName_, StateName(state_));
     }
     running_.store(false);
 }

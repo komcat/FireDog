@@ -62,6 +62,10 @@ public:
     struct StartOpts {
         bool stepMode = false;
         std::vector<std::size_t> startPath;   // {} = from the beginning
+        // Teach run: the recipe is rewritten (command/TeachMode.h) to its
+        // saved-position moves, each followed by a fine-tune-and-Save prompt.
+        // Not a run of the part: no $run DUT event is written.
+        bool teach = false;
     };
 
     // Validates (structure + params + references + devices Connected), inlines
@@ -111,6 +115,7 @@ public:
         bool        stepPaused = false;
         std::string nextStep;
         std::vector<std::size_t> nextPath;
+        bool        teach      = false;   // this run (or the last one) was a teach run
         std::vector<std::pair<std::string, CtxValue>> ctx;   // display snapshot
         // The ctx as it stood the instant the run ENDED, captured before the
         // engine drops its pointer. `ctx` above is live and therefore empty by
@@ -151,6 +156,7 @@ private:
     std::atomic<bool> stopReq_{false};
     std::atomic<bool> running_{false};
     std::atomic<bool> stepMode_{false};   // pause before every leaf while true
+    std::atomic<bool> teach_{false};      // this run is a teach run (StartOpts)
 
     mutable std::mutex      mu_;       // guards everything below
     std::condition_variable cv_;       // prompt handshake

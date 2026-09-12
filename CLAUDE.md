@@ -84,6 +84,7 @@ Breaking any of these is a defect, not a style choice.
 - Recipes never connect hardware; validation at Start requires devices already `Connected`.
 - Ctx does **not** flow between recipes — cross-recipe data goes through the DUT or the DataBus.
 - `$`-prefixed DUT keys are reserved for events.
+- **Teach mode is a recipe TRANSFORM plus a `teach` param on the movers; the engine has no teach mode.** `RecipeEngine::Start` hands its private copy through `MakeTeachRecipe` (`command/TeachMode.h`): non-movers are DISABLED (never removed — step paths must keep their indices), movers get `teach = true`, loops run once, an `if` becomes then-then-else, `stop_recipe` is off. `StepRunner`, `ValidateRecipe` and `CountLeafSteps` stay untouched — a second filter in the runner would be a second answer to what a teach run executes. Save writes **by uid** (`RecordPositionByUid`) and never creates. A teach run writes no `$run`, sets no deck mark and never advances the cycle; the flag is never persisted and `LogOut` clears it. A command becomes a teach mover by declaring `TeachParam()`, nothing else.
 
 ### Dispense needle
 - **The camera→needle offset lives in `gantry-main` AXIS space and never goes through `AxisTransform`.** Camera and needle ride the same device, so the delta between them crosses no frame — and `gantry-main`'s transform inverts Z (`M33 = -1`), so an axis value issued as a global delta descends when it meant to retreat. `read_position` reads axis, `move_axis_to` commands axis, `NeedleCal` stores axis.

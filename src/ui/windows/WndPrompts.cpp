@@ -13,6 +13,7 @@
 #include "imgui_internal.h"   // BringWindowToDisplayFront (always-on-top windows)
 
 #include "ui/Widgets.h"
+#include "ui/Theme.h"   // kTeachOrange (the teach prompt's Save row)
 #include "core/Log.h"
 #include "vision/VisionModel.h"   // FindVisionModel — the fallback's taught patch
 
@@ -158,9 +159,34 @@ void App::DrawManualAdjustWindow()
                  ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings);
     ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());   // always on top
 
-    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 460.0f);
-    ImGui::TextUnformatted(req.message.c_str());
-    ImGui::PopTextWrapPos();
+    // Header: the message on the left, and on the right the DEVICE this prompt
+    // is about, big, on a solid block. Two hexapods and a gantry share this
+    // window, and jogging the wrong one is the mistake the box exists to
+    // prevent - the small "Device:" line below was not enough from a step back.
+    {
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float boxW = 220.0f;
+        const float boxH = ImGui::GetTextLineHeight() * 3.0f + style.WindowPadding.y * 2.0f;
+        const float textW = 300.0f;
+        ImGui::BeginGroup();
+        if (req.teach) ImGui::TextColored(kTeachOrange, "TEACH  %s", req.positionName.c_str());
+        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + textW);
+        ImGui::TextUnformatted(req.message.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::EndGroup();
+        ImGui::SameLine(textW + style.ItemSpacing.x * 2.0f);
+        // Orange for a teach (it matches the Save button it leads to), the
+        // arm's amber for a plain manual_adjust; dark text on both for contrast.
+        ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                              req.teach ? kTeachOrange : ImVec4(1.0f, 0.75f, 0.20f, 1.0f));
+        ImGui::BeginChild("adjdev", ImVec2(boxW, boxH), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        DrawBigLabel(req.device.c_str(),
+                     ImVec2(boxW - style.WindowPadding.x * 2.0f, boxH - style.WindowPadding.y * 2.0f),
+                     ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+    }
     ImGui::Separator();
 
     // Resolve the device each frame (cheap; the command validated it exists).
@@ -182,6 +208,25 @@ void App::DrawManualAdjustWindow()
             line += buf;
         }
         ImGui::TextUnformatted(line.empty() ? "(no position data)" : line.c_str());
+        // A teach prompt shows what Save would replace, and by how much the
+        // operator has moved off it - a wrong step size shows up as a number.
+        if (req.teach && !req.target.empty()) {
+            const std::map<std::string, double> live = dev->Positions();
+            std::string saved, delta;
+            for (const auto& [axis, val] : req.target) {
+                char buf[48];
+                std::snprintf(buf, sizeof(buf), "%s%s %.4f", saved.empty() ? "" : "  ",
+                              axis.c_str(), val);
+                saved += buf;
+                const auto li = live.find(axis);
+                if (li == live.end()) continue;
+                std::snprintf(buf, sizeof(buf), "%s%s %+.4f", delta.empty() ? "" : "  ",
+                              axis.c_str(), li->second - val);
+                delta += buf;
+            }
+            ImGui::TextDisabled("saved  %s", saved.c_str());
+            if (!delta.empty()) ImGui::TextColored(kTeachOrange, "delta  %s", delta.c_str());
+        }
     }
     ImGui::Spacing();
 
@@ -238,9 +283,28 @@ void App::DrawManualAdjustWindow()
         if (fromScript) orch_.lua.AnswerAdjust(ok);
         else            orch_.recipe.AnswerAdjust(ok);
     };
-    if (ImGui::Button("OK (Complete)", ImVec2(140.0f, 0.0f))) answer(true);
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel (Fail Step)", ImVec2(140.0f, 0.0f))) answer(false);
+    if (req.teach) {
+        // Same bool channel; different words, because the answer means
+        // something else: true writes the position, false keeps it and the
+        // run goes on. Stop (the run strip) is the only abort.
+        ImGui::PushStyleColor(ImGuiCol_Button,        kTeachOrange);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kTeachOrangeHov);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kTeachOrangeAct);
+        // 170 px: "Skip (keep saved)" clipped at the 140 the OK/Cancel pair use.
+        if (ImGui::Button("Save position", ImVec2(170.0f, 0.0f))) answer(true);
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Write the device's current pose into '%s'.",
+                              req.positionName.c_str());
+        ImGui::SameLine();
+        if (ImGui::Button("Skip (keep saved)", ImVec2(170.0f, 0.0f))) answer(false);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Leave '%s' as it is and continue.", req.positionName.c_str());
+    } else {
+        if (ImGui::Button("OK (Complete)", ImVec2(140.0f, 0.0f))) answer(true);
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel (Fail Step)", ImVec2(140.0f, 0.0f))) answer(false);
+    }
     ImGui::End();
 }
 

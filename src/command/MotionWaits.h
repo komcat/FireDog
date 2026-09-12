@@ -8,6 +8,7 @@
 // stage. See docs/pi-hexapod-motion-design.md.
 #pragma once
 
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -84,5 +85,25 @@ CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int 
 ParamSpec ApproachVelocityParam(bool required = false);
 ParamSpec ApproachMmParam();
 ParamSpec ApproachPctParam();
+
+// ---- teach: fine-tune after arrival, save into the position -----------------
+// The optional `teach` Bool every saved-position mover declares. When set, the
+// command arrives as usual and then blocks on the Manual Adjust window so the
+// operator jogs onto the exact spot; Save writes the live pose INTO the
+// position the step drove to (by uid), Skip keeps the saved value. Declaring
+// the param is what makes a command a teach mover: teach-mode runs
+// (command/TeachMode.h) keep exactly the leaves whose spec carries it.
+inline constexpr const char* kTeachParamName = "teach";
+ParamSpec TeachParam();
+
+// The prompt + save, shared by every mover. `pos` is the record the step drove
+// to; `subtract` is taken off the live pose per axis before saving, so a
+// move_to_position_offset teaches the BASE position and not base + offset.
+// Only axes the record already holds are written (a 3-axis record on a
+// six-axis hexapod stays 3-axis). Skip returns Success with nothing written;
+// a stop during the prompt or the settle wait fails with "stopped".
+CommandResult TeachAfterMove(ExecutionContext& ctx, IMotionController* m,
+                             const std::string& device, const SavedPos& pos,
+                             const std::map<std::string, double>& subtract = {});
 
 } // namespace firedog

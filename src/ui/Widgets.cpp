@@ -975,6 +975,29 @@ void DeviceStatusLine(ConnState s, const char* name) {
     ImGui::Text("%-12s %s", name, StateText(s));
 }
 
+void DrawBigLabel(const char* text, const ImVec2& box, const ImVec4& color)
+{
+    const float base = ImGui::GetStyle().FontSizeBase;
+    float size = box.y * 0.62f;
+    if (size < base) size = base;
+    ImGui::PushFont(nullptr, size);
+    ImVec2 ts = ImGui::CalcTextSize(text);
+    ImGui::PopFont();
+    const float maxW = box.x - 6.0f;
+    if (ts.x > maxW && ts.x > 0.0f) {
+        size = size * maxW / ts.x;
+        if (size < base) size = base;
+        ImGui::PushFont(nullptr, size);
+        ts = ImGui::CalcTextSize(text);
+        ImGui::PopFont();
+    }
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImGui::PushFont(nullptr, size);
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + (box.x - ts.x) * 0.5f, pos.y + (box.y - ts.y) * 0.5f));
+    ImGui::TextColored(color, "%s", text);
+    ImGui::PopFont();
+}
+
 bool Splitter(const char* id, bool vertical, float thickness, float length) {
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.30f, 0.30f, 0.34f, 0.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.45f, 0.45f, 0.55f, 0.6f));

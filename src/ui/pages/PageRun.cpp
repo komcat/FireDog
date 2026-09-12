@@ -17,6 +17,7 @@
 #include "imgui.h"
 
 #include "ui/Widgets.h"
+#include "ui/Theme.h"   // kTeachOrange
 #include "core/DataBus.h"
 #include "core/DutSession.h"
 #include "core/Log.h"
@@ -324,6 +325,13 @@ void App::RestoreDeckSelection()
 // The deck's Execute button. The UI contributes the SELECTION; resolving it into
 // a queue is BuildRunQueue's job (command/ProgramRunner), and executing that
 // queue is the runner's.
+RecipeEngine::StartOpts App::RecipeStartOpts() const
+{
+    RecipeEngine::StartOpts opts;
+    opts.teach = teachMode_;
+    return opts;
+}
+
 void App::StartDeckRun(RunScope scope)
 {
     runStartErr_.clear();
@@ -350,7 +358,10 @@ void App::StartDeckRun(RunScope scope)
     // far this part got, and a page switch or a restart must not erase it.
     // Beside ClearLiveFrames because it is the same kind of boundary, declared
     // in the same place, for the same reason.
-    if (deckSlot_ >= 0 && deckSlot_ < static_cast<int>(prog.slots.size())) {
+    // A TEACH run is none of this: it re-teaches positions and says nothing
+    // about a part, so the accents and the numbers of the part on the machine
+    // stay exactly as they were.
+    if (!teachMode_ && deckSlot_ >= 0 && deckSlot_ < static_cast<int>(prog.slots.size())) {
         const ProgramSlot& slot = prog.slots[static_cast<std::size_t>(deckSlot_)];
         if (scope == RunScope::Slot ||
             (!deckNode_.empty() && deckNode_ == slot.startNodeUid)) {
@@ -363,13 +374,14 @@ void App::StartDeckRun(RunScope scope)
 
     RecipeEngine::Env env = session_.MakeRecipeEnv();
     if (!orch_.programs.Start(q.kind, q.label, prog.uid, std::move(q.items),
-                              std::move(env), &runStartErr_)) {
+                              std::move(env), &runStartErr_, RecipeStartOpts())) {
         FD_WARN("program", "run rejected: %s", runStartErr_.c_str());
         return;
     }
     // What actually launched, for AdvanceDeckCycle. A slot run leaves it empty:
-    // it ran the whole chain, so there is nowhere to advance to.
-    runNodeUid_ = (scope == RunScope::Node) ? deckNode_ : std::string();
+    // it ran the whole chain, so there is nowhere to advance to. A teach run
+    // leaves it empty too: the cycle does not move for a run that taught.
+    runNodeUid_ = (scope == RunScope::Node && !teachMode_) ? deckNode_ : std::string();
 }
 
 // ---- Deck cycle -------------------------------------------------------------
@@ -416,6 +428,8 @@ App::NodeMark App::DeckMarkOf(const ProgramNode& n) const
 
 void App::DrainDeckMarks()
 {
+    // A teach run's items are not outcomes for the part: no accent from them.
+    if (orch_.programs.GetStatus().teach) return;
     // Queue order, and Pending writes nothing — which is what makes a x100
     // folder that failed on pass 3 stay yellow instead of being overwritten by
     // the ninety-seven passes that never ran.
@@ -487,6 +501,7 @@ void App::DrainCycleVars()
     // Status.ctx is EMPTY by now (the engine drops its pointer before the state
     // goes terminal) — lastCtx is the snapshot it took at that boundary.
     const RecipeEngine::Status es = orch_.recipe.GetStatus();
+    if (es.teach) return;   // a teach run measured nothing about the part
     for (const auto& [key, val] : es.lastCtx) {
         if (!IsOperatorCtxKey(key)) continue;
         cycleVars_[key] = CycleVar{CtxValueToString(val), es.recipeName};
@@ -863,11 +878,19 @@ void App::DrawRunPanel()
             orch_.programs.Stop();
     } else {
         ImGui::BeginDisabled(!canRun);
-        if (IconButton(UiIcon("run_execute"), "Execute", ImVec2(130.0f, stripBtnH)))
+        // In teach mode the go button says so itself: the press that follows
+        // teaches positions instead of running the part.
+        if (IconButton(UiIcon("run_execute"), teachMode_ ? "Teach run" : "Execute",
+                       ImVec2(130.0f, stripBtnH)))
             StartDeckRun(onNode ? RunScope::Node : RunScope::Slot);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(onNode ? "Run the selected item (a folder runs its loops)"
-                                     : "Run every recipe in this slot");
+        if (ImGui::IsItemHovered()) {
+            if (teachMode_)
+                ImGui::SetTooltip("TEACH: run only the moves to saved positions,\n"
+                                  "and after each one fine-tune and Save that position.");
+            else
+                ImGui::SetTooltip(onNode ? "Run the selected item (a folder runs its loops)"
+                                         : "Run every recipe in this slot");
+        }
         ImGui::EndDisabled();
     }
     ImGui::PopStyleColor(3);
@@ -904,6 +927,45 @@ void App::DrawRunPanel()
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open the Program Organizer");
         ImGui::EndDisabled();
     }
+    // Teach mode toggle. Gated like re-teaching a position anywhere else (the
+    // Motion page's level): it writes positions, not programs. Disabled while
+    // anything runs, so a queue can never change mode between its items — the
+    // runner carries its own copy of the flag regardless.
+    if (CanAccess(Page::Motion)) {
+        ImGui::SameLine();
+        centerNext(ImGui::GetFrameHeight());
+        ImGui::BeginDisabled(orch_.Busy());
+        // The push/pop pair keys off the value BEFORE the click: the button
+        // flips the flag, and a pop decided on the new value pops colours that
+        // were never pushed (ImGui asserts, the process aborts).
+        const bool wasOn = teachMode_;
+        if (wasOn) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        kTeachOrange);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kTeachOrangeHov);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kTeachOrangeAct);
+        }
+        if (ImGui::Button(wasOn ? "TEACH ON" : "Teach")) {
+            teachMode_ = !teachMode_;
+            FD_INFO("program", "teach mode %s", teachMode_ ? "ON" : "off");
+        }
+        if (wasOn) ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Teach mode: a run executes ONLY its moves to saved positions\n"
+                              "(move_to_position and variants, move_path); everything else is\n"
+                              "skipped. After each move, jog onto the exact spot and Save to\n"
+                              "write it into that position, or Skip to keep it. Loops run once,\n"
+                              "both branches of an if are walked. No deck marks, no DUT record.\n"
+                              "Applies to every Run/Execute while on; off again at sign-out.");
+        ImGui::EndDisabled();
+    } else if (teachMode_) {
+        // Cannot happen after LogOut clears it, but never show a hidden mode.
+        teachMode_ = false;
+    }
+    if (teachMode_ || rs.teach) {
+        ImGui::SameLine();
+        centerNext(ImGui::GetTextLineHeight());
+        ImGui::TextColored(kTeachOrange, rs.active && rs.teach ? "TEACH RUN" : "TEACH");
+    }
     {
         const DutSession::Info di = DutSession::Instance().GetInfo();
         ImGui::SameLine();
@@ -917,8 +979,11 @@ void App::DrawRunPanel()
     }
     // Save/Load are document chores, not run controls — parked at the far right
     // so nothing sits between Execute and the operator's eye.
+    // Same height as Execute: one row, one reach, one size of target. Load is
+    // wider than before because it carries an icon now (assets/recipe_icons/
+    // load.png; IconButton scales it to text height whatever the file's size).
     constexpr float kSaveW = 110.0f;
-    constexpr float kLoadW = 80.0f;
+    constexpr float kLoadW = 100.0f;
     // Load stays with the Operator — WHICH job is in the deck is the operator's
     // call, and it mutates nothing. Save writes the programs document, so it
     // goes with the level that may edit programs at all; below that the deck is
@@ -930,16 +995,14 @@ void App::DrawRunPanel()
     // Never step BACK onto what is already drawn: a long start error would
     // otherwise be overprinted by the buttons.
     if (rightX > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(rightX);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
-                         (stripBtnH - ImGui::GetFrameHeight()) * 0.5f);
     ImGui::BeginDisabled(running);
     if (canSave) {
         if (IconButton(UiIcon("Save"), session_.ProgramsDirty() ? "Save*" : "Save",
-                       ImVec2(kSaveW, 0.0f)))
+                       ImVec2(kSaveW, stripBtnH)))
             session_.SavePrograms();
         ImGui::SameLine();
     }
-    if (ImGui::Button("Load", ImVec2(kLoadW, 0.0f))) runOpenLoad_ = true;
+    if (IconButton(UiIcon("load"), "Load", ImVec2(kLoadW, stripBtnH))) runOpenLoad_ = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Load a program into the deck");
     ImGui::EndDisabled();
     ImGui::EndChild();

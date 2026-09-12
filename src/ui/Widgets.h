@@ -407,6 +407,15 @@ void        DeviceStatusLine(ConnState s, const char* name);
 // bar that resizes up/down.
 bool Splitter(const char* id, bool vertical, float thickness, float length);
 
+// One line of text drawn as large as `box` allows and centred in it, from the
+// current cursor. The font is sized off the box height and shrunk to fit the
+// width, so a short "10um" and a long device name both fill the space without
+// clipping. Sizes come off the base font, so the label follows the UI scale.
+// Used for the readouts an operator must be able to check from a step back:
+// the Jog window's step size and device name, the Manual Adjust window's
+// device box.
+void DrawBigLabel(const char* text, const ImVec2& box, const ImVec4& color);
+
 // Format an amp value with an auto-scaled unit (mA / uA / nA / pA).
 std::string FormatCurrent(double a);
 
