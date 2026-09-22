@@ -424,8 +424,10 @@ void App::DrawMainWindow()
                     ImGui::SetTooltip("Select an alignment procedure first (Alignment, F5)");
             }
             pageBtn("Needle (F7)", Page::Needle, true);
-            pageBtn("Registration (F8)", Page::DeviceReg, true);
-            pageBtn("Gripped object (F9)", Page::Grip, true);
+            // No Registration or Gripped object button: both are one-time
+            // teach setups, reached from the View menu (or F8 / F9) only, so
+            // the strip stays the row of pages an operator changes between
+            // during a shift.
             if (anyBtn) ImGui::Separator();
         }
 

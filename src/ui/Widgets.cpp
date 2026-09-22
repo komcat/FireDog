@@ -65,6 +65,37 @@ CameraView MakeCameraView(const ImVec2& origin, const ImVec2& size,
     return v;
 }
 
+void DrawCameraViewImage(ImDrawList* dl, unsigned int tex, const CameraView& view)
+{
+    const ImVec2 boxMax(view.origin.x + view.size.x, view.origin.y + view.size.y);
+    dl->AddRectFilled(view.origin, boxMax, IM_COL32(18, 18, 22, 255));
+    if (!tex || view.imgW <= 0 || view.imgH <= 0) return;
+
+    // The visible window intersected with the image, in camera px: at zoom
+    // >= 1 this is the window itself, below 1 the image inside the letterbox.
+    const float x0 = fmaxf(view.left, 0.0f);
+    const float y0 = fmaxf(view.top, 0.0f);
+    const float x1 = fminf(view.left + view.vw, static_cast<float>(view.imgW));
+    const float y1 = fminf(view.top + view.vh, static_cast<float>(view.imgH));
+    if (x1 <= x0 || y1 <= y0) return;
+
+    dl->AddImage((ImTextureID)(intptr_t)tex, view.ToScreen(x0, y0), view.ToScreen(x1, y1),
+                 ImVec2(x0 / static_cast<float>(view.imgW), y0 / static_cast<float>(view.imgH)),
+                 ImVec2(x1 / static_cast<float>(view.imgW), y1 / static_cast<float>(view.imgH)));
+}
+
+void DrawZoomBadge(ImDrawList* dl, const CameraView& view, float zoom)
+{
+    char txt[48];
+    std::snprintf(txt, sizeof(txt), "zoom x%.2f", zoom);
+    const ImVec2 ts  = ImGui::CalcTextSize(txt);
+    const ImVec2 pad(6.0f, 3.0f);
+    const ImVec2 p0(view.origin.x + 6.0f, view.origin.y + 6.0f);
+    const ImVec2 p1(p0.x + ts.x + pad.x * 2.0f, p0.y + ts.y + pad.y * 2.0f);
+    dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 150), 3.0f);
+    dl->AddText(ImVec2(p0.x + pad.x, p0.y + pad.y), IM_COL32(235, 235, 235, 255), txt);
+}
+
 namespace {
 
 constexpr ImU32 kRefCol = IM_COL32(80, 230, 120, 140);   // image-centre reference
@@ -471,7 +502,10 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
                                            *mp.px, *mp.py, *mp.zoom);
 
     if (haveImg) {
-        ImGui::Image((ImTextureID)(intptr_t)mp.tex, img, view.Uv0(), view.Uv1());
+        // Draw-list, not ImGui::Image: below zoom 1 the frame is letterboxed
+        // and only the part of the box that IS image may sample the texture.
+        DrawCameraViewImage(dl, mp.tex, view);
+        ImGui::Dummy(img);
     } else {
         dl->AddRectFilled(origin, ImVec2(origin.x + img.x, origin.y + img.y),
                           IM_COL32(18, 18, 22, 255));
@@ -666,7 +700,7 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
     // a frame of latency nobody can see.
     if (haveImg && hovered && ImGui::GetIO().MouseWheel != 0.0f) {
         *mp.zoom *= (ImGui::GetIO().MouseWheel > 0.0f) ? 1.25f : 0.8f;
-        *mp.zoom = fminf(fmaxf(*mp.zoom, 1.0f), 12.0f);
+        *mp.zoom = fminf(fmaxf(*mp.zoom, mp.zoomMin), mp.zoomMax);
     }
     // One press = one CAMERA pixel (hold to repeat, Shift for 10). Taken only
     // while the mouse is over this window, never globally: an arrow aimed at a
@@ -840,6 +874,9 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
 
         DrawCross(dl, view.ToScreen(*mp.px, *mp.py), kCurCol, 22.0f, nullptr, false);
         dl->PopClipRect();
+        // Last, so nothing paints over it: the one overlay allowed on the
+        // picture, because it says what scale the picture is at.
+        DrawZoomBadge(dl, view, *mp.zoom);
     }
 
     // Footer: the step diagrams first, then the hint and the zoom control. They
@@ -851,7 +888,7 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
     ImGui::SameLine();
     ImGui::PushID(id);
     ImGui::SetNextItemWidth(110.0f);
-    ImGui::SliderFloat("##zoom", mp.zoom, 1.0f, 12.0f, "x%.2f",
+    ImGui::SliderFloat("##zoom", mp.zoom, mp.zoomMin, mp.zoomMax, "x%.2f",
                        ImGuiSliderFlags_Logarithmic);
     ImGui::SameLine();
     if (ImGui::SmallButton("Fit")) *mp.zoom = 1.0f;

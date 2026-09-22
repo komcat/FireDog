@@ -92,10 +92,13 @@ int KeiRangeIndexFor(double amps);
 // thing in both surfaces, and two copies of this arithmetic would drift the
 // moment one of them gained a feature.
 //
-// `fit` is a COVER fit (fill the box, crop the overflow) times a zoom >= 1, so
-// the visible window is always strictly inside the image and there is no
-// letterbox case. The window follows `focus` (clamped to the image), which is
-// what stops a zoomed view from hiding the very point being marked.
+// `fit` is a COVER fit (fill the box, crop the overflow) times a zoom, so at
+// zoom 1 the box is full and the visible window is strictly inside the image.
+// The window follows `focus` (clamped to the image), which is what stops a
+// zoomed view from hiding the very point being marked. A zoom BELOW 1 shows
+// the whole frame with a letterbox: the window is then wider than the image
+// and centred on it, and `DrawCameraViewImage` draws only the part that is
+// image — `Uv0`/`Uv1` alone would sample past the texture's edge.
 struct CameraView {
     ImVec2 origin{};          // top-left of the image box, in screen coords
     ImVec2 size{};            // the box's size on screen
@@ -120,9 +123,22 @@ struct CameraView {
 };
 
 // Build the view for an imgW x imgH image drawn at `origin` in a `size` box,
-// magnified by `zoom` (>= 1) and centred on the camera pixel (focusX, focusY).
+// magnified by `zoom` over the cover fit and centred on the camera pixel
+// (focusX, focusY).
 CameraView MakeCameraView(const ImVec2& origin, const ImVec2& size,
                           int imgW, int imgH, float focusX, float focusY, float zoom);
+
+// Paint the view's box: a dark ground, then the image clipped to the part of
+// the window that lies on it. At zoom >= 1 that is the whole box; below 1 it
+// is the letterboxed frame. Draw-list only — the caller reserves the box
+// (ImGui::Dummy / InvisibleButton) so the item and the picture stay one size.
+void DrawCameraViewImage(ImDrawList* dl, unsigned int tex, const CameraView& view);
+
+// The zoom ratio in the box's top-left corner: "x1.50 over the fit". Every
+// live view shows it, because the same feature reads as a different size on
+// every station and a picked point is only as good as the scale it was picked
+// at.
+void DrawZoomBadge(ImDrawList* dl, const CameraView& view, float zoom);
 
 // ---- Marking features on the live image ------------------------------------
 // The image + overlay + input half of a "mark a feature" surface: one movable
@@ -341,7 +357,11 @@ struct MarkPicker {
     int      activeMark = -1;
     float* px   = nullptr;               // crosshair, camera px   (in/out)
     float* py   = nullptr;
-    float* zoom = nullptr;               // magnification >= 1     (in/out)
+    float* zoom = nullptr;               // magnification over the fit (in/out)
+    // The range the wheel and the slider keep `zoom` in. Below 1 letterboxes
+    // the whole frame. The default is the pick window's; a page whose marks
+    // are a coarse edge rather than a fine feature narrows it (0.5..3).
+    float  zoomMin = 1.0f, zoomMax = 12.0f;
 };
 
 // What a right-click asked for. The widget cannot move anything itself — it

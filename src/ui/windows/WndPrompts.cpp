@@ -433,6 +433,7 @@ void App::DrawAlignPickWindow()
 
     if (haveImg) {
         ImGui::Image((ImTextureID)(intptr_t)cameraTex_, avail, view.Uv0(), view.Uv1());
+        DrawZoomBadge(dl, view, pickZoom_);
     } else {
         dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y),
                           IM_COL32(18, 18, 22, 255));

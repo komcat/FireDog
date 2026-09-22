@@ -878,6 +878,7 @@ void App::DrawVisionTeachImage(VisionModel& m)
 
     if (haveImg) {
         ImGui::Image((ImTextureID)(intptr_t)cameraTex_, avail, view.Uv0(), view.Uv1());
+        DrawZoomBadge(dl, view, visionZoom_);
 
         // The pre-processed foreground, painted over the scene it came from.
         // Drawn at the ROI's own screen rect rather than stretched over the

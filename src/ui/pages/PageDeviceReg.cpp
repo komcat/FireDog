@@ -24,6 +24,14 @@
 //   3  CORNERS        marks on the live image, in machine mm.
 //   4  COMPLETE       centre of the marks + the focused Z = the tip. t follows.
 //
+// The right-hand column is the device pair over four tabs: Registration (the
+// record, the footprint, the fleet), Teach Pose (steps 1-2), Capture tool
+// points (steps 3-4), Verify and test (the check, Send tool here, Look at the
+// tool). Each step is headed "Step n ..." and turns green when the RECORD
+// answers it, so a registration taught months ago opens as four green steps -
+// this is a one-time setup, and the page must say so rather than look untaught.
+// A tab goes green when everything on it is done; Verify only on a PASSED check.
+//
 // Nothing on this page actuates on its own. Every move is either the operator's
 // own jog or an explicit "drive to the pose you taught" button.
 #include "App.h"
@@ -425,6 +433,10 @@ void App::DrawDeviceRegPanel()
         mp.px         = &regPx_;
         mp.py         = &regPy_;
         mp.zoom       = &regZoom_;
+        // An imprint is a coarse mark: half the fit shows the whole frame to
+        // find it, three times is enough to put a corner on its edge.
+        mp.zoomMin    = 0.5f;
+        mp.zoomMax    = 3.0f;
 
         // The registered tip, projected through the same pose as the marks,
         // with the tool's footprint drawn around it. The box is CENTRED on the
@@ -490,7 +502,11 @@ void App::DrawDeviceRegPanel()
     }
     ImGui::SameLine(0.0f, 0.0f);
 
-    // ---- Right: the record, the four steps, the check ------------------------
+    // ---- Right: the device, then four tabs -----------------------------------
+    // Registration (the record) | Teach Pose (steps 1-2) | Capture tool points
+    // (steps 3-4) | Verify and test (the check and the two drives). Stacked,
+    // the whole thing was three screens tall and the record - the one part an
+    // operator comes back to - sat above a teach they do once per gripper.
     ImGui::BeginChild("drCtl", ImVec2(rightW, avail.y), ImGuiChildFlags_Borders);
 
     ImGui::TextDisabled("Relates a device's own axis origin to the camera gantry's,");
@@ -510,13 +526,54 @@ void App::DrawDeviceRegPanel()
         ImGui::TextColored(kBad, "'%s' not connected (or reports no X/Y)", regRef_);
     if (!haveImg)
         ImGui::TextColored(kBad, "no camera feed");
+    // The last thing a button said, above the tabs so it is read whichever tab
+    // the button was on: a capture on Teach Pose and a refused drive on Verify
+    // both report here.
+    if (!regTeachMsg_.empty())
+        ImGui::TextWrapped("%s", regTeachMsg_.c_str());
 
-    // ---- What the machine currently believes ---------------------------------
-    ImGui::SeparatorText("Registration");
+    // Which of the four steps the record already answers. Done is read off the
+    // RECORD, not the session: a tip taught last month is still taught, and an
+    // operator opening this page to look at it should find four green steps,
+    // not four empty ones. The corner marks are the one exception - they are
+    // consumed into the tip and cleared - so step 3 reads done from the tip
+    // they produced, or from a full set marked this session.
+    int regMarked = 0;
+    for (int i = 0; i < regMarkCount_; ++i) regMarked += regMarkHave_[i] ? 1 : 0;
+    const bool step1Done = reg.hasImprintPose;
+    const bool step2Done = reg.hasTipView;
+    const bool step3Done = reg.valid || regMarked == regMarkCount_;
+    const bool step4Done = reg.valid;
+
+    // A tab's label goes green once everything on it is done, so the row of
+    // tabs reads as the progress bar for a one-time setup. The push wraps only
+    // BeginTabItem: the label is drawn there, and the content keeps its colours.
+    const auto tabBegin = [&](const char* label, bool done) {
+        if (done) ImGui::PushStyleColor(ImGuiCol_Text, kGood);
+        const bool open = ImGui::BeginTabItem(label);
+        if (done) ImGui::PopStyleColor();
+        return open;
+    };
+    const auto stepHeader = [&](const char* title, bool done) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "%s%s", title, done ? "  - done" : "");
+        if (done) ImGui::PushStyleColor(ImGuiCol_Text, kGood);
+        ImGui::SeparatorText(buf);
+        if (done) ImGui::PopStyleColor();
+    };
+
+    if (!ImGui::BeginTabBar("drTabs")) {
+        ImGui::EndChild();
+        return;
+    }
+
+    // ==== Tab: Registration - what the machine currently believes =============
+    if (tabBegin("Registration", reg.valid)) {
+    ImGui::Spacing();
     if (!reg.valid) {
         ImGui::TextColored(kBad, "NOT REGISTERED");
         ImGui::TextDisabled("move_to_point refuses and a placement measures from");
-        ImGui::TextDisabled("scratch every time. Teach the tip below.");
+        ImGui::TextDisabled("scratch every time. Teach the tip on the next two tabs.");
     } else {
         ImGui::TextColored(kGood, "tip at device zero  %+.4f  %+.4f  %+.4f mm",
                            reg.t.x, reg.t.y, reg.t.z);
@@ -600,8 +657,82 @@ void App::DrawDeviceRegPanel()
         }
     }
 
+    // ---- The tool's footprint ------------------------------------------------
+    // Typed, not measured, and part of the RECORD: it describes the jaws on
+    // this device, which is machine state exactly like the tip they are centred
+    // on. Drawn around the tip on this image, the Gripped Object page and the
+    // Aux view, turned by the device's live U; nothing refuses on it. On the
+    // record's tab, and NOT gated on the record being valid: the size of the
+    // jaws is known before the tip is, and an operator setting up a new gripper
+    // types it while the coupon dries.
+    ImGui::SeparatorText("Tool footprint");
+    {
+        double w = reg.toolWmm, l = reg.toolLmm;
+        bool   changed = false;
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::InputDouble("##toolw", &w, 0.0, 0.0, "%.3f")) changed = true;
+        ImGui::SameLine();
+        ImGui::TextUnformatted("x");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::InputDouble("W x L mm", &l, 0.0, 0.0, "%.3f")) changed = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The jaws' outline, centred on the tip: width along %s's\n"
+                              "X, length along its Y, turned with the device's U. Drawn\n"
+                              "to scale on every camera view that shows the tip, so 'is\n"
+                              "the gripper standing on the part' is a picture. Its\n"
+                              "corners can be dragged on the image once it has a size.",
+                              regRef_);
+        if (w <= 0.0 || l <= 0.0)
+            ImGui::TextDisabled("0 draws nothing - enter the jaws' size to see the box");
+        if (changed) {
+            if (w < 0.0) w = 0.0;
+            if (l < 0.0) l = 0.0;
+            if (w > 500.0) w = 500.0;
+            if (l > 500.0) l = 500.0;
+            // The record may not exist yet (nothing taught): name it, exactly
+            // as CompleteDeviceRegTip does, or SetDeviceReg drops a nameless one.
+            DeviceReg edited = reg;
+            edited.device    = regDevice_;
+            edited.refDevice = regRef_;
+            edited.toolWmm   = w;
+            edited.toolLmm   = l;
+            workflow_.QueueDeviceReg(edited);
+        }
+    }
+
+    // ---- The fleet -----------------------------------------------------------
+    ImGui::SeparatorText("All registered devices");
+    for (const auto& [name, r] : workflow_.DeviceRegs()) {
+        if (!r.valid) continue;
+        ImGui::TextColored(r.verified ? kGood : kWarn, "%-12s", name.c_str());
+        ImGui::SameLine();
+        // Same three states as the panel above, in one word each: a failed check
+        // has measured something and must not read like one that never ran.
+        char state[48];
+        if (r.verified) snprintf(state, sizeof(state), "verified");
+        else if (!r.checkedAt.empty())
+            snprintf(state, sizeof(state), "CHECK FAILED %.3f mm", r.checkResidualMm);
+        else snprintf(state, sizeof(state), "UNVERIFIED");
+        ImGui::Text("-> %-12s t (%+.3f, %+.3f, %+.3f)  %s", r.refDevice.c_str(),
+                    r.t.x, r.t.y, r.t.z, state);
+    }
+
+    ImGui::Spacing();
+    ImGui::TextWrapped("A registration is an APPROACH. Its rotation is a typed "
+                       "permutation and its tip is one measured point, so it gets a "
+                       "tool close - a placement still measures and corrects. What it "
+                       "buys is that the correction loop lands on its first pass.");
+    ImGui::EndTabItem();
+    }
+
+    // ==== Tab: Teach Pose - steps 1 and 2 =====================================
+    if (tabBegin("Teach Pose", step1Done && step2Done)) {
+    ImGui::Spacing();
+    ImGui::TextDisabled("Two poses on the tool's device, one on the camera's.");
+
     // ---- Step 1: the imprint pose --------------------------------------------
-    ImGui::SeparatorText("1  Imprint pose");
+    stepHeader("Step 1  Imprint pose", step1Done);
     ImGui::TextWrapped("Put a marking coupon under the tool. Jog '%s' DOWN by hand "
                        "until it just marks the coupon - barely, not pressing - then "
                        "capture that pose.", regDevice_);
@@ -650,7 +781,7 @@ void App::DrawDeviceRegPanel()
     }
 
     // ---- Step 2: the camera view ---------------------------------------------
-    ImGui::SeparatorText("2  Camera view over the mark");
+    stepHeader("Step 2  Camera view over the mark", step2Done);
     ImGui::TextWrapped("Send the tool home, then drive '%s' until the mark is in the "
                        "picture and FOCUS on it. The focused Z is the tip's height - "
                        "the tool was resting on the surface now in focus.", regRef_);
@@ -681,9 +812,16 @@ void App::DrawDeviceRegPanel()
             ImGui::TextColored(kWarn, "not captured");
         }
     }
+    ImGui::EndTabItem();
+    }
+
+    // ==== Tab: Capture tool points - steps 3 and 4 ============================
+    if (tabBegin("Capture tool points", step3Done && step4Done)) {
+    ImGui::Spacing();
+    ImGui::TextDisabled("Mark the imprint on the live image, then compute the tip.");
 
     // ---- Step 3: the corners -------------------------------------------------
-    ImGui::SeparatorText("3  Mark the imprint");
+    stepHeader("Step 3  Mark the imprint", step3Done);
     {
         ImGui::SetNextItemWidth(90.0f);
         ImGui::InputInt("corners", &regMarkCount_, 0, 0);
@@ -738,13 +876,11 @@ void App::DrawDeviceRegPanel()
             regMarkActive_ = 0;
         }
 
-        int have = 0;
-        for (int i = 0; i < regMarkCount_; ++i) have += regMarkHave_[i] ? 1 : 0;
-        ImGui::TextDisabled("%d of %d marked", have, regMarkCount_);
+        ImGui::TextDisabled("%d of %d marked", regMarked, regMarkCount_);
     }
 
     // ---- Step 4: complete ----------------------------------------------------
-    ImGui::SeparatorText("4  Complete");
+    stepHeader("Step 4  Compute the tip", step4Done);
     {
         ImGui::TextDisabled("The centre of the corners is the tip in XY; the view's");
         ImGui::TextDisabled("focused Z is the tip in Z.");
@@ -752,54 +888,19 @@ void App::DrawDeviceRegPanel()
         if (ImGui::Button("Compute and save tip", ImVec2(180.0f, 0.0f)))
             CompleteDeviceRegTip();
         ImGui::EndDisabled();
+        if (reg.valid)
+            ImGui::TextDisabled("tip taught %s from %d picks - computing again replaces it",
+                                reg.tipAt.empty() ? "(undated)" : reg.tipAt.c_str(),
+                                reg.tipPoints);
+    }
+    ImGui::EndTabItem();
     }
 
-    // ---- The tool's footprint ------------------------------------------------
-    // Typed, not measured, and part of the RECORD: it describes the jaws on
-    // this device, which is machine state exactly like the tip they are centred
-    // on. Drawn around the tip on this image, the Gripped Object page and the
-    // Aux view, turned by the device's live U; nothing refuses on it. Its own
-    // section, below the four steps and above the check, and NOT gated on the
-    // record being valid: the size of the jaws is known before the tip is, and
-    // an operator setting up a new gripper types it while the coupon dries.
-    ImGui::SeparatorText("Tool footprint");
-    {
-        double w = reg.toolWmm, l = reg.toolLmm;
-        bool   changed = false;
-        ImGui::SetNextItemWidth(80.0f);
-        if (ImGui::InputDouble("##toolw", &w, 0.0, 0.0, "%.3f")) changed = true;
-        ImGui::SameLine();
-        ImGui::TextUnformatted("x");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80.0f);
-        if (ImGui::InputDouble("W x L mm", &l, 0.0, 0.0, "%.3f")) changed = true;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The jaws' outline, centred on the tip: width along %s's\n"
-                              "X, length along its Y, turned with the device's U. Drawn\n"
-                              "to scale on every camera view that shows the tip, so 'is\n"
-                              "the gripper standing on the part' is a picture. Its\n"
-                              "corners can be dragged on the image once it has a size.",
-                              regRef_);
-        if (w <= 0.0 || l <= 0.0)
-            ImGui::TextDisabled("0 draws nothing - enter the jaws' size to see the box");
-        if (changed) {
-            if (w < 0.0) w = 0.0;
-            if (l < 0.0) l = 0.0;
-            if (w > 500.0) w = 500.0;
-            if (l > 500.0) l = 500.0;
-            // The record may not exist yet (nothing taught): name it, exactly
-            // as CompleteDeviceRegTip does, or SetDeviceReg drops a nameless one.
-            DeviceReg edited = reg;
-            edited.device    = regDevice_;
-            edited.refDevice = regRef_;
-            edited.toolWmm   = w;
-            edited.toolLmm   = l;
-            workflow_.QueueDeviceReg(edited);
-        }
-    }
-
-    if (!regTeachMsg_.empty())
-        ImGui::TextWrapped("%s", regTeachMsg_.c_str());
+    // ==== Tab: Verify and test - the check and the two drives =================
+    // Green once the check has PASSED, never on a teach alone: this is the one
+    // tab whose "done" is a measurement rather than a capture.
+    if (tabBegin("Verify and test", reg.verified)) {
+    ImGui::Spacing();
 
     // ---- Check ---------------------------------------------------------------
     ImGui::SeparatorText("Check");
@@ -1122,30 +1223,10 @@ void App::DrawDeviceRegPanel()
         if (!jogArmed_)
             ImGui::TextDisabled("arm jog (Jog window) - this drives a device");
     }
-
-    // ---- The fleet -----------------------------------------------------------
-    ImGui::SeparatorText("All registered devices");
-    for (const auto& [name, r] : workflow_.DeviceRegs()) {
-        if (!r.valid) continue;
-        ImGui::TextColored(r.verified ? kGood : kWarn, "%-12s", name.c_str());
-        ImGui::SameLine();
-        // Same three states as the panel above, in one word each: a failed check
-        // has measured something and must not read like one that never ran.
-        char state[48];
-        if (r.verified) snprintf(state, sizeof(state), "verified");
-        else if (!r.checkedAt.empty())
-            snprintf(state, sizeof(state), "CHECK FAILED %.3f mm", r.checkResidualMm);
-        else snprintf(state, sizeof(state), "UNVERIFIED");
-        ImGui::Text("-> %-12s t (%+.3f, %+.3f, %+.3f)  %s", r.refDevice.c_str(),
-                    r.t.x, r.t.y, r.t.z, state);
+    ImGui::EndTabItem();
     }
 
-    ImGui::Spacing();
-    ImGui::TextWrapped("A registration is an APPROACH. Its rotation is a typed "
-                       "permutation and its tip is one measured point, so it gets a "
-                       "tool close - a placement still measures and corrects. What it "
-                       "buys is that the correction loop lands on its first pass.");
-
+    ImGui::EndTabBar();
     ImGui::EndChild();
 }
 

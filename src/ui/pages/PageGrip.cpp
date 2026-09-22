@@ -29,6 +29,13 @@
 // The Measure button launches the SAME shipped script the recipe step runs, for
 // the reason the Alignment and Placement pages do: the procedure an operator
 // taught and the one that runs at three in the morning have to be one thing.
+//
+// The right-hand column is the profile list over four tabs: Profile (step 1
+// gripper, step 6 outline), Teach Pose (steps 2-3), Find the object (steps
+// 4-5), Measure. Each step is headed "Step n ..." and turns green when the
+// PROFILE answers it, so one taught months ago opens green rather than blank -
+// this is a one-time setup and the page says so. A tab goes green when
+// everything on it is done; Measure only on a last run that passed.
 #include "App.h"
 
 #include "imgui.h"
@@ -338,6 +345,10 @@ void App::DrawGripPanel()
         mp.px         = &gripPx_;
         mp.py         = &gripPy_;
         mp.zoom       = &gripZoom_;
+        // A gripped part is a coarse edge: half the fit shows the whole frame
+        // to find it, three times is enough to put a mark on its edge.
+        mp.zoomMin    = 0.5f;
+        mp.zoomMax    = 3.0f;
 
         const bool boxWasDragging = gripBoxDrag_ >= 0;
         const MarkPickerResult r =
@@ -479,9 +490,68 @@ void App::DrawGripPanel()
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::InputText("##gripname", buf, sizeof(buf))) g->name = buf;
     }
+    // The last thing a button said, above the tabs so it is read whichever tab
+    // the button was on.
+    if (!gripTeachMsg_.empty()) ImGui::TextWrapped("%s", gripTeachMsg_.c_str());
+
+    // The inspect pose, resolved once: step 2 teaches it, step 3's text and
+    // the tab colours read it.
+    const SavedPos* ip = nullptr;
+    if (!g->device.empty() && !g->inspectUid.empty()) {
+        const auto it = session_.Positions().find(g->device);
+        if (it != session_.Positions().end())
+            for (const SavedPos& sp : it->second)
+                if (sp.uid == g->inspectUid) { ip = &sp; break; }
+    }
+
+    // Which steps the PROFILE already answers - read off the document, not the
+    // session, so a profile taught last month opens green and not blank. The
+    // exception is step 4 in manual mode, where the two marks are consumed by
+    // Adopt and cleared on every reselect: it reads done from a pair marked now
+    // or from a run that has measured it. "Look at it" (step 3) is a move and
+    // not a record, so it never turns green. Measure is green only on a last
+    // run that PASSED against the reference - a measurement, not a capture.
+    const bool step1Done = !g->device.empty() && reg.valid;
+    const bool step2Done = ip != nullptr;
+    const bool step4Done = ((g->mode == "auto") ? (GripDetector(*g) != nullptr)
+                                                : (gripMarkHave_[0] && gripMarkHave_[1])) ||
+                           !g->measuredAt.empty();
+    const bool step5Done = g->haveRef;
+    const bool step6Done = GripHasOutline(*g);
+    bool measureDone = false;
+    if (g->haveRef && !g->measuredAt.empty()) {
+        std::string why;
+        measureDone = GripVerdict(*g, g->lastDx, g->lastDy, &why);
+    }
+
+    // A tab's label goes green once everything on it is done, so the row of
+    // tabs reads as the progress bar for a one-time setup. The push wraps only
+    // BeginTabItem: the label is drawn there, and the content keeps its colours.
+    const auto tabBegin = [&](const char* label, bool done) {
+        if (done) ImGui::PushStyleColor(ImGuiCol_Text, kGood);
+        const bool open = ImGui::BeginTabItem(label);
+        if (done) ImGui::PopStyleColor();
+        return open;
+    };
+    const auto stepHeader = [&](const char* title, bool done) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "%s%s", title, done ? "  - done" : "");
+        if (done) ImGui::PushStyleColor(ImGuiCol_Text, kGood);
+        ImGui::SeparatorText(buf);
+        if (done) ImGui::PopStyleColor();
+    };
+
+    if (!ImGui::BeginTabBar("gripTabs")) {
+        ImGui::EndChild();
+        return;
+    }
+
+    // ==== Tab: Profile - the gripper and the outline ===========================
+    if (tabBegin("Profile", step1Done)) {
+    ImGui::Spacing();
 
     // ---- 1  The gripper ------------------------------------------------------
-    ImGui::SeparatorText("1  Gripper");
+    stepHeader("Step 1  Gripper", step1Done);
     {
         ImGui::SetNextItemWidth(180.0f);
         if (ImGui::BeginCombo("holds it", g->device.empty() ? "(pick)" : g->device.c_str())) {
@@ -534,21 +604,83 @@ void App::DrawGripPanel()
         }
     }
 
+    // ---- 6  The outline -------------------------------------------------------
+    // On the Profile tab beside the gripper, though numbered last: it is a
+    // property of the object like the gripper is, typed before anything is
+    // measured, and only ever drawn.
+    stepHeader("Step 6  Outline", step6Done);
+    {
+        ImGui::TextWrapped("The object's footprint as a rectangle, hung off the "
+                           "measured point. Drawn here and on the Aux window, where "
+                           "it follows the tool - and only ever drawn: nothing judges "
+                           "it. Width is along %s's X, length along its Y.",
+                           camName.empty() ? "the camera device" : camName.c_str());
+        bool edited = false;
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputDouble("width mm", &g->outWmm, 0.0, 0.0, "%.3f");
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputDouble("length mm", &g->outLmm, 0.0, 0.0, "%.3f");
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+        // The anchor is placed on the PICTURE, not typed: drag the box's body
+        // to move it about the measured point, a corner to size it. The
+        // numbers are shown so a drag can be read back, never edited here.
+        ImGui::Text("anchor  %+.3f  %+.3f mm", g->anchorDx, g->anchorDy);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Where the MEASURED point sits on the rectangle, as\n"
+                              "point minus centre, mm, in the rectangle's own frame.\n"
+                              "0, 0 is the centre; half the width is an edge.");
+        ImGui::SameLine();
+        if (ImGui::Button("Centre")) {
+            g->anchorDx = g->anchorDy = 0.0;
+            edited = true;
+        }
+        // Shown and edited are two switches, because a box that can be
+        // dragged owns every click on its body - and its body is where the
+        // marks go. Editing off leaves it a picture the crosshair sees through.
+        ImGui::Checkbox("show on image", &gripShowOutline_);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!gripShowOutline_);
+        ImGui::Checkbox("edit by dragging", &gripEditOutline_);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("On: drag the box's body to move it, a corner to resize\n"
+                              "it; clicks on the box then belong to the box.\n"
+                              "Off: the box is a picture, and a click inside it\n"
+                              "places the crosshair as anywhere else - turn it off\n"
+                              "to mark points 1 and 2 under the outline.");
+        if (!gripEditOutline_) gripBoxDrag_ = -1;   // a drag cannot outlive its switch
+        if (gripShowOutline_ && gripEditOutline_)
+            ImGui::TextDisabled("on the image: drag the box to move it,\n"
+                                "drag a corner to resize it");
+        if (edited) {
+            if (g->outWmm < 0.0) g->outWmm = 0.0;
+            if (g->outLmm < 0.0) g->outLmm = 0.0;
+            session_.SaveGrips();
+            FD_INFO("grip", "'%s': outline %.3f x %.3f mm, anchor (%+.3f, %+.3f)",
+                    g->name.c_str(), g->outWmm, g->outLmm, g->anchorDx, g->anchorDy);
+        }
+        if (!GripHasOutline(*g))
+            ImGui::TextDisabled("0 x 0 - nothing drawn");
+        else if (!objBoxShown)
+            ImGui::TextDisabled("drawn once the object is marked or measured");
+    }
+    ImGui::EndTabItem();
+    }
+
+    // ==== Tab: Teach Pose - steps 2 and 3 =====================================
+    if (tabBegin("Teach Pose", step2Done)) {
+    ImGui::Spacing();
+
     // ---- 2  The inspect pose -------------------------------------------------
-    ImGui::SeparatorText("2  Inspect pose");
+    stepHeader("Step 2  Inspect pose", step2Done);
     ImGui::TextWrapped("Where to hold the object so the camera can see it. It carries "
                        "the ROTATIONS as well as XYZ, which is what makes two "
                        "measurements comparable: a gripper turned since the teach "
                        "swings the object and reads as a mis-grip.");
     {
-        const SavedPos* ip = nullptr;
-        if (!g->device.empty() && !g->inspectUid.empty()) {
-            const auto it = session_.Positions().find(g->device);
-            if (it != session_.Positions().end())
-                for (const SavedPos& sp : it->second)
-                    if (sp.uid == g->inspectUid) { ip = &sp; break; }
-        }
-
         ImGui::BeginDisabled(busy || g->device.empty());
         if (ImGui::Button(ip ? "Re-teach here" : "Teach here", ImVec2(140.0f, 0.0f))) {
             // CapturePrivatePose updates IN PLACE when the name already exists,
@@ -604,7 +736,9 @@ void App::DrawGripPanel()
     }
 
     // ---- 3  Look at it -------------------------------------------------------
-    ImGui::SeparatorText("3  Look at it");
+    // Never green: a move is not a record, and nothing here can say it has
+    // been made.
+    stepHeader("Step 3  Look at it", false);
     ImGui::TextWrapped("Drives '%s' so the camera centre lands on the tool's tip - the "
                        "same move a run makes with move_camera_to_tool. The gripper "
                        "does not move.",
@@ -670,37 +804,16 @@ void App::DrawGripPanel()
         if (!jogArmed_)
             ImGui::TextDisabled("arm jog (Jog window) - this drives '%s'",
                                 camName.empty() ? "the camera device" : camName.c_str());
-
-        // And said out loud: a click with jog unarmed raises this alert rather
-        // than a status line the operator has to go looking for. Arming here is
-        // the same flag the Jog window's checkbox sets (the Alignment page
-        // already offers it inline); the move is NOT issued from the alert -
-        // an OK button that drives the gantry is not an alert.
-        if (gripOpenArmPopup_) { ImGui::OpenPopup("Jog not armed"); gripOpenArmPopup_ = false; }
-        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
-                                ImVec2(0.5f, 0.5f));
-        if (ImGui::BeginPopupModal("Jog not armed", nullptr,
-                                   ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::TextColored(kWarn, "Camera to tool drives '%s'.",
-                               camName.empty() ? "the camera device" : camName.c_str());
-            ImGui::Text("Jog is not armed, so nothing moved.");
-            ImGui::TextDisabled("Arm jog (the Arm checkbox in the Jog window, or the\n"
-                                "button below), then click Camera to tool again.");
-            ImGui::Spacing();
-            if (ImGui::Button("Arm jog", ImVec2(120.0f, 0.0f))) {
-                jogArmed_ = true;
-                gripTeachMsg_.clear();
-                FD_INFO("grip", "jog armed from the Camera to tool alert");
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Close", ImVec2(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-        }
+    }
+    ImGui::EndTabItem();
     }
 
+    // ==== Tab: Find the object - steps 4 and 5 ================================
+    if (tabBegin("Find the object", step4Done && step5Done)) {
+    ImGui::Spacing();
+
     // ---- 4  How the object is found ------------------------------------------
-    ImGui::SeparatorText("4  Find the object");
+    stepHeader("Step 4  Find the object", step4Done);
     {
         std::string why;
         const bool halcon = HalconDetector::Available(&why);
@@ -799,7 +912,7 @@ void App::DrawGripPanel()
     }
 
     // ---- 5  What counts as right ---------------------------------------------
-    ImGui::SeparatorText("5  Reference");
+    stepHeader("Step 5  Reference", step5Done);
     {
         // No size field. The marks' separation is where the operator could see
         // an edge, not the object's width - see GripProfile.h.
@@ -862,66 +975,12 @@ void App::DrawGripPanel()
                                 g->measuredAt.c_str());
     }
 
-    // ---- 6  The outline -------------------------------------------------------
-    ImGui::SeparatorText("6  Outline");
-    {
-        ImGui::TextWrapped("The object's footprint as a rectangle, hung off the "
-                           "measured point. Drawn here and on the Aux window, where "
-                           "it follows the tool - and only ever drawn: nothing judges "
-                           "it. Width is along %s's X, length along its Y.",
-                           camName.empty() ? "the camera device" : camName.c_str());
-        bool edited = false;
-        ImGui::SetNextItemWidth(90.0f);
-        ImGui::InputDouble("width mm", &g->outWmm, 0.0, 0.0, "%.3f");
-        edited |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(90.0f);
-        ImGui::InputDouble("length mm", &g->outLmm, 0.0, 0.0, "%.3f");
-        edited |= ImGui::IsItemDeactivatedAfterEdit();
-
-        // The anchor is placed on the PICTURE, not typed: drag the box's body
-        // to move it about the measured point, a corner to size it. The
-        // numbers are shown so a drag can be read back, never edited here.
-        ImGui::Text("anchor  %+.3f  %+.3f mm", g->anchorDx, g->anchorDy);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Where the MEASURED point sits on the rectangle, as\n"
-                              "point minus centre, mm, in the rectangle's own frame.\n"
-                              "0, 0 is the centre; half the width is an edge.");
-        ImGui::SameLine();
-        if (ImGui::Button("Centre")) {
-            g->anchorDx = g->anchorDy = 0.0;
-            edited = true;
-        }
-        // Shown and edited are two switches, because a box that can be
-        // dragged owns every click on its body - and its body is where the
-        // marks go. Editing off leaves it a picture the crosshair sees through.
-        ImGui::Checkbox("show on image", &gripShowOutline_);
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!gripShowOutline_);
-        ImGui::Checkbox("edit by dragging", &gripEditOutline_);
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("On: drag the box's body to move it, a corner to resize\n"
-                              "it; clicks on the box then belong to the box.\n"
-                              "Off: the box is a picture, and a click inside it\n"
-                              "places the crosshair as anywhere else - turn it off\n"
-                              "to mark points 1 and 2 under the outline.");
-        if (!gripEditOutline_) gripBoxDrag_ = -1;   // a drag cannot outlive its switch
-        if (gripShowOutline_ && gripEditOutline_)
-            ImGui::TextDisabled("on the image: drag the box to move it,\n"
-                                "drag a corner to resize it");
-        if (edited) {
-            if (g->outWmm < 0.0) g->outWmm = 0.0;
-            if (g->outLmm < 0.0) g->outLmm = 0.0;
-            session_.SaveGrips();
-            FD_INFO("grip", "'%s': outline %.3f x %.3f mm, anchor (%+.3f, %+.3f)",
-                    g->name.c_str(), g->outWmm, g->outLmm, g->anchorDx, g->anchorDy);
-        }
-        if (!GripHasOutline(*g))
-            ImGui::TextDisabled("0 x 0 - nothing drawn");
-        else if (!objBoxShown)
-            ImGui::TextDisabled("drawn once the object is marked or measured");
+    ImGui::EndTabItem();
     }
+
+    // ==== Tab: Measure - the whole procedure, as a run makes it ===============
+    if (tabBegin("Measure", measureDone)) {
+    ImGui::Spacing();
 
     // ---- Measure now ----------------------------------------------------------
     ImGui::SeparatorText("Measure");
@@ -961,8 +1020,6 @@ void App::DrawGripPanel()
         }
     }
 
-    if (!gripTeachMsg_.empty()) ImGui::TextWrapped("%s", gripTeachMsg_.c_str());
-
     ImGui::Spacing();
     ImGui::TextWrapped("The offset is a DELTA in %s's axis space, which is why it can "
                        "cross to a device that has never shared an origin with the "
@@ -970,6 +1027,38 @@ void App::DrawGripPanel()
                        "the tip's target, so the OBJECT lands under the camera; a "
                        "placement still measures and corrects from there.",
                        camName.empty() ? "the camera device" : camName.c_str());
+    ImGui::EndTabItem();
+    }
+
+    ImGui::EndTabBar();
+
+    // Said out loud: a click with jog unarmed raises this alert rather than a
+    // status line the operator has to go looking for. Arming here is the same
+    // flag the Jog window's checkbox sets (the Alignment page already offers it
+    // inline); the move is NOT issued from the alert - an OK button that drives
+    // the gantry is not an alert. Outside the tab bar, so the popup's ID does
+    // not depend on which tab the button that raised it lives on.
+    if (gripOpenArmPopup_) { ImGui::OpenPopup("Jog not armed"); gripOpenArmPopup_ = false; }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Jog not armed", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextColored(kWarn, "Camera to tool drives '%s'.",
+                           camName.empty() ? "the camera device" : camName.c_str());
+        ImGui::Text("Jog is not armed, so nothing moved.");
+        ImGui::TextDisabled("Arm jog (the Arm checkbox in the Jog window, or the\n"
+                            "button below), then click Camera to tool again.");
+        ImGui::Spacing();
+        if (ImGui::Button("Arm jog", ImVec2(120.0f, 0.0f))) {
+            jogArmed_ = true;
+            gripTeachMsg_.clear();
+            FD_INFO("grip", "jog armed from the Camera to tool alert");
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Close", ImVec2(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 
     ImGui::EndChild();
 }
