@@ -56,6 +56,11 @@ UiSettings UiSettings::Load(const std::string& path)
         // Pos pad: tolerant on every axis — a non-object, a non-array value or
         // a short/long row all degrade to blank slots rather than throwing away
         // the whole settings file.
+        if (j.contains("run_readouts") && j["run_readouts"].is_array()) {
+            for (const auto& v : j["run_readouts"])
+                if (v.is_string() && s.runReadouts.size() < 4)
+                    s.runReadouts.push_back(v.get<std::string>());
+        }
         if (j.contains("pos_pad") && j["pos_pad"].is_object()) {
             for (auto it = j["pos_pad"].begin(); it != j["pos_pad"].end(); ++it) {
                 if (!it.value().is_array()) continue;
@@ -126,6 +131,7 @@ bool UiSettings::Save(const std::string& path) const
     j["win_h"]   = winH;
     j["win_max"] = winMaximized;
     j["last_product"]  = lastProduct;
+    j["run_readouts"]  = runReadouts;
     nlohmann::json pad = nlohmann::json::object();
     for (const auto& kv : posPad) pad[kv.first] = kv.second;
     j["pos_pad"] = pad;

@@ -670,17 +670,30 @@ void App::DrawJogPanel()
 
     ImGui::TextUnformatted("Device");
     ImGui::BeginChild("jogdevs", ImVec2(halfW, rowH), ImGuiChildFlags_Borders);
+    // The list runs a size up from the rest of the window: which device the
+    // pad drives is the one fact to check before pressing anything on it. The
+    // selected name is drawn a second time one pixel to the right — a faked
+    // bold, because the atlas carries one typeface and no bold cut of it.
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.25f);
     for (size_t i = 0; i < n; ++i) {
         IMotionController* d = hardware_.MotionDevice(i);
         if (!d) continue;
-        const ConnState st = hardware_.MotionState(i);
+        const ConnState   st   = hardware_.MotionState(i);
+        const std::string name = hardware_.MotionName(i);
+        const bool        sel  = jogDevice_ == static_cast<int>(i);
         ImGui::PushID(static_cast<int>(i));
         ImGui::TextColored(StateColor(st), "%s", StateGlyph(st));
         ImGui::SameLine();
-        if (ImGui::Selectable(hardware_.MotionName(i).c_str(), jogDevice_ == static_cast<int>(i)))
+        if (ImGui::Selectable(name.c_str(), sel))
             jogDevice_ = static_cast<int>(i);
+        if (sel) {
+            const ImVec2 p = ImGui::GetItemRectMin();
+            ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + 1.0f, p.y),
+                                                ImGui::GetColorU32(ImGuiCol_Text), name.c_str());
+        }
         ImGui::PopID();
     }
+    ImGui::PopFont();
     ImGui::EndChild();
 
     IMotionController* dev = hardware_.MotionDevice(static_cast<size_t>(jogDevice_));

@@ -88,9 +88,21 @@ void App::DrawRecipePromptWindow()
     // Wrap at the window's own edge (0.0f), not at a fixed 560 px: the width is
     // the viewport's to decide now, and a hard-coded wrap would keep breaking
     // the message at the old width inside a wider box.
+    // The message sits at the top, centred when it fits on one line, with a
+    // block of empty space under it before the input and buttons: the box is
+    // taller than its content needs so the sentence stands alone at the top
+    // instead of being crowded by the controls. The font is unchanged — it is
+    // the room around the text, not its size, that makes it read first.
+    {
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float textW = ImGui::CalcTextSize(pending.c_str()).x;
+        if (textW < avail)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - textW) * 0.5f);
+    }
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(pending.c_str());
     ImGui::PopTextWrapPos();
+    ImGui::Dummy(ImVec2(0.0f, promptFont * 2.0f));   // the breathing room
     const auto answer = [&](bool ok) {
         if (fromScript) orch_.lua.AnswerPrompt(ok, promptInputBuf_);
         else            orch_.recipe.AnswerPrompt(ok, promptInputBuf_);
@@ -112,9 +124,17 @@ void App::DrawRecipePromptWindow()
     const float btnAvail = ImGui::GetContentRegionAvail().x;
     const float btnW = fmaxf(promptFont * 5.0f,
                              (btnAvail - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
-    const ImVec2 btn(btnW, 0.0f);
-    if (ImGui::Button("OK", btn) || submit) answer(true);
+    // Double height, and the two answers coloured apart: green says "go on",
+    // grey says "no" — a glance tells them apart before the label is read.
+    const ImVec2 btn(btnW, ImGui::GetFrameHeight() * 2.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.42f, 0.20f, 1.00f));
+    const bool ok = ImGui::Button("OK", btn) || submit;
+    ImGui::PopStyleColor(3);
+    if (ok) answer(true);
     ImGui::SameLine();
+    // Cancel keeps the grey pushed for the whole window above.
     if (ImGui::Button("Cancel", btn)) answer(false);
     ImGui::End();
 

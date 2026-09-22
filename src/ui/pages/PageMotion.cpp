@@ -15,10 +15,18 @@
 #include "core/Log.h"
 #include "core/Topics.h"
 
+#include <cmath>
 #include <cstdio>
 #include <map>
 
 namespace firedog {
+
+namespace {
+// Updating a saved position from a pose that differs from the record by more
+// than this on any axis asks twice. The same number is applied to every axis,
+// rotary ones included: a 1° slip on U is as worth a second look as 1 mm on X.
+constexpr double kPosUpdWarnMm = 1.0;
+}
 
 void App::DrawMotionListPanel()
 {
@@ -351,12 +359,13 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
         ImGui::EndPopup();
     }
 
-    const int cols = 5 + static_cast<int>(axes.size());
+    const int cols = 6 + static_cast<int>(axes.size());
     if (ImGui::BeginTable("savedpos", cols,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
             ImVec2(0.0f, ImGui::GetContentRegionAvail().y))) {   // fill the panel
         ImGui::TableSetupColumn("##move", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("##upd",  ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("##edit", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("Name",   ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("##ren",  ImGuiTableColumnFlags_WidthFixed);
         for (const auto& a : axes) ImGui::TableSetupColumn(a.c_str(), ImGuiTableColumnFlags_WidthFixed);
@@ -371,36 +380,41 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             if (sp.hidden)   // revealed hidden row — dim the whole row's text
                 ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 
+            // Move and Upd both hand off to a confirmation dialog below: one
+            // drives the machine, the other overwrites a taught place, and
+            // neither should happen on a single click in a dense table.
             ImGui::TableSetColumnIndex(0);
-            if (ImGui::SmallButton("Move")) {   // drive to the saved target, all axes together
-                std::vector<std::pair<std::string, double>> tgt;
-                for (const auto& a : axes) {
-                    const auto it = sp.vals.find(a);
-                    if (it != sp.vals.end()) tgt.emplace_back(a, it->second);
-                }
-                if (workflow_.MoveToPosition(static_cast<size_t>(selectedMotion_), tgt))
-                    FD_INFO("saved", "move %s -> '%s'", devName.c_str(), sp.name);
-                else
-                    FD_WARN("saved", "move %s -> '%s' failed", devName.c_str(), sp.name);
+            if (ImGui::SmallButton("Move")) {
+                moveRow_     = static_cast<int>(r);
+                openMovePos_ = true;
             }
             ImGui::TableSetColumnIndex(1);
-            if (ImGui::SmallButton("Upd")) {    // capture the live position (real)
-                const std::map<std::string, double> pos = m->Positions();
-                for (const auto& a : axes) { const auto it = pos.find(a); if (it != pos.end()) sp.vals[a] = it->second; }
-                FD_INFO("saved", "updated '%s' from current position", sp.name);
-                session_.SavePositions();
+            if (ImGui::SmallButton("Upd")) {
+                updRow_     = static_cast<int>(r);
+                updSecond_  = false;
+                openUpdPos_ = true;
             }
             ImGui::TableSetColumnIndex(2);
+            if (ImGui::SmallButton("Edit")) {   // type the axis values directly
+                editRow_ = static_cast<int>(r);
+                editVals_.clear();
+                for (const auto& a : axes) {
+                    const auto it = sp.vals.find(a);
+                    editVals_[a] = (it != sp.vals.end()) ? it->second : 0.0;
+                }
+                openEditPos_ = true;
+            }
+            ImGui::TableSetColumnIndex(3);
             ImGui::TextUnformatted(sp.name);   // read-only — rename via the Rename dialog
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("uid: %s", sp.uid.c_str());
-            ImGui::TableSetColumnIndex(3);
+            ImGui::TableSetColumnIndex(4);
             if (ImGui::SmallButton("Rename")) {
                 renameRow_ = static_cast<int>(r);
                 std::snprintf(renameBuf_, sizeof(renameBuf_), "%s", sp.name);
                 openRenamePos_ = true;
             }
 
-            int c = 4;
+            int c = 5;
             for (const auto& a : axes) {
                 ImGui::TableSetColumnIndex(c++);
                 const auto it = sp.vals.find(a);
@@ -438,12 +452,190 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                 saved.erase(saved.begin() + deleteRow_);
                 session_.SavePositions();
                 if (renameRow_ == deleteRow_) renameRow_ = -1;   // row gone — drop pending rename
+                if (moveRow_   == deleteRow_) moveRow_   = -1;
+                if (updRow_    == deleteRow_) updRow_    = -1;
+                if (editRow_   == deleteRow_) editRow_   = -1;
                 deleteRow_ = -1;
                 ImGui::CloseCurrentPopup();
             }
             ImGui::PopStyleColor(2);
             ImGui::SameLine();
             if (ImGui::Button("Cancel")) { deleteRow_ = -1; ImGui::CloseCurrentPopup(); }
+        }
+        ImGui::EndPopup();
+    }
+
+    // Saved vs live, one row per axis, with the delta and the largest |delta|
+    // handed back. Shared by the Move and Update dialogs, which show the same
+    // table and differ only in which column the machine ends up on.
+    const auto drawDiffTable = [&](const SavedPos& sp, const std::map<std::string, double>& live,
+                                   const char* savedHdr, const char* liveHdr) -> double {
+        double maxAbs = 0.0;
+        if (ImGui::BeginTable("posdiff", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn("Axis");
+            ImGui::TableSetupColumn(savedHdr);
+            ImGui::TableSetupColumn(liveHdr);
+            ImGui::TableSetupColumn("Delta");
+            ImGui::TableHeadersRow();
+            for (const auto& a : axes) {
+                const auto si = sp.vals.find(a);
+                const auto li = live.find(a);
+                const double s = (si != sp.vals.end()) ? si->second : 0.0;
+                const double l = (li != live.end())    ? li->second : 0.0;
+                const double d = l - s;
+                if (std::fabs(d) > maxAbs) maxAbs = std::fabs(d);
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(a.c_str());
+                ImGui::TableSetColumnIndex(1); ImGui::Text("%.4f", s);
+                ImGui::TableSetColumnIndex(2); ImGui::Text("%.4f", l);
+                ImGui::TableSetColumnIndex(3);
+                if (std::fabs(d) > kPosUpdWarnMm)
+                    ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.30f, 1.0f), "%+.4f", d);
+                else
+                    ImGui::Text("%+.4f", d);
+            }
+            ImGui::EndTable();
+        }
+        return maxAbs;
+    };
+
+    // ---- Move confirmation (row Move asks before the device goes) ----
+    if (openMovePos_) { ImGui::OpenPopup("Move To Position"); openMovePos_ = false; }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Move To Position", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const bool rowValid = moveRow_ >= 0 && static_cast<size_t>(moveRow_) < saved.size();
+        if (!rowValid) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            const SavedPos& sp = saved[static_cast<size_t>(moveRow_)];
+            ImGui::Text("Move %s to '%s'?", devName.c_str(), sp.name);
+            ImGui::TextDisabled("All axes travel together. Make sure the path is clear.");
+            drawDiffTable(sp, m->Positions(), "Target", "Now");
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.0f));
+            if (ImGui::Button("Move", ImVec2(120.0f, 0.0f))) {
+                std::vector<std::pair<std::string, double>> tgt;
+                for (const auto& a : axes) {
+                    const auto it = sp.vals.find(a);
+                    if (it != sp.vals.end()) tgt.emplace_back(a, it->second);
+                }
+                if (workflow_.MoveToPosition(static_cast<size_t>(selectedMotion_), tgt))
+                    FD_INFO("saved", "move %s -> '%s'", devName.c_str(), sp.name);
+                else
+                    FD_WARN("saved", "move %s -> '%s' failed", devName.c_str(), sp.name);
+                moveRow_ = -1;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) { moveRow_ = -1; ImGui::CloseCurrentPopup(); }
+        }
+        ImGui::EndPopup();
+    }
+
+    // ---- Update confirmation (row Upd shows before/after and asks; a large
+    //      delta needs a second press) ----
+    if (openUpdPos_) { ImGui::OpenPopup("Update Position"); openUpdPos_ = false; }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Update Position", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const bool rowValid = updRow_ >= 0 && static_cast<size_t>(updRow_) < saved.size();
+        if (!rowValid) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            SavedPos& sp = saved[static_cast<size_t>(updRow_)];
+            // Live is read every frame, like the New Position dialog: the
+            // row records where the machine stands when Update is pressed.
+            const std::map<std::string, double> live = m->Positions();
+            ImGui::Text("Overwrite '%s' on %s with the current position?", sp.name, devName.c_str());
+            const double maxAbs = drawDiffTable(sp, live, "Saved", "Current");
+            const bool big = maxAbs > kPosUpdWarnMm;
+            ImGui::Spacing();
+            if (big) {
+                ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.30f, 1.0f),
+                                   "An axis moves by more than %.0f mm.", kPosUpdWarnMm);
+                ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.30f, 1.0f),
+                                   updSecond_ ? "Press Confirm again to overwrite."
+                                              : "Press Update twice to overwrite.");
+            } else if (updSecond_) {
+                updSecond_ = false;   // the machine came back within range
+            }
+            const char* label = (big && updSecond_) ? "Confirm" : "Update";
+            if (big && updSecond_) {
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.72f, 0.20f, 0.20f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.25f, 0.25f, 1.0f));
+            } else {
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.0f));
+            }
+            if (ImGui::Button(label, ImVec2(120.0f, 0.0f))) {
+                if (big && !updSecond_) {
+                    updSecond_ = true;    // acknowledged; the next press writes
+                } else {
+                    for (const auto& a : axes) {
+                        const auto it = live.find(a);
+                        if (it != live.end()) sp.vals[a] = it->second;
+                    }
+                    FD_INFO("saved", "updated '%s' from current position (max delta %.4f)",
+                            sp.name, maxAbs);
+                    session_.SavePositions();
+                    updRow_ = -1; updSecond_ = false;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) {
+                updRow_ = -1; updSecond_ = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    // ---- Edit dialog (type every axis value and save) ----
+    if (openEditPos_) { ImGui::OpenPopup("Edit Position"); openEditPos_ = false; }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Edit Position", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const bool rowValid = editRow_ >= 0 && static_cast<size_t>(editRow_) < saved.size();
+        if (!rowValid) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            SavedPos& sp = saved[static_cast<size_t>(editRow_)];
+            ImGui::Text("Edit '%s' on %s", sp.name, devName.c_str());
+            ImGui::TextDisabled("uid %s — values are written on Save only.", sp.uid.c_str());
+            ImGui::Spacing();
+            bool first = true;
+            for (const auto& a : axes) {
+                ImGui::PushID(a.c_str());
+                ImGui::SetNextItemWidth(180.0f);
+                if (first && ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+                first = false;
+                ImGui::InputDouble("##v", &editVals_[a], 0.0, 0.0, "%.4f");
+                ImGui::SameLine();
+                const auto it = sp.vals.find(a);
+                const double cur = (it != sp.vals.end()) ? it->second : 0.0;
+                ImGui::Text("%s", a.c_str());
+                ImGui::SameLine();
+                ImGui::TextDisabled("(saved %.4f)", cur);
+                ImGui::PopID();
+            }
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.0f));
+            if (ImGui::Button("Save", ImVec2(120.0f, 0.0f))) {
+                for (const auto& a : axes) sp.vals[a] = editVals_[a];
+                FD_INFO("saved", "edited '%s' (uid %s, %s) by hand", sp.name, sp.uid.c_str(), devName.c_str());
+                session_.SavePositions();
+                editRow_ = -1;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) { editRow_ = -1; ImGui::CloseCurrentPopup(); }
         }
         ImGui::EndPopup();
     }

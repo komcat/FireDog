@@ -492,6 +492,7 @@ private:
     // each finished run's final snapshot into one list for the part.
     void DrainCycleVars();          // engine-idle edge -> cycleVars_ (App::Update)
     void DrawRunValuesPanel();      // the Run page's right-column "Values" list
+    void DrawRunReadouts();         // the pinned instrument readouts under it
     static bool IsOperatorCtxKey(const std::string& key);   // hides engine scratch
     // Program Organizer (its own window, opened by the Run strip's Edit box):
     // recipe library | the program tree. The ONLY program-editing surface.
@@ -785,6 +786,24 @@ private:
     // Delete-position confirmation dialog (X button asks before erasing).
     bool openDeletePos_ = false;
     int  deleteRow_     = -1;
+
+    // Move-to-position confirmation (row Move asks before the axes go: the
+    // table is dense and a mis-click sends the device somewhere else).
+    bool openMovePos_ = false;
+    int  moveRow_     = -1;
+
+    // Update-position confirmation (row Upd shows saved vs live per axis and
+    // asks; a delta over kPosUpdWarnMm on any axis needs a SECOND press —
+    // a taught place overwritten from the wrong pose is the costliest slip
+    // this table can make).
+    bool openUpdPos_ = false;
+    int  updRow_     = -1;
+    bool updSecond_  = false;       // first press acknowledged the large delta
+
+    // Edit-position dialog (type the axis values directly and save).
+    bool                          openEditPos_ = false;
+    int                           editRow_     = -1;
+    std::map<std::string, double> editVals_;
 
     // Teach-position handoff: a PositionUid form row raises the flag, the
     // Recipe Editor panel opens the modal. A flag rather than a direct
@@ -1395,6 +1414,14 @@ private:
         std::string source;   // recipe name that last wrote it
     };
     std::map<std::string, CycleVar> cycleVars_;
+    // Instrument readouts pinned under the Values list: DataBus topics chosen
+    // by the operator (persisted in UiSettings), with the last value pulled
+    // for each. Refreshed on a timer, not per frame — these are glanced at,
+    // and the streams behind them poll at hundreds of ms anyway.
+    std::vector<std::string> runReadouts_;
+    std::vector<double>      runReadoutVals_;     // parallel to runReadouts_
+    std::vector<bool>        runReadoutHas_;      // stream has published at all
+    double                   runReadoutAt_ = 0.0; // ImGui::GetTime() of the last pull
     bool engineWasRunning_ = false;   // edge-detect ONE recipe finishing
     // The node the ACTIVE run was launched on ("" = slot scope). Recorded at
     // Start because the deck stays clickable during a run: advancing off

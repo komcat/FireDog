@@ -23,6 +23,7 @@
 #include "core/Log.h"
 #include "core/Topics.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -651,6 +652,140 @@ void App::DrawRunValuesPanel()
     }
 }
 
+// The instrument readouts the operator can pin under the Values list. A fixed
+// catalogue of the three bench instruments' streams rather than every topic on
+// the bus: a motion axis or a vision score has its own page, and this block is
+// for "is the laser warm, is the rail up" while a run goes by. The SMU has no
+// voltage stream — its bias is a setting, not a measurement — so only its two
+// current channels are offered.
+namespace {
+enum class ReadoutKind { Temp, MilliAmp, Volt, Amp };
+struct ReadoutDef {
+    std::string  topic;
+    std::string  label;
+    ReadoutKind  kind;
+};
+std::vector<ReadoutDef> ReadoutCatalogue()
+{
+    std::vector<ReadoutDef> cat;
+    cat.push_back({topics::kCldTemp,    "CLD temp",    ReadoutKind::Temp});
+    cat.push_back({topics::kCldCurrent, "CLD current", ReadoutKind::MilliAmp});
+    for (int ch = 1; ch <= 3; ++ch) {
+        cat.push_back({topics::PsuVoltage(ch), "PSU ch" + std::to_string(ch) + " V", ReadoutKind::Volt});
+        cat.push_back({topics::PsuCurrent(ch), "PSU ch" + std::to_string(ch) + " I", ReadoutKind::Amp});
+    }
+    cat.push_back({topics::kKeithleyCh1, "SMU ch1 I", ReadoutKind::Amp});
+    cat.push_back({topics::kKeithleyCh2, "SMU ch2 I", ReadoutKind::Amp});
+    return cat;
+}
+const ReadoutDef* FindReadout(const std::vector<ReadoutDef>& cat, const std::string& topic)
+{
+    for (const ReadoutDef& d : cat) if (d.topic == topic) return &d;
+    return nullptr;
+}
+std::string FormatReadout(ReadoutKind kind, double v)
+{
+    char buf[48];
+    switch (kind) {
+    case ReadoutKind::Temp:     std::snprintf(buf, sizeof(buf), "%.2f C",  v); return buf;
+    case ReadoutKind::MilliAmp: std::snprintf(buf, sizeof(buf), "%.2f mA", v); return buf;
+    case ReadoutKind::Volt:     std::snprintf(buf, sizeof(buf), "%.3f V",  v); return buf;
+    case ReadoutKind::Amp:      return FormatCurrent(v);
+    }
+    return "?";
+}
+constexpr std::size_t kMaxRunReadouts   = 4;
+constexpr double      kRunReadoutPeriod = 0.25;   // s between pulls off the bus
+}
+
+void App::DrawRunReadouts()
+{
+    const std::vector<ReadoutDef> cat = ReadoutCatalogue();
+
+    // Pull on a timer. Only topics the bus already HAS are touched:
+    // DataBus::Stream creates on demand, and a phantom empty "psu/ch3/v"
+    // would then show up in every chart's topic picker.
+    const double now = ImGui::GetTime();
+    if (runReadoutVals_.size() != runReadouts_.size() ||
+        now - runReadoutAt_ >= kRunReadoutPeriod) {
+        runReadoutAt_ = now;
+        runReadoutVals_.assign(runReadouts_.size(), 0.0);
+        runReadoutHas_.assign(runReadouts_.size(), false);
+        const std::vector<std::string> present = DataBus::Instance().Topics();
+        const std::set<std::string> have(present.begin(), present.end());
+        for (std::size_t i = 0; i < runReadouts_.size(); ++i) {
+            if (!have.count(runReadouts_[i])) continue;
+            const DataStream& s = DataBus::Instance().Stream(runReadouts_[i]);
+            if (s.Count() == 0) continue;
+            runReadoutHas_[i]  = true;
+            runReadoutVals_[i] = s.LatestValue();
+        }
+    }
+
+    // The + goes first: SeparatorText takes the rest of the line.
+    const bool full = runReadouts_.size() >= kMaxRunReadouts;
+    ImGui::BeginDisabled(full);
+    if (ImGui::SmallButton("+")) ImGui::OpenPopup("runreadpick");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(full ? "Four readouts is the most this block shows"
+                               : "Pin an instrument value here");
+    ImGui::SameLine();
+    ImGui::SeparatorText("Readouts");
+    if (ImGui::BeginPopup("runreadpick")) {
+        for (const ReadoutDef& d : cat) {
+            bool pinned = false;
+            for (const std::string& t : runReadouts_) if (t == d.topic) { pinned = true; break; }
+            if (pinned) continue;
+            if (ImGui::Selectable(d.label.c_str())) {
+                runReadouts_.push_back(d.topic);
+                runReadoutAt_ = 0.0;   // pull on the next frame
+                SaveUiSettings();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.topic.c_str());
+        }
+        ImGui::EndPopup();
+    }
+
+    if (runReadouts_.empty()) {
+        ImGui::TextDisabled("None pinned. Press + to choose.");
+        return;
+    }
+    int remove = -1;
+    if (ImGui::BeginTable("runreadouts", 3,
+                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("##lbl", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("##val", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("##rm",  ImGuiTableColumnFlags_WidthFixed);
+        for (std::size_t i = 0; i < runReadouts_.size(); ++i) {
+            const ReadoutDef* d = FindReadout(cat, runReadouts_[i]);
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(d ? d->label.c_str() : runReadouts_[i].c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", runReadouts_[i].c_str());
+            ImGui::TableNextColumn();
+            const bool has = i < runReadoutHas_.size() && runReadoutHas_[i];
+            if (!has)
+                ImGui::TextDisabled("--");
+            else if (d)
+                ImGui::TextUnformatted(FormatReadout(d->kind, runReadoutVals_[i]).c_str());
+            else
+                ImGui::Text("%.4g", runReadoutVals_[i]);
+            if (!has && ImGui::IsItemHovered()) ImGui::SetTooltip("no data on the bus yet");
+            ImGui::TableNextColumn();
+            if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (remove >= 0) {
+        runReadouts_.erase(runReadouts_.begin() + remove);
+        runReadoutAt_ = 0.0;
+        SaveUiSettings();
+    }
+}
+
 // Deck cycle accents. Immutable file-scope constants, not App state, and not
 // Theme: the page's other run colours (the gold running row, the red missing
 // one) are literals here for the same reason — they say what a RUN did, not how
@@ -874,14 +1009,14 @@ void App::DrawRunPanel()
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, running ? stHov : goHov);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  running ? stAct : goAct);
     if (running) {
-        if (IconButton(UiIcon("Stop"), "Stop", ImVec2(130.0f, stripBtnH)))
+        if (IconButton(UiIcon("Stop"), "Stop", ImVec2(260.0f, stripBtnH)))
             orch_.programs.Stop();
     } else {
         ImGui::BeginDisabled(!canRun);
         // In teach mode the go button says so itself: the press that follows
         // teaches positions instead of running the part.
         if (IconButton(UiIcon("run_execute"), teachMode_ ? "Teach run" : "Execute",
-                       ImVec2(130.0f, stripBtnH)))
+                       ImVec2(260.0f, stripBtnH)))
             StartDeckRun(onNode ? RunScope::Node : RunScope::Slot);
         if (ImGui::IsItemHovered()) {
             if (teachMode_)
@@ -1272,13 +1407,20 @@ void App::DrawRunPanel()
     // The engine line is pinned to the BOTTOM and the values scroll above it:
     // "what is the engine doing" is glanced at, and a long value list must not
     // push it off the panel.
+    // The pinned instrument readouts sit between the two, at a fixed height
+    // for their row count, so they neither scroll away with the values nor
+    // push the engine line.
     {
-        const float engH = ImGui::GetTextLineHeightWithSpacing() * 2.0f +
-                           ImGui::GetStyle().ItemSpacing.y;
-        const float valsH = ImGui::GetContentRegionAvail().y - engH;
+        const float lineH = ImGui::GetTextLineHeightWithSpacing();
+        const float engH  = lineH * 2.0f + ImGui::GetStyle().ItemSpacing.y;
+        const float rows  = static_cast<float>((std::max)(runReadouts_.size(), std::size_t{1}));
+        const float readH = ImGui::GetFrameHeightWithSpacing() + lineH * rows +
+                            ImGui::GetStyle().ItemSpacing.y * 2.0f;
+        const float valsH = ImGui::GetContentRegionAvail().y - engH - readH;
         ImGui::BeginChild("runVals", ImVec2(0.0f, valsH > 0.0f ? valsH : 0.0f));
         DrawRunValuesPanel();
         ImGui::EndChild();
+        DrawRunReadouts();
     }
     ImGui::Separator();
     ImGui::Text("Engine: %s", RecipeEngine::StateName(es.state));

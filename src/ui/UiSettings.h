@@ -111,6 +111,12 @@ struct UiSettings {
     std::string runProgUid;
     int         runSlot = 0;
 
+    // Run page right column: the instrument readouts pinned under the Values
+    // list, as DataBus topic strings ("cld/temp", "psu/ch1/v", "keithley/ch1"),
+    // at most four. A station layout like the pad below: which numbers an
+    // operator wants in view during a run is a property of the bench.
+    std::vector<std::string> runReadouts;
+
     // Jog window "Pos" tab: the 3x3 quick-move pad, device name -> nine saved
     // position UIDs ("" = unassigned slot). Keyed by DEVICE NAME, not fleet
     // index, so reordering hardware.json does not shuffle an operator's pad.
