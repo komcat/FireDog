@@ -56,10 +56,22 @@ UiSettings UiSettings::Load(const std::string& path)
         // Pos pad: tolerant on every axis — a non-object, a non-array value or
         // a short/long row all degrade to blank slots rather than throwing away
         // the whole settings file.
+        // Readouts: an object per row; a bare string (the first version of the
+        // field) is a topic with no limit.
         if (j.contains("run_readouts") && j["run_readouts"].is_array()) {
-            for (const auto& v : j["run_readouts"])
-                if (v.is_string() && s.runReadouts.size() < 4)
-                    s.runReadouts.push_back(v.get<std::string>());
+            for (const auto& v : j["run_readouts"]) {
+                if (s.runReadouts.size() >= 4) break;
+                RunReadout r;
+                if (v.is_string()) {
+                    r.topic = v.get<std::string>();
+                } else if (v.is_object()) {
+                    r.topic = v.value("topic", std::string());
+                    r.mode  = v.value("mode", std::string("none"));
+                    r.lo    = v.value("lo", 0.0);
+                    r.hi    = v.value("hi", 0.0);
+                }
+                if (!r.topic.empty()) s.runReadouts.push_back(std::move(r));
+            }
         }
         if (j.contains("pos_pad") && j["pos_pad"].is_object()) {
             for (auto it = j["pos_pad"].begin(); it != j["pos_pad"].end(); ++it) {
@@ -131,7 +143,10 @@ bool UiSettings::Save(const std::string& path) const
     j["win_h"]   = winH;
     j["win_max"] = winMaximized;
     j["last_product"]  = lastProduct;
-    j["run_readouts"]  = runReadouts;
+    nlohmann::json ro = nlohmann::json::array();
+    for (const RunReadout& r : runReadouts)
+        ro.push_back({{"topic", r.topic}, {"mode", r.mode}, {"lo", r.lo}, {"hi", r.hi}});
+    j["run_readouts"]  = ro;
     nlohmann::json pad = nlohmann::json::object();
     for (const auto& kv : posPad) pad[kv.first] = kv.second;
     j["pos_pad"] = pad;

@@ -21,6 +21,16 @@ struct QuickIoRow {
     int         dwellMs = 0;   // 0 = toggle; > 0 = ON for this long, then OFF
 };
 
+// One pinned instrument readout on the Run page, with an optional limit that
+// colours the value: green inside, red outside. `mode` is "none", "above"
+// (value > lo), "below" (value < hi) or "between" (lo <= value <= hi).
+struct RunReadout {
+    std::string topic;         // DataBus topic ("cld/temp", "psu/ch1/v", ..)
+    std::string mode = "none";
+    double      lo = 0.0;
+    double      hi = 0.0;
+};
+
 struct UiSettings {
     int   fontIndex  = 0;       // index into App's kFonts table
     float fontSize   = 26.0f;   // UI font size in px
@@ -115,7 +125,7 @@ struct UiSettings {
     // list, as DataBus topic strings ("cld/temp", "psu/ch1/v", "keithley/ch1"),
     // at most four. A station layout like the pad below: which numbers an
     // operator wants in view during a run is a property of the bench.
-    std::vector<std::string> runReadouts;
+    std::vector<RunReadout> runReadouts;
 
     // Jog window "Pos" tab: the 3x3 quick-move pad, device name -> nine saved
     // position UIDs ("" = unassigned slot). Keyed by DEVICE NAME, not fleet

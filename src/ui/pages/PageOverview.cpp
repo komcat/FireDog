@@ -40,7 +40,25 @@ ImVec4 LevelColor(LogLevel l) {
 void App::DrawDutBlock()
 {
     const DutSession::Info di = DutSession::Instance().GetInfo();
+    // A dot beside the label says whether a record is open: green with a DUT,
+    // yellow without one - the one state an operator about to press Execute
+    // needs to see from across the bench. Grey until a product is loaded.
+    {
+        const float  h  = ImGui::GetTextLineHeight();
+        const ImVec2 p  = ImGui::GetCursorScreenPos();
+        const ImU32  col = !di.productSet ? IM_COL32(110, 110, 115, 255)
+                         : di.open        ? IM_COL32(70, 200, 100, 255)
+                                          : IM_COL32(235, 190, 40, 255);
+        ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + h * 0.5f, p.y + h * 0.5f),
+                                                    h * 0.32f, col);
+        ImGui::Dummy(ImVec2(h, h));
+        ImGui::SameLine();
+    }
     ImGui::TextUnformatted("DUT");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(!di.productSet ? "no product loaded"
+                          : di.open      ? "DUT record open"
+                                         : "no DUT open - enter a serial");
     // Technician and up. This block is shared with the Run page, so on an
     // Operator's station it is the ONE control that leaves the application
     // entirely — an Explorer window, and from there the whole filesystem. The

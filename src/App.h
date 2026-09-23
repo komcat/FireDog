@@ -1418,7 +1418,7 @@ private:
     // by the operator (persisted in UiSettings), with the last value pulled
     // for each. Refreshed on a timer, not per frame — these are glanced at,
     // and the streams behind them poll at hundreds of ms anyway.
-    std::vector<std::string> runReadouts_;
+    std::vector<RunReadout>  runReadouts_;
     std::vector<double>      runReadoutVals_;     // parallel to runReadouts_
     std::vector<bool>        runReadoutHas_;      // stream has published at all
     double                   runReadoutAt_ = 0.0; // ImGui::GetTime() of the last pull

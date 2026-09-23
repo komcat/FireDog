@@ -714,8 +714,8 @@ void App::DrawRunReadouts()
         const std::vector<std::string> present = DataBus::Instance().Topics();
         const std::set<std::string> have(present.begin(), present.end());
         for (std::size_t i = 0; i < runReadouts_.size(); ++i) {
-            if (!have.count(runReadouts_[i])) continue;
-            const DataStream& s = DataBus::Instance().Stream(runReadouts_[i]);
+            if (!have.count(runReadouts_[i].topic)) continue;
+            const DataStream& s = DataBus::Instance().Stream(runReadouts_[i].topic);
             if (s.Count() == 0) continue;
             runReadoutHas_[i]  = true;
             runReadoutVals_[i] = s.LatestValue();
@@ -735,10 +735,12 @@ void App::DrawRunReadouts()
     if (ImGui::BeginPopup("runreadpick")) {
         for (const ReadoutDef& d : cat) {
             bool pinned = false;
-            for (const std::string& t : runReadouts_) if (t == d.topic) { pinned = true; break; }
+            for (const RunReadout& r : runReadouts_) if (r.topic == d.topic) { pinned = true; break; }
             if (pinned) continue;
             if (ImGui::Selectable(d.label.c_str())) {
-                runReadouts_.push_back(d.topic);
+                RunReadout r;
+                r.topic = d.topic;
+                runReadouts_.push_back(std::move(r));
                 runReadoutAt_ = 0.0;   // pull on the next frame
                 SaveUiSettings();
             }
@@ -751,28 +753,91 @@ void App::DrawRunReadouts()
         ImGui::TextDisabled("None pinned. Press + to choose.");
         return;
     }
-    int remove = -1;
-    if (ImGui::BeginTable("runreadouts", 3,
+    // A limit colours the value and nothing else: green inside, red outside,
+    // plain when none is set or no data has arrived. It is a readout, not an
+    // interlock - nothing here stops a run.
+    const auto inBand = [](const RunReadout& r, double v, bool* judged) -> bool {
+        *judged = true;
+        if (r.mode == "above")   return v > r.lo;
+        if (r.mode == "below")   return v < r.hi;
+        if (r.mode == "between") return v >= r.lo && v <= r.hi;
+        *judged = false;
+        return true;
+    };
+    static const char* kModes[4]      = {"none", "above", "below", "between"};
+    static const char* kModeLabels[4] = {"No limit", "Green above", "Green below", "Green between"};
+    int  remove  = -1;
+    bool changed = false;
+    if (ImGui::BeginTable("runreadouts", 4,
                           ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("##lbl", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn("##val", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("##lim", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("##rm",  ImGuiTableColumnFlags_WidthFixed);
         for (std::size_t i = 0; i < runReadouts_.size(); ++i) {
-            const ReadoutDef* d = FindReadout(cat, runReadouts_[i]);
+            RunReadout&       r = runReadouts_[i];
+            const ReadoutDef* d = FindReadout(cat, r.topic);
             ImGui::PushID(static_cast<int>(i));
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::TextUnformatted(d ? d->label.c_str() : runReadouts_[i].c_str());
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", runReadouts_[i].c_str());
+            ImGui::TextUnformatted(d ? d->label.c_str() : r.topic.c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", r.topic.c_str());
             ImGui::TableNextColumn();
             const bool has = i < runReadoutHas_.size() && runReadoutHas_[i];
-            if (!has)
+            if (!has) {
                 ImGui::TextDisabled("--");
-            else if (d)
-                ImGui::TextUnformatted(FormatReadout(d->kind, runReadoutVals_[i]).c_str());
-            else
-                ImGui::Text("%.4g", runReadoutVals_[i]);
-            if (!has && ImGui::IsItemHovered()) ImGui::SetTooltip("no data on the bus yet");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("no data on the bus yet");
+            } else {
+                bool judged = false;
+                const bool ok = inBand(r, runReadoutVals_[i], &judged);
+                if (judged)
+                    ImGui::PushStyleColor(ImGuiCol_Text, ok ? ImVec4(0.30f, 0.85f, 0.40f, 1.0f)
+                                                            : ImVec4(1.00f, 0.35f, 0.30f, 1.0f));
+                if (d) ImGui::TextUnformatted(FormatReadout(d->kind, runReadoutVals_[i]).c_str());
+                else   ImGui::Text("%.4g", runReadoutVals_[i]);
+                if (judged) ImGui::PopStyleColor();
+            }
+            ImGui::TableNextColumn();
+            // The limit button: its label says the mode at a glance.
+            const char* limLbl = r.mode == "above"   ? ">"
+                               : r.mode == "below"   ? "<"
+                               : r.mode == "between" ? "><"
+                                                     : "lim";
+            if (ImGui::SmallButton(limLbl)) ImGui::OpenPopup("runreadlim");
+            if (ImGui::IsItemHovered()) {
+                if (r.mode == "above")        ImGui::SetTooltip("green when > %.4g", r.lo);
+                else if (r.mode == "below")   ImGui::SetTooltip("green when < %.4g", r.hi);
+                else if (r.mode == "between") ImGui::SetTooltip("green when %.4g .. %.4g", r.lo, r.hi);
+                else                          ImGui::SetTooltip("set a green/red limit");
+            }
+            if (ImGui::BeginPopup("runreadlim")) {
+                ImGui::TextUnformatted(d ? d->label.c_str() : r.topic.c_str());
+                int mode = 0;
+                for (int m = 0; m < 4; ++m) if (r.mode == kModes[m]) mode = m;
+                ImGui::SetNextItemWidth(160.0f);
+                if (ImGui::Combo("##mode", &mode, kModeLabels, 4)) {
+                    r.mode  = kModes[mode];
+                    changed = true;
+                }
+                if (mode == 1 || mode == 3) {
+                    ImGui::SetNextItemWidth(160.0f);
+                    ImGui::InputDouble(mode == 3 ? "low" : "min", &r.lo, 0.0, 0.0, "%.4g");
+                    if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
+                }
+                if (mode == 2 || mode == 3) {
+                    ImGui::SetNextItemWidth(160.0f);
+                    ImGui::InputDouble(mode == 3 ? "high" : "max", &r.hi, 0.0, 0.0, "%.4g");
+                    if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
+                }
+                if (mode != 0)
+                    ImGui::TextDisabled("in the units shown (%s)",
+                                        d ? (d->kind == ReadoutKind::Temp     ? "C"
+                                           : d->kind == ReadoutKind::MilliAmp ? "mA"
+                                           : d->kind == ReadoutKind::Volt     ? "V"
+                                                                              : "A")
+                                          : "raw");
+                ImGui::EndPopup();
+            }
             ImGui::TableNextColumn();
             if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
             ImGui::PopID();
@@ -782,8 +847,9 @@ void App::DrawRunReadouts()
     if (remove >= 0) {
         runReadouts_.erase(runReadouts_.begin() + remove);
         runReadoutAt_ = 0.0;
-        SaveUiSettings();
+        changed = true;
     }
+    if (changed) SaveUiSettings();
 }
 
 // Deck cycle accents. Immutable file-scope constants, not App state, and not
