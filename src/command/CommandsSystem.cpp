@@ -430,6 +430,147 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       return err.empty() ? CommandResult::Success()
                                          : CommandResult::Fail(err);
                   }});
+
+    // xcan_to_target: the coarse ladder once, then the fine ladder up to
+    // `retries` times, until a pass reaches the target. Each pass is fd.xcan
+    // (hexapod_align.lua) so the scan has one implementation; the script only
+    // decides how many times to ask. It is a STANDARD script — resolved
+    // through ResolveScript to the shipped copy, unlike the three scans above
+    // — because how a scan is retried is not a product's business the way the
+    // scan's own parameters are, and those still travel through this form.
+    reg.Register({"xcan_to_target", "Motion",
+                  "XCAN until target (xcan_to_target.lua): coarse ladder, then fine "
+                  "retries until the feedback reaches the target",
+                  {
+                      {"device", PT::DeviceHexapod, true, {}, 0, 0, {}, "hexapod to scan"},
+                      {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
+                       "feedback signal"},
+                      {"axes", PT::Enum, false, "XYZ", 0, 0, {"XYZ", "XY", "XZ", "YZ"},
+                       "which axes every pass scans (order is always Z, then Y, then X)"},
+                      {"target_ua", PT::Double, false, 800.0, 0.0001, 1e9, {},
+                       "stop-and-stay when feedback reaches this (uA); judged after "
+                       "every pass"},
+                      {"steps_um", PT::String, false, "10,5,2,1", 0, 0, {},
+                       "pass-1 ladder, coarse -> fine (um)"},
+                      {"adaptive", PT::Bool, false, true, 0, 0, {},
+                       "pass 1 uses the signal-zoned ladder"},
+                      {"zone_low_ua", PT::Double, false, 1.0, 0.0001, 1e9, {},
+                       "adaptive only: lower end of the signal range (uA)"},
+                      {"zone_high_ua", PT::Double, false, 800.0, 0.0001, 1e9, {},
+                       "adaptive only: upper end of the signal range (uA)"},
+                      {"fine_steps_um", PT::String, false, "2,1,0.5", 0, 0, {},
+                       "retry ladder (um), run when pass 1 fell short"},
+                      {"fine_adaptive", PT::Bool, false, false, 0, 0, {},
+                       "retries use the signal-zoned ladder (off = every rung runs)"},
+                      {"retries", PT::Int, false, 3, 0, 20, {},
+                       "fine passes after pass 1; the script returns on the first "
+                       "pass that reaches the target"},
+                      {"settle_min_ms", PT::Int, false, 0, 0, 5000, {},
+                       "extra mechanical-settle floor before each sample (ms)"},
+                      {"velocity_mm_s", PT::Double, false, 1.0, 0.0, 100.0, {},
+                       "scan velocity applied before starting; 0 = keep current"},
+                      {"fail_if_missed", PT::Bool, false, true, 0, 0, {},
+                       "fail the step when no pass reaches the target (off = "
+                       "report xcan_reached=false and continue)"},
+                      {"trace", PT::Bool, false, false, 0, 0, {},
+                       "one 'xcan,' CSV line per sample"},
+                      {"file", PT::ScriptFile, false,
+                       "config/scripts/xcan_to_target.lua", 0, 0, {},
+                       "script override; this name is a STANDARD procedure and always "
+                       "resolves to the shipped copy"},
+                  },
+                  CommandSpec::Needs::None,
+                  [rp](ExecutionContext& c, const ParamValues& p) {
+                      c.CtxSet("xcan_device", p.GetString("device"));
+                      c.CtxSet("xcan_topic", p.GetString("topic"));
+                      c.CtxSet("xcan_axes", p.GetString("axes"));
+                      c.CtxSet("xcan_target_ua", p.GetDouble("target_ua"));
+                      c.CtxSet("xcan_steps_um", p.GetString("steps_um"));
+                      c.CtxSet("xcan_adaptive", p.GetBool("adaptive"));
+                      c.CtxSet("xcan_zone_low_ua", p.GetDouble("zone_low_ua"));
+                      c.CtxSet("xcan_zone_high_ua", p.GetDouble("zone_high_ua"));
+                      c.CtxSet("xcan_fine_steps_um", p.GetString("fine_steps_um"));
+                      c.CtxSet("xcan_fine_adaptive", p.GetBool("fine_adaptive"));
+                      c.CtxSet("xcan_retries", static_cast<double>(p.GetInt("retries")));
+                      c.CtxSet("xcan_settle_min_ms",
+                               static_cast<double>(p.GetInt("settle_min_ms")));
+                      c.CtxSet("xcan_velocity_mm_s", p.GetDouble("velocity_mm_s"));
+                      c.CtxSet("xcan_fail_if_missed", p.GetBool("fail_if_missed"));
+                      c.CtxSet("xcan_trace", p.GetBool("trace"));
+                      const std::string file = c.ResolveScript(p.GetString("file"));
+                      const std::string err = RunLuaFile(file, *rp, c, {}, false, nullptr);
+                      return err.empty() ? CommandResult::Success()
+                                         : CommandResult::Fail(err);
+                  }});
+
+    // xcan_two_lens: the Run page's "6800 uA / Left Coarse" sequence as a
+    // step. Left coarse to the target; short of it, ONE left follow-up picked
+    // by the signal (coarse again in the coarse band, fine above the fine
+    // band, nothing below); still short, ONE right coarse pass; then exit as
+    // is. Same standard-script deal as xcan_to_target.
+    reg.Register({"xcan_two_lens", "Motion",
+                  "XCAN two lens (xcan_two_lens.lua): left coarse, one banded left "
+                  "follow-up, one right coarse, exit as is",
+                  {
+                      {"left", PT::DeviceHexapod, true, {}, 0, 0, {}, "left hexapod"},
+                      {"right", PT::DeviceHexapod, true, {}, 0, 0, {}, "right hexapod"},
+                      {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
+                       "feedback signal"},
+                      {"axes", PT::Enum, false, "XYZ", 0, 0, {"XYZ", "XY", "XZ", "YZ"},
+                       "which axes every pass scans (order is always Z, then Y, then X)"},
+                      {"target_ua", PT::Double, false, 6800.0, 0.0001, 1e9, {},
+                       "stop-and-stay when feedback reaches this (uA); judged after "
+                       "every pass"},
+                      {"zone_low_ua", PT::Double, false, 200.0, 0.0001, 1e9, {},
+                       "adaptive zone lower limit (uA)"},
+                      {"zone_high_ua", PT::Double, false, 0.0, 0.0, 1e9, {},
+                       "adaptive zone upper limit (uA); 0 = the target"},
+                      {"coarse_steps_um", PT::String, false, "10,5,2,1", 0, 0, {},
+                       "the Coarse ladder (um)"},
+                      {"fine_steps_um", PT::String, false, "2,1,0.5", 0, 0, {},
+                       "the Fine ladder (um)"},
+                      {"coarse_band_ua", PT::Double, false, 800.0, 0.0001, 1e9, {},
+                       "after the first pass, from this signal up the left follow-up "
+                       "is coarse again; below it there is none"},
+                      {"fine_band_ua", PT::Double, false, 1500.0, 0.0001, 1e9, {},
+                       "from this signal up the left follow-up is the fine ladder"},
+                      {"settle_min_ms", PT::Int, false, 0, 0, 5000, {},
+                       "extra mechanical-settle floor before each sample (ms)"},
+                      {"velocity_mm_s", PT::Double, false, 1.0, 0.0, 100.0, {},
+                       "scan velocity applied before starting; 0 = keep current"},
+                      {"fail_if_missed", PT::Bool, false, false, 0, 0, {},
+                       "fail the step when no pass reaches the target (off = exit as "
+                       "is with xtl_reached=false)"},
+                      {"trace", PT::Bool, false, false, 0, 0, {},
+                       "one 'xcan,' CSV line per sample"},
+                      {"file", PT::ScriptFile, false,
+                       "config/scripts/xcan_two_lens.lua", 0, 0, {},
+                       "script override; this name is a STANDARD procedure and always "
+                       "resolves to the shipped copy"},
+                  },
+                  CommandSpec::Needs::None,
+                  [rp](ExecutionContext& c, const ParamValues& p) {
+                      c.CtxSet("xtl_left", p.GetString("left"));
+                      c.CtxSet("xtl_right", p.GetString("right"));
+                      c.CtxSet("xtl_topic", p.GetString("topic"));
+                      c.CtxSet("xtl_axes", p.GetString("axes"));
+                      c.CtxSet("xtl_target_ua", p.GetDouble("target_ua"));
+                      c.CtxSet("xtl_zone_low_ua", p.GetDouble("zone_low_ua"));
+                      c.CtxSet("xtl_zone_high_ua", p.GetDouble("zone_high_ua"));
+                      c.CtxSet("xtl_coarse_steps_um", p.GetString("coarse_steps_um"));
+                      c.CtxSet("xtl_fine_steps_um", p.GetString("fine_steps_um"));
+                      c.CtxSet("xtl_coarse_band_ua", p.GetDouble("coarse_band_ua"));
+                      c.CtxSet("xtl_fine_band_ua", p.GetDouble("fine_band_ua"));
+                      c.CtxSet("xtl_settle_min_ms",
+                               static_cast<double>(p.GetInt("settle_min_ms")));
+                      c.CtxSet("xtl_velocity_mm_s", p.GetDouble("velocity_mm_s"));
+                      c.CtxSet("xtl_fail_if_missed", p.GetBool("fail_if_missed"));
+                      c.CtxSet("xtl_trace", p.GetBool("trace"));
+                      const std::string file = c.ResolveScript(p.GetString("file"));
+                      const std::string err = RunLuaFile(file, *rp, c, {}, false, nullptr);
+                      return err.empty() ? CommandResult::Success()
+                                         : CommandResult::Fail(err);
+                  }});
 }
 
 } // namespace firedog
