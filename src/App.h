@@ -474,6 +474,7 @@ private:
     // product as ONE table, a row per serial and a column per recorded key,
     // plus a chart of one key across the parts. WndViewData.cpp.
     void DrawViewDataWindow();
+    void DrawPositionHistoryWindow();   // the positions change journal + Restore
     void LoadDataRows();              // scan + flatten every dut.json under data/
     void SortDataRows();              // by dataSortCol_/dataSortAsc_ (header click, reload)
     // Run page (View menu, full-page) — programs = slots of recipes. R1.
@@ -1415,6 +1416,13 @@ private:
     // Left-click activates a slot, right-click edits it in a modal; 0 = off.
     int    rasterTgtSel_   = 0;   // Raster exit-target preset: 0 = 5 uA, 1 = 20 uA
     int    xcanPresetSel_  = 1;   // ACTIVE target slot (xcanTargets_; default 400 uA)
+    // MAX: no exit threshold at all — the XCAN ladder runs to its end and
+    // parks on the best point (align_exit_threshold 0, adaptive off, since a
+    // zone needs a target). A manual maximisation, not a product power class,
+    // so it is not a slot: the slot stays selected underneath and a click on
+    // any target button turns MAX off. Climb cannot run under it (its target
+    // is mandatory) and says so.
+    bool   xcanTargetMax_  = false;
     // Run-band raster launcher knobs (raster_scan.lua): slow axis X steps down
     // from start, fast axis Y sweeps centered; axes/gating stay script defaults.
     double rasterSlowSpanUm_ = 40.0;                  // X- total travel
@@ -1556,6 +1564,16 @@ private:
     // the session. Not persisted — a viewer is opened on demand. The selection
     // is a SERIAL, not an index: a header-click re-sorts the rows under it.
     bool                     showData_ = false;
+    // Position History window (View menu, or the Motion page's History /
+    // Hist buttons): the journal beside the positions file in use, filtered
+    // by device and optionally one uid. The rows are re-read when the
+    // session's journal version or the file behind it changes.
+    bool                     showPosHist_ = false;
+    std::string              posHistDevice_;      // "" = every device
+    std::string              posHistUid_;         // "" = every position
+    std::string              posHistPath_;        // what posHistEntries_ was read from
+    unsigned                 posHistVer_ = ~0u;   // session version it was read at
+    std::vector<PosChange>   posHistEntries_;     // oldest first, as on disk
     std::string              dataDir_;
     std::vector<DutDataRow>  dataRows_;
     std::vector<std::string> dataKeys_;       // union of keys, first-seen order

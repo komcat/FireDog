@@ -26,6 +26,7 @@
 #include "core/AlignFrame.h"
 #include "core/GripProfile.h"
 #include "core/MotionMap.h"
+#include "core/PositionHistory.h"   // PosChange (the positions change journal)
 #include "core/Product.h"
 #include "core/SavedPositions.h"
 #include "vision/VisionModel.h"
@@ -78,8 +79,23 @@ public:
     // ---- load / save ----
     void LoadPositions();   // config fallback (startup, before any product)
     void LoadMaps();        // node-edge maps (Mapped Path tab)
-    void SavePositions();   // product positions file when loaded, else config
+    // Product positions file when loaded, else config — AND the change
+    // journal: the map is diffed against what was last written or loaded and
+    // every visible add / update / rename / delete is appended to
+    // PositionHistoryPath() with the signed-in operator and `source` ("hand"
+    // for a page button; the teach drain and Restore name theirs). This is the
+    // ONE place a position change is recorded: no caller logs its own.
+    void SavePositions(const std::string& source = "hand");
     void SaveMaps();        // machine-global: maps reference stable position uids
+
+    // ---- position change journal (core/PositionHistory.h) ----
+    void        SetPositionAuthor(std::string operatorId) { positionAuthor_ = std::move(operatorId); }
+    std::string PositionHistoryPath() const;   // beside the positions file in use
+    unsigned    PositionHistoryVersion() const { return positionHistoryVer_; }   // bumps per append
+    // Write a journal entry's old state back: values (update / delete — a
+    // deleted row is re-created under its uid) or the name (rename). Returns
+    // false when the row is gone and the entry has nothing to put back.
+    bool RestorePosition(const PosChange& entry);
 
     // Recipes: the product's recipes file when it has one with content, else
     // config/recipes.local.json -> recipes.json. Load/Save keep the dirty
@@ -174,7 +190,9 @@ public:
     // worker threads, drained on the UI thread): merge by name — the app-side
     // uid wins for existing names so recipe references stay stable — then
     // persist once per batch. No-op for an empty batch.
-    void MergeTaughtPositions(const std::vector<std::pair<std::string, SavedPos>>& taught);
+    // `source` names the run for the journal ("recipe <name>" / "script <name>").
+    void MergeTaughtPositions(const std::vector<std::pair<std::string, SavedPos>>& taught,
+                              const std::string& source);
 
     // Give a device its first row — a zeroed "Home" over `axes` — if it has
     // none yet, and persist it. No-op (returns false) once the device has any
@@ -189,6 +207,12 @@ public:
 private:
     ProductManifest product_;
     SavedPosMap     positions_;
+    // The journal's reference: what the positions file held when it was last
+    // loaded or written. SavePositions diffs against it, then adopts the new
+    // map. Not a dirty baseline — positions autosave — but the same idea.
+    SavedPosMap     positionsBaseline_;
+    std::string     positionAuthor_;        // signed-in operator id (App::LogIn)
+    unsigned        positionHistoryVer_ = 0;
     MotionMapSet    maps_;
 
     std::vector<Recipe> recipes_;

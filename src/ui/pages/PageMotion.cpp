@@ -332,6 +332,12 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
         std::snprintf(newPosBuf_, sizeof(newPosBuf_), "P%zu", saved.size());
         openNewPos_ = true;
     }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("History")) {   // the change journal for this device
+        posHistDevice_ = devName;
+        posHistUid_.clear();
+        showPosHist_ = true;
+    }
 
     // Per-position visibility widget: system positions stay hidden from the
     // table unless revealed here. The hidden flag persists with the position.
@@ -359,7 +365,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
         ImGui::EndPopup();
     }
 
-    const int cols = 6 + static_cast<int>(axes.size());
+    const int cols = 7 + static_cast<int>(axes.size());
     if (ImGui::BeginTable("savedpos", cols,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
             ImVec2(0.0f, ImGui::GetContentRegionAvail().y))) {   // fill the panel
@@ -368,6 +374,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
         ImGui::TableSetupColumn("##edit", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("Name",   ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("##ren",  ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("##hist", ImGuiTableColumnFlags_WidthFixed);
         for (const auto& a : axes) ImGui::TableSetupColumn(a.c_str(), ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("##del",  ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableHeadersRow();
@@ -413,8 +420,14 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                 std::snprintf(renameBuf_, sizeof(renameBuf_), "%s", sp.name);
                 openRenamePos_ = true;
             }
+            ImGui::TableSetColumnIndex(5);
+            if (ImGui::SmallButton("Hist")) {   // this row's change journal
+                posHistDevice_ = devName;
+                posHistUid_    = sp.uid;
+                showPosHist_   = true;
+            }
 
-            int c = 5;
+            int c = 6;
             for (const auto& a : axes) {
                 ImGui::TableSetColumnIndex(c++);
                 const auto it = sp.vals.find(a);

@@ -5,6 +5,8 @@
 
 # FireDog user-local runtime config (ui.local.json, positions.local.json, ...)
 *.local.json
+# The positions change journal of the config fallback (a product's lives in its folder)
+config/*.history.jsonl
 
 # Taught vision template patches, the side files of config/vision.local.json.
 config/vision/

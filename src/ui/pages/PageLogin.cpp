@@ -90,6 +90,7 @@ bool App::LogIn(const std::string& id, const std::string& pw)
     // writer, so a record can never disagree with the title bar about whose
     // shift it was.
     DutSession::Instance().SetOperator(user_.id, user_.name, RoleKey(user_.role));
+    session_.SetPositionAuthor(user_.id);   // the positions journal's "by", same writer
 
     FD_INFO("users", "%s logged in as %s", user_.Label().c_str(),
             RoleName(user_.role));
@@ -113,6 +114,7 @@ void App::LogOut()
     FD_INFO("users", "%s logged out", user_.Label().c_str());
     user_ = ActiveUser{};
     DutSession::Instance().SetOperator("", "", "");
+    session_.SetPositionAuthor("");
 
     // Close the privileged surfaces behind them, and clear the fields so the
     // next person does not find a number pre-typed and press Enter on it.

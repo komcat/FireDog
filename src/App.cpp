@@ -183,6 +183,7 @@ int App::Run()
             if (showJog_   && CanUse(kRoleJog)) DrawJogWindow();
             if (orgOpen_   && CanUse(kRoleOrg)) DrawProgramOrganizer();
             if (showData_  && CanUse(kRoleData)) DrawViewDataWindow();
+            if (showPosHist_ && CanUse(kRoleJog)) DrawPositionHistoryWindow();
             if (showUsers_) DrawEmployeeManager();   // checks Admin itself
         }
         host_.EndFrame();
@@ -222,7 +223,17 @@ void App::Update(float dt)
     // Teach hand-backs from save_position steps: engine worker threads queue
     // them on Workflow, and THIS is the worker->UI hand-off point — the
     // session is UI-thread-only, so the drain must stay here in Update().
-    session_.MergeTaughtPositions(workflow_.TakeSavedPositions());
+    {
+        // The journal names the run that taught: whichever engine owns the
+        // worker that queued these (a program's slot is a recipe Start).
+        std::vector<std::pair<std::string, SavedPos>> taught = workflow_.TakeSavedPositions();
+        if (!taught.empty()) {
+            std::string source = "teach";
+            if (orch_.recipe.Running())   source = "recipe " + orch_.recipe.GetStatus().recipeName;
+            else if (orch_.lua.Running()) source = "script " + orch_.lua.GetStatus().scriptName;
+            session_.MergeTaughtPositions(taught, source);
+        }
+    }
 
     // Same hand-off for a frame taught by align_solve: the procedure document
     // is UI-thread state, so the worker queues the result and it is stored (and

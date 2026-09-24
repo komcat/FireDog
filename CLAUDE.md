@@ -75,6 +75,7 @@ Breaking any of these is a defect, not a style choice.
 - Runtime-writable JSON follows the `xxx.local.json` → `xxx.json` fallback (local files gitignored).
 - A rebuild recopies the repo's `config/` over the exe-side copy — mirror durable edits back into the repo file.
 - Never hard-code DataBus topic strings; they live in `core/Topics.h`.
+- **A position change is recorded by DIFF in `ProductSession::SavePositions`, never at a call site.** The journal (`core/PositionHistory`) compares the map being written with `positionsBaseline_`; a caller only says *why* (`SavePositions("hand")`, the teach drain's `recipe <name>`), never *what*. Hidden positions are not journalled. Restore goes through `RestorePosition`, which saves like any edit and so appends its own entry — a restore that rewrote the journal would lose what it restored from. `App::LogIn` is the one writer of the journal's author, as it is of the DUT operator.
 
 ### Orchestration
 - **A slot is a TREE of nodes (recipe | folder), and a FOLDER is the unit of repetition.** Loops are expanded into the flat queue by `BuildRunQueue` at Start — `ProgramRunner` never learns what a folder is, so Stop, progress and `$run` keep exactly one implementation. Hence the ceilings (`kMaxQueueItems`, `kMaxDepth`): a mistyped loop count must be refused before the machine moves. There is no "repeat rows 1-3" range loop — a range is a second way to say what a folder says, and it breaks on the first reorder.

@@ -48,6 +48,7 @@ bool ProductSession::LoadProduct(const std::string& name)
     } else {
         FD_WARN("product", "'%s' has no positions entry; keeping current positions", name.c_str());
     }
+    positionsBaseline_ = positions_;   // the journal starts from what the file holds
     product_ = std::move(m);
     // Products created before a role existed have no manifest entry for it, so
     // their saves would fall back to config/ forever. Backfill on load — this
@@ -74,11 +75,23 @@ void ProductSession::NewProduct(const char* name)
     // Where the current models' templates live, captured BEFORE the manifest
     // swap moves VisionDir() to the new product.
     const std::string oldVisionDir = VisionDir();
+    const std::string oldHistory   = PositionHistoryPath();
 
     product_ = std::move(m);
     DutSession::Instance().SetProduct(product_.name, product_.uid,
                                       product_.DataDir());
     SavePositions();   // carry the current in-memory positions into the product
+    // The positions carried over bring their journal with them: the new
+    // product's rows ARE the old ones, and "who changed this" does not start
+    // over because the folder did. Best-effort copy (the old side may have
+    // none yet).
+    {
+        std::error_code ec;
+        const std::string newHistory = PositionHistoryPath();
+        if (newHistory != oldHistory && std::filesystem::exists(oldHistory, ec))
+            std::filesystem::copy_file(oldHistory, newHistory,
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+    }
     // Procedure DEFINITIONS carry over like recipes (their positions did too),
     // but a taught frame belongs to the part that was on the machine — keeping
     // it would silently give the new product the old part's origin.
@@ -157,7 +170,8 @@ void ProductSession::LoadScriptsList()
 
 void ProductSession::LoadPositions()
 {
-    positions_ = LoadSavedPositions();   // config fallback (no product yet)
+    positions_         = LoadSavedPositions();   // config fallback (no product yet)
+    positionsBaseline_ = positions_;
 }
 
 void ProductSession::LoadMaps()
@@ -165,7 +179,7 @@ void ProductSession::LoadMaps()
     maps_ = LoadMotionMaps();
 }
 
-void ProductSession::SavePositions()
+void ProductSession::SavePositions(const std::string& source)
 {
     // Product loaded -> autosave into the product's positions file (with its
     // uid); otherwise the machine-global config fallback. Warns if unwritable.
@@ -173,6 +187,54 @@ void ProductSession::SavePositions()
         SaveSavedPositionsFile(product_.FilePath("positions"), positions_, e->uid);
     else
         SaveSavedPositions(positions_);
+    // The journal: whatever changed since the last load / save, attributed.
+    const std::vector<PosChange> changes =
+        DiffPositions(positionsBaseline_, positions_, positionAuthor_, source);
+    if (!changes.empty()) {
+        AppendPositionHistory(PositionHistoryPath(), changes);
+        ++positionHistoryVer_;
+    }
+    positionsBaseline_ = positions_;
+}
+
+std::string ProductSession::PositionHistoryPath() const
+{
+    if (product_.Entry("positions"))
+        return PositionHistoryPathFor(product_.FilePath("positions"));
+    return PositionHistoryPathFor("config/positions.local.json");
+}
+
+bool ProductSession::RestorePosition(const PosChange& entry)
+{
+    std::vector<SavedPos>& list = positions_[entry.device];
+    SavedPos* row = nullptr;
+    for (SavedPos& e : list) if (e.uid == entry.uid) { row = &e; break; }
+    const std::string source = "restore of " + entry.action + " @ " + entry.at;
+
+    if (entry.action == "rename") {
+        if (!row || entry.nameBefore.empty()) return false;
+        std::snprintf(row->name, sizeof(row->name), "%s", entry.nameBefore.c_str());
+    } else if (entry.action == "update") {
+        if (!row || entry.before.empty()) return false;
+        row->vals = entry.before;
+    } else if (entry.action == "delete") {
+        if (entry.before.empty()) return false;
+        if (!row) {   // re-create under the same uid so old references resolve again
+            SavedPos sp;
+            std::snprintf(sp.name, sizeof(sp.name), "%s", entry.name.c_str());
+            sp.uid = entry.uid;
+            list.push_back(std::move(sp));
+            row = &list.back();
+        }
+        row->vals   = entry.before;
+        row->hidden = false;
+    } else {
+        return false;   // an add has nothing to put back (delete the row instead)
+    }
+    FD_INFO("saved", "restored '%s' (%s, %s) from the %s of %s", row->name,
+            entry.device.c_str(), entry.uid.c_str(), entry.action.c_str(), entry.at.c_str());
+    SavePositions(source);
+    return true;
 }
 
 void ProductSession::SaveMaps()
@@ -639,7 +701,7 @@ bool ProductSession::SeedHomePosition(const std::string& device,
 }
 
 void ProductSession::MergeTaughtPositions(
-    const std::vector<std::pair<std::string, SavedPos>>& taught)
+    const std::vector<std::pair<std::string, SavedPos>>& taught, const std::string& source)
 {
     if (taught.empty()) return;
     for (const auto& [dev, sp] : taught) {
@@ -669,7 +731,7 @@ void ProductSession::MergeTaughtPositions(
         }
         if (!found) list.push_back(sp);
     }
-    SavePositions();
+    SavePositions(source);
 }
 
 } // namespace firedog
