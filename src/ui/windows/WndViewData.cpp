@@ -25,6 +25,7 @@
 #include "core/Log.h"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -128,8 +129,18 @@ std::string BucketKey(const std::string& opened, int mode)
         case 1: return opened.substr(0, 10);
         case 3: return opened.substr(0, 7);
         case 2: {
+            // "YYYY-MM-DD": three fixed-width fields with the dashes checked,
+            // parsed with from_chars rather than sscanf (which MSVC flags as
+            // unsafe on every build). A field that is not all digits fails.
             int y = 0, m = 0, d = 0;
-            if (std::sscanf(opened.c_str(), "%4d-%2d-%2d", &y, &m, &d) != 3) return std::string();
+            const auto field = [&opened](std::size_t at, std::size_t len, int& out) {
+                const char* b = opened.data() + at;
+                const auto r = std::from_chars(b, b + len, out);
+                return r.ec == std::errc() && r.ptr == b + len;
+            };
+            if (opened[4] != '-' || opened[7] != '-' ||
+                !field(0, 4, y) || !field(5, 2, m) || !field(8, 2, d))
+                return std::string();
             using namespace std::chrono;
             const year_month_day ymd{year{y}, month{static_cast<unsigned>(m)},
                                      day{static_cast<unsigned>(d)}};
