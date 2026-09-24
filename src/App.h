@@ -495,15 +495,30 @@ private:
     void DrawRunReadouts();         // the pinned instrument readouts under it
     static bool IsOperatorCtxKey(const std::string& key);   // hides engine scratch
     // Program Organizer (its own window, opened by the Run strip's Edit box):
-    // recipe library | the program tree. The ONLY program-editing surface.
+    // recipe library | 1st slot tree | aisle | 2nd slot tree. The ONLY
+    // program-editing surface. `panel` is 0 (1st) or 1 (2nd) throughout: each
+    // panel shows a slot of its own with a selection of its own, and the aisle
+    // moves or copies a selection across.
     void DrawProgramOrganizer();
+    // One panel: toolbar, folder knobs, cycle line, the tree, the deferred drop.
+    // `other` is the opposite panel's slot (null when hidden) - a drag from
+    // there lands here as a MOVE.
+    void DrawOrgPanel(ProgramSlot& slot, ProgramSlot* other, int panel);
     // `topLevel` gates the cycle context menu: only a top-level node can be a
     // cycle state, because the folder is what Execute launches.
-    void DrawOrgTree(ProgramSlot& slot, std::vector<ProgramNode>& items, bool topLevel);
-    void DrawOrgNodeDropTarget(const std::string& anchorUid, bool intoFolder);
-    void ApplyOrgDrop(ProgramSlot& slot);   // the deferred drop, after the tree draw
-    void OrgAddRecipe(const std::string& recipeUid);   // library -> tree, at the selection
-    void OrgAddFolder();
+    void DrawOrgTree(ProgramSlot& slot, std::vector<ProgramNode>& items, bool topLevel,
+                     int panel);
+    void DrawOrgNodeDropTarget(const std::string& anchorUid, bool intoFolder, int panel);
+    // The deferred drop, after the tree draw. A node uid not in `slot` is
+    // looked for in `other` and moved across.
+    void ApplyOrgDrop(ProgramSlot& slot, ProgramSlot* other, int panel);
+    void OrgAddRecipe(const std::string& recipeUid);   // library -> 1st panel, at its selection
+    void OrgAddFolder(ProgramSlot& slot, int panel);
+    // Land a node at a panel's selection: inside a selected folder (unless
+    // `besideFolder`), after a selected row, else at the slot's end. The new
+    // node becomes the selection.
+    void OrgPlace(ProgramSlot& slot, int panel, ProgramNode n, bool besideFolder = false);
+    std::string& OrgSel(int panel) { return panel == 0 ? orgSel_ : orgSel2_; }
     void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|Climb|XCAN tabs
     void DrawRunXcanBlock();          // XCAN tab: hex-left/right launch presets
     void DrawRunQuickAlign();         // operator band: 5 one-press target+ladder launches
@@ -1440,8 +1455,20 @@ private:
     // program is reshaped. Its slot selection is its OWN: reorganising slot 3
     // must not drag the operator's deck off the station they are running.
     bool        orgOpen_  = false;
-    int         orgSlot_  = -1;      // slot being organized (-1 = follow the deck)
-    std::string orgSel_;             // selected node uid in the tree
+    int         orgSlot_  = -1;      // 1st panel's slot (-1 = follow the deck)
+    std::string orgSel_;             // 1st panel's selected node uid
+    // The 2nd panel: another slot of the same program (or the same slot twice)
+    // beside the first, so a node can be moved or copied across through the
+    // aisle buttons or by drag. Its slot and selection are its own.
+    bool        orgTwo_   = true;
+    int         orgSlot2_ = -1;
+    std::string orgSel2_;
+    int         orgAddPanel_ = 0;    // where the library's add / double-click lands
+    // The node clipboard (Cut / Copy / Paste on either panel's toolbar). One
+    // subtree; a paste inserts a CLONE with fresh uids, so it can be pasted
+    // twice and neither copy answers to the original's name.
+    std::vector<ProgramNode> orgClip_;
+    char        orgSlotNameBuf_[48] = "";   // a panel's Rename popup (one open at a time)
     char        orgFilter_[64] = ""; // recipe-library filter box
     // A drag-drop landing is RECORDED during the tree draw and applied after
     // it: an insert reallocates the very vector the recursion is walking, so
@@ -1452,6 +1479,7 @@ private:
     std::string orgDropNode_;        // tree payload (node uid being moved)
     std::string orgDropAnchor_;      // where it lands ("" = slot end, top level)
     bool        orgDropInto_    = false;   // anchor is a folder: go INSIDE it
+    int         orgDropPanel_   = 0;       // which panel's tree recorded it
     bool        orgDropPending_ = false;
     bool        orgDelConfirm_  = false;   // open the delete-program confirm
     std::string runStartErr_;

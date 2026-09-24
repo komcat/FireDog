@@ -64,6 +64,17 @@ struct Program {
 ProgramNode MakeRecipeNode(const std::string& recipeUid);
 ProgramNode MakeFolderNode(const std::string& name = "folder");
 
+// ---- Copies ----------------------------------------------------------------
+// Deep copies with FRESH uids. A uid is an identity — the organizer selects by
+// it, the runner marks against it, a slot's cycle states name it — so a copy
+// that kept the originals would be two nodes answering to one name. CloneSlot
+// re-points its cycle uids onto the copies; CloneProgram mints a new program
+// uid as well, because the DUT records reference the program by it and a
+// duplicate is a different program.
+ProgramNode CloneNode(const ProgramNode& n);
+ProgramSlot CloneSlot(const ProgramSlot& s);
+Program     CloneProgram(const Program& p);
+
 // ---- Tree edits ------------------------------------------------------------
 // All of them address a node by uid and search the whole subtree, so the
 // organizer never has to carry a path. Every one is a no-op that returns false

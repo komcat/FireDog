@@ -118,7 +118,7 @@ monitor and reshape a program while watching the deck it will drive).
 ```
 + Program Organizer ------------------------------------------------+
 | [New] [Delete]  program [Siphog888____]  uid: da744c55            |
-| slot [1  Production v] [+ Slot] name [Production] [^][v][x Slot]  |
+| 1st slot: [+ Slot] [Dup Slot] [^][v][x Slot] [x] 2nd panel                    |
 +------------------------+------------------------------------------+
 | Recipes                | [+ Folder] [^][v][>][<][Remove]          |
 | [filter______]         | folder [Left Lens___]  loop [100]        |
@@ -151,6 +151,45 @@ monitor and reshape a program while watching the deck it will drive).
   `command/Program` tree helpers (`ExtractNode` / `InsertAfter` / `InsertInto` /
   `MoveNodeUp|Down` / `Indent` / `Outdent`) rather than being hand-rolled in the
   UI: "move this row" is only ever correct if the subtree comes with it.
+
+### Two panels, one program (September 2026)
+
+The tree column became **two**: the *1st panel* is the slot being organized
+(the top row's `+ Slot / Dup Slot / ^ v / x Slot` act on it; the
+library's `add` and double-click land in whichever panel its "add to" radio names, the 1st by default), and the *2nd panel* shows any slot of
+the same program — or the same slot again — with an **aisle** between them:
+
+```
+| Recipes      | 1st: [1  PROD Tall A v]     |        | 2nd: [2  PROD Tall B v] |
+| …            | [+ Folder][^][v][>][<]      | Copy > | [+ Folder][^][v][>][<]  |
+|              | [Remove][Cut][Copy][Paste][Rename] | Move > | [Remove][Cut][Copy][Paste][Rename]
+|              | cycle: …                    |        | cycle: …                |
+|              |     Init SMU and TEC        | < Copy |     Probe SLED          |
+|              | [+] Left Lens x100 (…)      | < Move |     UV                  |
+```
+
+- **Each panel owns its slot and its selection** (`orgSlot_`/`orgSel_`,
+  `orgSlot2_`/`orgSel2_`), and every helper takes `panel` (0 or 1) rather than
+  a slot reference alone, so the two selections, the two drop targets and the
+  clipboard never disagree about which tree they mean. A drop is recorded
+  with its panel and applied by that panel.
+- **The aisle moves or copies the selection across**, landing by the same
+  rule a paste does (inside a selected folder, after a selected row, else at
+  the end). *Move* keeps the node's uid — it is the same node, elsewhere — and
+  clears it from the source slot's cycle states; *Copy* lands a clone. A drag
+  from one panel into the other is the same act as *Move*. The same slot on
+  both sides is allowed: it is then a second view, and Move is an in-slot move.
+- **Cut / Copy / Paste** on either toolbar work a one-subtree clipboard
+  (`orgClip_`). Paste inserts a **clone**, so one clip can be pasted twice.
+- **Every copy goes through `CloneNode` / `CloneSlot` / `CloneProgram`**
+  (`command/Program`), which mint **fresh uids all the way down**: a uid is an
+  identity (selection, run marks, the cycle states, the DUT's program
+  reference), so a copy that kept them would be two nodes answering to one
+  name. `CloneSlot` re-points its cycle uids onto the copies; `CloneProgram`
+  mints a new program uid. *Duplicate* (program) and *Dup Slot* are these two,
+  and the copy becomes what you are looking at. `+ Slot` asks for the new slot's name in a popup; *Rename* on each panel's toolbar renames that panel's slot the same way (the top row carries no permanent name field).
+- The 2nd panel is a checkbox (`orgTwo_`, on by default, not persisted); with
+  it off the window is the single-tree layout it had before.
 
 ### Two invariants the UI must keep
 

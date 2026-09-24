@@ -6,6 +6,7 @@
 
 #include <exception>
 #include <fstream>
+#include <map>
 #include <utility>
 
 namespace firedog {
@@ -38,6 +39,54 @@ ProgramNode MakeFolderNode(const std::string& name)
     n.name = name;
     n.loop = 1;
     return n;
+}
+
+// ---- Copies ----------------------------------------------------------------
+
+namespace {
+// The copy, recording old -> new so a slot can re-point its cycle states.
+ProgramNode CloneNodeInto(const ProgramNode& n, std::map<std::string, std::string>* remap)
+{
+    ProgramNode c = n;
+    c.uid = GenerateUid();
+    if (remap) (*remap)[n.uid] = c.uid;
+    c.children.clear();
+    c.children.reserve(n.children.size());
+    for (const ProgramNode& k : n.children) c.children.push_back(CloneNodeInto(k, remap));
+    return c;
+}
+} // namespace
+
+ProgramNode CloneNode(const ProgramNode& n)
+{
+    return CloneNodeInto(n, nullptr);
+}
+
+ProgramSlot CloneSlot(const ProgramSlot& s)
+{
+    std::map<std::string, std::string> remap;
+    ProgramSlot c;
+    c.name = s.name;
+    c.items.reserve(s.items.size());
+    for (const ProgramNode& n : s.items) c.items.push_back(CloneNodeInto(n, &remap));
+    const auto re = [&remap](const std::string& uid) {
+        const auto it = remap.find(uid);
+        return it == remap.end() ? std::string() : it->second;
+    };
+    c.startNodeUid = re(s.startNodeUid);
+    c.endNodeUid   = re(s.endNodeUid);
+    return c;
+}
+
+Program CloneProgram(const Program& p)
+{
+    Program c;
+    c.uid         = GenerateUid();
+    c.name        = p.name + " copy";
+    c.description = p.description;
+    c.slots.reserve(p.slots.size());
+    for (const ProgramSlot& s : p.slots) c.slots.push_back(CloneSlot(s));
+    return c;
 }
 
 // ---- Tree edits ------------------------------------------------------------
