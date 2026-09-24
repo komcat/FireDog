@@ -25,6 +25,14 @@ std::size_t Walk(std::vector<RecipeStep>& steps, const CommandRegistry& reg)
         if (!s.enabled) continue;
         if (s.type == "group" || s.type == "sub_recipe") {
             movers += Walk(s.children, reg);
+        } else if (s.type == "parallel") {
+            // One stage at a time: a teach run puts the operator at the Manual
+            // Adjust window for each mover, and two lanes prompting at once
+            // would be two windows for one pair of hands. The lanes still run,
+            // just in order — the taught positions are the same either way.
+            s.type = "group";
+            s.params = nlohmann::json::object();
+            movers += Walk(s.children, reg);
         } else if (s.type == "loop") {
             s.params = nlohmann::json::object();
             s.params["count"] = 1;

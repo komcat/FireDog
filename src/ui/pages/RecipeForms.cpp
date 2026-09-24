@@ -14,8 +14,10 @@
 #include "core/Log.h"
 #include "core/Topics.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -118,6 +120,12 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
             s.params["message"] = std::string(mbuf);
     } else if (s.type == "group") {
         ImGui::TextDisabled("Group: organizational only.");
+    } else if (s.type == "parallel") {
+        ImGui::TextWrapped("Parallel: the children are dealt into one lane per device. "
+                           "Lanes run at once; within a lane the moves run in the order "
+                           "written. The block ends when every lane is done. Moves "
+                           "only, no teach. A barrier between two sets is a second block.");
+        ImGui::TextDisabled("A child's on_error acts within its lane; the block's on the block.");
     } else if (const CommandSpec* spec = orch_.registry.Find(s.type)) {
         ImGui::TextWrapped("%s", spec->description.c_str());
         ImGui::Spacing();
@@ -172,6 +180,39 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
     nlohmann::json cur = params.contains(p.name) ? params[p.name] : p.defaultValue;
     const char* label = p.name.c_str();
     const float w = 170.0f;
+
+    // A picker grows to fit its preview text — a position called "See Grip
+    // Focus" was being shown as "See Grip Focu" — but never past what is left
+    // of the row after its label and whatever buttons follow it (`trailing`
+    // px), so the form keeps its single-column shape however long a name gets.
+    // When the text still does not fit, hovering shows the full name above the
+    // parameter's help (`previewTip`), and the generic help tooltip at the end
+    // stands down so the two do not stack.
+    bool clipped  = false;
+    bool tipShown = false;
+    const auto fitW = [&](const std::string& preview, float trailing = 0.0f) {
+        const ImGuiStyle& st = ImGui::GetStyle();
+        const float need = ImGui::CalcTextSize(preview.c_str()).x +
+                           st.FramePadding.x * 2.0f + ImGui::GetFrameHeight();   // + arrow
+        const float labelW = ImGui::CalcTextSize(label).x + st.ItemInnerSpacing.x;
+        const float maxW   = ImGui::GetContentRegionAvail().x - labelW - trailing;
+        const float fit    = std::max(w, std::min(need, maxW));
+        clipped = need > fit + 0.5f;
+        return fit;
+    };
+    const auto previewTip = [&](const std::string& preview) {
+        if (!clipped || !ImGui::IsItemHovered()) return;
+        HelpTooltip(p.help.empty() ? preview : preview + "\n\n" + p.help);
+        tipShown = true;
+    };
+    // What the Go / Teach here pair after a position picker takes up.
+    const auto smallButtonsW = [](std::initializer_list<const char*> labels) {
+        const ImGuiStyle& st = ImGui::GetStyle();
+        float total = 0.0f;
+        for (const char* l : labels)
+            total += ImGui::CalcTextSize(l).x + st.FramePadding.x * 2.0f + st.ItemSpacing.x;
+        return total;
+    };
 
     // Device-scoped reference params (position uid / map / pin) go stale when
     // the operator hot-swaps the step's device: the stored value no longer
@@ -304,8 +345,10 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
     }
     case ParamType::Enum: {
         const std::string v = cur.is_string() ? cur.get<std::string>() : "";
-        ImGui::SetNextItemWidth(w);
-        if (ImGui::BeginCombo(label, v.c_str())) {
+        ImGui::SetNextItemWidth(fitW(v));
+        const bool open = ImGui::BeginCombo(label, v.c_str());
+        previewTip(v);
+        if (open) {
             for (const std::string& o : p.options) {
                 if (ImGui::Selectable(o.c_str(), o == v)) {
                     params[p.name] = o;
@@ -321,8 +364,11 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
     case ParamType::DeviceIo:
     case ParamType::Slide: {
         const std::string v = cur.is_string() ? cur.get<std::string>() : "";
-        ImGui::SetNextItemWidth(w);
-        if (ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str())) {
+        const std::string preview = v.empty() ? "(pick)" : v;
+        ImGui::SetNextItemWidth(fitW(preview));
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        previewTip(preview);
+        if (open) {
             const auto item = [&](const std::string& name) {
                 if (ImGui::Selectable(name.c_str(), name == v)) {
                     params[p.name] = name;
@@ -359,9 +405,10 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
                 if (sp.uid == v) { preview = sp.name; resolved = true; break; }
         }
         if (!resolved) pushStale();
-        ImGui::SetNextItemWidth(w);
+        ImGui::SetNextItemWidth(fitW(preview, smallButtonsW({"Go", "Teach here"})));
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
+        previewTip(preview);
         if (open) {
             if (it == session_.Positions().end() || it->second.empty())
                 ImGui::TextDisabled("(no saved positions for '%s')", dev.c_str());
@@ -450,9 +497,10 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             resolved = true;
         }
         if (!resolved) pushStale();
-        ImGui::SetNextItemWidth(w);
+        ImGui::SetNextItemWidth(fitW(preview));
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
+        previewTip(preview);
         if (open) {
             if (session_.Aligns().empty())
                 ImGui::TextDisabled("(no alignment procedures - see the Alignment page)");
@@ -481,9 +529,10 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             resolved = true;
         }
         if (!resolved) pushStale();
-        ImGui::SetNextItemWidth(w);
+        ImGui::SetNextItemWidth(fitW(preview));
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
+        previewTip(preview);
         if (open) {
             if (session_.Grips().empty())
                 ImGui::TextDisabled("(no grip profiles - see the Gripped Object page)");
@@ -532,9 +581,10 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             resolved = true;
         }
         if (!resolved) pushStale();
-        ImGui::SetNextItemWidth(w);
+        ImGui::SetNextItemWidth(fitW(preview));
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
+        previewTip(preview);
         if (open) {
             if (!ap) {
                 ImGui::TextDisabled("(pick the alignment procedure first)");
@@ -574,9 +624,10 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             resolved = true;
         }
         if (!resolved) pushStale();
-        ImGui::SetNextItemWidth(w);
+        ImGui::SetNextItemWidth(fitW(preview));
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
+        previewTip(preview);
         if (open) {
             if (session_.VisionModels().empty())
                 ImGui::TextDisabled("(no detection models - teach one from an "
@@ -604,9 +655,11 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             for (const MotionMap& m : it->second)
                 if (m.name == v) { resolved = true; break; }
         if (!resolved) pushStale();
-        ImGui::SetNextItemWidth(w);
-        const bool open = ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str());
+        const std::string preview = v.empty() ? "(pick)" : v;
+        ImGui::SetNextItemWidth(fitW(preview));
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
+        previewTip(preview);
         if (open) {
             if (it == session_.Maps().end() || it->second.empty())
                 ImGui::TextDisabled("(no maps for '%s')", dev.c_str());
@@ -646,9 +699,11 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
                        (p.pinDir != PinDir::Input && has(false));
         }
         if (!resolved) pushStale();
-        ImGui::SetNextItemWidth(w);
-        const bool open = ImGui::BeginCombo(label, v.empty() ? "(pick)" : v.c_str());
+        const std::string preview = v.empty() ? "(pick)" : v;
+        ImGui::SetNextItemWidth(fitW(preview));
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
+        previewTip(preview);
         if (open) {
             if (!d) {
                 ImGui::TextDisabled("(pick a device first)");
@@ -706,8 +761,10 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         for (const ScriptInfo& si : session_.Scripts()) {
             if (si.path == v) { preview = si.name; break; }
         }
-        ImGui::SetNextItemWidth(w);
-        if (ImGui::BeginCombo(label, preview.c_str())) {
+        ImGui::SetNextItemWidth(fitW(preview));
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        previewTip(preview);
+        if (open) {
             if (session_.Scripts().empty())
                 ImGui::TextDisabled("(no scripts in %s)", session_.ScriptsDirUsed().c_str());
             for (const ScriptInfo& si : session_.Scripts()) {
@@ -722,7 +779,7 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         break;
     }
     }
-    if (ImGui::IsItemHovered()) HelpTooltip(p.help);
+    if (!tipShown && ImGui::IsItemHovered()) HelpTooltip(p.help);
     ImGui::PopID();
     return changed;
 }

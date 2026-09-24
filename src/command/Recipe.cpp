@@ -3,6 +3,7 @@
 
 #include "command/CommandRegistry.h"
 #include "command/ExecutionContext.h"   // CheckConditionShape
+#include "command/MotionWaits.h"        // kTeachParamName (parallel refuses it)
 #include "core/Log.h"
 #include "core/Product.h"               // GenerateUid — backfill for recipes without one
 #include "hardware/HardwareManager.h"
@@ -21,7 +22,7 @@ constexpr const char* kBasePath  = "config/recipes.json";
 
 bool IsStructuralStep(const std::string& type)
 {
-    return type == "loop" || type == "if" || type == "group" ||
+    return type == "loop" || type == "if" || type == "group" || type == "parallel" ||
            type == "sub_recipe" || type == "stop_recipe";
 }
 
@@ -232,8 +233,8 @@ std::size_t CountLeafSteps(const std::vector<RecipeStep>& steps)
         } else if (s.type == "if") {
             // Unknown branch at plan time — count the larger one.
             n += std::max(CountLeafSteps(s.children), CountLeafSteps(s.elseChildren));
-        } else if (s.type == "group" || s.type == "sub_recipe") {
-            n += CountLeafSteps(s.children);
+        } else if (s.type == "group" || s.type == "sub_recipe" || s.type == "parallel") {
+            n += CountLeafSteps(s.children);   // a parallel lane is one leaf each
         } else if (s.type == "stop_recipe") {
             // structural, no leaf
         } else {
@@ -483,6 +484,35 @@ void ValidateSteps(const ValidateEnv& env, const std::vector<RecipeStep>& steps,
             ValidateSteps(env, s.elseChildren, where, path, true, depth + 1);
         } else if (s.type == "group") {
             ValidateSteps(env, s.children, where, path, false, depth + 1);
+        } else if (s.type == "parallel") {
+            // The children are ordinary leaves and get the ordinary checks
+            // (params, references, Connected) below; what is checked HERE is
+            // what makes them safe to run at once. Every refusal is one that
+            // would otherwise surface with two stages already moving.
+            if (s.children.empty()) Issue(env, where, path, "parallel has no children");
+            ValidateSteps(env, s.children, where, path, false, depth + 1);
+            for (std::size_t k = 0; k < s.children.size(); ++k) {
+                const RecipeStep& c = s.children[k];
+                if (!c.enabled) continue;
+                const std::string cw = where + "." + std::to_string(k + 1) + " (" + c.type + ")";
+                std::vector<std::size_t> cp = path;
+                cp.push_back(k);
+                if (IsStructuralStep(c.type)) {
+                    Issue(env, cw, cp, "a parallel block holds moves only, not " + c.type);
+                    continue;
+                }
+                const CommandSpec* spec = env.reg.Find(c.type);
+                if (!spec) continue;   // reported by the ordinary pass
+                if (spec->parallelBy.empty()) {
+                    Issue(env, cw, cp, c.type + " cannot run in a parallel block");
+                    continue;
+                }
+                if (c.params.value(kTeachParamName, false))
+                    Issue(env, cw, cp, "teach cannot run in a parallel block - the "
+                                       "operator can only stand at one stage");
+                // Two children on one device are fine: they form one lane and
+                // run in order (StepRunner::ExecParallel).
+            }
         } else if (s.type == "sub_recipe") {
             const std::string uid = s.params.value("uid", std::string());
             if (uid.empty()) {

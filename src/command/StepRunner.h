@@ -4,10 +4,17 @@
 // invokes it synchronously on the Lua worker thread with the same
 // ExecutionContext (shared ctx, same stop token).
 //
-// Pure execution: no threads, no locks, no status of its own — the caller
-// observes through the callbacks and the shared ExecutionContext. Cooperative
+// Pure execution: no locks, no status of its own — the caller observes
+// through the callbacks and the shared ExecutionContext. Cooperative
 // stop/safety aborts come from ctx.ShouldStop() (the engines' hook installs
 // both), checked between steps and inside every command wait.
+//
+// The ONE place it forks: a `parallel` block runs each child on a thread of
+// its own and joins every one before the block returns (ExecParallel). Those
+// threads are scoped to the block's stack frame — nothing is detached, the
+// engine's worker still owns the run, and Stop reaches every lane through the
+// same ctx.ShouldStop() the lane's own waits already poll. The callbacks are
+// only ever invoked from the calling thread.
 #pragma once
 
 #include "command/ExecutionContext.h"
@@ -58,6 +65,13 @@ private:
                       const std::vector<std::size_t>& basePath, int depth);
     Outcome ExecLeaf(const RecipeStep& s, const std::string& where,
                      const std::vector<std::size_t>& path);
+    // A `parallel` block: the enabled children are dealt into LANES by device
+    // (a lane = every child naming one device, in the order written), lanes
+    // run at once, each lane runs its items in order, and the block ends when
+    // the last lane is done. A child's on_error acts within its lane; the
+    // block's on_error acts on the block.
+    Outcome ExecParallel(const RecipeStep& s, const std::string& where,
+                         const std::vector<std::size_t>& path);
 
     const CommandRegistry& reg_;
     ExecutionContext&      ctx_;

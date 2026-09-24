@@ -756,6 +756,14 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       return CommandResult::Success();
                   }});
 
+    // The movers below opt into `parallel` blocks (CommandSpec::parallelBy):
+    // each drives exactly the controller its `device` names, waits on that
+    // controller alone, and shares nothing else but the ExecutionContext.
+    // move_relative_global is deliberately NOT on the list: it goes through
+    // JogGlobal, whose per-device jog track lives in an unguarded map on
+    // Workflow, and two lanes inserting into it at once is a data race.
+    constexpr const char* kParallelByDevice = "device";
+
     reg.Register({"read_position", "Motion",
                   "Read the device's CURRENT pose into ctx as <prefix>_x/_y/_z "
                   "(every axis it reports, lowercase)",
@@ -787,7 +795,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       PreDelayParam(),
                       PostDelayParam(),
                   },
-                  CommandSpec::Needs::None, ExecMoveAxisTo});
+                  CommandSpec::Needs::None, ExecMoveAxisTo, kParallelByDevice});
 
     reg.Register({"move_to_position", "Motion",
                   "Coordinated absolute move to a saved position, wait for arrival "
@@ -806,7 +814,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       PostDelayParam(),
                       TeachParam(),
                   },
-                  CommandSpec::Needs::None, ExecMoveToPosition});
+                  CommandSpec::Needs::None, ExecMoveToPosition, kParallelByDevice});
 
     reg.Register({"move_to_position_offset", "Motion",
                   "Move to a saved position PLUS per-axis offsets (e.g. 'safe' with Z -5 mm)",
@@ -827,7 +835,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       PostDelayParam(),
                       TeachParam(),
                   },
-                  CommandSpec::Needs::None, ExecMoveToPositionOffset});
+                  CommandSpec::Needs::None, ExecMoveToPositionOffset, kParallelByDevice});
 
     // Now a spelling of move_to_position with the approach velocity REQUIRED.
     // Kept registered because recipes on disk name it, and because a step that
@@ -848,7 +856,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       PostDelayParam(),
                       TeachParam(),
                   },
-                  CommandSpec::Needs::None, ExecMoveToPositionApproach});
+                  CommandSpec::Needs::None, ExecMoveToPositionApproach, kParallelByDevice});
 
     reg.Register({"move_path", "Motion",
                   "Move along a mapped path; the device must already be AT 'from'",
@@ -866,7 +874,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       PostDelayParam(),
                       TeachParam(),
                   },
-                  CommandSpec::Needs::None, ExecMovePath});
+                  CommandSpec::Needs::None, ExecMovePath, kParallelByDevice});
 
     reg.Register({"move_relative", "Motion",
                   "Relative move on ONE local axis (target = current + delta), wait for "
@@ -885,7 +893,7 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       PreDelayParam(),
                       PostDelayParam(),
                   },
-                  CommandSpec::Needs::None, ExecMoveRelative});
+                  CommandSpec::Needs::None, ExecMoveRelative, kParallelByDevice});
 
     reg.Register({"move_relative_global", "Motion",
                   "Relative move along GLOBAL axes (via the device transform), wait for settle",

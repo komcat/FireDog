@@ -2,8 +2,8 @@
 //
 // A recipe is a NESTED list of steps (children arrays, not bobcat's flat list
 // with begin/end markers — malformed nesting is impossible by construction).
-// Leaf steps name a registered command; five structural types are interpreted
-// by the engine itself: loop / if / group / sub_recipe / stop_recipe.
+// Leaf steps name a registered command; six structural types are interpreted
+// by the engine itself: loop / if / group / parallel / sub_recipe / stop_recipe.
 //
 // Persistence follows the project conventions: one consolidated file
 // (config/recipes.local.json -> recipes.json fallback), or the product
@@ -65,6 +65,8 @@ struct StructuralStepInfo {
 };
 inline constexpr StructuralStepInfo kStructuralSteps[] = {
     {"group",       "Organizational container - runs its children in order"},
+    {"parallel",    "One lane per device, lanes run AT ONCE, each lane's moves in "
+                    "order; the block ends when every lane is done"},
     {"loop",        "Repeat children a fixed count, or while a condition holds"},
     {"if",          "Run children when a condition holds; else-branch otherwise"},
     {"sub_recipe",  "Run another recipe inline (referenced by uid)"},

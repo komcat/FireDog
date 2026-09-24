@@ -313,7 +313,7 @@ Rules:
 
 ### 5.2 Control flow is engine-native, not registry commands
 
-The executor itself interprets five structural step types; the registry holds
+The executor itself interprets six structural step types; the registry holds
 only leaf actions. This keeps the registry's contract simple (a command = one
 parameterized action) and keeps flow semantics in exactly one place:
 
@@ -324,6 +324,37 @@ parameterized action) and keeps flow semantics in exactly one place:
   `> < >= <= == != is_true is_false exists not_exists` (bobcat's proven set).
   A full expression parser (AND/OR/parens) is a later, additive upgrade.
 - `group` — organizational only (nickname + children), emits nothing.
+- `parallel` — bobcat's `ParallelMove` / `ParallelMoveRelative` as a BLOCK
+  rather than a command with a JSON-array param: the children are ordinary
+  mover leaves (`move_to_position`, `move_relative`, `move_path`, …). They
+  are dealt into **one LANE per device**, in the order written; lanes run at
+  once, each lane runs its items in order, and the block ends when the last
+  lane is done. So `1 left, 2 right, 3 left, 4 right` is two lanes of two:
+  3 waits for 1 and never for 2. **There is no barrier inside a block** — a
+  barrier between two sets is the end of one block and the start of the
+  next. Added September 2026. The rules, each of which the validator
+  enforces before the run starts:
+  - a child must be a leaf whose `CommandSpec::parallelBy` is set (the
+    movers name their `device` param); no structure inside, no non-mover;
+  - no `teach` on a child (the operator can only stand at one stage; a
+    teach-mode run turns the block into a `group` so the lanes teach in turn);
+  - a child's `on_error` acts WITHIN its lane exactly as in a group (retry
+    re-runs the item, continue steps past it, abort ends the lane there and
+    the items after it do not run); the block's `on_error` acts on the block;
+  - the step-mode gate and the executing-step highlight are the block's.
+  - **Execution is a scoped fork-join, the one exception to "each engine runs
+    ONE worker".** `StepRunner::ExecParallel` runs each lane's ordinary
+    `ExecuteWithDelays` on a thread of its own and joins every one before the
+    block returns; nothing is detached and the callbacks never leave the
+    calling thread. Forking is what keeps `MoveWithApproach`, the settle rule
+    and the stop handling at ONE implementation — the alternative, an
+    issue/wait split for every mover, is a second copy of each. Stop reaches
+    every lane through the same `ctx.ShouldStop()` its waits already poll;
+    a lane that fails stops its own device and the others are let finish
+    (a sibling's failure says nothing about whether this lane's path is
+    safe to abandon halfway). `move_relative_global` is not parallel-capable
+    on purpose: it goes through `JogGlobal`, whose per-device jog track lives
+    in an unguarded map on `Workflow`.
 - `sub_recipe` — `uid` of another recipe; inlined at load with
   cycle detection (bobcat's self-reference check, generalized).
 - `stop_recipe` — end the run early; `ok: true|false` variant for

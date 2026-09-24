@@ -62,7 +62,7 @@ Inside the page, the familiar three-panel split (shared splitter sizes):
   "PosA" (hex-left)`), and the `enabled` checkbox. Row buttons / context menu:
   Add sibling, Add child (structural only), Move up/down (within siblings),
   Delete. **Add step** opens the palette: registry commands grouped by
-  category (`CommandRegistry::List()`) plus the five structural types.
+  category (`CommandRegistry::List()`) plus the six structural types.
 - **Row icons.** A small picture sits after the step number in the tree and
   before the name in the palette — the SAME picture in both, from one lookup
   (`StepIconFile`, `ui/Widgets`), because the glyph learned while picking a
@@ -185,7 +185,7 @@ combo), op combo (the 10 ops), value field shown only for comparison ops.
    `CommandSpec.h`, the four pin-using command registrations, and
    `Recipe.cpp`'s `CheckReferences`.
 2. **Structural palette metadata** — a tiny constant table in `Recipe.h`
-   (`{type, description}` for the five structural types) so the palette
+   (`{type, description}` for the six structural types) so the palette
    doesn't hardcode strings in the UI.
 3. **`RecipeEngine::Status.stepPath`** — add `std::vector<std::size_t>` (the
    numeric path of the executing step, e.g. `{1,0,2}`) alongside the existing

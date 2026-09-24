@@ -8,8 +8,14 @@
 // motion maps, copied at Start so they are stable for the whole run).
 //
 // Threading: ShouldStop/Sleep/WaitUntil and every command run on the worker
-// thread; CtxSnapshot may be called from the UI thread (status display) — the
-// ctx store is mutex-guarded for exactly that reason.
+// thread — or, inside a `parallel` block, on one of its lane threads, which
+// the block joins before it returns (StepRunner::ExecParallel). Those lanes
+// share this one instance, so what they touch here must stay lock-free-safe
+// (ShouldStop is a read of the engine's atomics, the waits are stateless) or
+// guarded: CtxSnapshot may be called from the UI thread (status display) and
+// the ctx store is mutex-guarded for exactly that reason, which also covers
+// two lanes. RecordPosition and the prompts are NOT covered and no
+// parallel-capable command calls them (teach is refused in a block).
 #pragma once
 
 #include "core/AlignFrame.h"

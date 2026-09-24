@@ -653,6 +653,7 @@ std::string App::AutoNickname(const RecipeStep& s) const
     }
     if (s.type == "if") return "if " + condText(s.params);
     if (s.type == "group") return "group";
+    if (s.type == "parallel") return "parallel";
     if (s.type == "sub_recipe") {
         const std::string uid = s.params.value("uid", std::string());
         for (const Recipe& r : session_.Recipes())
@@ -1094,6 +1095,13 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
     const bool canElse  = sel && sel->type == "if";
     if (!canChild && edAddMode_ == 1) edAddMode_ = 0;
     if (!canElse && edAddMode_ == 2) edAddMode_ = 0;
+    // Into a parallel block the palette offers only what can run there: the
+    // movers that declared parallelBy, and no structure. Validation would
+    // refuse anything else anyway; this just stops it being picked.
+    const bool intoParallel = edAddMode_ == 1 && sel && sel->type == "parallel";
+    const auto offered = [&](const CommandSpec* c) {
+        return !intoParallel || !c->parallelBy.empty();
+    };
     if (ImGui::RadioButton("after", edAddMode_ == 0)) edAddMode_ = 0;
     ImGui::SameLine();
     ImGui::BeginDisabled(!canChild);
@@ -1151,7 +1159,7 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
                                           ImGuiTreeNodeFlags_SpanAvailWidth);
     };
 
-    {   // Structure (engine-native step types)
+    if (!intoParallel) {   // Structure (engine-native step types)
         const bool catMatch = PaletteMatch("Structure", edSearchBuf_);
         bool any = catMatch;
         for (const StructuralStepInfo& t : kStructuralSteps) {
@@ -1174,12 +1182,13 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
         std::size_t end = i;
         while (end < cmds.size() && cmds[end]->category == cat) ++end;
         const bool catMatch = PaletteMatch(cat.c_str(), edSearchBuf_);
-        bool any = catMatch;
+        bool any = false;
         for (std::size_t k = i; k < end && !any; ++k)
-            any = PaletteMatch(cmds[k]->name, edSearchBuf_);
+            any = offered(cmds[k]) && (catMatch || PaletteMatch(cmds[k]->name, edSearchBuf_));
         if (any && beginCat(cat.c_str())) {
             for (std::size_t k = i; k < end; ++k) {
-                if (catMatch || PaletteMatch(cmds[k]->name, edSearchBuf_))
+                if (offered(cmds[k]) &&
+                    (catMatch || PaletteMatch(cmds[k]->name, edSearchBuf_)))
                     drawEntry(cmds[k]->name.c_str(), cmds[k]->description.c_str());
             }
             ImGui::TreePop();

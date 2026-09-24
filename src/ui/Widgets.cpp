@@ -397,6 +397,10 @@ const char* StepIconFile(const char* type)
         // and `if` the same glyph would say "these rows are the same kind of
         // thing", which is the opposite of what the column is for.
         {"group",                "GROUP"},
+        // A parallel block is a block of steps too — what differs is HOW its
+        // rows run, and the row text says "parallel". Reusing the glyph beats
+        // naming a picture nobody drew.
+        {"parallel",             "GROUP"},
         // The machine has stopped and is waiting for a person.
         {"prompt",               "prompt"},
         {"prompt_input",         "prompt"},

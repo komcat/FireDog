@@ -123,6 +123,17 @@ struct CommandSpec {
     // is expected; every wait MUST go through ExecutionContext (Sleep /
     // WaitUntil) so a stop request interrupts it within one poll interval.
     std::function<CommandResult(ExecutionContext&, const ParamValues&)> execute;
+
+    // The name of the param that says which ONE device this command drives
+    // ("device" for the movers). Set = the command may be a child of a
+    // `parallel` block, where every child runs at once on its own thread and
+    // the block's children must all name DIFFERENT values of it — two lanes
+    // on one controller would fight over its target. Empty (the default) =
+    // sequential only. This is the whole opt-in, like TeachParam() is for
+    // teach mode: a command that shares nothing but the ExecutionContext and
+    // its own controller declares it; one that touches shared Workflow state
+    // (the jog tracks, a prompt, the document) must not.
+    std::string parallelBy;
 };
 
 // "" on success, else a human-readable error naming the parameter. Unknown
