@@ -113,7 +113,8 @@ targets)`, which refuses while a critical safety alert is unacknowledged
 
 `PI_MOV` returns immediately. Every blocking command (`move_to_position`,
 `move_relative`, `move_to_position_offset`, `move_path` legs, `move_to_position_approach`,
-and the Align moves `move_local` / `place_move`) uses the same two-stage wait, in this
+`move_lift_off` (both legs), and the Align moves `move_local` / `place_move`) uses the
+same two-stage wait, in this
 order — and, since the approach landed, all of them reach it through the one
 `MoveWithApproach` helper below:
 
@@ -181,7 +182,8 @@ Move  |------- velocity_mm_s, the rest of the distance -------|-- approach_veloc
 
 It is **the one implementation**, shared by every point-to-point move command —
 `move_to_position`, `move_to_position_offset`, `move_relative`,
-`move_to_position_approach` (Motion) and `move_local`, `place_move` (Align). It used to
+`move_to_position_approach`, `move_lift_off` (Motion) and `move_local`, `place_move`
+(Align). It used to
 be the body of `move_to_position_approach` alone, which meant a slow finish cost you
 whatever else your step's command did.
 

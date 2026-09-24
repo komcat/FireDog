@@ -508,6 +508,101 @@ CommandResult ExecMoveRelative(ExecutionContext& ctx, const ParamValues& p)
     return MoveWithApproach(ctx, m, idx, targets, p, "the relative target");
 }
 
+// "Z-" / "X+" (or "-Z" / "+X") -> axis name + sign. Empty = the device's
+// default retreat direction, decided by what the controller IS and not by what
+// it is called: a PI hexapod carries the lens and backs off along its own X+;
+// the ACS gantry carries the head and Z- lifts it. Any other axis is a typo
+// unless the device has it.
+bool ParseLiftAxis(const std::string& spec, const IMotionController* m,
+                   std::string* axisOut, double* signOut, std::string* err)
+{
+    std::string axis;
+    double sign = 0.0;
+    if (spec.empty()) {
+        if (m->Type() == "PI") { axis = "X"; sign = +1.0; }
+        else                   { axis = "Z"; sign = -1.0; }
+    } else {
+        for (const char raw : spec) {
+            if (raw == ' ') continue;
+            if (raw == '+' || raw == '-') {
+                if (sign != 0.0) { *err = "lift_axis '" + spec + "' names two signs"; return false; }
+                sign = raw == '+' ? +1.0 : -1.0;
+                continue;
+            }
+            axis += static_cast<char>(std::toupper(static_cast<unsigned char>(raw)));
+        }
+        if (axis.empty() || sign == 0.0) {
+            *err = "lift_axis '" + spec + "' must be an axis and a sign, e.g. \"Z-\" or \"X+\"";
+            return false;
+        }
+    }
+    bool known = false;
+    for (const std::string& a : m->Axes())
+        if (a == axis) { known = true; break; }
+    if (!known) {
+        *err = "device '" + m->Name() + "' has no axis " + axis + " to lift off along";
+        return false;
+    }
+    *axisOut = axis;
+    *signOut = sign;
+    return true;
+}
+
+// Lift off, then go: back the tool away from the part along ONE local axis
+// (default 2 mm, direction per ParseLiftAxis) and only then drive to the saved
+// position. Two legs on purpose: a coordinated move straight from a seated
+// pose drags the tool sideways while it is still in contact, and the retreat is
+// what makes the second leg an ordinary travel. The approach parameters belong
+// to the ARRIVAL leg — the lift is a short retreat at travel speed, and slowing
+// it would only prolong the moment the tool is nearest the part.
+CommandResult ExecMoveLiftOff(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    const SavedPos* pos = ctx.FindPosition(device, p.GetString("position"));
+    if (!pos) return CommandResult::Fail("position uid not found");
+    const auto targets = TargetsOf(*pos, m);
+    if (targets.empty()) return CommandResult::Fail("position shares no axes with device");
+
+    std::string axis;
+    double      sign = 0.0;
+    if (!ParseLiftAxis(p.GetString("lift_axis"), m, &axis, &sign, &err))
+        return CommandResult::Fail(err);
+
+    const CommandResult pre = ApplyPreMove(ctx, idx, p);
+    if (!pre.ok) return pre;
+
+    const double lift = p.GetDouble("lift_mm");
+    if (lift > 0.0) {
+        m->RequestFastPoll();
+        const std::map<std::string, double> cur = m->Positions();
+        const auto it = cur.find(axis);
+        if (it == cur.end())
+            return CommandResult::Fail("no live position for axis '" + axis + "'");
+        // The lift leg reads only the arrival tolerance and timeout: no approach
+        // triple, so MoveWithApproach takes its plain path whatever the step's
+        // approach settings say about the second leg.
+        const ParamValues liftParams(nlohmann::json{
+            {"tol_mm", p.GetDouble("tol_mm")}, {"timeout_ms", p.GetInt("timeout_ms")}});
+        const std::vector<std::pair<std::string, double>> liftTargets = {
+            {axis, it->second + sign * lift}};
+        FD_INFO("recipe", "%s: lift off %.3f mm along %s%c", device.c_str(), lift,
+                axis.c_str(), sign > 0.0 ? '+' : '-');
+        const CommandResult up =
+            MoveWithApproach(ctx, m, idx, liftTargets, liftParams, "the lift-off point");
+        if (!up.ok) return up;
+    }
+
+    const CommandResult mv =
+        MoveWithApproach(ctx, m, idx, targets, p, "'" + std::string(pos->name) + "'");
+    if (!mv.ok || !p.GetBool(kTeachParamName)) return mv;
+    return TeachAfterMove(ctx, m, device, *pos);
+}
+
 // Read the device's live pose into ctx as <prefix>_<axis>, lowercase — the same
 // spelling manual_adjust already uses, so a script that jogs and a script that
 // merely looks name the pose identically.
@@ -894,6 +989,31 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveRelative, kParallelByDevice});
+
+    reg.Register({"move_lift_off", "Motion",
+                  "Lift off along one local axis (default 2 mm; hexapod X+, gantry Z-), "
+                  "THEN move to a saved position (optionally with a slower final approach)",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
+                      {"position", PT::PositionUid, true, {}, 0, 0, {},
+                       "saved position uid to drive to after the lift"},
+                      {"lift_mm", PT::Double, false, 2.0, 0.0, 50.0, {},
+                       "lift-off distance (mm); 0 = no lift, just the move"},
+                      {"lift_axis", PT::String, false, "", 0, 0, {},
+                       "signed local axis for the lift, e.g. \"Z-\" or \"X+\"; empty = "
+                       "by controller (PI hexapod X+, ACS gantry Z-)"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "per-leg arrival timeout"},
+                      {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
+                      VelocityParam(),
+                      ExposureParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
+                      TeachParam(),
+                  },
+                  CommandSpec::Needs::None, ExecMoveLiftOff, kParallelByDevice});
 
     reg.Register({"move_relative_global", "Motion",
                   "Relative move along GLOBAL axes (via the device transform), wait for settle",
