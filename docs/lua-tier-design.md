@@ -19,13 +19,15 @@ original two-tier decision: a real language over the SAME command registry.
 - Same operational contract as the recipe engine: one worker thread, one
   orchestration owner at a time, cooperative stop honored inside any wait or
   loop, safety-alert abort, exceptions/errors contained, no UI-thread blocking.
-- Programs are **plain `.lua` files** authored in a real editor (VS Code);
-  FireDog lists, runs, stops, and monitors them. No in-app code editor.
+- Programs are **plain `.lua` files**; FireDog lists, runs, stops, and
+  monitors them. (Phase C1 shipped them view-only; the in-app editor came
+  later as C4, below — the file on disk is still the program.)
 
 **Non-goals (this phase)**
 
 - No in-app text editing of scripts (view + reload only — ImGui is the wrong
   tool for code editing; bobcat's operators author in external editors too).
+  *Superseded by C4 (implemented 2026-09) — see §8.*
 - No Lua debugger (breakpoints/step) — bobcat proves it's buildable on
   `lua_sethook` later; the hook infrastructure this phase adds is the same one
   a debugger would extend.
@@ -182,17 +184,50 @@ handles `fd.prompt` (same engine-side pending-prompt pattern).
    pauses land at line boundaries, so a blocking fd.* command finishes first;
    Stop and safety aborts always release a pause). Still usage-driven and NOT
    built: script-local `positions` teaching helpers.
-4. **C4 — FUTURE: in-app script editor, VS-Code-style (not scheduled)**. The
-   Scripts page's read-only source view grows into a real editor: editable
-   text with Lua syntax highlighting, line numbers + breakpoint gutter,
-   auto-indent, find, and save back to the script file (dirty guard like the
-   recipe editor's). Candidate approach: port/embed an ImGui code-editor
-   widget (e.g. the ImGuiColorTextEdit family — needs vetting for ImGui 1.92
-   dynamic fonts) rather than hand-rolling one; `fd.*` completion could come
-   straight from `CommandRegistry::List()` + each command's `ParamSpec`s
-   (the registry is the completion database for free). This is a RICH-FEATURE
-   task — sizeable UI work with no new engine capability — which is why
-   authoring deliberately stays in external editors until it is scheduled.
+4. **C4 — in-app script editor (IMPLEMENTED 2026-09)**. The Scripts page's
+   source view is a real editor: Lua syntax colour, line numbers + the
+   breakpoint gutter, auto-indent, Tab indent, find, completion, a compile-only
+   syntax check and lint, Save / Revert / New, and the Recipe Editor's
+   unsaved-changes guard (`SwitchPage`, list clicks, Reload, the exit
+   confirm). State: `ScriptEditorState` (`ui/ScriptEditor.h`, one `App`
+   member); code: `ui/pages/PageScripts.cpp`.
+
+   Approach — NOT an embedded editor widget. The ImGuiColorTextEdit family
+   was rejected for 1.92+ dynamic fonts and for being a second text-editing
+   implementation to maintain. Instead ImGui's own `InputTextMultiline` does
+   the editing (caret, selection, clipboard, undo) with its text colour set to
+   TRANSPARENT, and the page paints a syntax-coloured rendering of the same
+   buffer into the parent draw list BEFORE the widget (a parent's draw list
+   renders before its children, so the colour sits under the widget's
+   selection highlight and caret — the caret is `ImGuiCol_InputTextCursor`,
+   not the text colour). The widget is sized to the WHOLE text and never
+   scrolls itself; the child around it scrolls, so gutter, colour, find marks
+   and caret share one scroll offset. Two ImGui facts are load-bearing:
+   (1) Escape inside an InputText REVERTS the whole edit session — the edit
+   callback keeps a `shadow` copy and the page restores it on that
+   deactivation, so reaching for Escape to close the completion popup cannot
+   lose the typing; (2) ImGui fires ONE callback per frame (Completion, else
+   Edit, else Always), so the key handling is one function both events call.
+   The completion popup is a window on the TOOLTIP layer (`Begin` with
+   `ImGuiWindowFlags_Tooltip | NoFocusOnAppearing`): drawn above everything
+   without taking the keyboard, which is what lets Up/Down/Tab/Enter reach
+   the editor; a click on a row takes focus, so the editor asks for it back
+   and applies the row on its next callback.
+
+   The completion database is `CommandRegistry::List()` (name, params,
+   description) plus `LuaFdBuiltins()` in `LuaEngine.cpp` — the hand-written
+   bindings listed once, next to the code that binds them, so the editor never
+   carries a second copy. The same set is what the lint checks `fd.<name>`
+   against; the syntax check is `CheckLuaSyntax` (`luaL_loadbufferx` on a
+   bare scratch state: nothing runs, no header leaves the engine TU),
+   debounced 0.6 s behind the last keystroke.
+
+   **The engine still runs the FILE.** Run is disabled while the buffer is
+   dirty and the editor is read-only while `orch_.Busy()`, so the line the
+   debugger reports is always a line of the text on screen. Save preserves the
+   file's line endings and rescans the list (the description is the first
+   line), keeping the selection by path. The two standard procedures can be
+   edited here like any file, and the page keeps saying which copy runs.
 
 ## 9. Open questions (decide at review)
 

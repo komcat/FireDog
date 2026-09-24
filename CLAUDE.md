@@ -165,6 +165,7 @@ Breaking any of these is a defect, not a style choice.
 - When moving UI code between files, keep window/child/label strings and call order **byte-identical** (ImGui IDs derive from the runtime stack, not source location), and never mix a move with an improvement in one commit.
 - Dangerous actions stay gated behind their armed checkbox (IO outputs, pneumatics, jog, click-to-move).
 - Put global style/color tweaks in `ui/Theme.{h,cpp}`, not in individual panels.
+- **The script editor is ImGui's `InputTextMultiline` under a colour overlay, and the engine runs the FILE.** The widget's text is transparent; the page paints the coloured text into the PARENT draw list before the widget and sizes the widget to the whole buffer so the outer child scrolls both — draw the overlay anywhere else (foreground list, after the widget) and it lands over the selection or drifts from the caret. Escape in an InputText REVERTS the edit session, hence `ScriptEditorState::shadow`; ImGui fires ONE text callback per frame (Completion, else Edit, else Always), so key handling lives in one function both call. Run stays disabled while the buffer is dirty, or the debugger's line numbers describe a file nobody is looking at. Completion candidates come from `CommandRegistry::List()` + `LuaFdBuiltins()` (`LuaEngine.cpp`) — never a list typed in the UI.
 - **Do not reintroduce raylib/rlImGui.** It is single-window by design, which makes a real second OS window impossible and blocks ImGui multi-viewport. Owning the GLFW host removes that ceiling.
 
 ### Project

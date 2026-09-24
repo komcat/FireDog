@@ -14,6 +14,7 @@
 #include "ui/GlHost.h"
 #include "ui/Widgets.h"        // MarkIcon (the pt1/pt2 step diagrams)
 #include "ui/UiSettings.h"     // QuickIoRow (the Jog window's IO tab rows)
+#include "ui/ScriptEditor.h"   // ScriptEditorState (the Scripts page's editor)
 #include "command/CommandRegistry.h"   // ParamSpec (schema forms)
 #include "command/LuaEngine.h"         // ScriptInfo (Scripts page)
 #include "command/Orchestration.h"     // registry + engines + runner, one unit
@@ -448,10 +449,24 @@ private:
     // Worker->UI hand-off for the E points, plus the idle fallback that mirrors
     // the SELECTED procedure's taught frame. Update(), like the other drains.
     void DrainAlignPoints();
-    // Programs page (View menu, full-page) — Phase C1: list/run .lua programs.
-    void DrawScriptsPanel();          // page body: scripts | source | run info
+    // Scripts page (View menu, full-page): list | editor | run info, plus the
+    // Lua debugger controls. The editor (design-doc item C4) is an InputText
+    // under a syntax-colour overlay — see ui/ScriptEditor.h.
+    void DrawScriptsPanel();          // page body: scripts | editor | run info
     void LoadScriptsList();           // session rescan + Scripts page selection sync
-    void SyncScriptSelection();       // clamp scriptSel_ / drop the cached source view
+    void SyncScriptSelection();       // keep the selection on the same FILE across a rescan
+    void SelectScript(int idx);       // list click: dirty guard, then load the file
+    void LoadScriptEditor(const std::string& path);   // file -> buffer (drops the old one)
+    bool SaveScriptEditor();          // buffer -> file, then rescan (description may change)
+    void RevertScriptEditor();        // buffer <- last saved text
+    void LexScript();                 // tokens + lint + line table, once per text change
+    void VerifyScript();              // CheckLuaSyntax on the buffer, now
+    void BuildScriptFdTable();        // completion candidates: registry + LuaFdBuiltins
+    void JumpToScriptLine(int line, int col, int len);   // select + scroll + focus
+    void DrawScriptEditor(bool thisRunning, bool paused, int execLine);   // the editor child
+    void DrawScriptCompletionPopup(); // the tooltip-layer candidate list under the caret
+    void DrawScriptModals();          // unsaved-changes guard + New Script
+    bool ScriptDirty() const { return !scriptEd_.path.empty() && scriptEd_.text != scriptEd_.saved; }
     // DUT Records viewer (View menu, full-page, read-only) — Phase D2.
     void DrawDutViewPanel();          // serial list | entries table | summary
     void LoadDutList();               // scan the product's data/ for records
@@ -1337,6 +1352,15 @@ private:
     // shift+click for a range from the anchor = last plainly clicked row).
     std::map<std::string, std::set<int>> scriptBps_;
     int scriptBpAnchor_ = -1;
+    ScriptEditorState scriptEd_;       // the editor: buffer, tokens, lint, completion
+    // Unsaved-changes guard, the Recipe Editor's shape: 1 = select another
+    // script (scPendingSel_), 2 = leave the page (scLeaveTarget_), 3 = reload
+    // the list. Raised only while the machine is idle — see SwitchPage.
+    int  scConfirmAction_ = 0;
+    int  scPendingSel_    = -1;
+    Page scLeaveTarget_   = Page::Overview;
+    bool scNewOpen_       = false;     // New Script name prompt
+    char scNewName_[64]   = "";
 
     // serial|openedAt of the DUT record currently open, so Update can
     // edge-detect a NEW one and drop the taught frames with it.
@@ -1543,8 +1567,6 @@ private:
     char                     dataFilter_[64] = "";
     int                      dataSortCol_ = 0;     // table column the rows are ordered by
     bool                     dataSortAsc_ = true;  // (kept so a Reload keeps the order)
-    std::string              scriptSrcPath_;    // which file scriptSrc_ holds
-    std::vector<std::string> scriptSrc_;        // source lines (view only)
     std::string              scriptStartErr_;   // last Start() rejection
 
     bool openLoadProduct_ = false;   // menu -> popup handoff (OpenPopup must

@@ -51,6 +51,27 @@ struct ScriptInfo {
 // Scan `dir` for *.lua (sorted by name). Missing dir -> empty, never throws.
 std::vector<ScriptInfo> ListScripts(const std::string& dir);
 
+// Compile-only check of a script's text on a scratch Lua state: nothing runs,
+// no binding exists, so a script that calls fd.* still checks clean. Returns
+// "" when the chunk parses, else the compiler's message with the "[chunk]:N:"
+// prefix stripped; `line` (nullable) receives N, or 0 when the message has no
+// line. The Scripts editor runs this behind a short debounce while typing.
+std::string CheckLuaSyntax(const std::string& source, const std::string& chunkName,
+                           int* line = nullptr);
+
+// The hand-written fd.* bindings (everything RunLuaFile adds beside the
+// generated per-command functions), for the editor's completion and lint.
+// The registry lists the commands; THIS lists the rest, so the editor never
+// carries a second copy of what the engine binds. `name` is the member as
+// written after "fd." (dotted for a sub-table entry), `insert` what completion
+// puts in the buffer, `help` one line for the popup.
+struct LuaFdBuiltin {
+    const char* name;
+    const char* insert;
+    const char* help;
+};
+const std::vector<LuaFdBuiltin>& LuaFdBuiltins();
+
 class LuaEngine;
 
 // Run a .lua file synchronously on the CALLING thread with the standard fd

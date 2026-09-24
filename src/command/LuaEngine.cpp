@@ -51,6 +51,84 @@ std::vector<ScriptInfo> ListScripts(const std::string& dir)
     return out;
 }
 
+// ---- Compile-only syntax check (Scripts editor) ------------------------------
+// A bare luaL_newstate with NO libraries and NO fd table: luaL_loadbufferx
+// only parses, so an unknown global is not its business (the lint above the
+// editor covers fd.* names) and nothing in it can move the machine. "t" mode
+// refuses a precompiled chunk, which a .lua file has no business being.
+std::string CheckLuaSyntax(const std::string& source, const std::string& chunkName,
+                           int* line)
+{
+    if (line) *line = 0;
+    lua_State* L = luaL_newstate();
+    if (!L) return "cannot create a Lua state";
+    // '=' names the chunk verbatim, so the message reads "<name>:12: ...".
+    const std::string chunk = "=" + chunkName;
+    std::string msg;
+    const int rc = luaL_loadbufferx(L, source.data(), source.size(), chunk.c_str(), "t");
+    if (rc != LUA_OK) {
+        const char* m = lua_tostring(L, -1);
+        msg = m ? m : "syntax error";
+        // Strip "<name>:N: " and hand N back.
+        const std::string prefix = chunkName + ":";
+        if (msg.rfind(prefix, 0) == 0) {
+            std::size_t i = prefix.size();
+            int n = 0;
+            bool any = false;
+            while (i < msg.size() && msg[i] >= '0' && msg[i] <= '9') {
+                n = n * 10 + (msg[i] - '0');
+                ++i;
+                any = true;
+            }
+            if (any && i < msg.size() && msg[i] == ':') {
+                if (line) *line = n;
+                ++i;
+                while (i < msg.size() && msg[i] == ' ') ++i;
+                msg = msg.substr(i);
+            }
+        }
+    }
+    lua_close(L);
+    return msg;
+}
+
+// The names RunLuaFile binds by hand (below), in one table the editor reads.
+// Keep it in step with the set_function calls: a binding added there and not
+// here is flagged as unknown by the lint until it is.
+const std::vector<LuaFdBuiltin>& LuaFdBuiltins()
+{
+    static const std::vector<LuaFdBuiltin> k = {
+        {"read", "read(",
+         "fd.read(topic) -> value, count : latest DataBus value (nil before the first "
+         "publish) and the topic's publish counter, read count-first so a fresh-sample "
+         "gate can never see a stale value"},
+        {"sleep", "sleep(", "fd.sleep(ms) : wait, interrupted by Stop"},
+        {"log", "log(", "fd.log(msg) : a line into the log band and the daily log"},
+        {"logf", "logf(", "fd.logf(fmt, ...) : printf-style fd.log"},
+        {"prompt", "prompt(",
+         "fd.prompt(msg) -> ok : block on the OK / Cancel prompt window"},
+        {"input", "input(",
+         "fd.input(msg) -> text | nil : block on a text prompt (keyboard or scanner); "
+         "nil on Cancel"},
+        {"clock", "clock()", "fd.clock() -> seconds : monotonic clock"},
+        {"param", "param(",
+         "fd.param(name, default) -> value : the ctx value a recipe or a page injected, "
+         "else the default; logs which one was used"},
+        {"positions", "positions(",
+         "fd.positions(device) -> { name = uid } : the device's taught positions"},
+        {"ctx", "ctx.",
+         "fd.ctx.key : read / write the run context (bool, number or string)"},
+        {"dut", "dut.", "fd.dut : read accessors over the open DUT record"},
+        {"dut.is_open", "dut.is_open()", "fd.dut.is_open() -> bool"},
+        {"dut.serial", "dut.serial()", "fd.dut.serial() -> string"},
+        {"dut.product", "dut.product()", "fd.dut.product() -> string"},
+        {"run_recipe", "run_recipe(",
+         "fd.run_recipe(uid_or_name) : run a library recipe inline on this worker "
+         "(not available to a script a recipe's run_script started)"},
+    };
+    return k;
+}
+
 // ---- Lua hook (stop + line reporting) ---------------------------------------
 // A pointer to this stack-resident context travels in the lua_State's extra
 // space; the hook fires every LINE (source highlight, engine runs only) and

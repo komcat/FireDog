@@ -655,6 +655,8 @@ void App::DrawExitConfirmModal()
             ImGui::BulletText("Recipe editor has unsaved edits");
         if (session_.ProgramsDirty())
             ImGui::BulletText("Program deck has unsaved edits");
+        if (ScriptDirty())
+            ImGui::BulletText("Script editor has unsaved edits");
         if (orch_.Busy())
             ImGui::BulletText("A recipe/script/path move is still running");
         ImGui::Separator();

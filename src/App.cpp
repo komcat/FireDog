@@ -428,6 +428,12 @@ void App::SwitchPage(Page p)
         edLeaveTarget_   = p;
         return;
     }
+    // Same guard, same reasoning, for the script editor's buffer.
+    if (currentPage_ == Page::Scripts && ScriptDirty() && !orch_.Busy()) {
+        scConfirmAction_ = 2;
+        scLeaveTarget_   = p;
+        return;
+    }
     if (IsTakeoverPage(p) && !IsTakeoverPage(currentPage_))
         prevPage_ = currentPage_;
     currentPage_ = p;
@@ -553,14 +559,23 @@ void App::ResetDocumentSelections()
     SyncScriptSelection();
 }
 
-// Scripts page selection, after the session rescanned the scripts dir: keep a
-// still-valid index, otherwise fall back to the first script (or none).
+// Scripts page selection, after the session rescanned the scripts dir: keep
+// the selection on the same FILE (a Save rescans to refresh the description
+// and must not hop), otherwise a still-valid index, otherwise the first
+// script (or none). The editor buffer is not touched here: a clean buffer
+// whose file is no longer listed (product changed) is dropped by the page on
+// its next draw, and a DIRTY one is kept and shown as an orphan, because a
+// product load is not a licence to discard somebody's edits.
 void App::SyncScriptSelection()
 {
-    if (scriptSel_ >= static_cast<int>(session_.Scripts().size()))
+    int found = -1;
+    for (int i = 0; i < static_cast<int>(session_.Scripts().size()); ++i) {
+        if (session_.Scripts()[i].path == scriptEd_.path) { found = i; break; }
+    }
+    if (found >= 0)
+        scriptSel_ = found;
+    else if (scriptSel_ >= static_cast<int>(session_.Scripts().size()))
         scriptSel_ = session_.Scripts().empty() ? -1 : 0;
-    scriptSrcPath_.clear();   // force a source re-read on next draw
-    scriptSrc_.clear();
     scriptStartErr_.clear();
     scriptBpAnchor_ = -1;
 }
