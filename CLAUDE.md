@@ -43,6 +43,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 | 3 — UI | `src/App.*`, `src/ui/` | GLFW+OpenGL3 host, ImGui pages, ImPlot charts | `docs/ui-layer.md`, `docs/ui-file-layout.md` |
 | — Access | `src/core/Employees.*`, `src/ui/pages/PageLogin.cpp` | employee roster, levels, the login gate | `docs/user-access-design.md` |
 | — Tools | `tools/rig/` | `FireDogRig`, the console bring-up rig (layers 1–2, no UI) | `docs/rig-console.md` |
+| — Release | `tools/release/package-release.ps1` | the release zip from the `x64-release-deploy` build (exes + runtime DLLs + `config/` minus `*.local.json` + `assets/`); the five-step procedure is in its header | — |
 
 ### Topic docs (`docs/`)
 
