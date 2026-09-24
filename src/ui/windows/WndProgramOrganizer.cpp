@@ -553,6 +553,16 @@ void App::DrawProgramOrganizer()
     } else {
         ImGui::TextDisabled("no program loaded - New, or Load on the Run page");
     }
+    // Save and Close sit on this top row, not under the trees: on a tall
+    // library the foot scrolls out of reach of a hand that is up here anyway.
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    if (IconSmallButton(UiIcon("Save"), session_.ProgramsDirty() ? "Save*" : "Save"))
+        session_.SavePrograms();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Write the programs file");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Close")) orgOpen_ = false;
     ImGui::EndDisabled();
     if (orgDelConfirm_) { ImGui::OpenPopup("orgDel"); orgDelConfirm_ = false; }
     if (ImGui::BeginPopup("orgDel")) {
@@ -710,7 +720,7 @@ void App::DrawProgramOrganizer()
     ProgramSlot* other1 = orgTwo_ ? &slot2 : nullptr;   // what a drag INTO panel 1 may come from
 
     // ---- Columns: the library | 1st slot | aisle | 2nd slot ----
-    const float footH = ImGui::GetFrameHeightWithSpacing() * 3.0f;
+    const float footH = ImGui::GetFrameHeightWithSpacing() * 2.0f;
     const float bodyH = ImGui::GetContentRegionAvail().y - footH;
     // The library column is dragged and persisted like every other splitter in
     // the app. Clamped against the CURRENT width each frame, so shrinking the
@@ -909,18 +919,11 @@ void App::DrawProgramOrganizer()
 
     ImGui::EndDisabled();
 
-    // ---- Foot: what the 1st slot costs, and Save ----
+    // ---- Foot: what the 1st slot costs (Save and Close are on the top row) ----
     ImGui::Separator();
     const long long runs = ExpandedCount(slot.items);
     ImGui::Text("%d item(s) in slot %d, expanding to %lld recipe run(s).",
                 CountRecipeNodes(slot.items), orgSlot_ + 1, runs);
-    ImGui::BeginDisabled(busy);
-    if (IconButton(UiIcon("Save"), session_.ProgramsDirty() ? "Save*" : "Save",
-                   ImVec2(110.0f, 0.0f)))
-        session_.SavePrograms();
-    ImGui::SameLine();
-    if (ImGui::Button("Close", ImVec2(90.0f, 0.0f))) orgOpen_ = false;
-    ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled("Edits live in memory until Save.");
 
