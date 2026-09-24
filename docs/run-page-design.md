@@ -140,7 +140,14 @@ Operator-facing: minimal reading, big controls, DUT-first flow.
   raster_scan.lua), **Climb** (close the gap, climb_raster.lua — see
   `docs/climb-raster-design.md`) and **XCAN** (the peak, hexapod_align.lua).
   Each tab is hex-left / hex-right × launch presets, right-click to edit, with
-  inline results. Its height is dragged by the splitter above it and persisted
+  inline results. The XCAN and Climb tabs share one **Target** row (the
+  product power classes; the active slot is injected into every launch), and
+  the XCAN row ends in **MAX**: no exit threshold at all — the ladder runs
+  every rung with the adaptive zones off and parks on the best point, the
+  manual maximisation for a part whose class is not known yet. MAX is a mode
+  over the slot, not a slot: a click on any target (or a Quick launch, which
+  names one) turns it off, and Climb, whose target is mandatory, refuses to
+  run under it and says so. Its height is dragged by the splitter above it and persisted
   (`runScanH`), because the tabs carry parameter forms and a fixed row count
   crops whichever tab needs the most. Below that, a **log band** (the shared
   Overview log viewer).

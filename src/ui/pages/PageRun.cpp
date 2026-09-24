@@ -1636,11 +1636,16 @@ void App::StartXcanPreset(const std::string& device, int presetIdx)
         {"align_dir_memory", p.dirMemory ? 1.0 : 0.0},
         {"align_reuse_sample", p.reuseSample ? 1.0 : 0.0},
         {"align_trace", xcanTrace_ ? 1.0 : 0.0},
-        {"align_exit_threshold", tp.targetUa * 1e-6},
-        {"align_adaptive", 1.0},
+        // MAX: no threshold (0 = off in the script) and the plain ladder — the
+        // adaptive zones are defined off a target this run does not have.
+        {"align_exit_threshold", xcanTargetMax_ ? 0.0 : tp.targetUa * 1e-6},
+        {"align_adaptive", xcanTargetMax_ ? 0.0 : 1.0},
         {"align_zone_low", tp.zoneLowUa * 1e-6},
         {"align_zone_high", tp.zoneHighUa * 1e-6},
     };
+    if (xcanTargetMax_)
+        FD_INFO("script", "xcan preset '%s' on %s: MAX (no exit threshold)", p.label.c_str(),
+                device.c_str());
     scriptStartErr_.clear();
     if (!orch_.lua.Start(script, std::move(env), &scriptStartErr_))
         FD_WARN("script", "xcan preset '%s' rejected: %s", p.label.c_str(),
@@ -1810,6 +1815,7 @@ void App::DrawRunQuickAlign()
         ImGui::BeginDisabled(busy || !ready);
         if (ImGui::Button(label, size)) {
             xcanPresetSel_ = targetIdx;
+            xcanTargetMax_ = false;   // this button names a target
             StartXcanPreset(dev, presetIdx);
         }
         ImGui::EndDisabled();
@@ -1894,9 +1900,11 @@ void App::DrawRunXcanBlock()
         anyTarget = true;
         ImGui::SameLine();
         ImGui::PushID(i);
-        if (PresetButton(XcanTargetLabel(t).c_str(), xcanPresetSel_ == i,
-                         ImVec2(76.0f, 0.0f)))
+        if (PresetButton(XcanTargetLabel(t).c_str(), xcanPresetSel_ == i && !xcanTargetMax_,
+                         ImVec2(76.0f, 0.0f))) {
             xcanPresetSel_ = i;
+            xcanTargetMax_ = false;
+        }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Exit target %g uA, adaptive zones %g-%g uA\n"
                               "right-click: settings",
@@ -1912,6 +1920,15 @@ void App::DrawRunXcanBlock()
         ImGui::SameLine();
         if (ImGui::SmallButton("targets...")) xcanTgtCfgOpen_ = true;
     }
+    // MAX: no exit threshold — run the whole ladder, stay on the best point.
+    // The manual maximisation for a part whose power class is not known yet.
+    ImGui::SameLine();
+    if (PresetButton("MAX", xcanTargetMax_, ImVec2(56.0f, 0.0f))) xcanTargetMax_ = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("No exit threshold: every rung of the ladder runs and the\n"
+                          "hexapod parks on the best point found (adaptive zones off).\n"
+                          "Click a target to leave MAX. Climb needs a target and\n"
+                          "will not run under MAX.");
 
     // Launch row: hex-left [presets...]   hex-right [presets...]   Stop.
     // Left-click launches on that hexapod; RIGHT-click opens the preset's
@@ -2298,9 +2315,11 @@ void App::DrawRunClimbBlock()
         anyTarget = true;
         ImGui::SameLine();
         ImGui::PushID(i);
-        if (PresetButton(XcanTargetLabel(t).c_str(), xcanPresetSel_ == i,
-                         ImVec2(76.0f, 0.0f)))
+        if (PresetButton(XcanTargetLabel(t).c_str(), xcanPresetSel_ == i && !xcanTargetMax_,
+                         ImVec2(76.0f, 0.0f))) {
             xcanPresetSel_ = i;
+            xcanTargetMax_ = false;
+        }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Climb until a plane's best reaches %g%% of %g uA\n"
                               "(shared with the XCAN tab; right-click: settings)",
@@ -2319,8 +2338,12 @@ void App::DrawRunClimbBlock()
     ImGui::SameLine();
     {
         const XcanTarget& t = xcanTargets_[xcanPresetSel_];
-        ImGui::TextDisabled("  exit at %.1f uA",
-                            t.targetUa * climbPresets_[climbCfgSel_].targetPct / 100.0);
+        if (xcanTargetMax_)
+            ImGui::TextColored(ImVec4(0.98f, 0.72f, 0.32f, 1.0f),
+                               "  XCAN is on MAX - pick a target to climb");
+        else
+            ImGui::TextDisabled("  exit at %.1f uA",
+                                t.targetUa * climbPresets_[climbCfgSel_].targetPct / 100.0);
     }
 
     // Inline knob row: the four numbers that get retuned on a real part.
@@ -2373,7 +2396,8 @@ void App::DrawRunClimbBlock()
     const bool busy = orch_.Busy();
     bool anyPreset = false;
     for (const ClimbPreset& cp : climbPresets_) anyPreset |= cp.enabled;
-    const bool haveTarget = xcanTargets_[xcanPresetSel_].targetUa > 0.0;
+    // Under MAX there is no target for the climb to take a fraction of.
+    const bool haveTarget = xcanTargets_[xcanPresetSel_].targetUa > 0.0 && !xcanTargetMax_;
     const auto presets = [&](const char* dev) {
         int idx = -1;
         for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
