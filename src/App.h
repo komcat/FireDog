@@ -747,6 +747,10 @@ private:
     std::string mapCtxNode_;     // node uid under the context menu
     int         mapCtxEdge_ = -1;   // edge index under the context menu
     std::string mapSelEdgeA_, mapSelEdgeB_;   // click-selected edge (empty = none)
+    std::string mapSelNode_;     // click-selected node (not in edge mode): the
+                                 // canvas side panel offers a path or a direct
+                                 // move to it
+    bool        openMapDirect_ = false;   // arm the direct-move confirm modal
     ImVec2      mapAddAt_ = ImVec2(0.0f, 0.0f);   // canvas spot for "add node here"
     int  mapFrom_ = 0, mapTo_ = -1;    // Go combos (From index 0 = nearest node)
     std::vector<std::string> mapLastPath_;   // last computed path (canvas highlight)

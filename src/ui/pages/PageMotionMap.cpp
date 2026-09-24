@@ -12,6 +12,7 @@
 #include "imgui.h"
 
 #include "ui/Widgets.h"
+#include "command/MotionWaits.h"   // TargetsOf: the direct move commands a position's axes
 #include "core/Log.h"
 
 #include <algorithm>
@@ -42,6 +43,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         mapEdgeFrom_.clear();
         mapDragNode_.clear();
         mapSelEdgeA_.clear(); mapSelEdgeB_.clear();
+        mapSelNode_.clear();
         mapLastPath_.clear();
         mapFrom_ = 0;
         mapTo_   = -1;
@@ -66,6 +68,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
                 mapSel_ = i;
                 mapEdgeFrom_.clear();
                 mapSelEdgeA_.clear(); mapSelEdgeB_.clear();
+                mapSelNode_.clear();
                 mapLastPath_.clear();
                 mapFrom_ = 0; mapTo_ = -1;
             }
@@ -226,10 +229,23 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p0, p1, IM_COL32(20, 22, 27, 255), 4.0f);
     dl->AddRect(p0, p1, IM_COL32(70, 74, 82, 255), 4.0f);
+    // The side panel (below) sits ON the canvas, so the canvas must let later
+    // items win the hover, and its own hit-test must ignore the panel's rect —
+    // or a click on "Path here" first lands on the canvas as "click on empty
+    // space", which clears the very selection the panel is showing.
+    const ImVec2 mp = ImGui::GetIO().MousePos;
+    const bool   selNodeValid = !mapSelNode_.empty() && map.FindNode(mapSelNode_) != nullptr;
+    const ImVec2 panelSize(230.0f, ImGui::GetFrameHeightWithSpacing() * 4.0f +
+                                       ImGui::GetStyle().WindowPadding.y * 2.0f);
+    const ImVec2 panelPos(p1.x - panelSize.x - 8.0f, p0.y + 8.0f);
+    const bool   overPanel = selNodeValid &&
+        mp.x >= panelPos.x && mp.x <= panelPos.x + panelSize.x &&
+        mp.y >= panelPos.y && mp.y <= panelPos.y + panelSize.y;
+    ImGui::SetNextItemAllowOverlap();
     ImGui::InvisibleButton("mapcanvas", cs,
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-    const bool  canvasHovered = ImGui::IsItemHovered();
-    const ImVec2 mp = ImGui::GetIO().MousePos;
+    const bool   canvasHovered = ImGui::IsItemHovered() && !overPanel;
+    const ImVec2 afterCanvas   = ImGui::GetCursorScreenPos();
     const ImVec2 lm(mp.x - p0.x, mp.y - p0.y);   // mouse in canvas coords
 
     auto nodeCenter = [&p0](const MotionMapNode& n) { return ImVec2(p0.x + n.x, p0.y + n.y); };
@@ -304,6 +320,8 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
                                          : IM_COL32(150, 60, 60, 255));
         if (n.uid == currentUid)
             dl->AddCircle(c, kNodeR + 3.0f, IM_COL32(80, 220, 120, 255), 0, 3.0f);
+        if (!mapEdgeMode_ && n.uid == mapSelNode_)   // selected: white ring outside
+            dl->AddCircle(c, kNodeR + 6.0f, IM_COL32(235, 235, 240, 255), 0, 2.0f);
         if (mapEdgeMode_ && n.uid == mapEdgeFrom_)
             dl->AddCircle(c, kNodeR + 3.0f, IM_COL32(240, 200, 80, 255), 0, 3.0f);
         const char*  label = p ? p->name : "(missing)";
@@ -329,7 +347,10 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
                 mapEdgeFrom_ = hovered;   // chain: keep linking from here
             }
         } else if (!hovered.empty()) {
+            // A press both selects and starts a drag: a click that never moves
+            // is a selection, a click that moves is a reposition.
             mapDragNode_ = hovered;
+            mapSelNode_  = hovered;
             mapSelEdgeA_.clear(); mapSelEdgeB_.clear();
         } else {
             const int ei = hitEdge();   // click an edge line to select it
@@ -339,6 +360,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             } else {
                 mapSelEdgeA_.clear(); mapSelEdgeB_.clear();
             }
+            mapSelNode_.clear();   // empty space or an edge: the node panel goes
         }
     }
     if (edgeSelected && !ImGui::GetIO().WantTextInput &&
@@ -380,6 +402,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             ImGui::Separator();
             if (ImGui::MenuItem("Delete node (and its edges)")) {
                 map.RemoveNode(mapCtxNode_);
+                if (mapSelNode_ == mapCtxNode_) mapSelNode_.clear();
                 mapLastPath_.clear();
                 session_.SaveMaps();
             }
@@ -414,6 +437,131 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         ImGui::EndPopup();
     }
 
+    const Workflow::PathProgress pp = workflow_.PathStatus();
+    const bool running = pp.active && pp.devIdx == devIdx;
+
+    // Runs the planned chain through the path executor: shared by the side
+    // panel's "Path here" and the strip's Go below, so a route drawn on the
+    // canvas is exactly the route driven.
+    const auto startPath = [&](const std::string& fromUid, const std::string& toUid) {
+        std::string routeErr;
+        const std::vector<MapRouteLeg> legs =
+            BuildMapRoute(map, saved, m->Axes(), fromUid, toUid, &routeErr);
+        if (legs.empty()) {
+            FD_WARN("path", "%s: %s", devName.c_str(), routeErr.c_str());
+            return;
+        }
+        mapLastPath_.clear();
+        std::vector<Workflow::PathWaypoint> wps;
+        wps.reserve(legs.size());
+        for (const MapRouteLeg& leg : legs) {
+            mapLastPath_.push_back(leg.uid);
+            wps.push_back({leg.label, leg.targets});
+        }
+        workflow_.StartPathMove(devIdx, std::move(wps));
+    };
+
+    // ---- Side panel: the selected node, and how to get there ----
+    // On the canvas, top-right. Two offers, never both: when the device sits
+    // on a node that the map connects to the selection, a path along the
+    // edges - the whole reason the map exists. Otherwise a DIRECT move, behind
+    // a confirmation, because the edges are the record of which straight
+    // lines are known to be clear and a move that ignores them may hit
+    // whatever the map was drawn to avoid.
+    if (selNodeValid) {
+        const SavedPos* selPos = posOf(mapSelNode_);
+        const bool here = mapSelNode_ == currentUid;
+        std::string routeErr;
+        const bool routed = !here && !currentUid.empty() && selPos &&
+            !BuildMapRoute(map, saved, m->Axes(), currentUid, mapSelNode_, &routeErr).empty();
+        const bool canMove = !running && !orch_.Busy() && m->IsConnected() && selPos;
+
+        ImGui::SetCursorScreenPos(panelPos);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.11f, 0.14f, 0.96f));
+        ImGui::BeginChild("mapside", panelSize, ImGuiChildFlags_Borders,
+                          ImGuiWindowFlags_NoScrollbar);
+        ImGui::PopStyleColor();
+        ImGui::TextUnformatted(selPos ? selPos->name : "(missing position)");
+        if (!selPos) {
+            ImGui::TextDisabled("node has no saved position");
+        } else if (here) {
+            ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.40f, 1.0f), "device is here");
+        } else if (routed) {
+            const SavedPos* fromPos = posOf(currentUid);
+            ImGui::TextDisabled("path from '%s'", fromPos ? fromPos->name : "?");
+            ImGui::BeginDisabled(!canMove);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.50f, 0.28f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.62f, 0.34f, 1.0f));
+            if (ImGui::Button("Path here", ImVec2(-1.0f, 0.0f)))
+                startPath(currentUid, mapSelNode_);
+            ImGui::PopStyleColor(2);
+            ImGui::EndDisabled();
+        } else {
+            if (currentUid.empty()) {
+                ImGui::TextDisabled("device is not on a node");
+            } else {
+                const SavedPos* fromPos = posOf(currentUid);
+                ImGui::TextDisabled("no path from '%s'", fromPos ? fromPos->name : "?");
+            }
+            ImGui::BeginDisabled(!canMove);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.62f, 0.42f, 0.12f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.52f, 0.16f, 1.0f));
+            if (ImGui::Button("Move directly...", ImVec2(-1.0f, 0.0f))) openMapDirect_ = true;
+            ImGui::PopStyleColor(2);
+            ImGui::EndDisabled();
+        }
+        ImGui::BeginDisabled(!m->IsConnected());
+        if (ImGui::SmallButton("Stop")) {
+            if (running) workflow_.CancelPathMove();
+            else         workflow_.StopMotion(devIdx);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Deselect")) mapSelNode_.clear();
+        ImGui::EndChild();
+        ImGui::SetCursorScreenPos(afterCanvas);   // back below the canvas
+    }
+
+    if (openMapDirect_) { ImGui::OpenPopup("Direct Move"); openMapDirect_ = false; }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Direct Move", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const SavedPos* selPos = selNodeValid ? posOf(mapSelNode_) : nullptr;
+        if (!selPos || running || orch_.Busy() || !m->IsConnected()) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            ImGui::Text("Move %s directly to '%s'?", devName.c_str(), selPos->name);
+            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.25f, 1.0f),
+                               "This is a straight-line move that ignores the map's edges.");
+            ImGui::TextDisabled("%s", currentUid.empty()
+                                          ? "The device is not on a node, so no path can be planned."
+                                          : "The map has no path from the node the device is on.");
+            ImGui::TextDisabled("Make sure nothing is in the way before confirming.");
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.62f, 0.42f, 0.12f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.52f, 0.16f, 1.0f));
+            if (ImGui::Button("Move directly")) {
+                const auto targets = TargetsOf(*selPos, m);
+                if (targets.empty()) {
+                    FD_WARN("path", "%s: '%s' shares no axis with the device",
+                            devName.c_str(), selPos->name);
+                } else {
+                    FD_INFO("path", "%s: DIRECT move to '%s' (map edges bypassed, confirmed)",
+                            devName.c_str(), selPos->name);
+                    mapLastPath_.clear();
+                    if (!workflow_.MoveToPosition(devIdx, targets))
+                        FD_WARN("path", "%s: direct move to '%s' rejected",
+                                devName.c_str(), selPos->name);
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     // ---- Move along path (node -> node via edges) ----
     struct GoNode { std::string uid; const char* label; };
     std::vector<GoNode> goNodes;
@@ -422,9 +570,6 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
     }
     if (mapTo_ >= static_cast<int>(goNodes.size()))       mapTo_   = -1;
     if (mapFrom_ > static_cast<int>(goNodes.size()))      mapFrom_ = 0;
-
-    const Workflow::PathProgress pp = workflow_.PathStatus();
-    const bool running = pp.active && pp.devIdx == devIdx;
 
     ImGui::TextUnformatted("Move");
     ImGui::SameLine();
@@ -460,24 +605,9 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         const std::string fromUid =
             (mapFrom_ == 0) ? NearestMapNodeUid(map, saved, m->Positions())
                             : goNodes[mapFrom_ - 1].uid;
-
         // Route planning is shared with the recipe engine's move_path command
         // (core/MotionMap::BuildMapRoute) — one planner, two executors.
-        std::string routeErr;
-        const std::vector<MapRouteLeg> legs = BuildMapRoute(
-            map, saved, m->Axes(), fromUid, goNodes[mapTo_].uid, &routeErr);
-        if (legs.empty()) {
-            FD_WARN("path", "%s: %s", devName.c_str(), routeErr.c_str());
-        } else {
-            mapLastPath_.clear();
-            std::vector<Workflow::PathWaypoint> wps;
-            wps.reserve(legs.size());
-            for (const MapRouteLeg& leg : legs) {
-                mapLastPath_.push_back(leg.uid);
-                wps.push_back({leg.label, leg.targets});
-            }
-            workflow_.StartPathMove(devIdx, std::move(wps));
-        }
+        startPath(fromUid, goNodes[mapTo_].uid);
     }
     ImGui::EndDisabled();
 
