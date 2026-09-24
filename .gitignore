@@ -27,8 +27,10 @@ mono_crash.*
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
-# ... but tools/release/ is source (the packaging script), not a build output.
+# ... but tools/release/ (the packaging script) and the /release skill are
+# source, not build outputs.
 !tools/release/
+!.claude/skills/release/
 x64/
 x86/
 [Ww][Ii][Nn]32/
