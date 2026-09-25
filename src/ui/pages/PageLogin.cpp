@@ -46,6 +46,10 @@ UserRole MinRoleFor(Page p)
         case Page::IO:
         case Page::Pneumatic:
         case Page::DutView:
+        // A tray's corners are raw axis readings into the product document —
+        // exactly the Motion page's saved positions, which a Technician
+        // already teaches. Its Go buttons sit behind the jog arm like theirs.
+        case Page::Tray:
             return UserRole::Technician;
 
         // Teaching the machine: WatchEdit, TransformEdit, Scripts, Align,

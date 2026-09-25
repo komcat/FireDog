@@ -78,6 +78,9 @@ struct UiSettings {
     // Gripped Object page: width of its right-hand control column in px
     // (0 = default). Same reasoning as the Registration page beside it.
     float gripCtlW = 0.0f;
+    // Waffle Tray page: width of its right-hand control column in px (same
+    // shape as the two above; 0 = the App default).
+    float trayCtlW = 0.0f;
 
     // Run page: height of the Scan band in px (0 = default). Its own field
     // rather than lowerH: the band carries the scan parameter forms, and how

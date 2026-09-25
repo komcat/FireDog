@@ -40,7 +40,7 @@ bool IsTakeoverPage(Page p)
            p == Page::DutView || p == Page::Run || p == Page::Align ||
            p == Page::VisionTeach || p == Page::AlignNominal ||
            p == Page::AlignPlace || p == Page::Needle || p == Page::DeviceReg ||
-           p == Page::Grip;
+           p == Page::Grip || p == Page::Tray;
 }
 } // namespace
 
@@ -77,6 +77,7 @@ int App::Run()
         if (ui.orgLibW       > 0.0f) orgLibW_       = ui.orgLibW;
         if (ui.regCtlW       > 0.0f) regCtlW_       = ui.regCtlW;
         if (ui.gripCtlW      > 0.0f) gripCtlW_      = ui.gripCtlW;
+        if (ui.trayCtlW      > 0.0f) trayCtlW_      = ui.trayCtlW;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
         showVisionMarks_ = ui.showVisionMarks;
@@ -477,16 +478,17 @@ void App::SaveUiSettings()
     s.visionResultW = visionResultW_;
     s.edInspectW    = edInspectW_;
     s.edPaletteW    = edPaletteW_;
-    s.runDeckW      = runDeckW_;
     s.edShowHidden  = edShowHidden_;
     s.edTagFilter   = edTagFilter_;
     s.edTagHide     = edTagHide_;
+    s.runDeckW      = runDeckW_;
     s.runDutW       = runDutW_;
     s.runScanH      = runScanH_;
     s.runShotH      = runShotPanelH_;
     s.orgLibW       = orgLibW_;
     s.regCtlW       = regCtlW_;
     s.gripCtlW      = gripCtlW_;
+    s.trayCtlW      = trayCtlW_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.showVisionMarks = showVisionMarks_;
@@ -572,6 +574,11 @@ void App::ResetDocumentSelections()
     // A different product is a different part: no taught frame survives it.
     // This also covers app start, since Run() calls us before the first frame.
     workflow_.ClearLiveFrames("product loaded");
+    // And a different product's trays are different trays: the consumed
+    // cells describe the fixture that was on the machine.
+    workflow_.ClearTrayCursor("", "product loaded");
+    traySel_ = session_.Trays().empty() ? -1 : 0;
+    trayMsg_.clear();
     workflow_.InvalidateDetector("");
     SyncScriptSelection();
 }
@@ -626,6 +633,11 @@ void App::LoadProgramsFromDisk()
 void App::NewProduct(const char* name)
 {
     session_.NewProduct(name);
+    // The trays carried over; the cells taken off them did not. NewProduct
+    // does not go through ResetDocumentSelections (the selections are still
+    // valid: the collections are the same objects), so the cursor is cleared
+    // here.
+    workflow_.ClearTrayCursor("", "new product");
     SaveUiSettings();   // remember as last product for the next startup
 }
 

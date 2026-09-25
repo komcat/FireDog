@@ -142,7 +142,7 @@ void App::DrawRecipeEditPanel()
         issues = ValidateRecipe(session_.Recipes()[recipeSel_], orch_.registry, hardware_,
                                 session_.Positions(), session_.Maps(), session_.Aligns(),
                                 session_.VisionModels(), session_.Grips(),
-                                session_.Recipes(), false);
+                                session_.Trays(), session_.Recipes(), false);
     // The issues list lives in its own band at the BOTTOM of the page (the
     // run strip on top keeps only state/progress/errors).
     const std::size_t shownIssues = issues.size() < 3 ? issues.size() : 3;
@@ -844,6 +844,10 @@ std::string App::AutoNickname(const RecipeStep& s) const
             piece = v.get<std::string>();
             if (const GripProfile* g = FindGripProfile(session_.Grips(), piece))
                 piece = g->name;
+        } else if (p.type == ParamType::TrayUid && v.is_string()) {
+            piece = v.get<std::string>();
+            if (const WaffleTray* t = FindWaffleTray(session_.Trays(), piece))
+                piece = t->name;
         } else if (p.type == ParamType::IntChoice && v.is_number()) {
             // The choice's name, for the same reason: "align_station 2" makes
             // the reader look the numbering up.

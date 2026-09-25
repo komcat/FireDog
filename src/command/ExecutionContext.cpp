@@ -42,10 +42,12 @@ ExecutionContext::ExecutionContext(Workflow& wf, HardwareManager& hw,
                                    const std::vector<AlignProc>& aligns,
                                    const std::vector<VisionModel>& visionModels,
                                    const std::vector<GripProfile>& grips,
+                                   const std::vector<WaffleTray>& trays,
                                    std::string visionDir, std::string scriptsDir,
                                    Hooks hooks)
     : wf_(wf), hw_(hw), positions_(positions), maps_(maps), aligns_(aligns),
-      visionModels_(visionModels), grips_(grips), visionDir_(std::move(visionDir)),
+      visionModels_(visionModels), grips_(grips), trays_(trays),
+      visionDir_(std::move(visionDir)),
       scriptsDir_(std::move(scriptsDir)), hooks_(std::move(hooks))
 {
 }
@@ -291,6 +293,11 @@ const VisionModel* ExecutionContext::FindVisionModel(const std::string& uidOrNam
 const GripProfile* ExecutionContext::FindGrip(const std::string& uidOrName) const
 {
     return firedog::FindGripProfile(grips_, uidOrName);
+}
+
+const WaffleTray* ExecutionContext::FindTray(const std::string& uidOrName) const
+{
+    return firedog::FindWaffleTray(trays_, uidOrName);
 }
 
 bool ExecutionContext::AwaitPrompt(const std::string& message)

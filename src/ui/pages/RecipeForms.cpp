@@ -78,6 +78,7 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
         ImGui::SameLine();
         if (ImGui::RadioButton("while", isWhile) && !isWhile) {
             s.params.erase("count");
+            s.params.erase("index_ctx");   // counts a count loop only
             s.params["while"] = nlohmann::json::object();
         }
         if (s.params.contains("count")) {
@@ -85,6 +86,19 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
                         ? static_cast<int>(s.params["count"].get<double>()) : 1;
             ImGui::SetNextItemWidth(120.0f);
             if (ImGui::InputInt("count##loop", &c)) s.params["count"] = c < 1 ? 1 : c;
+            // The pass number (1-based) into a ctx key, so a child can be
+            // driven by it: move_to_cell's row_key / col_key. Empty = none.
+            char ik[64];
+            std::snprintf(ik, sizeof(ik), "%s",
+                          s.params.value("index_ctx", std::string()).c_str());
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputText("index ctx##loop", ik, sizeof(ik))) {
+                if (ik[0] == '\0') s.params.erase("index_ctx");
+                else               s.params["index_ctx"] = std::string(ik);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("ctx key that receives the pass number, 1..count\n"
+                                  "(e.g. \"r\", read by move_to_cell's row_key)");
         } else if (s.params.contains("while")) {
             DrawConditionEditor(s.params["while"]);
             int mi = s.params.value("max_iterations", kDefaultMaxIterations);
@@ -552,6 +566,41 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         }
         if (!resolved)
             ImGui::TextColored(kStaleRed, "unknown grip profile - re-pick");
+        break;
+    }
+    case ParamType::TrayUid: {
+        // Not device-scoped either: the tray carries the device its corners
+        // were taught on, so the step has no "device" of its own to scope by.
+        const std::string v = cur.is_string() ? cur.get<std::string>() : "";
+        std::string preview = v.empty() ? "(pick)" : v;
+        bool resolved       = v.empty();
+        if (const WaffleTray* t = FindWaffleTray(session_.Trays(), v)) {
+            preview  = t->name;
+            resolved = true;
+        }
+        if (!resolved) pushStale();
+        ImGui::SetNextItemWidth(fitW(preview));
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        if (!resolved) ImGui::PopStyleColor(4);
+        previewTip(preview);
+        if (open) {
+            if (session_.Trays().empty())
+                ImGui::TextDisabled("(no trays - see the Waffle Tray page)");
+            else
+                for (const WaffleTray& t : session_.Trays()) {
+                    char row[128];
+                    std::snprintf(row, sizeof(row), "%s   (%s, %d x %d)", t.name.c_str(),
+                                  t.device.empty() ? "no device" : t.device.c_str(),
+                                  t.rows, t.cols);
+                    if (ImGui::Selectable(row, t.uid == v)) {
+                        params[p.name] = t.uid;
+                        changed = true;
+                    }
+                }
+            ImGui::EndCombo();
+        }
+        if (!resolved)
+            ImGui::TextColored(kStaleRed, "unknown waffle tray - re-pick");
         break;
     }
     case ParamType::NominalUid: {

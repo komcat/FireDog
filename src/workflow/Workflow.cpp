@@ -534,6 +534,76 @@ std::size_t Workflow::LiveFrameCount() const
     return liveFrames_.size();
 }
 
+// ---- Waffle tray cursors ---------------------------------------------------
+
+void Workflow::TrayConsume(const std::string& trayUid, int row, int col)
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    trayConsumed_[trayUid].insert(TrayCell{row, col});
+}
+
+bool Workflow::TrayIsConsumed(const std::string& trayUid, int row, int col) const
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    const auto it = trayConsumed_.find(trayUid);
+    return it != trayConsumed_.end() && it->second.count(TrayCell{row, col}) > 0;
+}
+
+std::set<TrayCell> Workflow::TrayConsumed(const std::string& trayUid) const
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    const auto it = trayConsumed_.find(trayUid);
+    return it != trayConsumed_.end() ? it->second : std::set<TrayCell>{};
+}
+
+bool Workflow::TrayNext(const std::string& trayUid, const std::vector<TrayCell>& ordered,
+                        bool wrap, TrayCell* out, std::size_t* index,
+                        std::size_t* remaining)
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    std::set<TrayCell>& taken = trayConsumed_[trayUid];
+    auto pick = [&]() -> bool {
+        for (std::size_t i = 0; i < ordered.size(); ++i) {
+            if (taken.count(ordered[i])) continue;
+            taken.insert(ordered[i]);
+            if (out)       *out = ordered[i];
+            if (index)     *index = i + 1;
+            if (remaining) *remaining = ordered.size() - (i + 1);
+            return true;
+        }
+        return false;
+    };
+    if (pick()) return true;
+    if (!wrap || ordered.empty()) return false;
+    // Every enabled cell is taken: a fresh tray. Only the cells this walk
+    // covers are released — a cell disabled since was never in `ordered` and
+    // stays as it was.
+    for (const TrayCell& c : ordered) taken.erase(c);
+    FD_INFO("tray", "tray %s: every cell taken - wrapping to the first", trayUid.c_str());
+    return pick();
+}
+
+void Workflow::ClearTrayCursor(const std::string& trayUid, const char* reason)
+{
+    std::size_t n = 0;
+    {
+        const std::lock_guard<std::mutex> lock(trayMu_);
+        if (trayUid.empty()) {
+            for (const auto& kv : trayConsumed_) n += kv.second.size();
+            trayConsumed_.clear();
+        } else if (const auto it = trayConsumed_.find(trayUid); it != trayConsumed_.end()) {
+            n = it->second.size();
+            trayConsumed_.erase(it);
+        }
+    }
+    // Logged when it matters, like the live frames: "why did tray_next start
+    // from (1,1) again" has to be answerable from the log.
+    if (n > 0)
+        FD_INFO("tray", "tray cursor(s) cleared: %s (%zu consumed cell(s) released%s%s)",
+                reason ? reason : "reset", n, trayUid.empty() ? "" : ", tray ",
+                trayUid.c_str());
+}
+
 void Workflow::QueueAlignPoint(const std::string& uid, int station, const AlignPoint& p)
 {
     const std::lock_guard<std::mutex> lock(alignPtMu_);

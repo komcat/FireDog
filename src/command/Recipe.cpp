@@ -298,6 +298,7 @@ struct ValidateEnv {
     const std::vector<AlignProc>& aligns;
     const std::vector<VisionModel>& visionModels;
     const std::vector<GripProfile>& grips;
+    const std::vector<WaffleTray>&  trays;
     const std::vector<Recipe>& library;
     bool requireConnected = false;
     std::vector<RecipeIssue>* issues = nullptr;
@@ -430,6 +431,14 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
                 Issue(env, where, path, "grip profile '" + v + "' not found");
             break;
         }
+        case ParamType::TrayUid: {
+            // Uid or name, existence only: whether the tray's corners are taught
+            // is checked when the step runs (TrayValidate), so a recipe written
+            // before the tray was taught still opens.
+            if (!FindWaffleTray(env.trays, v))
+                Issue(env, where, path, "waffle tray '" + v + "' not found");
+            break;
+        }
         case ParamType::MapName: {
             const auto it = env.maps.find(device);
             bool found = false;
@@ -514,6 +523,12 @@ void ValidateSteps(const ValidateEnv& env, const std::vector<RecipeStep>& steps,
             } else if (hasWhile) {
                 const std::string e = CheckConditionShape(s.params["while"]);
                 if (!e.empty()) Issue(env, where, path, e);
+            }
+            if (s.params.contains("index_ctx")) {
+                if (!s.params["index_ctx"].is_string())
+                    Issue(env, where, path, "loop index_ctx must be a ctx key (string)");
+                else if (hasWhile)
+                    Issue(env, where, path, "loop index_ctx only counts a \"count\" loop");
             }
             if (s.children.empty()) Issue(env, where, path, "loop has no children");
             ValidateSteps(env, s.children, where, path, false, depth + 1);
@@ -603,11 +618,12 @@ std::vector<RecipeIssue> ValidateRecipe(const Recipe& r, const CommandRegistry& 
                                         const std::vector<AlignProc>& aligns,
                                         const std::vector<VisionModel>& visionModels,
                                         const std::vector<GripProfile>& grips,
+                                        const std::vector<WaffleTray>& trays,
                                         const std::vector<Recipe>& library,
                                         bool requireConnected)
 {
     std::vector<RecipeIssue> issues;
-    ValidateEnv env{reg, hw, positions, maps, aligns, visionModels, grips, library,
+    ValidateEnv env{reg, hw, positions, maps, aligns, visionModels, grips, trays, library,
                     requireConnected, &issues};
     if (r.steps.empty()) issues.push_back({"(root)", "recipe has no steps", {}});
     ValidateSteps(env, r.steps, "", {}, false, 1);

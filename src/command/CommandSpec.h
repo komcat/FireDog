@@ -51,6 +51,9 @@ enum class ParamType {
                     // device-scoped — the profile NAMES the gripper it belongs
                     // to, so scoping it to a step's "device" would be a second
                     // answer to which device is holding the object
+    TrayUid,        // Waffle-tray uid (or name); not device-scoped for the same
+                    // reason — the tray carries the device its corners were
+                    // taught on
     MapName,        // MotionMap name (resolved against the step's "device")
     PinName,        // IO pin name (resolved against the step's "device")
     TopicName,      // DataBus topic (no validation — topics create on demand)

@@ -38,6 +38,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("org_lib_w"))  s.orgLibW  = j["org_lib_w"].get<float>();
         if (j.contains("reg_ctl_w"))  s.regCtlW  = j["reg_ctl_w"].get<float>();
         if (j.contains("grip_ctl_w")) s.gripCtlW = j["grip_ctl_w"].get<float>();
+        if (j.contains("tray_ctl_w")) s.trayCtlW = j["tray_ctl_w"].get<float>();
         if (j.contains("show_chart"))    s.showChart   = j["show_chart"].get<bool>();
         if (j.contains("click_to_move")) s.clickToMove = j["click_to_move"].get<bool>();
         if (j.contains("show_vision_marks")) s.showVisionMarks = j["show_vision_marks"].get<bool>();
@@ -121,16 +122,17 @@ bool UiSettings::Save(const std::string& path) const
     j["vision_result_w"] = visionResultW;
     j["ed_inspect_w"]    = edInspectW;
     j["ed_palette_w"]    = edPaletteW;
-    j["run_deck_w"]      = runDeckW;
     j["ed_show_hidden"]  = edShowHidden;
     j["ed_tag_filter"]   = edTagFilter;
     j["ed_tag_hide"]     = edTagHide;
+    j["run_deck_w"]      = runDeckW;
     j["run_dut_w"]       = runDutW;
     j["run_scan_h"]      = runScanH;
     j["run_shot_h"]      = runShotH;
     j["org_lib_w"]       = orgLibW;
     j["reg_ctl_w"]       = regCtlW;
     j["grip_ctl_w"]      = gripCtlW;
+    j["tray_ctl_w"]      = trayCtlW;
     j["show_chart"]    = showChart;
     j["click_to_move"] = clickToMove;
     j["show_vision_marks"] = showVisionMarks;

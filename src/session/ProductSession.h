@@ -29,6 +29,7 @@
 #include "core/PositionHistory.h"   // PosChange (the positions change journal)
 #include "core/Product.h"
 #include "core/SavedPositions.h"
+#include "core/WaffleTray.h"
 #include "vision/VisionModel.h"
 
 namespace firedog {
@@ -55,6 +56,9 @@ public:
 
     std::vector<GripProfile>&       Grips()       { return grips_; }
     const std::vector<GripProfile>& Grips() const { return grips_; }
+
+    std::vector<WaffleTray>&       Trays()       { return trays_; }
+    const std::vector<WaffleTray>& Trays() const { return trays_; }
 
     // Scripts are scanned from disk, never edited here (authoring is external).
     const std::vector<ScriptInfo>& Scripts()        const { return scripts_; }
@@ -146,6 +150,16 @@ public:
     // is unknown.
     bool ApplyGripResult(const std::string& uid, double dx, double dy);
 
+    // Waffle trays — the same document conventions once more: a grid of
+    // positions taught from three corners. Product state like grips: the tray
+    // is part of how this product is loaded. Nothing hands back from a run —
+    // the cursor a run advances is runtime state on Workflow, never persisted.
+    void LoadTraysFromDisk();
+    void SaveTrays();
+    void SaveTraysTo(const std::string& path, const std::string& uid);
+    std::string TraysDump() const;
+    bool TraysDirty() const { return TraysDump() != traysBaseline_; }
+
     // Vision detection models — same persistence conventions as recipes and
     // alignment procedures: a tuned detector is a document, so explicit Save
     // plus a dirty baseline. Half-tuned parameters must not reach the next run.
@@ -234,6 +248,10 @@ private:
     std::vector<GripProfile> grips_;
     std::string              gripsUid_;
     std::string              gripsBaseline_;
+
+    std::vector<WaffleTray> trays_;
+    std::string             traysUid_;
+    std::string             traysBaseline_;
 
     std::vector<ScriptInfo> scripts_;
     std::string             scriptsDirUsed_;   // the dir the list came from

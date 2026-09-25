@@ -7,6 +7,7 @@
 #include "core/DeviceReg.h"            // DeviceReg (a gripper tip in gantry space)
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
+#include "core/WaffleTray.h"           // TrayCell (the consumed-cell cursors)
 #include "hardware/HardwareConfig.h"   // AxisTransform, HardwareConfig
 #include "vision/HalconDetector.h"     // the cached detectors (PIMPL, no SDK leak)
 #include "vision/VisionModel.h"
@@ -20,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -354,6 +356,28 @@ public:
     void ClearLiveFrames(const char* reason);
     std::size_t LiveFrameCount() const;
 
+    // ---- Waffle tray cursors (tray_next / tray_reset / the Waffle Tray page)
+    // Which cells of a tray a run has already taken, by tray uid. RUNTIME
+    // state, never persisted: a consumed cell describes the parts on ONE
+    // physical tray, exactly like a live frame describes one part. Held here
+    // for the live frame's reason — a program runs each slot as its own engine
+    // Start, and the whole point is that slot N takes the cell after slot N-1.
+    // So unlike a frame it is NOT cleared at program start or DUT open: a
+    // program consumes one cell per part. Cleared at product load and by the
+    // page's Reset / the tray_reset step, both of which say so in the log.
+    // Read by worker threads (tray_next) and the page (the shading).
+    void TrayConsume(const std::string& trayUid, int row, int col);
+    bool TrayIsConsumed(const std::string& trayUid, int row, int col) const;
+    std::set<TrayCell> TrayConsumed(const std::string& trayUid) const;   // a copy
+    // The first cell of `ordered` not yet consumed, consumed on the spot under
+    // ONE lock so two lanes cannot take the same cell. `wrap` starts over when
+    // every cell is taken; else false = exhausted and nothing consumed.
+    // `index` is 1-based into `ordered`; `remaining` counts what is left AFTER
+    // this one.
+    bool TrayNext(const std::string& trayUid, const std::vector<TrayCell>& ordered,
+                  bool wrap, TrayCell* out, std::size_t* index, std::size_t* remaining);
+    void ClearTrayCursor(const std::string& trayUid, const char* reason);   // "" = all
+
     // ---- Reliability hand-back (vision_test command) ------------------------
     // The SAME route, and for a reason worth writing down: the engine's Status
     // ctx snapshot is NOT a usable channel for a finished run. RecipeEngine
@@ -529,6 +553,10 @@ private:
     // and by the UI (the "live" indicator), written by align_solve.
     mutable std::mutex                       frameMu_;
     std::map<std::string, AlignResult>       liveFrames_;
+
+    // Consumed waffle-tray cells by tray uid (see TrayNext).
+    mutable std::mutex                       trayMu_;
+    std::map<std::string, std::set<TrayCell>> trayConsumed_;
 
     // The needle lever arm, plus its worker->UI queue.
     mutable std::mutex     needleMu_;

@@ -331,6 +331,9 @@ void App::DrawMainWindow()
                 if (CanAccess(Page::Grip) &&
                     ImGui::MenuItem("Gripped object", "F9", currentPage_ == Page::Grip))
                     ToggleEditorPage(Page::Grip);
+                if (CanAccess(Page::Tray) &&
+                    ImGui::MenuItem("Waffle Tray", "F10", currentPage_ == Page::Tray))
+                    ToggleEditorPage(Page::Tray);
                 if (CanAccess(Page::Scripts) &&
                     ImGui::MenuItem("Scripts", "F4", currentPage_ == Page::Scripts))
                     ToggleEditorPage(Page::Scripts);
@@ -378,6 +381,8 @@ void App::DrawMainWindow()
             ToggleEditorPage(Page::DeviceReg);
         if (ImGui::IsKeyPressed(ImGuiKey_F9, false) && currentPage_ != Page::Grip)
             ToggleEditorPage(Page::Grip);
+        if (ImGui::IsKeyPressed(ImGuiKey_F10, false) && currentPage_ != Page::Tray)
+            ToggleEditorPage(Page::Tray);
 
         // Quick-access strip (all pages): one-click jump to the operator pages.
         // Same guarded routing as the F-keys (activate, not toggle — clicking
@@ -434,7 +439,9 @@ void App::DrawMainWindow()
             // No Registration or Gripped object button: both are one-time
             // teach setups, reached from the View menu (or F8 / F9) only, so
             // the strip stays the row of pages an operator changes between
-            // during a shift.
+            // during a shift. The Waffle Tray page IS one of those: a fresh
+            // tray means a Reset and a glance at which cells are taken.
+            pageBtn("Waffle Tray (F10)", Page::Tray, true);
             if (anyBtn) ImGui::Separator();
         }
 
@@ -457,7 +464,7 @@ void App::DrawMainWindow()
             currentPage_ == Page::Align || currentPage_ == Page::VisionTeach ||
             currentPage_ == Page::AlignNominal || currentPage_ == Page::AlignPlace ||
             currentPage_ == Page::Needle || currentPage_ == Page::DeviceReg ||
-            currentPage_ == Page::Grip) {
+            currentPage_ == Page::Grip || currentPage_ == Page::Tray) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
@@ -470,6 +477,7 @@ void App::DrawMainWindow()
                                 : currentPage_ == Page::Needle        ? "Dispense needle"
                                 : currentPage_ == Page::DeviceReg     ? "Device registration"
                                 : currentPage_ == Page::Grip          ? "Gripped object"
+                                : currentPage_ == Page::Tray          ? "Waffle tray"
                                                                       : "Run";
             // Vision teach and the two alignment teach pages are only ever
             // reached FROM the Alignment page, and a takeover -> takeover switch
@@ -511,6 +519,7 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::Needle)        DrawNeedlePanel();
             else if (currentPage_ == Page::DeviceReg)     DrawDeviceRegPanel();
             else if (currentPage_ == Page::Grip)          DrawGripPanel();
+            else if (currentPage_ == Page::Tray)          DrawTrayPanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();

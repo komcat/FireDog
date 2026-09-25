@@ -13,6 +13,7 @@
 
 #include "core/AlignFrame.h"
 #include "core/GripProfile.h"
+#include "core/WaffleTray.h"
 #include "vision/VisionModel.h"
 #include "core/MotionMap.h"
 #include "core/SavedPositions.h"
@@ -51,7 +52,6 @@ struct Recipe {
     std::string uid;
     std::string name = "recipe";
     std::string description;
-    std::vector<RecipeStep> steps;
     // Editor bookkeeping, persisted with the recipe. `hidden` withholds it
     // from the lists (the editor's, the organizer's library) and nothing else:
     // a program that references it by uid still runs it. `tags` are free
@@ -59,13 +59,14 @@ struct Recipe {
     // the recipe, not about what it does, so nothing else reads them.
     bool hidden = false;
     std::vector<std::string> tags;
+    std::vector<RecipeStep> steps;
 };
 
-// Structural step types interpreted by the engine (not registry commands).
 bool RecipeHasTag(const Recipe& r, const std::string& tag);
 // "a, b ,c" -> {"a","b","c"}: trimmed, empties dropped, duplicates dropped.
 std::vector<std::string> ParseTagList(const std::string& text);
 
+// Structural step types interpreted by the engine (not registry commands).
 bool IsStructuralStep(const std::string& type);
 
 // Palette metadata for the structural types (the editor's add-step palette
@@ -123,6 +124,7 @@ std::vector<RecipeIssue> ValidateRecipe(const Recipe& r, const CommandRegistry& 
                                         const std::vector<AlignProc>& aligns,
                                         const std::vector<VisionModel>& visionModels,
                                         const std::vector<GripProfile>& grips,
+                                        const std::vector<WaffleTray>& trays,
                                         const std::vector<Recipe>& library,
                                         bool requireConnected);
 

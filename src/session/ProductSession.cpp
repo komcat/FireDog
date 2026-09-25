@@ -26,6 +26,7 @@ bool ProductSession::LoadInitial(const std::string& lastProduct)
     if (!product_.Loaded()) LoadAlignsFromDisk();
     if (!product_.Loaded()) LoadVisionFromDisk();
     if (!product_.Loaded()) LoadGripsFromDisk();
+    if (!product_.Loaded()) LoadTraysFromDisk();
     LoadScriptsList();   // .lua programs (product dir, else config/scripts)
     if (product_.Loaded())   // DUT records live under the product's data/
         DutSession::Instance().SetProduct(product_.name, product_.uid,
@@ -56,11 +57,13 @@ bool ProductSession::LoadProduct(const std::string& name)
     EnsureManifestRole(product_, "alignments");
     EnsureManifestRole(product_, "vision");
     EnsureManifestRole(product_, "grips");
+    EnsureManifestRole(product_, "trays");
     LoadRecipesFromDisk();   // product recipes replace the config-fallback set
     LoadProgramsFromDisk();  // product programs likewise
     LoadAlignsFromDisk();    // product alignment procedures likewise
     LoadVisionFromDisk();    // product vision detection models likewise
     LoadGripsFromDisk();     // product gripped-object profiles likewise
+    LoadTraysFromDisk();     // product waffle trays likewise
     LoadScriptsList();       // product scripts likewise (config fallback)
     DutSession::Instance().SetProduct(product_.name, product_.uid,
                                       product_.DataDir());   // auto-closes any DUT
@@ -120,6 +123,14 @@ void ProductSession::NewProduct(const char* name)
         g.measuredAt.clear();
     }
     if (!grips_.empty()) SaveGrips();
+
+    // Trays carry over intact. A tray's corners say where a fixture sits on
+    // THIS machine, and its masks which cavities are usable — the new product
+    // is loaded from the same fixture until somebody re-teaches it. Nothing
+    // in the record describes one part the way a taught frame or a reference
+    // offset does. (The consumed-cell cursor is runtime state on Workflow and
+    // is cleared by App on a new product, like on a load.)
+    if (!trays_.empty()) SaveTrays();
 }
 
 void ProductSession::SaveProduct()
@@ -140,6 +151,8 @@ void ProductSession::SaveProduct()
             SaveVisionTo(path, e.uid);
         } else if (e.role == "grips") {
             SaveGripsTo(path, e.uid);
+        } else if (e.role == "trays") {
+            SaveTraysTo(path, e.uid);
         } else {
             FD_WARN("product", "unknown manifest role '%s' (skipped)", e.role.c_str());
         }
@@ -545,6 +558,70 @@ bool ProductSession::ApplyGripResult(const std::string& uid, double dx, double d
     return true;
 }
 
+// ---- Waffle trays - the same document conventions once more ---------------
+
+void ProductSession::LoadTraysFromDisk()
+{
+    if (product_.Loaded()) {
+        const ManifestFile* e = product_.Entry("trays");
+        if (e) {
+            trays_ = LoadWaffleTraysFile(product_.FilePath("trays"), &traysUid_);
+            if (!trays_.empty()) {
+                if (!traysUid_.empty() && traysUid_ != e->uid)
+                    FD_WARN("product", "trays uid mismatch: manifest %s vs file '%s'",
+                            e->uid.c_str(), traysUid_.c_str());
+                traysBaseline_ = TraysDump();
+                return;
+            }
+            // An empty seed file adopts the manifest uid, so the first Save
+            // lands in the product and not in config/ (same as grips).
+            traysUid_      = e->uid;
+            trays_.clear();
+            traysBaseline_ = TraysDump();
+            return;
+        }
+        FD_WARN("product", "'%s' has no trays entry; using config waffle trays",
+                product_.name.c_str());
+    }
+    traysUid_.clear();
+    trays_ = LoadWaffleTrays();   // config/trays.local.json -> trays.json
+    traysBaseline_ = TraysDump();
+}
+
+void ProductSession::SaveTrays()
+{
+    std::string path = "config/trays.local.json";
+    std::string uid  = traysUid_;
+    if (product_.Loaded()) {
+        if (const ManifestFile* e = product_.Entry("trays")) {
+            path = product_.FilePath("trays");
+            uid  = e->uid;
+        }
+    }
+    if (uid.empty()) uid = GenerateUid();
+    traysUid_ = uid;
+    if (SaveWaffleTraysFile(path, trays_, uid)) {
+        traysBaseline_ = TraysDump();
+        FD_INFO("tray", "saved %zu waffle tray(s) to %s", trays_.size(), path.c_str());
+    } else {
+        FD_WARN("tray", "could not save waffle trays to %s", path.c_str());
+    }
+}
+
+void ProductSession::SaveTraysTo(const std::string& path, const std::string& uid)
+{
+    SaveWaffleTraysFile(path, trays_, uid);
+    traysUid_      = uid;
+    traysBaseline_ = TraysDump();
+}
+
+std::string ProductSession::TraysDump() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const WaffleTray& t : trays_) arr.push_back(WaffleTrayToJson(t));
+    return arr.dump();
+}
+
 // ---- Vision detection models — same conventions as alignment procedures ----
 
 std::string ProductSession::VisionDir() const
@@ -657,6 +734,7 @@ RecipeEngine::Env ProductSession::MakeRecipeEnv() const
     env.aligns    = aligns_;
     env.visionModels = vision_;
     env.grips        = grips_;
+    env.trays        = trays_;
     env.visionDir    = VisionDir();
     // The dir actually SCANNED, not the ideal one: a product with no scripts
     // folder falls back to config/scripts, and a run must resolve against the
@@ -674,6 +752,7 @@ LuaEngine::Env ProductSession::MakeLuaEnv() const
     env.aligns    = aligns_;
     env.visionModels = vision_;
     env.grips        = grips_;
+    env.trays        = trays_;
     env.visionDir    = VisionDir();
     // The dir actually SCANNED, not the ideal one: a product with no scripts
     // folder falls back to config/scripts, and a run must resolve against the

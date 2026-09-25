@@ -34,6 +34,7 @@ const char* ParamTypeName(ParamType t)
     case ParamType::NominalUid:   return "nominal";
     case ParamType::VisionUid:    return "detection model";
     case ParamType::GripUid:      return "grip profile";
+    case ParamType::TrayUid:      return "waffle tray";
     case ParamType::MapName:      return "map name";
     case ParamType::PinName:      return "pin name";
     case ParamType::TopicName:    return "topic";
@@ -92,6 +93,7 @@ bool TypeMatches(ParamType t, const nlohmann::json& v)
     case ParamType::NominalUid:
     case ParamType::VisionUid:
     case ParamType::GripUid:
+    case ParamType::TrayUid:
     case ParamType::MapName:
     case ParamType::PinName:
     case ParamType::TopicName:

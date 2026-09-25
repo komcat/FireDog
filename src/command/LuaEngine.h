@@ -100,6 +100,7 @@ public:
         std::vector<AlignProc> aligns;    // taught local frames (fd.align_*)
         std::vector<VisionModel> visionModels;   // taught detectors (fd.vision_*)
         std::vector<GripProfile> grips;          // gripped-object profiles (grip_*)
+        std::vector<WaffleTray>  trays;          // waffle trays (move_to_cell, tray_*)
         std::string              visionDir;      // where their template patches live
         std::string              scriptsDir;     // product scripts win over config/scripts
         // Seeded into the run's ctx before the script starts — the UI-side

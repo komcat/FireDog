@@ -154,7 +154,7 @@ ProductManifest CreateProduct(const std::string& name)
     m.uid     = GenerateUid();
     m.created = NowStamp();
     for (const char* role : {"positions", "recipes", "programs", "alignments",
-                            "vision", "grips"}) {
+                            "vision", "grips", "trays"}) {
         ManifestFile mf;
         mf.role = role;
         mf.uid  = GenerateUid();

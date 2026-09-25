@@ -20,6 +20,7 @@
 
 #include "core/AlignFrame.h"
 #include "core/GripProfile.h"
+#include "core/WaffleTray.h"
 #include "vision/VisionModel.h"
 #include "core/MotionMap.h"
 #include "core/SavedPositions.h"
@@ -218,6 +219,7 @@ public:
                      const std::vector<AlignProc>& aligns,
                      const std::vector<VisionModel>& visionModels,
                      const std::vector<GripProfile>& grips,
+                     const std::vector<WaffleTray>& trays,
                      std::string visionDir, std::string scriptsDir, Hooks hooks);
     ExecutionContext(const ExecutionContext&) = delete;
     ExecutionContext& operator=(const ExecutionContext&) = delete;
@@ -253,6 +255,7 @@ public:
     const std::vector<AlignProc>& Aligns() const { return aligns_; }
     const std::vector<VisionModel>& VisionModels() const { return visionModels_; }
     const std::vector<GripProfile>& Grips() const { return grips_; }
+    const std::vector<WaffleTray>&  Trays() const { return trays_; }
     // Where the models' taught template patches live, for this run's document.
     const std::string& VisionDir() const { return visionDir_; }
     // The scripts directory this run resolves against — the product's when it
@@ -282,6 +285,8 @@ public:
     const VisionModel* FindVisionModel(const std::string& uidOrName) const;
     // Gripped-object profile by uid, else by name. Same rule again.
     const GripProfile* FindGrip(const std::string& uidOrName) const;
+    // Waffle tray by uid, else by name. Same rule again.
+    const WaffleTray* FindTray(const std::string& uidOrName) const;
 
     // Teach: record `vals` as the device's saved position `name` — update by
     // name (uid kept stable) or create. Mutates the RUN's copy, so later steps
@@ -312,6 +317,7 @@ private:
     const std::vector<AlignProc>& aligns_;   // ditto
     const std::vector<VisionModel>& visionModels_;   // ditto
     const std::vector<GripProfile>& grips_;          // ditto
+    const std::vector<WaffleTray>&  trays_;          // ditto
     std::string         visionDir_;                  // by value: they are paths,
     std::string         scriptsDir_;                  // not live documents
     Hooks               hooks_;
@@ -334,10 +340,10 @@ std::optional<bool> EvalCondition(const nlohmann::json& cond, ExecutionContext& 
 // recipe validation, which has no ExecutionContext yet).
 std::string CheckConditionShape(const nlohmann::json& cond);
 
-} // namespace firedog
 // A numeric ctx value, with *found telling a missing or non-numeric key apart
 // from a genuine 0.0. Shared by the align, grip and tray commands — every
 // "<prefix>_<field>" read goes through this one so a string where a number
 // was expected fails the same way everywhere.
 double CtxNumber(const ExecutionContext& ctx, const std::string& key, bool* found);
 
+} // namespace firedog

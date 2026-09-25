@@ -118,8 +118,12 @@ StepRunner::Outcome StepRunner::ExecSteps(const std::vector<RecipeStep>& steps,
         } else if (s.type == "loop") {
             if (s.params.contains("count")) {
                 const int count = s.params["count"].get<int>();
+                // The optional index: 1-based, written before every pass so a
+                // child (move_to_cell's row_key/col_key) can be driven by it.
+                const std::string indexKey = s.params.value("index_ctx", std::string());
                 for (int k = 0; k < count; ++k) {
                     if (ctx_.ShouldStop()) return Outcome::Aborted;
+                    if (!indexKey.empty()) ctx_.CtxSet(indexKey, static_cast<double>(k + 1));
                     const Outcome o = ExecSteps(s.children, where, path, depth + 1);
                     if (o != Outcome::Ok) return o;
                 }

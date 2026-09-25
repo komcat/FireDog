@@ -248,7 +248,7 @@ std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
                     throw std::runtime_error("run_recipe: '" + ref + "' not found");
                 const std::vector<RecipeIssue> issues = ValidateRecipe(
                     *found, reg, ctx.Hw(), ctx.Positions(), ctx.Maps(), ctx.Aligns(),
-                    ctx.VisionModels(), ctx.Grips(), library, true);
+                    ctx.VisionModels(), ctx.Grips(), ctx.Trays(), library, true);
                 if (!issues.empty())
                     throw std::runtime_error("run_recipe '" + found->name + "': " +
                                              issues.front().where + ": " +
@@ -685,7 +685,7 @@ void LuaEngine::ThreadMain(std::string path, Env env)
     // the lua_State (created and destroyed inside RunLuaFile).
     ExecutionContext ctx(
         wf_, hw_, env.positions, env.maps, env.aligns,
-        env.visionModels, env.grips, env.visionDir, env.scriptsDir,
+        env.visionModels, env.grips, env.trays, env.visionDir, env.scriptsDir,
         ExecutionContext::Hooks{
             [this] { return HookShouldStop(); },
             [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },

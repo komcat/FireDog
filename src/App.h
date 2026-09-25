@@ -45,7 +45,7 @@ namespace firedog {
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
                   Align, VisionTeach, AlignNominal, AlignPlace, Needle,
-                  DeviceReg, Grip };
+                  DeviceReg, Grip, Tray };
 
 // One XCAN launch preset (a button on the Run page's Scan band): the step
 // ladder + the hexapod_align.lua tunables injected at launch. Five slots;
@@ -383,6 +383,19 @@ private:
     // a log line cannot do.
     void DrawGripPanel();
     void StartGripMeasureRun(const GripProfile& g);   // launches grip_measure.lua
+
+    // The Waffle Tray page (PageTray.cpp): a grid of positions taught from
+    // three corners, with rows, columns and cells switched on and off. The
+    // moving is a recipe step (move_to_cell); this page TEACHES the corners
+    // and shows which cells a run has taken.
+    void DrawTrayPanel();
+    // The ONE writer of a corner, for "Teach here" (the live pose) and the
+    // "or taught..." picker alike: both hand in COORDINATES. Stamps the date.
+    void TeachTrayCorner(WaffleTray& t, TrayCornerSlot slot,
+                         const std::map<std::string, double>& pose, const char* how);
+    // Drive the tray's device to cell (r,c) as a watched move. Jog-armed and
+    // idle only; a refusal lands in trayMsg_ (and the arm alert when unarmed).
+    void GoToTrayCell(const WaffleTray& t, int r, int c);
     // The private pose sweep, by the convention the alignment procedures set:
     // the position is named after its owner, so deleting the owner drops it.
     void DropGripPositions(const GripProfile& g);
@@ -990,8 +1003,17 @@ private:
     bool edOpenRenameRecipe_  = false;
     bool edOpenDeleteRecipe_  = false;
     bool edOpenDeleteStep_    = false;
+    bool edOpenTagRecipe_     = false;
     char edNameBuf_[64]       = "";
     char edSearchBuf_[64]     = "";      // palette search filter
+    char edTagBuf_[160]       = "";      // Tag modal: comma-separated tags
+    // The recipe list's filter (persisted in UiSettings, see there). A recipe
+    // that fails it still draws while SELECTED, dimmed: the editor beside the
+    // list is showing it, and a list that cannot say which one would lie.
+    bool        edShowHidden_ = false;
+    std::string edTagFilter_;
+    bool        edTagHide_    = false;
+    bool RecipeListed(const Recipe& r) const;   // passes the filter above
 
     // Alignment page UI state — the procedures themselves live in session_.
     int  alignSel_      = -1;    // selected procedure
@@ -1008,17 +1030,8 @@ private:
     // How many runs the Frame check pane's repeatability sweep asks for, and
     // the window the Cpk beneath it is computed over. One number for both: the
     // question the sweep answers is "what did THOSE runs do", and a capability
-    bool edOpenTagRecipe_     = false;
     // figure computed over a different span than the sweep is a different claim.
     int alignRepeatN_ = kAlignRepeatDefault;
-    char edTagBuf_[160]       = "";      // Tag modal: comma-separated tags
-    // The recipe list's filter (persisted in UiSettings, see there). A recipe
-    // that fails it still draws while SELECTED, dimmed: the editor beside the
-    // list is showing it, and a list that cannot say which one would lie.
-    bool        edShowHidden_ = false;
-    std::string edTagFilter_;
-    bool        edTagHide_    = false;
-    bool RecipeListed(const Recipe& r) const;   // passes the filter above
     // Which nominal the nominal pane is showing. A UID, never an index: the
     // vector is erased from and appended to while the pane is open, and an
     // index would silently start pointing at a different point. Empty = show
@@ -1153,6 +1166,16 @@ private:
     double gripFocusRangeMm_ = 0.5;
     std::string gripStartErr_;   // why the last Measure refused to start
     std::string gripTeachMsg_;   // what the last teach step did, or would not do
+
+    // ---- Waffle Tray page ----------------------------------------------------
+    // The tray list is the document's (session_.Trays()); this is the page's
+    // view of it. The consumed-cell shading is read off Workflow each frame.
+    int   traySel_ = -1;              // index into session_.Trays()
+    float trayCtlW_ = 430.0f;         // control column width, persisted
+    bool  trayCtlSplitting_ = false;  // edge-detect the drag END
+    bool  trayOpenArmPopup_ = false;  // a Go clicked with jog unarmed: raise the alert
+    int   trayLineRow_ = 1, trayLineCol_ = 1;   // the line toggles' spinners (big trays)
+    std::string trayMsg_;             // what the last button did, or would not do
 
     // Nominal teach page state — the nominals themselves live in session_.
     // Page::AlignNominal IS the "open" flag; nomProcUid_ says which procedure.
