@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <exception>
 #include <vector>
 
@@ -161,6 +162,17 @@ std::vector<LogEntry> Logger::Snapshot() const
         if (ns < floor) continue;   // hidden by a Clear()
         LogEntry e;
         e.t     = static_cast<double>(ns - p_->startNs) / 1e9;
+        // Formatted here, once per entry, not per frame: the panel redraws
+        // every visible row each frame and a localtime per row would be the
+        // most expensive thing on the Overview page.
+        {
+            const std::time_t secs = static_cast<std::time_t>(ns / 1000000000LL);
+            const int ms = static_cast<int>((ns / 1000000LL) % 1000);
+            std::tm tm{};
+            localtime_s(&tm, &secs);
+            std::snprintf(e.stamp, sizeof(e.stamp), "%02d:%02d:%02d.%03d", tm.tm_hour,
+                          tm.tm_min, tm.tm_sec, ms);
+        }
         e.level = FromSpd(m.level);
         e.text.assign(m.payload.data(), m.payload.size());
         out.push_back(std::move(e));

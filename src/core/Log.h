@@ -28,6 +28,7 @@ const char* LevelName(LogLevel lvl);
 
 struct LogEntry {
     double      t;         // seconds since logger start
+    char        stamp[16]; // local wall-clock "HH:MM:SS.mmm" — what the panel shows
     LogLevel    level;
     std::string text;      // "[source] message"
 };

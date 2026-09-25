@@ -257,8 +257,8 @@ void App::DrawLogPanel()
                       ImGuiWindowFlags_HorizontalScrollbar);
     for (const LogEntry& e : logView_) {
         if (e.level < minShown) continue;   // also filter already-buffered rows
-        ImGui::TextColored(LevelColor(e.level), "%9.3f  %-5s  %s",
-                           e.t, LevelName(e.level), e.text.c_str());
+        ImGui::TextColored(LevelColor(e.level), "%s  %-5s  %s",
+                           e.stamp, LevelName(e.level), e.text.c_str());
     }
     if (logAutoScroll_) ImGui::SetScrollY(ImGui::GetScrollMaxY());
     ImGui::EndChild();
