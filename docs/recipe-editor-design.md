@@ -175,6 +175,19 @@ combo), op combo (the 10 ops), value field shown only for comparison ops.
   it writes the current `recipes_` (mirroring the positions role).
 - Recipes reference positions/maps by uid/name exactly as Phase A defined —
   the editor never invents a new addressing scheme.
+- **Filing: `hidden` and `tags` live ON the recipe; the filter lives in
+  UiSettings.** Hide/Show and Tag on the list's toolbar edit the selected
+  recipe (dirty like a rename, saved with it, `hidden` and `tags` written
+  only when set so older files round-trip unchanged). Hidden withholds the
+  recipe from the LISTS — the editor's and the organizer's library — and from
+  nothing else: a program that names it by uid still runs it, exactly like a
+  hidden position resolving at validation. The list's filter (`show hidden`,
+  one tag, show-only-that-tag or hide-it) is how one operator looks at the
+  library, so it is persisted per station in UiSettings and never in the
+  recipes file. A recipe the filter would drop still draws while SELECTED,
+  dimmed: the editor beside the list is showing it. `App::RecipeListed` is
+  the one predicate; the organizer applies the hidden half and lets its text
+  filter match a tag as well as the name.
 
 ## 6. Small core changes required (the complete list)
 

@@ -257,17 +257,106 @@ void App::DrawRecipeEditPanel()
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Paste recipe JSON from the clipboard (new uid)");
     ImGui::EndDisabled();
+    // Filing: Hide/Show flips the selected recipe's `hidden` flag, Tag opens
+    // the tag modal. Both edit the recipe (dirty like a rename) and neither
+    // touches the filter below — hiding a recipe and choosing not to look at
+    // hidden recipes are two different decisions.
+    ImGui::BeginDisabled(!haveSel);
+    {
+        const bool selHidden = haveSel && session_.Recipes()[recipeSel_].hidden;
+        ImGui::SameLine();
+        if (ImGui::SmallButton(selHidden ? "Show" : "Hide"))
+            session_.Recipes()[recipeSel_].hidden = !selHidden;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(selHidden ? "Unhide the selected recipe"
+                                        : "Hide the selected recipe from the lists "
+                                          "(programs that reference it still run it)");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Tag")) {
+            std::string joined;
+            for (const std::string& t : session_.Recipes()[recipeSel_].tags)
+                joined += (joined.empty() ? "" : ", ") + t;
+            std::snprintf(edTagBuf_, sizeof(edTagBuf_), "%s", joined.c_str());
+            edOpenTagRecipe_ = true;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Edit the selected recipe's tags");
+    }
+    ImGui::EndDisabled();
+    // The filter. Every tag in the library is offered, so a tag typed once is
+    // picked from a list ever after, and "show"/"hide" says which way the
+    // chosen tag cuts. Persisted in UiSettings: it is how THIS operator looks
+    // at the library, not a fact about it.
+    {
+        bool filterChanged = false;
+        if (ImGui::Checkbox("show hidden", &edShowHidden_)) filterChanged = true;
+        std::vector<std::string> allTags;
+        for (const Recipe& r : session_.Recipes())
+            for (const std::string& t : r.tags)
+                if (std::find(allTags.begin(), allTags.end(), t) == allTags.end())
+                    allTags.push_back(t);
+        std::sort(allTags.begin(), allTags.end());
+        // A filter tag that no recipe carries any more (the last one was
+        // untagged, or the product changed) is still listed, so it can be
+        // cleared from the same combo it was set from.
+        if (!edTagFilter_.empty() &&
+            std::find(allTags.begin(), allTags.end(), edTagFilter_) == allTags.end())
+            allTags.push_back(edTagFilter_);
+        const float modeW = ImGui::CalcTextSize("show").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - modeW -
+                                ImGui::GetStyle().ItemSpacing.x);
+        if (ImGui::BeginCombo("##tagfilt", edTagFilter_.empty() ? "any tag" : edTagFilter_.c_str())) {
+            if (ImGui::Selectable("any tag", edTagFilter_.empty())) {
+                edTagFilter_.clear();
+                filterChanged = true;
+            }
+            for (const std::string& t : allTags) {
+                if (ImGui::Selectable(t.c_str(), edTagFilter_ == t)) {
+                    edTagFilter_  = t;
+                    filterChanged = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(edTagFilter_.empty());
+        if (ImGui::SmallButton(edTagHide_ ? "hide" : "show")) {
+            edTagHide_    = !edTagHide_;
+            filterChanged = true;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(edTagHide_ ? "Hiding recipes with this tag - click to show only them"
+                                         : "Showing only recipes with this tag - click to hide them instead");
+        if (filterChanged) SaveUiSettings();
+    }
     ImGui::Separator();
     if (session_.Recipes().empty())
         ImGui::TextWrapped("No recipes yet - New creates one, or Reload from disk.");
+    int listed = 0;
     for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
+        const Recipe& r = session_.Recipes()[i];
+        const bool passes = RecipeListed(r);
+        if (!passes && recipeSel_ != i) continue;
+        ++listed;
         ImGui::PushID(i);
-        if (ImGui::Selectable(session_.Recipes()[i].name.c_str(), recipeSel_ == i)) {
+        // Hidden recipes read as hidden even when the filter lets them through;
+        // a selected recipe the filter would drop reads the same way.
+        const bool dim = r.hidden || !passes;
+        if (dim) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+        if (ImGui::Selectable(r.name.c_str(), recipeSel_ == i)) {
             recipeSel_ = i;
             ClearStepSel();
         }
+        if (dim) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered() && (r.hidden || !r.tags.empty())) {
+            std::string tip = r.hidden ? "hidden" : "";
+            for (const std::string& t : r.tags) tip += (tip.empty() ? "" : "  ") + ("#" + t);
+            ImGui::SetTooltip("%s", tip.c_str());
+        }
         ImGui::PopID();
     }
+    if (listed == 0 && !session_.Recipes().empty())
+        ImGui::TextDisabled("(all %zu filtered out)", session_.Recipes().size());
     ImGui::EndChild();
     ImGui::SameLine();
 
@@ -462,12 +551,57 @@ void App::DrawRecipeEditPanel()
     if (edOpenRenameRecipe_) { ImGui::OpenPopup("Rename Recipe"); edOpenRenameRecipe_ = false; }
     if (edOpenDeleteRecipe_) { ImGui::OpenPopup("Delete Recipe"); edOpenDeleteRecipe_ = false; }
     if (edOpenDeleteStep_)   { ImGui::OpenPopup("Delete Step");   edOpenDeleteStep_   = false; }
+    if (edOpenTagRecipe_)    { ImGui::OpenPopup("Tag Recipe");    edOpenTagRecipe_    = false; }
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("Rename Recipe", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::InputText("##recname", edNameBuf_, sizeof(edNameBuf_));
         if (ImGui::Button("OK", ImVec2(100.0f, 0.0f)) && haveSel) {
             session_.Recipes()[recipeSel_].name = edNameBuf_;   // label only; uid unchanged
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Tag Recipe", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (haveSel) ImGui::Text("Tags for '%s'", session_.Recipes()[recipeSel_].name.c_str());
+        ImGui::SetNextItemWidth(360.0f);
+        ImGui::InputTextWithHint("##rectags", "comma-separated, e.g. left, demo",
+                                 edTagBuf_, sizeof(edTagBuf_));
+        // Every tag already in the library, one click to append: the point of
+        // a tag is that two recipes share it, and a re-typed one is a typo
+        // away from a second tag nobody meant.
+        std::vector<std::string> allTags;
+        for (const Recipe& r : session_.Recipes())
+            for (const std::string& t : r.tags)
+                if (std::find(allTags.begin(), allTags.end(), t) == allTags.end())
+                    allTags.push_back(t);
+        std::sort(allTags.begin(), allTags.end());
+        if (!allTags.empty()) {
+            ImGui::TextDisabled("existing:");
+            const std::vector<std::string> cur = ParseTagList(edTagBuf_);
+            float rowX = 0.0f;
+            for (const std::string& t : allTags) {
+                const bool have = std::find(cur.begin(), cur.end(), t) != cur.end();
+                const float w = ImGui::CalcTextSize(t.c_str()).x +
+                                ImGui::GetStyle().FramePadding.x * 2.0f;
+                if (rowX > 0.0f && rowX + w > 360.0f) rowX = 0.0f;
+                else if (rowX > 0.0f) ImGui::SameLine();
+                rowX += w + ImGui::GetStyle().ItemSpacing.x;
+                ImGui::BeginDisabled(have);
+                if (ImGui::SmallButton(t.c_str())) {
+                    std::string joined = edTagBuf_;
+                    if (!ParseTagList(joined).empty()) joined += ", ";
+                    joined += t;
+                    std::snprintf(edTagBuf_, sizeof(edTagBuf_), "%s", joined.c_str());
+                }
+                ImGui::EndDisabled();
+            }
+        }
+        if (ImGui::Button("OK", ImVec2(100.0f, 0.0f)) && haveSel) {
+            session_.Recipes()[recipeSel_].tags = ParseTagList(edTagBuf_);
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -510,6 +644,16 @@ void App::DrawRecipeEditPanel()
         ImGui::EndPopup();
     }
     DrawTeachPositionModal();
+}
+
+// The recipe list's filter: hidden recipes only on request, then the tag
+// filter either way it cuts. The organizer's library applies the hidden half
+// only — its text filter already does the narrowing there.
+bool App::RecipeListed(const Recipe& r) const
+{
+    if (r.hidden && !edShowHidden_) return false;
+    if (edTagFilter_.empty()) return true;
+    return RecipeHasTag(r, edTagFilter_) != edTagHide_;
 }
 
 // Re-teach the position a step REFERENCES, in place. Raised by the "Teach here"

@@ -9,6 +9,7 @@
 #include "hardware/HardwareManager.h"
 
 #include <algorithm>
+#include <cctype>
 #include <exception>
 #include <fstream>
 #include <set>
@@ -90,6 +91,10 @@ nlohmann::json RecipeToJson(const Recipe& r)
     j["uid"]  = r.uid;
     j["name"] = r.name;
     if (!r.description.empty()) j["description"] = r.description;
+    // Both only when set, so a file written before they existed round-trips
+    // byte for byte and stays clean in the dirty compare.
+    if (r.hidden) j["hidden"] = true;
+    if (!r.tags.empty()) j["tags"] = r.tags;
     nlohmann::json arr = nlohmann::json::array();
     for (const RecipeStep& s : r.steps) arr.push_back(StepToJson(s));
     j["steps"] = std::move(arr);
@@ -102,6 +107,13 @@ Recipe RecipeFromJson(const nlohmann::json& j)
     r.uid         = j.value("uid", std::string());
     r.name        = j.value("name", std::string("recipe"));
     r.description = j.value("description", std::string());
+    r.hidden      = j.value("hidden", false);
+    if (j.contains("tags") && j["tags"].is_array()) {
+        std::string joined;
+        for (const nlohmann::json& t : j["tags"])
+            if (t.is_string()) joined += t.get<std::string>() + ",";
+        r.tags = ParseTagList(joined);   // the same trim/dedupe the editor applies
+    }
     if (r.uid.empty()) r.uid = GenerateUid();
     if (j.contains("steps") && j["steps"].is_array()) {
         for (const nlohmann::json& s : j["steps"]) {
@@ -109,6 +121,36 @@ Recipe RecipeFromJson(const nlohmann::json& j)
         }
     }
     return r;
+}
+
+bool RecipeHasTag(const Recipe& r, const std::string& tag)
+{
+    for (const std::string& t : r.tags)
+        if (t == tag) return true;
+    return false;
+}
+
+std::vector<std::string> ParseTagList(const std::string& text)
+{
+    std::vector<std::string> out;
+    std::string cur;
+    const auto flush = [&]() {
+        std::size_t b = 0, e = cur.size();
+        while (b < e && std::isspace(static_cast<unsigned char>(cur[b]))) ++b;
+        while (e > b && std::isspace(static_cast<unsigned char>(cur[e - 1]))) --e;
+        const std::string tag = cur.substr(b, e - b);
+        cur.clear();
+        if (tag.empty()) return;
+        for (const std::string& t : out)
+            if (t == tag) return;
+        out.push_back(tag);
+    };
+    for (const char c : text) {
+        if (c == ',' || c == ';') flush();
+        else cur += c;
+    }
+    flush();
+    return out;
 }
 
 // ---- Persistence ------------------------------------------------------------

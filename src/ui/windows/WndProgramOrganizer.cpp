@@ -763,7 +763,17 @@ void App::DrawProgramOrganizer()
     // The hover tooltip is what gets the clipped name back.
     const float addW = ImGui::CalcTextSize("add").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     for (const Recipe& r : session_.Recipes()) {
-        if (!Contains(r.name, orgFilter_)) continue;
+        // Hidden means hidden from the pickers; a program that already names
+        // the recipe still runs it (RecipeByUid above never looks at the flag).
+        // The text filter matches a tag too, so "left" finds what was filed as
+        // left and not only what was named that way.
+        if (r.hidden) continue;
+        if (!Contains(r.name, orgFilter_)) {
+            bool tagHit = false;
+            for (const std::string& t : r.tags)
+                if (Contains(t, orgFilter_)) { tagHit = true; break; }
+            if (!tagHit) continue;
+        }
         ImGui::PushID(r.uid.c_str());
         const float nameW = ImGui::GetContentRegionAvail().x - addW -
                             ImGui::GetStyle().ItemSpacing.x;

@@ -52,9 +52,20 @@ struct Recipe {
     std::string name = "recipe";
     std::string description;
     std::vector<RecipeStep> steps;
+    // Editor bookkeeping, persisted with the recipe. `hidden` withholds it
+    // from the lists (the editor's, the organizer's library) and nothing else:
+    // a program that references it by uid still runs it. `tags` are free
+    // labels the lists filter on; a tag is a fact about how the author files
+    // the recipe, not about what it does, so nothing else reads them.
+    bool hidden = false;
+    std::vector<std::string> tags;
 };
 
 // Structural step types interpreted by the engine (not registry commands).
+bool RecipeHasTag(const Recipe& r, const std::string& tag);
+// "a, b ,c" -> {"a","b","c"}: trimmed, empties dropped, duplicates dropped.
+std::vector<std::string> ParseTagList(const std::string& text);
+
 bool IsStructuralStep(const std::string& type);
 
 // Palette metadata for the structural types (the editor's add-step palette

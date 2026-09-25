@@ -28,6 +28,9 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("vision_result_w")) s.visionResultW = j["vision_result_w"].get<float>();
         if (j.contains("ed_inspect_w")) s.edInspectW = j["ed_inspect_w"].get<float>();
         if (j.contains("ed_palette_w")) s.edPaletteW = j["ed_palette_w"].get<float>();
+        if (j.contains("ed_show_hidden")) s.edShowHidden = j["ed_show_hidden"].get<bool>();
+        if (j.contains("ed_tag_filter"))  s.edTagFilter  = j["ed_tag_filter"].get<std::string>();
+        if (j.contains("ed_tag_hide"))    s.edTagHide    = j["ed_tag_hide"].get<bool>();
         if (j.contains("run_deck_w")) s.runDeckW = j["run_deck_w"].get<float>();
         if (j.contains("run_dut_w"))  s.runDutW  = j["run_dut_w"].get<float>();
         if (j.contains("run_scan_h")) s.runScanH = j["run_scan_h"].get<float>();
@@ -119,6 +122,9 @@ bool UiSettings::Save(const std::string& path) const
     j["ed_inspect_w"]    = edInspectW;
     j["ed_palette_w"]    = edPaletteW;
     j["run_deck_w"]      = runDeckW;
+    j["ed_show_hidden"]  = edShowHidden;
+    j["ed_tag_filter"]   = edTagFilter;
+    j["ed_tag_hide"]     = edTagHide;
     j["run_dut_w"]       = runDutW;
     j["run_scan_h"]      = runScanH;
     j["run_shot_h"]      = runShotH;

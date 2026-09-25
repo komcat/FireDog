@@ -67,6 +67,9 @@ int App::Run()
         if (ui.visionResultW > 0.0f) visionResultW_ = ui.visionResultW;
         if (ui.edInspectW    > 0.0f) edInspectW_    = ui.edInspectW;
         if (ui.edPaletteW    > 0.0f) edPaletteW_    = ui.edPaletteW;
+        edShowHidden_ = ui.edShowHidden;
+        edTagFilter_  = ui.edTagFilter;
+        edTagHide_    = ui.edTagHide;
         if (ui.runDeckW      > 0.0f) runDeckW_      = ui.runDeckW;
         if (ui.runDutW       > 0.0f) runDutW_       = ui.runDutW;
         if (ui.runScanH      > 0.0f) runScanH_      = ui.runScanH;
@@ -475,6 +478,9 @@ void App::SaveUiSettings()
     s.edInspectW    = edInspectW_;
     s.edPaletteW    = edPaletteW_;
     s.runDeckW      = runDeckW_;
+    s.edShowHidden  = edShowHidden_;
+    s.edTagFilter   = edTagFilter_;
+    s.edTagHide     = edTagHide_;
     s.runDutW       = runDutW_;
     s.runScanH      = runScanH_;
     s.runShotH      = runShotPanelH_;

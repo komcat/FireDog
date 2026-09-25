@@ -1003,8 +1003,17 @@ private:
     // How many runs the Frame check pane's repeatability sweep asks for, and
     // the window the Cpk beneath it is computed over. One number for both: the
     // question the sweep answers is "what did THOSE runs do", and a capability
+    bool edOpenTagRecipe_     = false;
     // figure computed over a different span than the sweep is a different claim.
     int alignRepeatN_ = kAlignRepeatDefault;
+    char edTagBuf_[160]       = "";      // Tag modal: comma-separated tags
+    // The recipe list's filter (persisted in UiSettings, see there). A recipe
+    // that fails it still draws while SELECTED, dimmed: the editor beside the
+    // list is showing it, and a list that cannot say which one would lie.
+    bool        edShowHidden_ = false;
+    std::string edTagFilter_;
+    bool        edTagHide_    = false;
+    bool RecipeListed(const Recipe& r) const;   // passes the filter above
     // Which nominal the nominal pane is showing. A UID, never an index: the
     // vector is erased from and appended to while the pane is open, and an
     // index would silently start pointing at a different point. Empty = show

@@ -54,6 +54,12 @@ struct UiSettings {
     float edInspectW = 0.0f;
     // Recipe editor: width of its command palette column in px (0 = default).
     float edPaletteW = 0.0f;
+    // Recipe editor: the recipe list's filter. A view preference, so it lives
+    // here and not in the recipes file — two operators filing the same
+    // library differently must not fight over one saved filter.
+    bool        edShowHidden  = false;   // list recipes marked hidden
+    std::string edTagFilter;             // "" = every tag
+    bool        edTagHide     = false;   // false = show only that tag, true = hide it
 
     // Run page: widths of its deck (left) and DUT (right) columns in px
     // (0 = default). Same reasoning again — a takeover page with its own layout.
