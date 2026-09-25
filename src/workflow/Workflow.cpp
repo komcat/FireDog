@@ -542,6 +542,53 @@ void Workflow::TrayConsume(const std::string& trayUid, int row, int col)
     trayConsumed_[trayUid].insert(TrayCell{row, col});
 }
 
+void Workflow::TrayRelease(const std::string& trayUid, int row, int col)
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    const auto it = trayConsumed_.find(trayUid);
+    if (it != trayConsumed_.end()) it->second.erase(TrayCell{row, col});
+}
+
+void Workflow::TraySeed(const std::string& trayUid, const std::set<TrayCell>& used)
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    trayConsumed_[trayUid] = used;
+    trayActive_.erase(trayUid);   // a re-seeded tray has no part in progress
+}
+
+bool Workflow::TrayActive(const std::string& trayUid, TrayCell* out) const
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    const auto it = trayActive_.find(trayUid);
+    if (it == trayActive_.end()) return false;
+    if (out) *out = it->second;
+    return true;
+}
+
+void Workflow::SetTrayActive(const std::string& trayUid, TrayCell cell)
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    trayActive_[trayUid] = cell;
+}
+
+void Workflow::ClearTrayActive(const std::string& trayUid)
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    trayActive_.erase(trayUid);
+}
+
+void Workflow::QueueTrayUsed(const TrayUsedEvent& ev)
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    trayUsedQueue_.push_back(ev);
+}
+
+std::vector<Workflow::TrayUsedEvent> Workflow::TakeTrayUsed()
+{
+    const std::lock_guard<std::mutex> lock(trayMu_);
+    return std::exchange(trayUsedQueue_, {});
+}
+
 bool Workflow::TrayIsConsumed(const std::string& trayUid, int row, int col) const
 {
     const std::lock_guard<std::mutex> lock(trayMu_);
@@ -566,6 +613,8 @@ bool Workflow::TrayNext(const std::string& trayUid, const std::vector<TrayCell>&
         for (std::size_t i = 0; i < ordered.size(); ++i) {
             if (taken.count(ordered[i])) continue;
             taken.insert(ordered[i]);
+            trayActive_[trayUid] = ordered[i];
+            trayUsedQueue_.push_back({trayUid, false, ordered[i], true});
             if (out)       *out = ordered[i];
             if (index)     *index = i + 1;
             if (remaining) *remaining = ordered.size() - (i + 1);
@@ -575,11 +624,10 @@ bool Workflow::TrayNext(const std::string& trayUid, const std::vector<TrayCell>&
     };
     if (pick()) return true;
     if (!wrap || ordered.empty()) return false;
-    // Every enabled cell is taken: a fresh tray. Only the cells this walk
-    // covers are released — a cell disabled since was never in `ordered` and
-    // stays as it was.
-    for (const TrayCell& c : ordered) taken.erase(c);
-    FD_INFO("tray", "tray %s: every cell taken - wrapping to the first", trayUid.c_str());
+    // Every enabled cell is used: treat it as a fresh tray, every cavity full.
+    taken.clear();
+    trayUsedQueue_.push_back({trayUid, true, TrayCell{0, 0}, false});
+    FD_INFO("tray", "tray %s: every cell used - wrapping to a full tray", trayUid.c_str());
     return pick();
 }
 
@@ -591,15 +639,19 @@ void Workflow::ClearTrayCursor(const std::string& trayUid, const char* reason)
         if (trayUid.empty()) {
             for (const auto& kv : trayConsumed_) n += kv.second.size();
             trayConsumed_.clear();
-        } else if (const auto it = trayConsumed_.find(trayUid); it != trayConsumed_.end()) {
-            n = it->second.size();
-            trayConsumed_.erase(it);
+            trayActive_.clear();
+        } else {
+            if (const auto it = trayConsumed_.find(trayUid); it != trayConsumed_.end()) {
+                n = it->second.size();
+                trayConsumed_.erase(it);
+            }
+            trayActive_.erase(trayUid);
         }
     }
     // Logged when it matters, like the live frames: "why did tray_next start
     // from (1,1) again" has to be answerable from the log.
     if (n > 0)
-        FD_INFO("tray", "tray cursor(s) cleared: %s (%zu consumed cell(s) released%s%s)",
+        FD_INFO("tray", "tray cursor(s) cleared: %s (%zu used cell(s) released%s%s)",
                 reason ? reason : "reset", n, trayUid.empty() ? "" : ", tray ",
                 trayUid.c_str());
 }

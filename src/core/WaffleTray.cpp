@@ -216,6 +216,11 @@ bool TrayCellEnabled(const WaffleTray& t, int r, int c)
     return t.disabledCells.count(TrayCell{r, c}) == 0;
 }
 
+bool TrayCellUsed(const WaffleTray& t, int r, int c)
+{
+    return t.usedCells.count(TrayCell{r, c}) > 0;
+}
+
 bool TrayCellPose(const WaffleTray& t, int r, int c, std::map<std::string, double>* out)
 {
     if (!TrayValidate(t).empty() || !TrayCellInRange(t, r, c)) return false;
@@ -303,6 +308,9 @@ void TrayNormalize(WaffleTray& t)
     for (auto it = t.disabledCells.begin(); it != t.disabledCells.end();)
         it = TrayCellInRange(t, it->first, it->second) ? std::next(it)
                                                        : t.disabledCells.erase(it);
+    for (auto it = t.usedCells.begin(); it != t.usedCells.end();)
+        it = TrayCellInRange(t, it->first, it->second) ? std::next(it)
+                                                       : t.usedCells.erase(it);
 }
 
 const char* TrayOrderName(TrayOrder o)
@@ -347,9 +355,13 @@ nlohmann::json WaffleTrayToJson(const WaffleTray& t)
     nlohmann::json cells = nlohmann::json::array();
     for (const TrayCell& cell : t.disabledCells)
         cells.push_back(nlohmann::json::array({cell.first, cell.second}));
+    nlohmann::json used = nlohmann::json::array();
+    for (const TrayCell& cell : t.usedCells)
+        used.push_back(nlohmann::json::array({cell.first, cell.second}));
     j["disabled_rows"]  = std::move(rows);
     j["disabled_cols"]  = std::move(cols);
     j["disabled_cells"] = std::move(cells);
+    j["used_cells"]     = std::move(used);
     return j;
 }
 
@@ -373,11 +385,15 @@ WaffleTray WaffleTrayFromJson(const nlohmann::json& j)
     if (j.contains("disabled_cols") && j["disabled_cols"].is_array())
         for (const auto& v : j["disabled_cols"])
             if (v.is_number_integer()) t.disabledCols.insert(v.get<int>());
-    if (j.contains("disabled_cells") && j["disabled_cells"].is_array())
-        for (const auto& v : j["disabled_cells"])
+    const auto readCells = [&](const char* key, std::set<TrayCell>& into) {
+        if (!j.contains(key) || !j[key].is_array()) return;
+        for (const auto& v : j[key])
             if (v.is_array() && v.size() == 2 && v[0].is_number_integer() &&
                 v[1].is_number_integer())
-                t.disabledCells.insert(TrayCell{v[0].get<int>(), v[1].get<int>()});
+                into.insert(TrayCell{v[0].get<int>(), v[1].get<int>()});
+    };
+    readCells("disabled_cells", t.disabledCells);
+    readCells("used_cells", t.usedCells);
     TrayNormalize(t);
     return t;
 }

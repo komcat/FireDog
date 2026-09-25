@@ -8,9 +8,15 @@
 //
 //   move_to_cell   drive the tray's device to cell (row, col) — typed, or read
 //                  from ctx keys so a loop index or a tray_next result picks it
-//   tray_next      take the next enabled cell off the tray's session cursor
-//                  and put its row/col into ctx; ok=false when it is used up
-//   tray_reset     release every consumed cell of a tray
+//   move_to_active_cell  the same move to the tray's ACTIVE cell: the one an
+//                  operator clicked in the Waffle Tray window, or the last one
+//                  tray_next handed out
+//   tray_next      take the next enabled cell nobody has used yet, mark it
+//                  used, and put its row/col into ctx; ok=false when the
+//                  tray is empty
+//   tray_mark_used mark the active cell used and make the next full cell
+//                  active - the step after the work, for a run-per-part recipe
+//   tray_reset     mark every cell of a tray full again
 //
 // move_to_cell is NOT a teach mover and NOT a parallel mover, and both are
 // deliberate. A teach writes the live pose into the position the step drove
@@ -94,18 +100,14 @@ bool ResolveIndex(ExecutionContext& ctx, const ParamValues& p, const char* value
     return true;
 }
 
-// ---- move_to_cell ------------------------------------------------------------
+// ---- move_to_cell / move_to_active_cell ---------------------------------------
 
-CommandResult ExecMoveToCell(ExecutionContext& ctx, const ParamValues& p)
+// The move itself, once the cell is known: the two commands differ only in
+// where (r,c) comes from, and one body means one set of refusals.
+CommandResult MoveToCellBody(ExecutionContext& ctx, const ParamValues& p, const WaffleTray* t,
+                             int r, int c)
 {
     std::string err;
-    const WaffleTray* t = TrayFor(ctx, p, &err);
-    if (!t) return CommandResult::Fail(err);
-
-    int r = 0, c = 0;
-    if (!ResolveIndex(ctx, p, "row", "row_key", &r, &err)) return CommandResult::Fail(err);
-    if (!ResolveIndex(ctx, p, "col", "col_key", &c, &err)) return CommandResult::Fail(err);
-
     const std::string prefix = p.GetString("ctx_prefix");
     ctx.CtxSet(prefix + "_row", static_cast<double>(r));
     ctx.CtxSet(prefix + "_col", static_cast<double>(c));
@@ -161,7 +163,42 @@ CommandResult ExecMoveToCell(ExecutionContext& ctx, const ParamValues& p)
     const CommandResult mv = MoveWithApproach(ctx, m, idx, targets, p, CellName(*t, r, c));
     if (!mv.ok) return mv;
     ctx.CtxSet(prefix + "_moved", true);
+    // Arriving is not taking: the cell counts as used only when the step
+    // says so. Cursor first, then the document through the drain — the same
+    // two writes tray_next makes.
+    if (p.GetBool("mark_used")) {
+        ctx.Wf().TrayConsume(t->uid, r, c);
+        ctx.Wf().QueueTrayUsed({t->uid, false, TrayCell{r, c}, true});
+        FD_INFO("tray", "%s marked used on arrival", CellName(*t, r, c).c_str());
+    }
     return CommandResult::Success();
+}
+
+CommandResult ExecMoveToCell(ExecutionContext& ctx, const ParamValues& p)
+{
+    std::string err;
+    const WaffleTray* t = TrayFor(ctx, p, &err);
+    if (!t) return CommandResult::Fail(err);
+    int r = 0, c = 0;
+    if (!ResolveIndex(ctx, p, "row", "row_key", &r, &err)) return CommandResult::Fail(err);
+    if (!ResolveIndex(ctx, p, "col", "col_key", &c, &err)) return CommandResult::Fail(err);
+    return MoveToCellBody(ctx, p, t, r, c);
+}
+
+// The cell an operator selected in the tray window (or the last tray_next
+// handed out). Runtime state on Workflow, so a recipe written against "the
+// active cell" needs somebody to have picked one this session.
+CommandResult ExecMoveToActiveCell(ExecutionContext& ctx, const ParamValues& p)
+{
+    std::string err;
+    const WaffleTray* t = TrayFor(ctx, p, &err);
+    if (!t) return CommandResult::Fail(err);
+    TrayCell cell{0, 0};
+    if (!ctx.Wf().TrayActive(t->uid, &cell))
+        return CommandResult::Fail("tray '" + t->name + "' has no active cell: the tray is "
+                                   "complete, or none was picked - load a tray and click "
+                                   "its first cell in the Waffle Tray window");
+    return MoveToCellBody(ctx, p, t, cell.first, cell.second);
 }
 
 // ---- tray_next ----------------------------------------------------------------
@@ -202,6 +239,72 @@ CommandResult ExecTrayNext(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// ---- tray_mark_used ------------------------------------------------------------
+// The step after the work: the ACTIVE cell's part has been taken, so mark it
+// used and (advance) make the next full enabled cell after it, in `order`,
+// the active one - the cell the next run's move_to_active_cell drives to. The
+// operator picks the first cell once; every run after that walks on by itself.
+
+CommandResult ExecTrayMarkUsed(ExecutionContext& ctx, const ParamValues& p)
+{
+    std::string err;
+    const WaffleTray* t = TrayFor(ctx, p, &err);
+    if (!t) return CommandResult::Fail(err);
+
+    TrayCell cell{0, 0};
+    if (!ctx.Wf().TrayActive(t->uid, &cell))
+        return CommandResult::Fail("tray '" + t->name + "' has no active cell - nothing to mark");
+
+    TrayOrder order = TrayOrder::RowMajor;
+    if (!TrayOrderFromName(p.GetString("order"), &order))
+        return CommandResult::Fail("unknown order '" + p.GetString("order") + "'");
+
+    const std::string prefix = p.GetString("ctx_prefix");
+    ctx.Wf().TrayConsume(t->uid, cell.first, cell.second);
+    ctx.Wf().QueueTrayUsed({t->uid, false, cell, true});
+    FD_INFO("tray", "%s marked used", CellName(*t, cell.first, cell.second).c_str());
+
+    if (!p.GetBool("advance")) {
+        ctx.CtxSet(prefix + "_row", static_cast<double>(cell.first));
+        ctx.CtxSet(prefix + "_col", static_cast<double>(cell.second));
+        ctx.CtxSet(prefix + "_ok", true);
+        return CommandResult::Success();
+    }
+
+    // The next full cell AFTER the active one in the walk. An active cell the
+    // walk does not contain (disabled since) counts as "before everything".
+    const std::vector<TrayCell> cells = TrayEnabledCells(*t, order);
+    std::size_t from = 0;
+    for (std::size_t i = 0; i < cells.size(); ++i)
+        if (cells[i] == cell) { from = i + 1; break; }
+    bool found = false;
+    TrayCell next{0, 0};
+    std::size_t remaining = 0;
+    for (std::size_t i = from; i < cells.size(); ++i) {
+        if (ctx.Wf().TrayIsConsumed(t->uid, cells[i].first, cells[i].second)) continue;
+        if (!found) { next = cells[i]; found = true; }
+        else        ++remaining;
+    }
+    ctx.CtxSet(prefix + "_ok", found);
+    ctx.CtxSet(prefix + "_remaining", static_cast<double>(remaining));
+    if (!found) {
+        ctx.Wf().ClearTrayActive(t->uid);
+        char b[200];
+        std::snprintf(b, sizeof(b), "tray '%s': no full cell after (%d,%d) - the tray is "
+                      "complete; the next move_to_active_cell will stop the run",
+                      t->name.c_str(), cell.first, cell.second);
+        if (p.GetBool("require")) return CommandResult::Fail(b);
+        FD_WARN("tray", "%s (active cell cleared, %s_ok = false)", b, prefix.c_str());
+        return CommandResult::Success();
+    }
+    ctx.Wf().SetTrayActive(t->uid, next);
+    ctx.CtxSet(prefix + "_row", static_cast<double>(next.first));
+    ctx.CtxSet(prefix + "_col", static_cast<double>(next.second));
+    FD_INFO("tray", "tray '%s': active cell -> (%d,%d), %zu more after it", t->name.c_str(),
+            next.first, next.second, remaining);
+    return CommandResult::Success();
+}
+
 // ---- tray_reset ---------------------------------------------------------------
 
 CommandResult ExecTrayReset(ExecutionContext& ctx, const ParamValues& p)
@@ -211,6 +314,8 @@ CommandResult ExecTrayReset(ExecutionContext& ctx, const ParamValues& p)
     const WaffleTray* t = ctx.FindTray(ref);
     if (!t) return CommandResult::Fail("waffle tray '" + ref + "' not found");
     ctx.Wf().ClearTrayCursor(t->uid, "tray_reset");
+    // The document follows: every cavity full again, persisted by the drain.
+    ctx.Wf().QueueTrayUsed({t->uid, true, TrayCell{0, 0}, false});
     return CommandResult::Success();
 }
 
@@ -241,6 +346,9 @@ void RegisterTrayCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareManage
                        "the stand-off, signed, in the axis's own direction"},
                       {"ctx_prefix", PT::String, false, "cell", 0, 0, {},
                        "writes <prefix>_row, <prefix>_col and <prefix>_moved"},
+                      {"mark_used", PT::Bool, false, false, 0, 0, {},
+                       "on arrival, mark the cell used (empty) - saved with the tray, "
+                       "like a tray_next does"},
                       {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
                       {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
                       VelocityParam(),
@@ -252,6 +360,36 @@ void RegisterTrayCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareManage
                       PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToCell});
+
+    reg.Register({"move_to_active_cell", "Tray",
+                  "Drive a waffle tray's device to its ACTIVE cell - the one selected in "
+                  "the Waffle Tray window, or the last one tray_next handed out",
+                  {
+                      {"tray", PT::TrayUid, true, {}, 0, 0, {},
+                       "the waffle tray; its device is what moves"},
+                      {"skip_disabled", PT::Bool, false, false, 0, 0, {},
+                       "a disabled cell is skipped (<prefix>_moved = false) instead of "
+                       "failing the step"},
+                      {"offset_axis", PT::String, false, "", 0, 0, {},
+                       "stand off the cell along this axis of the tray's device (e.g. Z); "
+                       "goes with offset_mm"},
+                      {"offset_mm", PT::Double, false, 0.0, -500.0, 500.0, {},
+                       "the stand-off, signed, in the axis's own direction"},
+                      {"ctx_prefix", PT::String, false, "cell", 0, 0, {},
+                       "writes <prefix>_row, <prefix>_col and <prefix>_moved"},
+                      {"mark_used", PT::Bool, false, false, 0, 0, {},
+                       "on arrival, mark the cell used (empty) - saved with the tray"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
+                      VelocityParam(),
+                      ExposureParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
+                  },
+                  CommandSpec::Needs::None, ExecMoveToActiveCell});
 
     reg.Register({"tray_next", "Tray",
                   "Take the next enabled cell of a waffle tray off its session cursor "
@@ -275,8 +413,28 @@ void RegisterTrayCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareManage
                   },
                   CommandSpec::Needs::None, ExecTrayNext});
 
+    reg.Register({"tray_mark_used", "Tray",
+                  "After the work: mark the ACTIVE cell used and make the next full cell "
+                  "after it the active one, so the next run carries on from there",
+                  {
+                      {"tray", PT::TrayUid, true, {}, 0, 0, {}, "the waffle tray"},
+                      {"advance", PT::Bool, false, true, 0, 0, {},
+                       "move the active cell on to the next full enabled cell in `order`; "
+                       "off = only mark"},
+                      {"order", PT::Enum, false, "row_major", 0, 0,
+                       {"row_major", "col_major", "serpentine"},
+                       "the walk that decides which cell is next"},
+                      {"ctx_prefix", PT::String, false, "tray", 0, 0, {},
+                       "writes <prefix>_row/_col (the NEW active cell), _remaining and "
+                       "_ok (false when the tray is done and the active cell was cleared)"},
+                      {"require", PT::Bool, false, false, 0, 0, {},
+                       "fail the step when there is no next cell, instead of reporting "
+                       "<prefix>_ok = false"},
+                  },
+                  CommandSpec::Needs::None, ExecTrayMarkUsed});
+
     reg.Register({"tray_reset", "Tray",
-                  "Release every consumed cell of a waffle tray (a fresh tray was loaded)",
+                  "Mark every cell of a waffle tray full again (a fresh tray was loaded)",
                   {
                       {"tray", PT::TrayUid, true, {}, 0, 0, {}, "the waffle tray"},
                   },

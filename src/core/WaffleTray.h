@@ -57,6 +57,13 @@ struct WaffleTray {
     // row or column switches off every cell in it; a cell on its own.
     std::set<int>      disabledRows, disabledCols;
     std::set<TrayCell> disabledCells;
+    // USED = the cavity is empty: its part was taken (by a tray_next, or an
+    // operator marked it). Persisted WITH the tray, because it describes the
+    // fixture on the machine and a restart mid-tray must not start the next
+    // recipe at (1,1) again. The Workflow cursor is this set's live,
+    // thread-safe mirror: seeded from here at product load, written back
+    // through one App function (the page) or the TakeTrayUsed drain (a run).
+    std::set<TrayCell> usedCells;
 };
 
 // Two teaches of one spot. A pitch below this is not a tray, it is the same
@@ -93,6 +100,7 @@ bool TrayNeedsFar(const WaffleTray& t);      // rows > 1
 std::string TrayValidate(const WaffleTray& t);
 bool TrayCellInRange(const WaffleTray& t, int r, int c);
 bool TrayCellEnabled(const WaffleTray& t, int r, int c);   // in range && not disabled
+bool TrayCellUsed(const WaffleTray& t, int r, int c);      // in usedCells
 // The pose of cell (r,c). False when TrayValidate fails or the cell is out of
 // range; `out` is only written on true.
 bool TrayCellPose(const WaffleTray& t, int r, int c, std::map<std::string, double>* out);

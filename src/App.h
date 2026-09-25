@@ -139,6 +139,10 @@ inline constexpr UserRole kRoleOrg = UserRole::Technician;
 inline constexpr UserRole kRoleAux = UserRole::Operator;
 //   View Data reads the same records as the DUT Records page, so it sits with it.
 inline constexpr UserRole kRoleData = UserRole::Technician;
+//   The Waffle Tray window picks the active cell and marks cavities used or
+//   full - what an operator does as parts come and go. Its Drive here is
+//   kRoleJog, like every other move.
+inline constexpr UserRole kRoleTray = UserRole::Operator;
 
 // One DUT record flattened for the View Data window: the identity columns plus
 // the LAST value written under each non-event key. The append-only log may
@@ -389,6 +393,14 @@ private:
     // moving is a recipe step (move_to_cell); this page TEACHES the corners
     // and shows which cells a run has taken.
     void DrawTrayPanel();
+    // The grid (status, All full / All empty, legend, a button per cell),
+    // shared by the page and the floating window: one meaning per click.
+    void DrawTrayGrid(WaffleTray* t, bool busy);
+    // The floating Waffle Tray window (WndTray.cpp, View menu): the grid of
+    // the selected tray beside whatever page is open, so an operator can pick
+    // the ACTIVE cell a recipe's move_to_active_cell drives to, and mark
+    // cavities used or full as parts come and go.
+    void DrawTrayWindow();
     // The ONE writer of a corner, for "Teach here" (the live pose) and the
     // "or taught..." picker alike: both hand in COORDINATES. Stamps the date.
     void TeachTrayCorner(WaffleTray& t, TrayCornerSlot slot,
@@ -396,6 +408,11 @@ private:
     // Drive the tray's device to cell (r,c) as a watched move. Jog-armed and
     // idle only; a refusal lands in trayMsg_ (and the arm alert when unarmed).
     void GoToTrayCell(const WaffleTray& t, int r, int c);
+    // The page's ONE writer of a tray's used cells: the Workflow cursor (what
+    // tray_next reads) and the document (what survives a restart) together,
+    // so they cannot disagree. `cells` empty = every cell.
+    void SetTrayCellsUsed(const WaffleTray& t, const std::vector<TrayCell>& cells,
+                          bool used, const char* why);
     // The private pose sweep, by the convention the alignment procedures set:
     // the position is named after its owner, so deleting the owner drops it.
     void DropGripPositions(const GripProfile& g);
@@ -1175,6 +1192,7 @@ private:
     bool  trayCtlSplitting_ = false;  // edge-detect the drag END
     bool  trayOpenArmPopup_ = false;  // a Go clicked with jog unarmed: raise the alert
     int   trayLineRow_ = 1, trayLineCol_ = 1;   // the line toggles' spinners (big trays)
+    bool  showTray_ = false;          // the floating Waffle Tray window (View menu)
     std::string trayMsg_;             // what the last button did, or would not do
 
     // Nominal teach page state — the nominals themselves live in session_.

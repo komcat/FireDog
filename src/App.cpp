@@ -188,6 +188,7 @@ int App::Run()
             if (orgOpen_   && CanUse(kRoleOrg)) DrawProgramOrganizer();
             if (showData_  && CanUse(kRoleData)) DrawViewDataWindow();
             if (showPosHist_ && CanUse(kRoleJog)) DrawPositionHistoryWindow();
+            if (showTray_  && CanUse(kRoleTray)) DrawTrayWindow();
             if (showUsers_) DrawEmployeeManager();   // checks Admin itself
         }
         host_.EndFrame();
@@ -288,6 +289,16 @@ void App::Update(float dt)
         for (const DeviceReg& r : regs) workflow_.SetDeviceReg(r);
         if (SaveDeviceRegsFile(DeviceRegLocalPath(), workflow_.DeviceRegs()))
             FD_INFO("devreg", "device registrations saved to %s", DeviceRegLocalPath());
+    }
+
+    // A run's tray_next / tray_reset already moved the Workflow cursor; this
+    // is the document catching up so the used cells survive a restart. The
+    // cursor is not touched here — it is the worker's, and re-applying its
+    // own change would be a second writer.
+    for (const Workflow::TrayUsedEvent& ev : workflow_.TakeTrayUsed()) {
+        std::vector<TrayCell> cells;
+        if (!ev.all) cells.push_back(ev.cell);
+        session_.SetTrayCellsUsed(ev.trayUid, cells, ev.used);
     }
 
     // A finished reliability run writes its statistics into the detection model
@@ -574,9 +585,11 @@ void App::ResetDocumentSelections()
     // A different product is a different part: no taught frame survives it.
     // This also covers app start, since Run() calls us before the first frame.
     workflow_.ClearLiveFrames("product loaded");
-    // And a different product's trays are different trays: the consumed
-    // cells describe the fixture that was on the machine.
+    // And a different product's trays are different trays: the cursor is
+    // rebuilt from what THIS product's records say is used — the persisted
+    // set is the truth, the cursor its live mirror.
     workflow_.ClearTrayCursor("", "product loaded");
+    for (const WaffleTray& t : session_.Trays()) workflow_.TraySeed(t.uid, t.usedCells);
     traySel_ = session_.Trays().empty() ? -1 : 0;
     trayMsg_.clear();
     workflow_.InvalidateDetector("");
@@ -633,11 +646,11 @@ void App::LoadProgramsFromDisk()
 void App::NewProduct(const char* name)
 {
     session_.NewProduct(name);
-    // The trays carried over; the cells taken off them did not. NewProduct
-    // does not go through ResetDocumentSelections (the selections are still
-    // valid: the collections are the same objects), so the cursor is cleared
-    // here.
+    // The trays carried over, used cells included: the fixture on the machine
+    // did not change because the product folder did. NewProduct does not go
+    // through ResetDocumentSelections, so the cursor is re-seeded here.
     workflow_.ClearTrayCursor("", "new product");
+    for (const WaffleTray& t : session_.Trays()) workflow_.TraySeed(t.uid, t.usedCells);
     SaveUiSettings();   // remember as last product for the next startup
 }
 

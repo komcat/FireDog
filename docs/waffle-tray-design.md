@@ -84,36 +84,82 @@ disabled cell is never offered by `tray_next` and **fails** `move_to_cell`
 unless the step says `skip_disabled`, in which case `<prefix>_moved` is false:
 a move that silently did nothing looks exactly like one that arrived.
 
-## 4. The cursor: runtime state on Workflow
+## 4. Used cells: product state, with a live cursor on Workflow
 
-`tray_next` walks the enabled cells and hands out the next one a run has not
-taken. Which cells are taken is **runtime** state, never persisted: it
-describes the parts on ONE physical tray, exactly like a live frame describes
-one part, and a persisted "taken" would read as a licence to skip a cavity
-after a restart nobody remembers.
+`tray_next` walks the enabled cells and hands out the next one that still
+holds a part, marking it **used** (the cavity is empty). Which cells are used
+is saved WITH the tray (`usedCells`, `used_cells` in the file): it describes
+the fixture on the machine, an operator marks cavities by hand — one by
+clicking it, all with *All full* / *All empty* — and a restart mid-tray must
+not start the next recipe at (1,1) again. (The first version kept it as
+session-only state, like a live frame; the shift-change case is what changed
+it.)
 
-It lives on `Workflow` (`TrayNext` / `TrayConsumed` / `ClearTrayCursor`, under
-`trayMu_`) for the live frame's reason: a program runs each slot as its own
-engine Start, so per-run state would be wiped between one part and the next —
+A run cannot write the document (engines hold a copy, UI thread only), so the
+live truth a worker reads is a cursor on `Workflow` (`TrayNext` /
+`TrayConsumed` / `TraySeed` / `ClearTrayCursor`, under `trayMu_`), held there
+for the live frame's reason: a program runs each slot as its own engine Start,
 and the whole point is that slot N takes the cell after slot N−1. Hence,
-**unlike** a frame, it is NOT cleared at program start or DUT open. It is
-cleared at product load and new product (`App`), by the page's *Reset taken*,
-by a `tray_reset` step, and for one tray when it is deleted or its device
-changes. Every clear says so in the log.
+**unlike** a frame, it is NOT cleared at program start or DUT open. The two
+stay in step by construction:
 
-`TrayNext` picks and consumes under ONE lock, so two lanes of a `parallel`
-block could not take the same cell even though `move_to_cell` is not a parallel
-mover (see §5). `wrap` releases exactly the cells the walk covers and starts
-over — a tray reloaded without a reset — and a cell disabled since stays as it
-was.
+- **Product load / new product**: `App` clears the cursor and re-seeds it from
+  every tray's `usedCells` — the persisted set is the truth.
+- **A run**: `TrayNext` marks the cursor and queues a `TrayUsedEvent` under
+  the same lock; `tray_reset` clears the cursor and queues "all full".
+  `App::Update` drains `TakeTrayUsed` into `ProductSession::SetTrayCellsUsed`,
+  which saves on the spot (a grip measurement's route). The drain never
+  touches the cursor: that is the worker's, and a second writer would race it.
+- **The page**: `App::SetTrayCellsUsed` writes the cursor and then the
+  document. Nothing else writes either.
+
+`TrayNext` picks, consumes and queues under ONE lock, so two lanes of a
+`parallel` block could not take the same cell even though `move_to_cell` is
+not a parallel mover (see §5). `wrap` marks every cell full and starts over —
+a tray reloaded without a reset. Delete drops the cursor with the record; a
+device change clears the corners and the used set together (a re-taught tray
+starts full).
 
 ## 5. The commands
 
 | Step | Does |
 |---|---|
 | `move_to_cell` | tray + `row`/`col` (typed) or `row_key`/`col_key` (ctx) → `TrayCellPose` → optional stand-off (`offset_axis` + `offset_mm`, both or neither) → `ApplyPreMove` → `MoveWithApproach`. Writes `<prefix>_row/_col/_moved` (`ctx_prefix`, default `cell`). |
-| `tray_next` | next enabled, untaken cell in `order` (`row_major` / `col_major` / `serpentine`) → `<prefix>_row/_col/_index/_remaining/_ok` (default prefix `tray`). Exhausted: `_ok = false`, Success unless `require`. |
-| `tray_reset` | release every taken cell of the tray. |
+| `tray_next` | next enabled cell still holding a part, in `order` (`row_major` / `col_major` / `serpentine`), marked used → `<prefix>_row/_col/_index/_remaining/_ok` (default prefix `tray`). Tray empty: `_ok = false`, Success unless `require`. |
+| `move_to_active_cell` | the same move to the tray's ACTIVE cell — the one an operator clicked on the grid, or the last one `tray_next` handed out. Fails when none is set. |
+| `tray_mark_used` | the step after the work: mark the ACTIVE cell used and (`advance`, default on) make the next full enabled cell after it in `order` the active one; `<prefix>_row/_col` name the new active cell, `_ok = false` and the active cell cleared when the tray is done (fail with `require`). |
+| `tray_reset` | mark every cell of the tray full again. |
+
+The run-per-part recipe this gives: the operator clicks the first cell once,
+then every run is `move_to_active_cell` → the work → `tray_mark_used`, and the
+next run carries on from the next full cell with nobody touching the grid.
+
+Both movers take `mark_used` (default off): arriving at a cavity is not taking
+the part from it, so a "go and look" step leaves the tray as it was, and a
+sweep that does take parts says so on the step. When set, the arrival marks the
+cell through the same two writes `tray_next` makes.
+
+### The active cell
+
+Runtime state on `Workflow` beside the cursor (`TrayActive` / `SetTrayActive` /
+`ClearTrayActive`): the cell a recipe's `move_to_active_cell` drives to. Two
+writers — a click on the grid (the page or the floating window) and
+`tray_next`, which makes the cell it hands out active. A click also describes
+the whole tray — "the work starts here": every cell before the pick in reading
+order (row by row) is marked used, the pick and every cell after it full,
+through `SetTrayCellsUsed`. So a run walks from the pick to the end and
+nowhere else, and a complete tray STOPS: `tray_mark_used` on the last cell
+clears the active cell, and the next `move_to_active_cell` fails on "no active
+cell", which ends the run — and the program, since a failed recipe finishes
+the program as Failed. Nothing executes further until an operator loads a tray
+and clicks its first cell. (`require` on `tray_mark_used` moves that stop into
+the same run, at the cost of the last part's run reading as failed.) Cleared with the cursor
+(product load, All full / All empty, `tray_reset`). Not persisted: a restart
+has no part in progress, and an operator picks one in a second. The click
+stays live while a run is blocked on a prompt, which is what makes
+`prompt "pick the cell, then OK"` → `move_to_active_cell` a usable recipe; the
+marks and the disables on the same grid lock while `orch_.Busy()`, like every
+other document edit.
 
 A missing `row_key` **fails** rather than falling back to the typed value: a
 loop that forgot to set its index would otherwise drive every pass to the same
@@ -149,13 +195,25 @@ raw axis reading into the product document — a Motion-page saved position,
 which a Technician already teaches. Every Go sits behind the jog arm and
 `orch_.Busy()`, and an unarmed click raises the same alert the Grip page uses.
 
-Left: the grid — a button per cell, headers that toggle a whole row or column,
-consumed cells tinted, right-click drives there through `StartWatchedMove` (the
-pose overload; a cell has no uid). Past 2500 cells the grid is not drawn and
-line toggles take its place. Right: the tray list (New / Duplicate / Delete /
-Save), name, device, size, the three corner cards (Teach here · or taught... ·
-Go · values · date), the pitch readout, the validation line, *Reset taken*.
+Left: the grid (`App::DrawTrayGrid`) — a button per cell, green full, grey
+empty (used), yellow active, dark disabled. A click picks the ACTIVE cell
+(again: clears it); the right-click menu carries *Mark used* / *Mark full*,
+*Drive here* (through `StartWatchedMove`'s pose overload; a cell has no uid;
+`kRoleJog`) and *Disable* / *Enable*, so a stray click changes nothing about
+the parts. Headers toggle a whole row or column; *All full* / *All empty* mark
+the tray. Past 2500 cells the grid is not drawn and line toggles take its
+place. Right: the tray list (New / Duplicate / Delete / Save), name, device,
+size, the three corner cards (Teach here · or taught... · Go · values · date),
+the pitch readout, the validation line.
 
-Two edits save on the spot instead of waiting for Save: teaching a corner and
-changing the device. Both are physical acts an operator must not lose to a
-forgotten click.
+**The floating Waffle Tray window** (`ui/windows/WndTray.cpp`, View menu,
+`kRoleTray` = Operator) is the same grid — the very same `DrawTrayGrid`, so a
+click means one thing in both places — with a tray combo, kept open beside the
+Run page while parts come and go: pick the active cell, mark cavities, watch a
+run take them. The page stays Technician because it teaches; the window is
+Operator because selecting and marking are facts about the parts, and its
+Drive here is behind the jog level like every move.
+
+Three edits save on the spot instead of waiting for Save: teaching a corner,
+changing the device, and marking cells used or full. All are facts about the
+fixture an operator must not lose to a forgotten click.

@@ -17,8 +17,11 @@
 //     tray is a second answer to where its cells are.
 //   * MASKING: a chipped row, a missing column, one broken cavity. A disabled
 //     cell is never offered by `tray_next` and refused by `move_to_cell`.
-//   * SEEING which cells a run has taken (the session cursor on Workflow) and
-//     resetting it when a fresh tray is loaded.
+//   * MARKING which cavities hold a part. A run's tray_next marks the cell it
+//     took; an operator marks one by clicking it, or the whole tray with All
+//     full / All empty. The set is saved WITH the tray, so a restart mid-tray
+//     carries on at the next full cavity — the Workflow cursor a run reads is
+//     its live mirror, and App::SetTrayCellsUsed writes both.
 //
 // The record is PRODUCT state and saves like every document: the Save button,
 // with two exceptions that save on the spot because they are physical acts an
@@ -54,10 +57,13 @@ const ImVec4 kGood(0.35f, 0.85f, 0.45f, 1.0f);
 const ImVec4 kWarn(0.98f, 0.72f, 0.32f, 1.0f);
 const ImVec4 kBad (0.95f, 0.45f, 0.35f, 1.0f);
 
-// Cell button tints. Enabled cells keep the theme's button colour so the grid
-// reads like the rest of the UI; the other two states are the ones worth a hue.
-const ImVec4 kCellOff  (0.28f, 0.28f, 0.30f, 1.0f);   // disabled by row/col/cell
-const ImVec4 kCellTaken(0.22f, 0.45f, 0.72f, 1.0f);   // consumed by a run
+// Cell button tints, one per state an operator reads off the grid at a glance:
+// green holds a part, grey is empty (used), yellow is the one being worked on
+// (the last tray_next), dark is switched off.
+const ImVec4 kCellFull  (0.20f, 0.55f, 0.28f, 1.0f);
+const ImVec4 kCellEmpty (0.45f, 0.45f, 0.47f, 1.0f);
+const ImVec4 kCellActive(0.85f, 0.70f, 0.15f, 1.0f);
+const ImVec4 kCellOff   (0.22f, 0.22f, 0.24f, 1.0f);   // disabled by row/col/cell
 
 // Past this the grid is not something a person reads cell by cell, and a
 // button per cell is a frame budget: the controls still work, the grid says so.
@@ -124,6 +130,253 @@ void App::GoToTrayCell(const WaffleTray& t, int r, int c)
         trayMsg_.clear();
 }
 
+void App::SetTrayCellsUsed(const WaffleTray& t, const std::vector<TrayCell>& cells,
+                           bool used, const char* why)
+{
+    // Cursor first (what a run reads), then the document (what survives).
+    if (cells.empty()) {
+        if (used) {
+            std::set<TrayCell> all;
+            for (int r = 1; r <= t.rows; ++r)
+                for (int c = 1; c <= t.cols; ++c) all.insert(TrayCell{r, c});
+            workflow_.TraySeed(t.uid, all);
+        } else {
+            workflow_.ClearTrayCursor(t.uid, why);
+        }
+    } else {
+        for (const TrayCell& cell : cells) {
+            if (used) workflow_.TrayConsume(t.uid, cell.first, cell.second);
+            else      workflow_.TrayRelease(t.uid, cell.first, cell.second);
+        }
+    }
+    session_.SetTrayCellsUsed(t.uid, cells, used);
+    if (cells.size() == 1)
+        FD_INFO("tray", "'%s': cell (%d,%d) %s", t.name.c_str(), cells[0].first,
+                cells[0].second, why);
+    else
+        FD_INFO("tray", "'%s': %s", t.name.c_str(), why);
+}
+
+// The grid itself: the status lines, All full / All empty, the legend and a
+// button per cell. Shared by the page and the floating Waffle Tray window,
+// so the two cannot drift on what a click means.
+void App::DrawTrayGrid(WaffleTray* t, bool busy)
+{
+    const std::string why = TrayValidate(*t);
+    const std::set<TrayCell> taken = workflow_.TrayConsumed(t->uid);
+    const std::size_t total = TrayCellCount(*t);
+    std::size_t enabled = 0;
+    for (int r = 1; r <= t->rows; ++r)
+        for (int c = 1; c <= t->cols; ++c)
+            if (TrayCellEnabled(*t, r, c)) ++enabled;
+
+    ImGui::Text("%s  -  %d x %d on %s", t->name.c_str(), t->rows, t->cols,
+                t->device.empty() ? "(no device)" : t->device.c_str());
+    if (!why.empty())
+        ImGui::TextColored(kWarn, "not usable yet: %s", why.c_str());
+    else
+        ImGui::TextColored(kGood, "usable: every cell has a pose");
+    ImGui::Text("%zu of %zu cells enabled, %zu used (empty)", enabled, total,
+                taken.size());
+    ImGui::SameLine();
+    ImGui::BeginDisabled(busy || taken.empty());
+    if (ImGui::SmallButton("All full")) {
+        SetTrayCellsUsed(*t, {}, false, "all full on the Waffle Tray page");
+        trayMsg_ = "every cell marked full - the next tray_next starts at the first";
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("A fresh tray was loaded: every cavity holds a part.\n"
+                          "A recipe does the same with a tray_reset step.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(busy || taken.size() >= total);
+    if (ImGui::SmallButton("All empty")) {
+        SetTrayCellsUsed(*t, {}, true, "all empty on the Waffle Tray page");
+        trayMsg_ = "every cell marked used - tray_next reports the tray empty";
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Every cavity is empty; then mark the ones that still hold "
+                          "a part.");
+    ImGui::TextDisabled("click a cell: make it the ACTIVE cell (move_to_active_cell goes "
+                        "there) - cells before it become used, it and the rest full;  "
+                        "right-click: mark used / full, drive there, disable;  a header: "
+                        "the whole line on / off");
+    ImGui::TextColored(kCellFull, "green");   ImGui::SameLine(); ImGui::TextDisabled("full");
+    ImGui::SameLine(); ImGui::TextColored(kCellEmpty, "grey");   ImGui::SameLine(); ImGui::TextDisabled("empty (used)");
+    ImGui::SameLine(); ImGui::TextColored(kCellActive, "yellow"); ImGui::SameLine(); ImGui::TextDisabled("active (selected, or last tray_next)");
+    ImGui::SameLine(); ImGui::TextColored(kCellOff, "dark");     ImGui::SameLine(); ImGui::TextDisabled("disabled");
+    ImGui::Separator();
+
+    if (total > static_cast<std::size_t>(kMaxDrawnCells)) {
+        ImGui::TextWrapped("%zu cells is more than this page draws (%d). The tray "
+                           "still works: move_to_cell and tray_next address it by "
+                           "index, and rows and columns can be disabled below.",
+                           total, kMaxDrawnCells);
+        // The line toggles without the grid, so a big tray is still maskable.
+        ImGui::BeginDisabled(busy);
+        ImGui::SetNextItemWidth(100.0f);
+        ImGui::InputInt("row##big", &trayLineRow_);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("toggle row")) {
+            const int r = trayLineRow_;
+            if (r >= 1 && r <= t->rows) {
+                if (!t->disabledRows.erase(r)) t->disabledRows.insert(r);
+            }
+        }
+        ImGui::SetNextItemWidth(100.0f);
+        ImGui::InputInt("col##big", &trayLineCol_);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("toggle col")) {
+            const int c = trayLineCol_;
+            if (c >= 1 && c <= t->cols) {
+                if (!t->disabledCols.erase(c)) t->disabledCols.insert(c);
+            }
+        }
+        ImGui::EndDisabled();
+    } else {
+        // Cell size from what fits, clamped so a 2 x 3 is not three
+        // billboards and a 40 x 40 is still a target; past the clamp the
+        // child scrolls.
+        const ImVec2 region = ImGui::GetContentRegionAvail();
+        const float  gap    = ImGui::GetStyle().ItemSpacing.x;
+        const float  headW  = 30.0f;
+        const float  fitW   = (region.x - headW - gap * t->cols) / static_cast<float>(t->cols);
+        const float  fitH   = (region.y - headW - gap * t->rows) / static_cast<float>(t->rows);
+        const float  sz     = std::clamp(std::floor(fminf(fitW, fitH)), 16.0f, 72.0f);
+        const bool   labels = sz >= 34.0f;
+        TrayCell active{0, 0};
+        const bool haveActive = workflow_.TrayActive(t->uid, &active);
+
+        ImGui::BeginChild("trayCells", region, ImGuiChildFlags_None,
+                          ImGuiWindowFlags_HorizontalScrollbar);
+        // The headers and the menu's marks / disables are document edits and
+        // lock while a run is on; the cell click (the active cell) does NOT,
+        // because "pick the cell, then OK" on a prompt is the point of it.
+        // Column headers: a whole column on or off.
+        ImGui::Dummy(ImVec2(headW, sz * 0.6f));
+        ImGui::BeginDisabled(busy);
+        for (int c = 1; c <= t->cols; ++c) {
+            ImGui::SameLine();
+            const bool off = t->disabledCols.count(c) > 0;
+            if (off) ImGui::PushStyleColor(ImGuiCol_Button, kCellOff);
+            char lbl[32];
+            std::snprintf(lbl, sizeof(lbl), "%d###ch%d", c, c);
+            if (ImGui::Button(lbl, ImVec2(sz, sz * 0.6f))) {
+                if (!t->disabledCols.erase(c)) t->disabledCols.insert(c);
+            }
+            if (off) ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("column %d: %s", c, off ? "disabled" : "enabled");
+        }
+        ImGui::EndDisabled();
+        for (int r = 1; r <= t->rows; ++r) {
+            const bool rowOff = t->disabledRows.count(r) > 0;
+            if (rowOff) ImGui::PushStyleColor(ImGuiCol_Button, kCellOff);
+            char lbl[32];
+            std::snprintf(lbl, sizeof(lbl), "%d###rh%d", r, r);
+            ImGui::BeginDisabled(busy);
+            if (ImGui::Button(lbl, ImVec2(headW, sz))) {
+                if (!t->disabledRows.erase(r)) t->disabledRows.insert(r);
+            }
+            ImGui::EndDisabled();
+            if (rowOff) ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("row %d: %s", r, rowOff ? "disabled" : "enabled");
+
+            for (int c = 1; c <= t->cols; ++c) {
+                ImGui::SameLine();
+                const bool cellOff = t->disabledCells.count(TrayCell{r, c}) > 0;
+                const bool on      = TrayCellEnabled(*t, r, c);
+                const bool took    = taken.count(TrayCell{r, c}) > 0;
+                const bool isActive = haveActive && active == TrayCell{r, c};
+                const ImVec4 tint = !on      ? kCellOff
+                                  : isActive ? kCellActive
+                                  : took     ? kCellEmpty
+                                             : kCellFull;
+                ImGui::PushStyleColor(ImGuiCol_Button, tint);
+                const int pushed = 1;
+                char cl[48];
+                if (labels) std::snprintf(cl, sizeof(cl), "%d,%d###c%d_%d", r, c, r, c);
+                else        std::snprintf(cl, sizeof(cl), "###c%d_%d", r, c);
+                // Left click: pick the ACTIVE cell - what move_to_active_cell
+                // drives to. Clicking the active one again clears it. The
+                // marks and the setup acts sit on the right-click menu, so a
+                // stray click changes nothing about the parts or the tray.
+                if (ImGui::Button(cl, ImVec2(sz, sz))) {
+                    if (isActive) {
+                        workflow_.ClearTrayActive(t->uid);
+                        trayMsg_ = "no active cell";
+                    } else {
+                        workflow_.SetTrayActive(t->uid, TrayCell{r, c});
+                        // Picking a cell says "the work starts here": every
+                        // cell before it in reading order (row by row) is
+                        // used, this one and every one after it hold a part.
+                        // One click describes the whole tray, so a run walks
+                        // from the pick to the end and nowhere else.
+                        std::vector<TrayCell> before, after;
+                        for (int rr = 1; rr <= t->rows; ++rr)
+                            for (int cc = 1; cc <= t->cols; ++cc) {
+                                const TrayCell k{rr, cc};
+                                const bool isBefore = (rr < r) || (rr == r && cc < c);
+                                const bool used = t->usedCells.count(k) > 0;
+                                if (isBefore && !used) before.push_back(k);
+                                if (!isBefore && used) after.push_back(k);
+                            }
+                        if (!before.empty())
+                            SetTrayCellsUsed(*t, before, true,
+                                             "marked used before the active cell");
+                        if (!after.empty())
+                            SetTrayCellsUsed(*t, after, false,
+                                             "marked full from the active cell on");
+                        char b[160];
+                        std::snprintf(b, sizeof(b), "active cell (%d,%d) - "
+                                      "move_to_active_cell goes there; cells before it are "
+                                      "used, it and every cell after it are full", r, c);
+                        trayMsg_ = b;
+                    }
+                }
+                if (pushed) ImGui::PopStyleColor(pushed);
+                if (ImGui::BeginPopupContextItem()) {
+                    ImGui::TextDisabled("cell (%d,%d)", r, c);
+                    ImGui::BeginDisabled(busy);
+                    if (ImGui::MenuItem(took ? "Mark full (holds a part)" : "Mark used (empty)"))
+                        SetTrayCellsUsed(*t, {TrayCell{r, c}}, !took,
+                                         took ? "marked full on the grid"
+                                              : "marked used on the grid");
+                    if (CanUse(kRoleJog) && ImGui::MenuItem("Drive here")) GoToTrayCell(*t, r, c);
+                    if (ImGui::MenuItem(cellOff ? "Enable cell" : "Disable cell")) {
+                        // The cell's OWN flag; a cell dark because its row
+                        // is off stays dark, and the tooltip says which.
+                        if (cellOff) t->disabledCells.erase(TrayCell{r, c});
+                        else         t->disabledCells.insert(TrayCell{r, c});
+                    }
+                    ImGui::EndDisabled();
+                    if (busy) ImGui::TextDisabled("(a run is active)");
+                    ImGui::EndPopup();
+                }
+                if (ImGui::IsItemHovered()) {
+                    std::map<std::string, double> pose;
+                    std::string tip = "(" + std::to_string(r) + "," + std::to_string(c) + ")";
+                    if (TrayCellPose(*t, r, c, &pose)) tip += "  " + PoseLine(pose);
+                    if (cellOff) tip += "\ndisabled (this cell)";
+                    if (rowOff)  tip += "\ndisabled (row " + std::to_string(r) + ")";
+                    if (t->disabledCols.count(c))
+                        tip += "\ndisabled (column " + std::to_string(c) + ")";
+                    if (isActive) tip += "\nACTIVE - move_to_active_cell drives here";
+                    tip += took ? "\nUSED - the cavity is empty" : "\nfull - holds a part";
+                    tip += isActive ? "\nclick: clear the active cell"
+                                    : "\nclick: make it the active cell (before it: used; it and after: full)";
+                    tip += took ? "\nright-click: mark full, drive here, disable"
+                                : "\nright-click: mark used, drive here, disable";
+                    ImGui::SetTooltip("%s", tip.c_str());
+                }
+            }
+        }
+        ImGui::EndChild();
+    }
+}
+
 void App::DrawTrayPanel()
 {
     const bool busy = orch_.Busy();
@@ -158,140 +411,7 @@ void App::DrawTrayPanel()
     if (!t) {
         ImGui::TextDisabled("No tray selected.");
     } else {
-        const std::string why = TrayValidate(*t);
-        const std::set<TrayCell> taken = workflow_.TrayConsumed(t->uid);
-        const std::size_t total = TrayCellCount(*t);
-        std::size_t enabled = 0;
-        for (int r = 1; r <= t->rows; ++r)
-            for (int c = 1; c <= t->cols; ++c)
-                if (TrayCellEnabled(*t, r, c)) ++enabled;
-
-        ImGui::Text("%s  -  %d x %d on %s", t->name.c_str(), t->rows, t->cols,
-                    t->device.empty() ? "(no device)" : t->device.c_str());
-        if (!why.empty())
-            ImGui::TextColored(kWarn, "not usable yet: %s", why.c_str());
-        else
-            ImGui::TextColored(kGood, "usable: every cell has a pose");
-        ImGui::Text("%zu of %zu cells enabled, %zu taken by runs", enabled, total,
-                    taken.size());
-        ImGui::SameLine();
-        ImGui::BeginDisabled(busy || taken.empty());
-        if (ImGui::SmallButton("Reset taken")) {
-            workflow_.ClearTrayCursor(t->uid, "reset on the Waffle Tray page");
-            trayMsg_ = "taken cells released - the next tray_next starts over";
-        }
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("A fresh tray was loaded: release every cell a run has "
-                              "taken.\nA recipe does the same with a tray_reset step.");
-        ImGui::TextDisabled("click a cell to disable / enable it, a header for the whole "
-                            "line; right-click a cell to drive there");
-        ImGui::Separator();
-
-        if (total > static_cast<std::size_t>(kMaxDrawnCells)) {
-            ImGui::TextWrapped("%zu cells is more than this page draws (%d). The tray "
-                               "still works: move_to_cell and tray_next address it by "
-                               "index, and rows and columns can be disabled below.",
-                               total, kMaxDrawnCells);
-            // The line toggles without the grid, so a big tray is still maskable.
-            ImGui::BeginDisabled(busy);
-            ImGui::SetNextItemWidth(100.0f);
-            ImGui::InputInt("row##big", &trayLineRow_);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("toggle row")) {
-                const int r = trayLineRow_;
-                if (r >= 1 && r <= t->rows) {
-                    if (!t->disabledRows.erase(r)) t->disabledRows.insert(r);
-                }
-            }
-            ImGui::SetNextItemWidth(100.0f);
-            ImGui::InputInt("col##big", &trayLineCol_);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("toggle col")) {
-                const int c = trayLineCol_;
-                if (c >= 1 && c <= t->cols) {
-                    if (!t->disabledCols.erase(c)) t->disabledCols.insert(c);
-                }
-            }
-            ImGui::EndDisabled();
-        } else {
-            // Cell size from what fits, clamped so a 2 x 3 is not three
-            // billboards and a 40 x 40 is still a target; past the clamp the
-            // child scrolls.
-            const ImVec2 region = ImGui::GetContentRegionAvail();
-            const float  gap    = ImGui::GetStyle().ItemSpacing.x;
-            const float  headW  = 30.0f;
-            const float  fitW   = (region.x - headW - gap * t->cols) / static_cast<float>(t->cols);
-            const float  fitH   = (region.y - headW - gap * t->rows) / static_cast<float>(t->rows);
-            const float  sz     = std::clamp(std::floor(fminf(fitW, fitH)), 16.0f, 72.0f);
-            const bool   labels = sz >= 34.0f;
-
-            ImGui::BeginChild("trayCells", region, ImGuiChildFlags_None,
-                              ImGuiWindowFlags_HorizontalScrollbar);
-            ImGui::BeginDisabled(busy);
-            // Column headers: a whole column on or off.
-            ImGui::Dummy(ImVec2(headW, sz * 0.6f));
-            for (int c = 1; c <= t->cols; ++c) {
-                ImGui::SameLine();
-                const bool off = t->disabledCols.count(c) > 0;
-                if (off) ImGui::PushStyleColor(ImGuiCol_Button, kCellOff);
-                char lbl[32];
-                std::snprintf(lbl, sizeof(lbl), "%d###ch%d", c, c);
-                if (ImGui::Button(lbl, ImVec2(sz, sz * 0.6f))) {
-                    if (!t->disabledCols.erase(c)) t->disabledCols.insert(c);
-                }
-                if (off) ImGui::PopStyleColor();
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("column %d: %s", c, off ? "disabled" : "enabled");
-            }
-            for (int r = 1; r <= t->rows; ++r) {
-                const bool rowOff = t->disabledRows.count(r) > 0;
-                if (rowOff) ImGui::PushStyleColor(ImGuiCol_Button, kCellOff);
-                char lbl[32];
-                std::snprintf(lbl, sizeof(lbl), "%d###rh%d", r, r);
-                if (ImGui::Button(lbl, ImVec2(headW, sz))) {
-                    if (!t->disabledRows.erase(r)) t->disabledRows.insert(r);
-                }
-                if (rowOff) ImGui::PopStyleColor();
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("row %d: %s", r, rowOff ? "disabled" : "enabled");
-
-                for (int c = 1; c <= t->cols; ++c) {
-                    ImGui::SameLine();
-                    const bool cellOff = t->disabledCells.count(TrayCell{r, c}) > 0;
-                    const bool on      = TrayCellEnabled(*t, r, c);
-                    const bool took    = taken.count(TrayCell{r, c}) > 0;
-                    int pushed = 0;
-                    if (!on)       { ImGui::PushStyleColor(ImGuiCol_Button, kCellOff);   ++pushed; }
-                    else if (took) { ImGui::PushStyleColor(ImGuiCol_Button, kCellTaken); ++pushed; }
-                    char cl[48];
-                    if (labels) std::snprintf(cl, sizeof(cl), "%d,%d###c%d_%d", r, c, r, c);
-                    else        std::snprintf(cl, sizeof(cl), "###c%d_%d", r, c);
-                    if (ImGui::Button(cl, ImVec2(sz, sz))) {
-                        // The cell's OWN flag toggles; a cell dark because its
-                        // row is off stays dark, and the tooltip says which.
-                        if (cellOff) t->disabledCells.erase(TrayCell{r, c});
-                        else         t->disabledCells.insert(TrayCell{r, c});
-                    }
-                    if (pushed) ImGui::PopStyleColor(pushed);
-                    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) GoToTrayCell(*t, r, c);
-                    if (ImGui::IsItemHovered()) {
-                        std::map<std::string, double> pose;
-                        std::string tip = "(" + std::to_string(r) + "," + std::to_string(c) + ")";
-                        if (TrayCellPose(*t, r, c, &pose)) tip += "  " + PoseLine(pose);
-                        if (cellOff) tip += "\ndisabled (this cell)";
-                        if (rowOff)  tip += "\ndisabled (row " + std::to_string(r) + ")";
-                        if (t->disabledCols.count(c))
-                            tip += "\ndisabled (column " + std::to_string(c) + ")";
-                        if (took) tip += "\ntaken by a run";
-                        tip += "\nright-click: drive here (jog must be armed)";
-                        ImGui::SetTooltip("%s", tip.c_str());
-                    }
-                }
-            }
-            ImGui::EndDisabled();
-            ImGui::EndChild();
-        }
+        DrawTrayGrid(t, busy);
     }
     ImGui::EndChild();
 
@@ -401,6 +521,7 @@ void App::DrawTrayPanel()
                 t->origin = TrayCorner{};
                 t->rowEnd = TrayCorner{};
                 t->far    = TrayCorner{};
+                t->usedCells.clear();   // a re-taught tray starts full
                 workflow_.ClearTrayCursor(t->uid, "tray device changed");
                 session_.SaveTrays();
                 trayMsg_ = hadCorners ? "device changed - the three corners were cleared, "
@@ -504,10 +625,14 @@ void App::DrawTrayPanel()
 
     ImGui::SeparatorText("In a recipe");
     ImGui::TextWrapped("move_to_cell drives this tray's device to (row, col) - typed, or "
-                       "read from ctx keys. tray_next takes the next enabled cell that "
-                       "no run has taken yet and writes tray_row / tray_col; put a "
-                       "move_to_cell with row_key = tray_row, col_key = tray_col after "
-                       "it. tray_reset, or Reset taken here, releases every cell.");
+                       "read from ctx keys. move_to_active_cell drives to the cell "
+                       "clicked on the grid (View > Waffle Tray window keeps the grid "
+                       "beside the Run page). tray_next takes the next enabled cell that "
+                       "still holds a part, marks it used and writes tray_row / "
+                       "tray_col; put a move_to_cell with row_key = tray_row, col_key = "
+                       "tray_col after it. Used cells are saved with the tray, so the "
+                       "next run carries on where this one stopped. tray_reset, or All "
+                       "full here, marks every cell full again.");
 
     // Said out loud: a Go with jog unarmed raises this alert. Safe as a modal:
     // every Go is disabled while orch_.Busy(), so no worker is behind a prompt.

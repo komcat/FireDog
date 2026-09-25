@@ -622,6 +622,30 @@ std::string ProductSession::TraysDump() const
     return arr.dump();
 }
 
+bool ProductSession::SetTrayCellsUsed(const std::string& uid,
+                                      const std::vector<TrayCell>& cells, bool used)
+{
+    WaffleTray* t = FindWaffleTray(trays_, uid);
+    if (!t) {
+        FD_WARN("tray", "used-cell change for unknown tray '%s' (dropped)", uid.c_str());
+        return false;
+    }
+    if (cells.empty()) {
+        t->usedCells.clear();
+        if (used)
+            for (int r = 1; r <= t->rows; ++r)
+                for (int c = 1; c <= t->cols; ++c) t->usedCells.insert(TrayCell{r, c});
+    } else {
+        for (const TrayCell& cell : cells) {
+            if (!TrayCellInRange(*t, cell.first, cell.second)) continue;
+            if (used) t->usedCells.insert(cell);
+            else      t->usedCells.erase(cell);
+        }
+    }
+    SaveTrays();
+    return true;
+}
+
 // ---- Vision detection models — same conventions as alignment procedures ----
 
 std::string ProductSession::VisionDir() const

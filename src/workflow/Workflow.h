@@ -357,26 +357,50 @@ public:
     std::size_t LiveFrameCount() const;
 
     // ---- Waffle tray cursors (tray_next / tray_reset / the Waffle Tray page)
-    // Which cells of a tray a run has already taken, by tray uid. RUNTIME
-    // state, never persisted: a consumed cell describes the parts on ONE
-    // physical tray, exactly like a live frame describes one part. Held here
-    // for the live frame's reason — a program runs each slot as its own engine
-    // Start, and the whole point is that slot N takes the cell after slot N-1.
-    // So unlike a frame it is NOT cleared at program start or DUT open: a
-    // program consumes one cell per part. Cleared at product load and by the
-    // page's Reset / the tray_reset step, both of which say so in the log.
-    // Read by worker threads (tray_next) and the page (the shading).
+    // Which cells of a tray are USED (the cavity is empty), by tray uid. The
+    // live, thread-safe mirror of WaffleTray::usedCells, which is the
+    // persisted truth: an operator marks cavities on the page and a restart
+    // mid-tray must not start the next recipe at (1,1). Held here rather than
+    // in an engine Env for the live frame's reason — a program runs each slot
+    // as its own engine Start, and the whole point is that slot N takes the
+    // cell after slot N-1 — so it is NOT cleared at program start or DUT open.
+    // Seeded from the document at product load (TraySeed); a worker's change
+    // reaches the document through QueueTrayUsed / TakeTrayUsed, drained in
+    // App::Update; the page's changes go through App::SetTrayCellsUsed, which
+    // writes both. Read by worker threads (tray_next) and the page.
     void TrayConsume(const std::string& trayUid, int row, int col);
+    void TrayRelease(const std::string& trayUid, int row, int col);
+    void TraySeed(const std::string& trayUid, const std::set<TrayCell>& used);
     bool TrayIsConsumed(const std::string& trayUid, int row, int col) const;
     std::set<TrayCell> TrayConsumed(const std::string& trayUid) const;   // a copy
-    // The first cell of `ordered` not yet consumed, consumed on the spot under
-    // ONE lock so two lanes cannot take the same cell. `wrap` starts over when
-    // every cell is taken; else false = exhausted and nothing consumed.
-    // `index` is 1-based into `ordered`; `remaining` counts what is left AFTER
-    // this one.
+    // The ACTIVE cell: the one an operator selected in the tray window, or
+    // the last one tray_next handed out — what move_to_active_cell drives to.
+    // Runtime only (a restart has no part in progress); cleared with the
+    // cursor. False when none is set.
+    bool TrayActive(const std::string& trayUid, TrayCell* out) const;
+    void SetTrayActive(const std::string& trayUid, TrayCell cell);
+    void ClearTrayActive(const std::string& trayUid);
+    // The first cell of `ordered` not yet used, used on the spot under ONE
+    // lock so two lanes cannot take the same cell, and queued for the
+    // document. `wrap` releases every cell and starts over when all are used;
+    // else false = exhausted and nothing consumed. `index` is 1-based into
+    // `ordered`; `remaining` counts what is left AFTER this one.
     bool TrayNext(const std::string& trayUid, const std::vector<TrayCell>& ordered,
                   bool wrap, TrayCell* out, std::size_t* index, std::size_t* remaining);
-    void ClearTrayCursor(const std::string& trayUid, const char* reason);   // "" = all
+    // Cursor only — the caller decides whether the document follows (product
+    // load re-seeds; tray_reset queues; the page writes both). "" = all.
+    void ClearTrayCursor(const std::string& trayUid, const char* reason);
+
+    // A worker's change to a tray's used set, for the UI thread to persist.
+    // `all` = every cell of the tray to `used`; else the one `cell`.
+    struct TrayUsedEvent {
+        std::string trayUid;
+        bool        all = false;
+        TrayCell    cell{0, 0};
+        bool        used = false;
+    };
+    void QueueTrayUsed(const TrayUsedEvent& ev);
+    std::vector<TrayUsedEvent> TakeTrayUsed();
 
     // ---- Reliability hand-back (vision_test command) ------------------------
     // The SAME route, and for a reason worth writing down: the engine's Status
@@ -554,9 +578,12 @@ private:
     mutable std::mutex                       frameMu_;
     std::map<std::string, AlignResult>       liveFrames_;
 
-    // Consumed waffle-tray cells by tray uid (see TrayNext).
+    // Used waffle-tray cells by tray uid (see TrayNext), and the worker->UI
+    // queue that carries a run's changes to the document.
     mutable std::mutex                       trayMu_;
     std::map<std::string, std::set<TrayCell>> trayConsumed_;
+    std::map<std::string, TrayCell>          trayActive_;
+    std::vector<TrayUsedEvent>               trayUsedQueue_;
 
     // The needle lever arm, plus its worker->UI queue.
     mutable std::mutex     needleMu_;

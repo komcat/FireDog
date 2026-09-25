@@ -159,6 +159,13 @@ public:
     void SaveTraysTo(const std::string& path, const std::string& uid);
     std::string TraysDump() const;
     bool TraysDirty() const { return TraysDump() != traysBaseline_; }
+    // The used-cell set of one tray: `cells` to `used`, or EVERY cell when
+    // `cells` is empty. Persists on the spot, like a grip's measurement — the
+    // callers are a run's drain and the page's marks, both facts about the
+    // fixture that must survive the next click. False when the uid is
+    // unknown. The Workflow cursor is NOT touched here (App does both).
+    bool SetTrayCellsUsed(const std::string& uid, const std::vector<TrayCell>& cells,
+                          bool used);
 
     // Vision detection models — same persistence conventions as recipes and
     // alignment procedures: a tuned detector is a document, so explicit Save
