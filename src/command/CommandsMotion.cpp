@@ -331,6 +331,13 @@ ParamSpec ExposureParam()
             "optional camera exposure set BEFORE moving (vision-ready on arrival); 0 = leave"};
 }
 
+ParamSpec ToolVelocityParam()
+{
+    return {"velocity_mm_s", ParamType::Double, false, kToolVelocityMmS, 0.0, 1000.0, {},
+            "velocity for this move and every leg of it (default 5 mm/s - a tool closing "
+            "on a lens or the camera); 0 = keep current. Persists on the device"};
+}
+
 // ---- File-local from here on ------------------------------------------------
 namespace {
 

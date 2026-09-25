@@ -94,6 +94,15 @@ ParamSpec VelocityParam();
 ParamSpec ExposureParam();
 CommandResult ApplyPreMove(ExecutionContext& ctx, int idx, const ParamValues& p);
 
+// The same velocity param for the TOOL approaches (move_tool_to_camera,
+// move_camera_to_tool, move_to_point, tool_travel_to_camera, the two grip
+// moves), with a default instead of "keep current": a registered tool closing
+// on a lens or the camera runs at kToolVelocityMmS unless the step says
+// otherwise. 0 still means keep current. Like every velocity_mm_s it persists
+// on the device.
+inline constexpr double kToolVelocityMmS = 5.0;
+ParamSpec ToolVelocityParam();
+
 // ---- teach: fine-tune after arrival, save into the position -----------------
 // The optional `teach` Bool every saved-position mover declares. When set, the
 // command arrives as usual and then blocks on the Manual Adjust window so the

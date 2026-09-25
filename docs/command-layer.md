@@ -25,7 +25,12 @@ destination is known before anything moves. The three parameters carry
 sharing a group* under a collapsing header (opened by itself when one is set, or when one
 is required — a validation error must never hide behind a fold), which is what keeps
 three optional fields off six forms that were already long. `DrawParamWidget` is
-untouched and stays one row per `ParamSpec`.
+untouched and stays one row per `ParamSpec`. The six TOOL approaches (`move_tool_to_camera`,
+`move_camera_to_tool`, `move_to_point`, `tool_travel_to_camera`, `grip_move_to_camera`,
+`grip_camera_to_object`) share **`ToolVelocityParam()`** (`MotionWaits.h`): the same
+`velocity_mm_s`, but defaulting to `kToolVelocityMmS` = 5 mm/s rather than "keep current" — a
+registered tool closing on a lens or the camera does not inherit whatever speed the last step
+left on the device. A saved step with no value now runs at 5; type 0 to keep current.
 
 **`move_lift_off`** is two legs through that same helper: a short retreat along ONE
 local axis (`lift_mm`, default 2; `lift_axis` as `"Z-"` / `"X+"`, empty = by controller
