@@ -81,6 +81,9 @@ struct UiSettings {
     // Waffle Tray page: width of its right-hand control column in px (same
     // shape as the two above; 0 = the App default).
     float trayCtlW = 0.0f;
+    // Whether the floating Waffle Tray window was open. Restored, because an
+    // operator who keeps it beside the Run page wants it back next shift.
+    bool  showTrayWin = false;
 
     // Run page: height of the Scan band in px (0 = default). Its own field
     // rather than lowerH: the band carries the scan parameter forms, and how

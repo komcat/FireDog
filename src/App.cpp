@@ -78,6 +78,7 @@ int App::Run()
         if (ui.regCtlW       > 0.0f) regCtlW_       = ui.regCtlW;
         if (ui.gripCtlW      > 0.0f) gripCtlW_      = ui.gripCtlW;
         if (ui.trayCtlW      > 0.0f) trayCtlW_      = ui.trayCtlW;
+        showTray_        = ui.showTrayWin;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
         showVisionMarks_ = ui.showVisionMarks;
@@ -500,6 +501,7 @@ void App::SaveUiSettings()
     s.regCtlW       = regCtlW_;
     s.gripCtlW      = gripCtlW_;
     s.trayCtlW      = trayCtlW_;
+    s.showTrayWin   = showTray_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.showVisionMarks = showVisionMarks_;

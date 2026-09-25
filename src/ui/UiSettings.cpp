@@ -39,6 +39,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("reg_ctl_w"))  s.regCtlW  = j["reg_ctl_w"].get<float>();
         if (j.contains("grip_ctl_w")) s.gripCtlW = j["grip_ctl_w"].get<float>();
         if (j.contains("tray_ctl_w")) s.trayCtlW = j["tray_ctl_w"].get<float>();
+        if (j.contains("show_tray_win")) s.showTrayWin = j["show_tray_win"].get<bool>();
         if (j.contains("show_chart"))    s.showChart   = j["show_chart"].get<bool>();
         if (j.contains("click_to_move")) s.clickToMove = j["click_to_move"].get<bool>();
         if (j.contains("show_vision_marks")) s.showVisionMarks = j["show_vision_marks"].get<bool>();
@@ -133,6 +134,7 @@ bool UiSettings::Save(const std::string& path) const
     j["reg_ctl_w"]       = regCtlW;
     j["grip_ctl_w"]      = gripCtlW;
     j["tray_ctl_w"]      = trayCtlW;
+    j["show_tray_win"]   = showTrayWin;
     j["show_chart"]    = showChart;
     j["click_to_move"] = clickToMove;
     j["show_vision_marks"] = showVisionMarks;
