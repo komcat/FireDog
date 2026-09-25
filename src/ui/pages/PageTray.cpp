@@ -182,7 +182,11 @@ void App::DrawTrayGrid(WaffleTray* t, bool busy)
     ImGui::BeginDisabled(busy || taken.empty());
     if (ImGui::SmallButton("All full")) {
         SetTrayCellsUsed(*t, {}, false, "all full on the Waffle Tray page");
-        trayMsg_ = "every cell marked full - the next tray_next starts at the first";
+        // A fresh tray starts at its first cell, like a tray_reset step.
+        const std::vector<TrayCell> cells = TrayEnabledCells(*t, TrayOrder::RowMajor);
+        if (!cells.empty()) workflow_.SetTrayActive(t->uid, cells.front());
+        trayMsg_ = cells.empty() ? "every cell marked full"
+                                 : "every cell marked full - the first cell is active";
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))

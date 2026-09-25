@@ -128,7 +128,7 @@ starts full).
 | `tray_next` | next enabled cell still holding a part, in `order` (`row_major` / `col_major` / `serpentine`), marked used → `<prefix>_row/_col/_index/_remaining/_ok` (default prefix `tray`). Tray empty: `_ok = false`, Success unless `require`. |
 | `move_to_active_cell` | the same move to the tray's ACTIVE cell — the one an operator clicked on the grid, or the last one `tray_next` handed out. Fails when none is set. |
 | `tray_mark_used` | the step after the work: mark the ACTIVE cell used and (`advance`, default on) make the next full enabled cell after it in `order` the active one; `<prefix>_row/_col` name the new active cell, `_ok = false` and the active cell cleared when the tray is done (fail with `require`). |
-| `tray_reset` | mark every cell of the tray full again. |
+| `tray_reset` | mark every cell of the tray full again and make the first enabled cell (in `order`) the active one, so the run-per-part recipe needs no click after a reset; `<prefix>_row/_col/_ok`. The page's *All full* does the same. |
 
 The run-per-part recipe this gives: the operator clicks the first cell once,
 then every run is `move_to_active_cell` → the work → `tray_mark_used`, and the

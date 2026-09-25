@@ -16,7 +16,7 @@
 //                  tray is empty
 //   tray_mark_used mark the active cell used and make the next full cell
 //                  active - the step after the work, for a run-per-part recipe
-//   tray_reset     mark every cell of a tray full again
+//   tray_reset     mark every cell of a tray full again, first cell active
 //
 // move_to_cell is NOT a teach mover and NOT a parallel mover, and both are
 // deliberate. A teach writes the live pose into the position the step drove
@@ -316,6 +316,28 @@ CommandResult ExecTrayReset(ExecutionContext& ctx, const ParamValues& p)
     ctx.Wf().ClearTrayCursor(t->uid, "tray_reset");
     // The document follows: every cavity full again, persisted by the drain.
     ctx.Wf().QueueTrayUsed({t->uid, true, TrayCell{0, 0}, false});
+
+    // A fresh tray starts at its first cell: the active cell is set so the
+    // run-per-part recipe (move_to_active_cell -> work -> tray_mark_used)
+    // needs no click after a reset. In `order`, so it is the cell
+    // tray_mark_used's walk would have picked first.
+    TrayOrder order = TrayOrder::RowMajor;
+    if (!TrayOrderFromName(p.GetString("order"), &order))
+        return CommandResult::Fail("unknown order '" + p.GetString("order") + "'");
+    const std::vector<TrayCell> cells = TrayEnabledCells(*t, order);
+    const std::string prefix = p.GetString("ctx_prefix");
+    if (cells.empty()) {
+        ctx.CtxSet(prefix + "_ok", false);
+        FD_WARN("tray", "tray '%s' reset, but it has no enabled cell to make active",
+                t->name.c_str());
+        return CommandResult::Success();
+    }
+    ctx.Wf().SetTrayActive(t->uid, cells.front());
+    ctx.CtxSet(prefix + "_row", static_cast<double>(cells.front().first));
+    ctx.CtxSet(prefix + "_col", static_cast<double>(cells.front().second));
+    ctx.CtxSet(prefix + "_ok", true);
+    FD_INFO("tray", "tray '%s' reset: every cell full, active cell (%d,%d)", t->name.c_str(),
+            cells.front().first, cells.front().second);
     return CommandResult::Success();
 }
 
@@ -434,9 +456,15 @@ void RegisterTrayCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareManage
                   CommandSpec::Needs::None, ExecTrayMarkUsed});
 
     reg.Register({"tray_reset", "Tray",
-                  "Mark every cell of a waffle tray full again (a fresh tray was loaded)",
+                  "Mark every cell of a waffle tray full again (a fresh tray was loaded) and "
+                  "make its first cell the active one",
                   {
                       {"tray", PT::TrayUid, true, {}, 0, 0, {}, "the waffle tray"},
+                      {"order", PT::Enum, false, "row_major", 0, 0,
+                       {"row_major", "col_major", "serpentine"},
+                       "the walk whose first enabled cell becomes active"},
+                      {"ctx_prefix", PT::String, false, "tray", 0, 0, {},
+                       "writes <prefix>_row/_col (the active cell) and _ok"},
                   },
                   CommandSpec::Needs::None, ExecTrayReset});
 }
