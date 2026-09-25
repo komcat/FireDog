@@ -392,7 +392,6 @@ const char* StepIconFile(const char* type)
         // gets icons at all.
         {"move_relative",        "move_relative"},
         {"move_relative_global", "move_relative"},
-        {"place_move",           "move_default"},
         // A block of steps rather than one step. Only `group` — giving `loop`
         // and `if` the same glyph would say "these rows are the same kind of
         // thing", which is the opposite of what the column is for.

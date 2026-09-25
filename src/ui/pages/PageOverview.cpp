@@ -81,7 +81,23 @@ void App::DrawDutBlock()
         return;
     }
     if (di.open) {
-        ImGui::Text("%s", di.serial.c_str());
+        // The serial is what an operator checks from across the bench: twice
+        // the body size, shrunk to fit the row when a long one would overflow.
+        {
+            const float base = ImGui::GetStyle().FontSizeBase;
+            const float maxW = ImGui::GetContentRegionAvail().x;
+            float size = base * 2.0f;
+            ImGui::PushFont(nullptr, size);
+            const float tw = ImGui::CalcTextSize(di.serial.c_str()).x;
+            ImGui::PopFont();
+            if (tw > maxW && tw > 0.0f && maxW > 0.0f) {
+                size *= maxW / tw;
+                if (size < base * 0.75f) size = base * 0.75f;   // stay legible
+            }
+            ImGui::PushFont(nullptr, size);
+            ImGui::TextUnformatted(di.serial.c_str());
+            ImGui::PopFont();
+        }
         ImGui::TextDisabled("%zu entrie(s)%s%s", di.entries,
                             di.status.empty() ? "" : " - ", di.status.c_str());
         std::string err;

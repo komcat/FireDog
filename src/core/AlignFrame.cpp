@@ -67,6 +67,7 @@ nlohmann::json PointToJson(const AlignPoint& p)
     j["gx"] = p.gx; j["gy"] = p.gy;
     j["px"] = p.px; j["py"] = p.py;
     j["wx"] = p.wx; j["wy"] = p.wy;
+    if (p.hasZ) j["gz"] = p.gz;   // absent = not recorded, never 0
     return j;
 }
 
@@ -77,6 +78,8 @@ AlignPoint PointFromJson(const nlohmann::json& j)
     p.gx = j.value("gx", 0.0); p.gy = j.value("gy", 0.0);
     p.px = j.value("px", 0.0); p.py = j.value("py", 0.0);
     p.wx = j.value("wx", 0.0); p.wy = j.value("wy", 0.0);
+    p.hasZ = j.contains("gz");
+    p.gz   = j.value("gz", 0.0);
     return p;
 }
 
@@ -91,6 +94,7 @@ nlohmann::json ResultToJson(const AlignResult& r)
     j["origin_y"]    = r.originY;
     j["theta_deg"]   = r.thetaDeg;
     j["span_mm"]     = r.spanMm;
+    if (r.hasZ) j["z"] = r.z;
     return j;
 }
 
@@ -106,6 +110,8 @@ AlignResult ResultFromJson(const nlohmann::json& j)
     r.originY  = j.value("origin_y", 0.0);
     r.thetaDeg = j.value("theta_deg", 0.0);
     r.spanMm   = j.value("span_mm", 0.0);
+    r.hasZ     = j.contains("z");
+    r.z        = j.value("z", 0.0);
     return r;
 }
 
@@ -174,15 +180,14 @@ nlohmann::json NominalToJson(const AlignNominal& n)
     j["name"]     = n.name;
     j["lx"]       = n.lx;
     j["ly"]       = n.ly;
+    // Only the marks that are real: an empty point written beside real ones
+    // reads as a mark taken at the origin. `points` is always written, because
+    // "absent = 2" is what every file older than the 1-mark teach meant.
     j["p1"]       = PointToJson(n.p1);
-    j["p2"]       = PointToJson(n.p2);
-    // Only when they mean something: a two-mark nominal writing two empty
-    // points would read as a four-mark teach with two marks at the origin.
-    if (n.points >= 4) {
-        j["p3"]     = PointToJson(n.p3);
-        j["p4"]     = PointToJson(n.p4);
-        j["points"] = n.points;
-    }
+    if (n.points >= 2) j["p2"] = PointToJson(n.p2);
+    if (n.points >= 3) j["p3"] = PointToJson(n.p3);
+    if (n.points >= 4) j["p4"] = PointToJson(n.p4);
+    j["points"]   = n.points;
     j["mx"]       = n.mx;
     j["my"]       = n.my;
     j["span_mm"]  = n.spanMm;
@@ -211,9 +216,10 @@ AlignNominal NominalFromJson(const nlohmann::json& j)
     if (j.contains("p2")) n.p2 = PointFromJson(j["p2"]);
     if (j.contains("p3")) n.p3 = PointFromJson(j["p3"]);
     if (j.contains("p4")) n.p4 = PointFromJson(j["p4"]);
-    // Absent = two, which is what every file written before four existed meant.
+    // Absent = two, which is what every file written before `points` existed
+    // meant. Four is still read: files taught with the old 2-or-4 page carry it.
     n.points = j.value("points", 2);
-    if (n.points != 4) n.points = 2;
+    if (n.points < 1 || n.points > kAlignNominalMarksMax) n.points = 2;
     n.mx       = j.value("mx", 0.0);
     n.my       = j.value("my", 0.0);
     n.spanMm   = j.value("span_mm", 0.0);
@@ -280,6 +286,9 @@ bool SolveAlignFrame(const AlignPoint& e1, const AlignPoint& e2,
     out->originY  = e1.wy;
     out->thetaDeg = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
     out->spanMm   = span;
+    // The working height, only when both marks recorded one - half a Z is no Z.
+    out->hasZ     = e1.hasZ && e2.hasZ;
+    out->z        = out->hasZ ? 0.5 * (e1.gz + e2.gz) : 0.0;
     out->capturedAt = NowStamp();
     out->valid    = true;
     return true;
@@ -394,8 +403,9 @@ bool SolveAlignNominalN(const AlignResult& frame, const AlignPoint* pts, int n,
         if (err) *err = "no valid local frame - teach the alignment first";
         return false;
     }
-    if (!pts || (n != 2 && n != 4)) {
-        if (err) *err = "a nominal is taught from 2 or 4 marks";
+    if (!pts || n < 1 || n > kAlignNominalMarksMax) {
+        if (err) *err = "a nominal is taught from 1 to " +
+                        std::to_string(kAlignNominalMarksMax) + " marks";
         return false;
     }
     if (!out) return true;
@@ -405,11 +415,14 @@ bool SolveAlignNominalN(const AlignResult& frame, const AlignPoint* pts, int n,
     out->mx = sx / n;
     out->my = sy / n;
 
-    // Two marks: the separation, which is what `spanMm` has always meant. Four:
-    // twice the mean distance from the centre — the same figure for a ring that
-    // the separation is for a pair, so one number reads the same either way.
-    // It is the only number that can see a mark placed off its feature.
-    if (n == 2) {
+    // One mark: nothing to spread. Two: the separation, which is what `spanMm`
+    // has always meant. Three or more: twice the mean distance from the centre
+    // — the same figure for a ring that the separation is for a pair, so one
+    // number reads the same either way. It is the only number that can see a
+    // mark placed off its feature.
+    if (n == 1) {
+        out->spanMm = 0.0;
+    } else if (n == 2) {
         const double dx = pts[1].wx - pts[0].wx;
         const double dy = pts[1].wy - pts[0].wy;
         out->spanMm = std::sqrt(dx * dx + dy * dy);
@@ -424,12 +437,12 @@ bool SolveAlignNominalN(const AlignResult& frame, const AlignPoint* pts, int n,
     }
 
     out->points = n;
+    // Cleared past `n`: `points` says they are not real, and a re-teach with
+    // fewer marks must not leave the old ones half-written.
     out->p1 = pts[0];
-    out->p2 = pts[1];
-    // Left as they were on a two-mark teach: `points` says they are not real,
-    // and a re-teach from four to two must not leave the old ring half-written.
-    out->p3 = (n == 4) ? pts[2] : AlignPoint{};
-    out->p4 = (n == 4) ? pts[3] : AlignPoint{};
+    out->p2 = (n >= 2) ? pts[1] : AlignPoint{};
+    out->p3 = (n >= 3) ? pts[2] : AlignPoint{};
+    out->p4 = (n >= 4) ? pts[3] : AlignPoint{};
 
     AlignMachineToLocal(frame, out->mx, out->my, &out->lx, &out->ly);
     out->taughtAt = NowStamp();

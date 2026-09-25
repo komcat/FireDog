@@ -186,11 +186,25 @@ this session may move against the part it just measured.
 The live frame is cleared at every boundary where the part might have changed:
 
 * **program start** (`App::StartDeckRun`) — every deck run teaches its own frame
-  or fails loudly;
+  or fails loudly, **unless the frame was KEPT** (below);
 * **DUT open** — edge-detected in `App::Update` off `DutSession::GetInfo()`
   rather than hooked into the two `Open` call sites, so a third one cannot be
   added without the reset firing;
 * **product load / app start** (`App::ResetDocumentSelections`).
+
+**Kept frames.** Some programs align once and then run several programs on the
+same part. `align_run keep_frame` (it passes `keep` to `align_solve`) marks the
+frame to survive a **program start and nothing else**: `Workflow::CarryLiveFrames`
+drops every unkept frame and marks the kept ones `carried`. DUT open, product load
+and app close still wipe it, because each of those can mean a different part.
+
+Opting in at the source is not enough on its own. A carried frame is invisible to
+`align_apply`, `nominal_point` and `move_local` unless the step sets
+`use_kept_frame`; without it the step fails and says a kept frame exists. So a
+recipe written for "this program aligns its own part" can never silently move
+against a frame another program measured. Re-solving makes the frame fresh again.
+The Alignment page shows a carried frame as **KEPT** rather than LIVE, and its own
+buttons accept it.
 
 Why `Workflow` and not the engine's `Env`: **a program runs each slot as its own
 engine `Start`**, so per-run state would be wiped between the recipe that aligns
@@ -495,35 +509,35 @@ each of them just `lx`/`ly` plus the record of how it was taught. A list rather
 than a single point because one procedure's frame typically serves several
 targets, and because a name is how anything downstream will address one.
 
-### Two marks, not one — or four
+### One, two or three points, averaged
 
-A nominal is taught as the **centre of two or four marks**. The reason is the
-same one that makes a centre hard to teach at all: the interesting point is
-usually the *middle* of something, and a middle has no feature under it to put a
-crosshair on. Marking corners puts the crosshair on something real every time and
-leaves the centre to arithmetic.
+A nominal is taught as the **average of 1, 2 or 3 crosshair points**. The
+operator's only job is to put the crosshair on each position and press *Set*:
 
-Two or four is a real choice. Two opposite corners give the centre in one stroke
-and **cannot check themselves**: a mark that lands off its feature moves the
-centre by half its error and looks exactly like a good mark. Four give the same
-centre as the average of a ring, and `spanMm` — twice the mean distance from the
-centre — is then a *width across the marks* that either matches the
-part or does not. `SolveAlignNominalN` takes 2 or 4 and refuses anything else: a
-three-mark ring has no centre worth the name, and averaging one anyway would put
-a nominal somewhere nobody chose. `points` on the record says which; files
-written before four existed have no key and load as two. `SolveAlignNominal`
-(two marks) stays, delegating, because most callers have exactly two.
+| Points | What it is for |
+|---|---|
+| 1 | the crosshair **is** the point |
+| 2 | two opposite corners of something whose **centre** is the point — a centre has no feature under it to aim at, so the arithmetic finds it |
+| 3 | three corners of a footprint, or the same feature three times to average the pick noise down |
 
-The picker needed no second code path for it: the centre it draws is the average
-of every *latched* mark and the envelope is their bounding box, which is the
-midpoint and the diagonal box when there are two. Only the diagonal LINE is
-pair-only — across four marks it joins two arbitrary corners of the ring.
+`spanMm` is recorded as a diagnostic and never judged: 0 for one point, the
+separation for two, twice the mean distance from the average for three. It is the
+only number that can show up a point placed off its feature.
+
+`SolveAlignNominalN` accepts 1..`kAlignNominalMarksMax` (4). The page asks for at
+most `kAlignNominalTeachMax` (3); the fourth slot exists only because files taught
+on the older 2-or-4 page carry `points: 4` and must go on reading. `points` is now
+always written; a file without it loads as two, which is what those files meant.
+A re-teach opens on the count the nominal was taught with (a four opens on three).
+
+The picker needed no second code path: the average it draws is of every *latched*
+mark and the envelope is their bounding box. With one point there is no average
+to draw — the mark is the nominal.
 
 This is deliberately *not* the frame's two-point rule. E1/E2 fix an origin **and
 a direction**, so `SolveAlignFrame` refuses a short span — below `kAlignMinSpanMM`
-the angle is noise. A nominal is a point: two coincident marks give a valid (if
-pointless) answer, so `SolveAlignNominal` imposes no minimum and records the
-span as a diagnostic instead.
+the angle is noise. A nominal is a point, so `SolveAlignNominalN` imposes no
+minimum.
 
 What it *does* refuse is an **invalid frame**. `AlignMachineToLocal` is an
 identity when the frame is not valid, so a nominal taught through one would be a
@@ -534,75 +548,60 @@ faithfully re-project it to somewhere no part has ever been.
 
 `Page::AlignNominal` (`ui/pages/PageAlignNominal.cpp`) is a takeover reached
 only from the nominal list's *New nominal…* and a nominal's *Re-teach* — one
-call, and the uid it carries (or does not) is the whole difference, which is why
-the two buttons are no longer both called "teach" — on exactly the argument
-`PageVisionTeach` makes: marking a feature needs a big live image, and the
-Alignment page's columns are strips. It shares `CameraView` with the crosshair
-pick window and the vision teach page, so a pixel means the same thing in all
-three.
+call, and the uid it carries (or does not) is the whole difference. Marking a
+feature needs a big live image, and the Alignment page's columns are strips. It
+shares `CameraView` with the crosshair pick window and the vision teach page, so
+a pixel means the same thing in all three.
 
-It can also draw a **registered tool's tip** (a combo of the devices registered
-against this image's gantry — a tip in another origin, projected through this
-pose, is off by the distance between the two) and a **resizable box centred on
-it**. Drag a corner on the image to size it; it re-centres on the tip every
-frame, so a drag can only change the size and there is no way to leave the box
-describing a place the tool is not. Its size persists in `UiSettings` and
-**nothing about it is stored on the nominal** — a nominal is a point on the part,
-and how wide the gripper is says nothing about where that point belongs. What it
-answers is the question an operator actually has while teaching one: *will the
-tool clear what is beside it*, which no number on the panel answers. A tip that
-cannot be predicted draws nothing and the panel prints the reason in full.
+The page is the image, the point selector, one *Set* per point, the average, the
+name and *Save*. The registered-tool footprint box and the envelope-angle spinner
+it used to carry were removed with the placement work they served.
 
-Three things about it are worth stating outright:
-
-* **Nothing moves.** It reads the live image and the device's pose and writes a
-  document field, so there is no arming checkbox — the pick window's argument.
-* **Each mark latches its own pose.** `wx = gx + (px - w/2) * pixel_to_mm_x`, the
-  same arithmetic §3 describes, evaluated at the moment the operator presses
-  *Set*. Jogging between the two marks is therefore expected, not a hazard, and
-  the two may come from opposite ends of the travel. Captured marks are drawn by
-  projecting back through the **current** pose, so they stay on their features
-  as the stage moves — the Aux window's E marks again.
+* **Nothing moves** unless the operator right-clicks with jog armed.
+* **Each point latches its own pose.** `wx = gx + (px - w/2) * pixel_to_mm_x`,
+  evaluated at the moment the operator presses *Set*. Jogging between points is
+  expected, and captured points are drawn by projecting back through the
+  **current** pose, so they stay on their features as the stage moves.
 * **It needs a LIVE frame** (§5b), not the record. A nominal is *stored* in
   local coordinates, so the conversion that produces them has to come from a
-  frame describing the part under the camera right now. Teaching against an old
-  record would produce numbers that describe nothing on this part — and, unlike
-  a bad move, would then be inherited by every part after it.
+  frame describing the part under the camera right now.
 
-Saving persists immediately (`SaveAligns`), like a taught frame and for the same
-reason: two hand-placed marks are expensive to lose. Re-teach keeps the uid so
-existing references survive; a duplicate name inside one procedure is refused,
-because the name is how a nominal is addressed and two of them would make that
-lookup a coin toss.
+Saving persists immediately (`SaveAligns`). A re-teach replaces the **point** —
+the local X/Y, the marks and their record — and keeps everything else the nominal
+owns: its uid, and any private pose or model still hanging off it. (It used to
+overwrite the whole record, which silently dropped those references.) A
+duplicate name inside one procedure is refused, because the name is how a script
+addresses a nominal.
 
 Duplicating a procedure **keeps** its nominals while clearing its `result`. That
 asymmetry is the whole idea in one line: the frame is per-part, the nominals are
 per-design.
 
-### The four steps, numbered on the buttons
+### The nominal pane
 
-A nominal's row is eight equal-looking `SmallButton`s and nothing about them
-says which comes first — least of all that *3. Use* and *4. Place…* are not two
-ways to do the same thing. So the four that **advance** carry their number:
+The Alignment page's nominal pane is a list on the left and the selected
+nominal's controls on the right. Two steps advance and carry a number:
 
 | | Button | What it does |
 |---|---|---|
-| 1 | *Teach nominal…* | mark two features; their midpoint becomes the local X/Y |
-| 2 | *Teach view* | save the current pose as where the camera watches this point from |
-| 3 | *Use* | load it into the local→machine probe, so *Move here* can drive there and check it |
-| 4 | *Place…* | mark a gripped object and compute the correction onto it |
+| 1 | *New nominal…* | open the teach page; the average of the points becomes the local X/Y |
+| 2 | *Go to nominal* | local → machine through the **live** frame, and drive the procedure's device there. **Armed**, and gated on a live frame: a computed destination out of a stale frame goes somewhere nobody chose. Z goes to the frame's **working height** — the mean gantry Z E1 and E2 were marked at (`AlignResult::z`, axis space, never transformed) — the same default the `move_to_nominal` step uses (`z_from_frame`, overridden by a typed `z_mm`). A frame taught before Z was recorded has none, and Z is then left where it is. |
 
-*Go view*, *Clear view*, *Re-teach* and *Delete* stay **unnumbered**, behind a
-24 px gap on their row. They check or undo a step rather than advancing one, and
-a number on them would claim otherwise.
+*Rename*, *Re-teach* and *Delete* are unnumbered. *Rename* is an inline edit
+(this layer raises no modal): an empty name or one already used in the procedure
+is refused. Recipe steps store the nominal's **uid**, so they follow a rename; a
+script or typed step that names it by its old name does not. *Delete* still sweeps
+any view, focus pose and detection models an older nominal owns.
 
-### What consumes one
-
-The nominal list's *Use* button loads a nominal into the local→machine probe
-fields directly above it, so *Move here* drives the **procedure's own device**
-to it — still behind the live-frame gate and the arm checkbox.
+The pane no longer teaches a camera view, a camera focus pose, loads the
+local→machine probe (*Use*) or opens the placement page. What that leaves behind
+is listed under §6c.
 
 ### A nominal owns two camera poses, not one
+
+> **Being removed.** The pane no longer teaches either pose below, and
+> `nominal_view` / `place_view` go with the placement module (§6c). Kept here
+> until that removal lands, because existing files still carry the fields.
 
 `viewUid` (`algn_<procUid>_<nomUid>_v`) is where the camera stands to watch a
 **gripped object** hovering over this point. `camUid` (`…_c`) is where it stands,
@@ -656,6 +655,11 @@ detection models were taught through, and a model matched at a different standof
 is matched against a picture it never saw.
 
 ## 6c. Placement — putting a gripped object on a nominal
+
+> **Superseded — to be removed.** Device registration
+> (`device-registration-design.md`) and the gripped-object module
+> (`gripped-object-design.md`) replace this. The page is no longer reachable from
+> the nominal pane; the commands, scripts and page below are slated for deletion.
 
 The interesting case is the other one: the object is held by **hex-left**, and
 the nominal is a point the **gantry's** camera measured. That is not a different

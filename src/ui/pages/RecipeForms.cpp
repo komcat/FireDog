@@ -141,6 +141,20 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
                            "only, no teach. A barrier between two sets is a second block.");
         ImGui::TextDisabled("A child's on_error acts within its lane; the block's on the block.");
     } else if (const CommandSpec* spec = orch_.registry.Find(s.type)) {
+        // The validation error goes FIRST, under enabled / on error: at the
+        // bottom of a long form it sat below the fold and got clipped at the
+        // right edge. Wrapped so the whole reason is readable. Computed from
+        // the params as they stand at the start of this frame - an edit below
+        // shows up one frame later, which nobody can see.
+        {
+            const std::string err = ValidateParams(*spec, s.params, nullptr);
+            if (!err.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.3f, 1.0f));
+                ImGui::TextWrapped("%s", err.c_str());
+                ImGui::PopStyleColor();
+                ImGui::Separator();
+            }
+        }
         ImGui::TextWrapped("%s", spec->description.c_str());
         ImGui::Spacing();
         // One row per ParamSpec, in declaration order — except that a RUN of
@@ -174,9 +188,6 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
             }
             i = j;
         }
-        const std::string err = ValidateParams(*spec, s.params, nullptr);
-        if (!err.empty())
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", err.c_str());
     } else {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "unknown command '%s'",
                            s.type.c_str());
@@ -312,6 +323,58 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             }
             params[p.name] = v;
             changed = true;
+        }
+        // `z_mm` is an ABSOLUTE Z in the device's own axis space on every step
+        // that has one (move_to_nominal, move_local, move_axis_to), so it gets
+        // Teach here: read the Z the device is standing at now. The device is
+        // the step's `device` param, else its alignment's device - the same
+        // resolution the commands use. Clear unsets an optional value, which
+        // for move_to_nominal means "back to the frame's Z"; a stored 0 is not
+        // the same thing as no value, and the box alone cannot show which.
+        if (p.name == "z_mm") {
+            std::string dev = params.value("device", std::string());
+            if (dev.empty())
+                if (const AlignProc* ap = FindAlignProc(session_.Aligns(),
+                                                        params.value("alignment", std::string())))
+                    dev = ap->device;
+            IMotionController* mc = nullptr;
+            for (std::size_t i = 0; i < hardware_.MotionCount(); ++i)
+                if (hardware_.MotionName(i) == dev) { mc = hardware_.MotionDevice(i); break; }
+            double z  = 0.0;
+            bool   hz = false;
+            if (mc && mc->IsConnected()) {
+                // A demand signal while the form is on screen, so the cache is
+                // fresh by the time the button is pressed (the driver idles at 1 Hz).
+                mc->RequestFastPoll();
+                const std::map<std::string, double> pos = mc->Positions();
+                const auto it = pos.find("Z");
+                if (it != pos.end()) { z = it->second; hz = true; }
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!hz);
+            if (ImGui::SmallButton("Teach here")) {
+                params[p.name] = z;
+                changed = true;
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip(hz ? "Set z_mm to %s's current Z: %.4f (absolute, axis space)"
+                                     : "%s: not connected, or reports no Z",
+                                  dev.empty() ? "(no device)" : dev.c_str(), z);
+            if (!p.required) {
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!params.contains(p.name));
+                if (ImGui::SmallButton("Clear")) {
+                    params.erase(p.name);
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+                if (!params.contains(p.name))
+                    ImGui::TextDisabled("   z_mm not set - %s",
+                                        params.contains("nominal")
+                                            ? "Z from the frame (z_from_frame)"
+                                            : "Z is left where it is");
+            }
         }
         break;
     }

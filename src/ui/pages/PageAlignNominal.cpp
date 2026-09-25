@@ -1,43 +1,29 @@
 // PageAlignNominal.cpp : the Nominal teach page (a full-page takeover, reached
-// only from the Alignment page's frame panel). Definitions of App members —
+// only from the Alignment page's nominal pane). Definitions of App members —
 // see App.h.
 //
-// A nominal is a target point on the PART — where something is meant to end up —
-// held in the alignment's local frame (O1) rather than in machine coordinates.
-// That is the whole point: the frame moves with each part, so a nominal taught
-// once against one part names the same physical place on every part after it,
-// without anybody re-teaching anything.
+// A nominal is a target point on the PART held in the alignment's local frame
+// (O1) rather than in machine coordinates. That is the whole point: the frame
+// moves with each part, so a nominal taught once against one part names the
+// same physical place on every part after it, without anybody re-teaching.
 //
-// It is taught as the CENTRE of two or four marks, because the point that
-// matters is usually the centre of something — a die, a pocket, a footprint —
-// and a centre has nothing under it to aim a crosshair at. Marking corners puts
-// the crosshair on a real feature every time and leaves the centre to
-// arithmetic.
+// The operator's only job here is to put the crosshair on 1, 2 or 3 positions.
+// The nominal is their AVERAGE:
+//   1  the crosshair IS the point;
+//   2  two opposite corners of something whose centre is the point - a centre
+//      has nothing under it to aim at, so the arithmetic finds it;
+//   3  three corners of a footprint, or the same feature three times to average
+//      the pick noise down.
+// The spread shown beside the result is the only thing that can show up a mark
+// placed off its feature, so it is shown and never judged.
 //
-// Two marks or four is a real choice, not a preference. Two opposite corners
-// give the centre in one stroke and cannot check themselves: a mark that lands
-// off its feature moves the centre by half its error and looks exactly like a
-// good mark. Four give the same centre as the average of a ring, and a spread
-// that disagrees with the part is the only thing that can show such a mark up.
-// The registration's imprint makes the identical trade for the identical reason.
+// NOTHING MOVES here unless the operator right-clicks with jog armed. The page
+// reads the live image and the device's pose and writes a document field, the
+// same argument the crosshair pick window makes. Jogging between marks is
+// expected: each mark latches the pose it was taken at.
 //
-// The page can also draw a REGISTERED TOOL's tip and a resizable box centred on
-// it. That box is a viewing aid and is never stored: a nominal is a point on the
-// part, and how wide the gripper is says nothing about where that point belongs.
-// What it answers is the question an operator actually has while teaching one —
-// will the tool clear what is beside it — and no number on the panel answers it.
-//
-// NOTHING MOVES here. The page reads the live image and the device's pose and
-// writes a document field, so it needs no arming checkbox — the same argument
-// the crosshair pick window makes. Jogging between the two marks is expected
-// and safe: each mark latches the pose it was taken at, so the two may come
-// from opposite ends of the travel.
-//
-// Why a takeover and not a panel on the Alignment page: marking a feature needs
-// a big live image, and the Alignment page's columns are strips. It follows the
-// vision teach page in every respect, and the image itself is
-// `DrawMarkPicker` (ui/Widgets.h) — the same mapping the crosshair pick window
-// uses, so a pixel means the same thing on every surface that has one.
+// The image is `DrawMarkPicker` (ui/Widgets.h) — the same mapping the crosshair
+// pick window uses, so a pixel means the same thing on every surface.
 #include "App.h"
 
 #include "imgui.h"
@@ -81,11 +67,9 @@ std::string CleanName(const char* buf)
 void App::OpenAlignNominalTeach(const AlignProc& a, const std::string& nomUid)
 {
     // Level checked at the TOP, not left to SwitchPage's refusal: everything
-    // below mutates state (the model, the marks, the selections) before it
-    // switches, so a refused switch would leave those edits behind on a page
-    // the caller never reaches. Same reason the Run deck's right-click checks
-    // early. Every caller today sits on an Admin page, so this is insurance,
-    // not a fix — but it is what makes the rule true everywhere.
+    // below mutates state (the marks, the selections) before it switches, so a
+    // refused switch would leave those edits behind on a page the caller never
+    // reaches. Same reason the Run deck's right-click checks early.
     if (!CanAccess(Page::AlignNominal)) return;
     nomProcUid_ = a.uid;
     nomEditUid_ = nomUid;
@@ -95,17 +79,20 @@ void App::OpenAlignNominalTeach(const AlignProc& a, const std::string& nomUid)
     }
     nomActive_  = 0;
     nomZoom_    = 1.5f;
-    nomEnvDeg_  = 0.0f;
     nomErr_.clear();
     nomPx_ = (cameraW_ > 0) ? static_cast<float>(cameraW_) * 0.5f : 0.0f;
     nomPy_ = (cameraH_ > 0) ? static_cast<float>(cameraH_) * 0.5f : 0.0f;
 
     const AlignNominal* n = FindAlignNominal(a, nomUid);
     // A re-teach opens on the count it was taught with: that is a fact about the
-    // feature - four corners on a square pocket stay four - and asking the
-    // operator to re-choose it every time is how a four-mark nominal silently
-    // becomes a two-mark one.
-    if (n) nomCount_ = (n->points == 4) ? 4 : 2;
+    // feature, and asking the operator to re-choose it every time is how a
+    // three-mark nominal silently becomes a one-mark one. A nominal taught with
+    // four on the older page opens on three, the most this page asks for.
+    if (n) {
+        nomCount_ = n->points;
+        if (nomCount_ < 1)           nomCount_ = 1;
+        if (nomCount_ > kNomMarkMax) nomCount_ = kNomMarkMax;
+    }
     const std::string name =
         n ? n->name : ("nominal " + std::to_string(a.nominals.size() + 1));
     std::snprintf(nomNameBuf_, sizeof(nomNameBuf_), "%s", name.c_str());
@@ -165,7 +152,7 @@ void App::DrawAlignNominalPanel()
     ImGui::BeginChild("anImg", ImVec2(imgW, avail.y), ImGuiChildFlags_Borders);
     {
         CameraMark marks[kNomMarkMax];
-        static const char* kLbl[kNomMarkMax] = {"pt1", "pt2", "pt3", "pt4"};
+        static const char* kLbl[kNomMarkMax] = {"pt1", "pt2", "pt3"};
         for (int i = 0; i < nomCount_; ++i) {
             marks[i].wx    = nomPt_[i].wx;
             marks[i].wy    = nomPt_[i].wy;
@@ -183,24 +170,8 @@ void App::DrawAlignNominalPanel()
         mp.gy            = gy;
         mp.marks         = marks;
         mp.markCount     = nomCount_;
-        mp.midpointLabel = "nominal";
-        // The tool, if one is chosen and its tip can be predicted right now.
-        // Same refusal as everywhere else: a tip that cannot be predicted draws
-        // nothing, and the panel says why - the picture never carries a guess.
-        if (nomToolDev_[0]) {
-            RegVec3     tip;
-            std::string why;
-            if (workflow_.DeviceRegTip(nomToolDev_, tip, &why)) {
-                mp.toolHave    = true;
-                mp.toolWx      = tip.x;
-                mp.toolWy      = tip.y;
-                mp.toolLabel   = nomToolDev_;
-                mp.boxWmm      = &nomBoxW_;
-                mp.boxHmm      = &nomBoxH_;
-                mp.boxDragging = &nomBoxDrag_;
-            }
-        }
-        mp.envelopeDeg   = nomEnvDeg_;
+        // One mark IS the nominal; the picker draws an average only from two.
+        mp.midpointLabel = (nomCount_ >= 2) ? "nominal" : nullptr;
         EnsureMarkIcons();
         mp.icons[0]      = markIcons_[0];
         mp.icons[1]      = markIcons_[1];
@@ -220,7 +191,7 @@ void App::DrawAlignNominalPanel()
     ImGui::EndChild();
     ImGui::SameLine();
 
-    // ---- Right: the marks, the arithmetic, and Save -------------------------
+    // ---- Right: the marks, the average, and Save ----------------------------
     ImGui::BeginChild("anCtl", ImVec2(rightW, avail.y), ImGuiChildFlags_Borders);
 
     ImGui::TextUnformatted(a->name.c_str());
@@ -249,20 +220,22 @@ void App::DrawAlignNominalPanel()
     if (!haveImg)
         ImGui::TextColored(kBad, "no camera feed");
 
-    ImGui::SeparatorText("Marks");
-    ImGui::TextDisabled("Mark features whose CENTRE is the target -");
-    ImGui::TextDisabled("corners of the footprint, say.");
+    ImGui::SeparatorText("Points");
+    ImGui::TextDisabled("Move the crosshair onto each position and set it.");
+    ImGui::TextDisabled("The nominal is the AVERAGE of the points.");
 
-    // Two or four. Switching down to two keeps marks 3 and 4 in memory but
-    // out of the arithmetic, so a mis-click on the selector costs nothing;
-    // switching up asks for the two that are missing.
+    // 1, 2 or 3. Switching down keeps the extra marks in memory but out of the
+    // average, so a mis-click on the selector costs nothing; switching up asks
+    // for the ones that are missing.
     {
         int want = nomCount_;
-        ImGui::TextDisabled("marks");
-        ImGui::SameLine();
-        if (ImGui::RadioButton("2", &want, 2)) {}
-        ImGui::SameLine();
-        if (ImGui::RadioButton("4", &want, 4)) {}
+        ImGui::TextDisabled("points");
+        for (int k = 1; k <= kNomMarkMax; ++k) {
+            ImGui::SameLine();
+            char lbl[8];
+            std::snprintf(lbl, sizeof(lbl), "%d", k);
+            ImGui::RadioButton(lbl, &want, k);
+        }
         if (want != nomCount_) {
             nomCount_ = want;
             // Point at the first one still missing, so the button that says
@@ -273,9 +246,9 @@ void App::DrawAlignNominalPanel()
             nomErr_.clear();
         }
         ImGui::SameLine();
-        ImGui::TextDisabled(nomCount_ == 2
-                                ? "opposite corners"
-                                : "a ring - the spread checks them");
+        ImGui::TextDisabled(nomCount_ == 1   ? "the point itself"
+                            : nomCount_ == 2 ? "average of two"
+                                             : "average of three");
     }
 
     const auto capture = [&](int i) {
@@ -290,8 +263,7 @@ void App::DrawAlignNominalPanel()
                         static_cast<double>(pixelToMmY_);
         nomPt_[i]   = p;
         nomHave_[i] = true;
-        // The next one still missing - which is "the other one" for a pair and
-        // the next corner of the ring for four.
+        // The next one still missing.
         nomActive_ = i;
         for (int k = 1; k <= nomCount_; ++k) {
             const int j = (i + k) % nomCount_;
@@ -316,18 +288,21 @@ void App::DrawAlignNominalPanel()
                                 a->device.c_str(), nomPt_[i].gx, nomPt_[i].gy,
                                 nomPt_[i].px, nomPt_[i].py);
         } else {
-            ImGui::TextDisabled(nomActive_ == i ? "(not marked - next)" : "(not marked)");
+            ImGui::TextDisabled(nomActive_ == i ? "(not set - next)" : "(not set)");
         }
         ImGui::PopID();
     }
-    ImGui::TextDisabled("Jog between the marks freely: each latches the");
-    ImGui::TextDisabled("pose it was taken at.");
+    if (nomCount_ > 1) {
+        ImGui::TextDisabled("Jog between the points freely: each latches the");
+        ImGui::TextDisabled("pose it was taken at.");
+    }
 
     ImGui::SeparatorText("Result");
-    bool both = true;
-    for (int i = 0; i < nomCount_; ++i) both = both && nomHave_[i];
-    if (!both) {
-        ImGui::TextDisabled("mark all %d points", nomCount_);
+    bool all = true;
+    for (int i = 0; i < nomCount_; ++i) all = all && nomHave_[i];
+    if (!all) {
+        ImGui::TextDisabled(nomCount_ == 1 ? "set the point" : "set all %d points",
+                            nomCount_);
     } else {
         // The same average the solver computes. Written here rather than
         // called out of it because the solver needs a live frame and this
@@ -336,33 +311,21 @@ void App::DrawAlignNominalPanel()
         for (int i = 0; i < nomCount_; ++i) { mx += nomPt_[i].wx; my += nomPt_[i].wy; }
         mx /= nomCount_;
         my /= nomCount_;
-        double spread = 0.0;
+        ImGui::Text("average   %.4f, %.4f mm", mx, my);
         if (nomCount_ == 2) {
             const double dx = nomPt_[1].wx - nomPt_[0].wx;
             const double dy = nomPt_[1].wy - nomPt_[0].wy;
-            spread = std::sqrt(dx * dx + dy * dy);
-        } else {
+            ImGui::Text("span      %.4f mm", std::sqrt(dx * dx + dy * dy));
+        } else if (nomCount_ >= 3) {
+            double spread = 0.0;
             for (int i = 0; i < nomCount_; ++i) {
                 const double dx = nomPt_[i].wx - mx, dy = nomPt_[i].wy - my;
                 spread += std::sqrt(dx * dx + dy * dy);
             }
             spread = 2.0 * spread / nomCount_;
+            ImGui::Text("spread    %.4f mm", spread);
+            ImGui::TextDisabled("twice the mean distance from the average");
         }
-        ImGui::Text("centre    %.4f, %.4f mm", mx, my);
-        ImGui::Text("%s  %.4f mm", nomCount_ == 2 ? "span     " : "spread   ", spread);
-        if (nomCount_ == 4)
-            ImGui::TextDisabled("twice the mean distance from the centre - a width");
-
-        // Overlay only. A footprint marked at an angle still has the same
-        // midpoint - the marks are two measured points and their average does
-        // not turn - so this spins the drawn box and nothing else. It is here to
-        // let the operator SEE the outline sit on the part; if it had to be
-        // stored, it would belong on the frame, not on a nominal.
-        ImGui::SetNextItemWidth(120.0f);
-        ImGui::DragFloat("box angle", &nomEnvDeg_, 0.5f, -180.0f, 180.0f, "%.1f deg");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("0")) nomEnvDeg_ = 0.0f;
-        ImGui::TextDisabled("drawing only - the saved midpoint is unaffected");
         if (haveLive) {
             double lx = 0.0, ly = 0.0;
             AlignMachineToLocal(frame, mx, my, &lx, &ly);
@@ -373,61 +336,11 @@ void App::DrawAlignNominalPanel()
         }
     }
 
-    ImGui::SeparatorText("Tool footprint");
-    // A viewing aid, and the panel says so where somebody might mistake it
-    // for part of the teach: nothing here is saved on the nominal.
-    ImGui::TextDisabled("Drawn only - none of this is stored on the nominal.");
-    {
-        // The registered devices, plus "none". Only tools registered against
-        // THIS image's gantry can be drawn on it: a tip in another origin,
-        // projected through this pose, is off by the distance between them.
-        const std::string refName = workflow_.GantryName();
-        const char* cur = nomToolDev_[0] ? nomToolDev_ : "(none)";
-        ImGui::SetNextItemWidth(160.0f);
-        if (ImGui::BeginCombo("tool", cur)) {
-            if (ImGui::Selectable("(none)", nomToolDev_[0] == 0)) nomToolDev_[0] = 0;
-            for (const auto& [name, r] : workflow_.DeviceRegs()) {
-                if (!r.valid || r.refDevice != refName) continue;
-                const bool sel = name == nomToolDev_;
-                if (ImGui::Selectable(name.c_str(), sel))
-                    std::snprintf(nomToolDev_, sizeof(nomToolDev_), "%s", name.c_str());
-            }
-            ImGui::EndCombo();
-        }
-        if (nomToolDev_[0]) {
-            RegVec3     tip;
-            std::string why;
-            if (workflow_.DeviceRegTip(nomToolDev_, tip, &why)) {
-                ImGui::TextColored(kGood, "tip %.4f, %.4f mm", tip.x, tip.y);
-                ImGui::SetNextItemWidth(90.0f);
-                if (ImGui::InputFloat("w mm", &nomBoxW_, 0.0f, 0.0f, "%.3f"))
-                    SaveUiSettings();
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(90.0f);
-                if (ImGui::InputFloat("h mm", &nomBoxH_, 0.0f, 0.0f, "%.3f"))
-                    SaveUiSettings();
-                nomBoxW_ = fmaxf(0.02f, nomBoxW_);
-                nomBoxH_ = fmaxf(0.02f, nomBoxH_);
-                ImGui::TextDisabled("drag a corner of the box on the image to resize;");
-                ImGui::TextDisabled("it stays centred on the tip, always.");
-            } else {
-                // The reason, in full, on the panel - the picture stays clean
-                // and the operator still learns why there is no box.
-                ImGui::TextColored(kWarn, "no tip: %s", why.c_str());
-            }
-        }
-    }
-    // Persist the box on the drag END, the way every splitter in this app does -
-    // and outside the branches above, so a tip that goes unavailable mid-drag
-    // (the device turned, the controller dropped) still writes what was set.
-    if (nomBoxWasDrag_ && !nomBoxDrag_) SaveUiSettings();
-    nomBoxWasDrag_ = nomBoxDrag_;
-
     ImGui::Separator();
     ImGui::SetNextItemWidth(200.0f);
     ImGui::InputText("name", nomNameBuf_, sizeof(nomNameBuf_));
 
-    const bool canSave = both && haveLive;
+    const bool canSave = all && haveLive;
     ImGui::BeginDisabled(!canSave);
     if (ImGui::Button("Save nominal", ImVec2(140.0f, 0.0f))) {
         AlignNominal n;
@@ -445,19 +358,34 @@ void App::DrawAlignNominalPanel()
             } else {
                 AlignNominal* tgt = FindAlignNominal(*a, nomEditUid_);
                 if (tgt) {
-                    n.uid = tgt->uid;    // re-teach keeps the identity
-                    *tgt  = n;
+                    // A re-teach replaces the POINT and keeps everything else
+                    // the nominal owns: its uid, and whatever private poses and
+                    // models still hang off it until they are removed.
+                    tgt->name     = n.name;
+                    tgt->lx       = n.lx;
+                    tgt->ly       = n.ly;
+                    tgt->p1       = n.p1;
+                    tgt->p2       = n.p2;
+                    tgt->p3       = n.p3;
+                    tgt->p4       = n.p4;
+                    tgt->points   = n.points;
+                    tgt->mx       = n.mx;
+                    tgt->my       = n.my;
+                    tgt->spanMm   = n.spanMm;
+                    tgt->taughtAt = n.taughtAt;
+                    tgt->frameAt  = n.frameAt;
+                    n = *tgt;
                 } else {
                     n.uid = GenerateUid();
                     a->nominals.push_back(n);
                     nomEditUid_ = n.uid;
                 }
                 // Persist NOW, like a taught frame and for the same reason: this
-                // took two hand-placed marks, and a crash that loses them costs
-                // the operator the whole job again.
+                // took hand-placed marks, and a crash that loses them costs the
+                // operator the whole job again.
                 session_.SaveAligns();
                 FD_INFO("align", "'%s': nominal '%s' local (%.4f, %.4f) mm, "
-                                 "centre (%.4f, %.4f) of %d marks, span %.4f",
+                                 "average (%.4f, %.4f) of %d point(s), span %.4f",
                         a->name.c_str(), n.name.c_str(), n.lx, n.ly, n.mx, n.my,
                         n.points, n.spanMm);
                 SwitchPage(Page::Align);
@@ -469,7 +397,7 @@ void App::DrawAlignNominalPanel()
     if (ImGui::Button("Cancel", ImVec2(110.0f, 0.0f))) SwitchPage(Page::Align);
 
     if (!nomErr_.empty()) ImGui::TextColored(kBad, "%s", nomErr_.c_str());
-    if (!canSave && both && !haveLive)
+    if (!canSave && all && !haveLive)
         ImGui::TextDisabled("a live frame is required to save");
 
     ImGui::EndChild();

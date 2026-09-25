@@ -346,12 +346,15 @@ void App::StartDeckRun(RunScope scope)
                                session_.Recipes(), &runStartErr_);
     if (q.items.empty()) return;   // reason already in runStartErr_
 
-    // Every deck run starts with NO taught frame. A frame from an earlier run
-    // was measured against a part that has since been handled, and move_local
-    // would drive to it without complaint — so the run must teach its own or
-    // fail loudly. Cleared here rather than inside ProgramRunner because the
-    // frames are Workflow state and layer 2.5 does not own them.
-    workflow_.ClearLiveFrames("program start");
+    // Every deck run starts with no FRESH taught frame. A frame from an earlier
+    // run was measured against a part that may since have been handled, and
+    // move_local would drive to it without complaint — so the run must teach
+    // its own or fail loudly. The one exception is a frame its align_run marked
+    // KEPT: it survives as `carried`, and only a step that opts in with
+    // use_kept_frame will move against it. DUT open / product load still wipe
+    // it. Here rather than inside ProgramRunner because the frames are Workflow
+    // state and layer 2.5 does not own them.
+    workflow_.CarryLiveFrames("program start");
 
     // Running the START state is what "a new part" means, so it — and a slot
     // run, which necessarily contains it — is the ONE thing that wipes the
@@ -481,14 +484,13 @@ void App::AdvanceDeckCycle()
 
 bool App::IsOperatorCtxKey(const std::string& key)
 {
-    // The alignment and placement scripts push a dozen scratch values through
+    // The alignment scripts push a dozen scratch values through
     // the same ctx a recipe measures into. They are engine bookkeeping, and
     // burying DarkCurrent under them makes the panel useless at a glance. An
     // underscore is the escape hatch for a recipe author who wants a key kept
     // out of the operator's sight.
     if (key.empty() || key[0] == '_') return false;
     if (key.rfind("align_", 0) == 0)  return false;
-    if (key.rfind("place_", 0) == 0)  return false;
     return true;
 }
 

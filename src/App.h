@@ -341,13 +341,6 @@ private:
     // COMPUTE ONLY — nothing is wired to move yet.
     void DrawAlignPlacePanel();                    // page body (takeover frame)
     void OpenAlignPlace(const AlignProc& a, const std::string& nomUid);
-    // Launch placement_procedure.lua with this page's settings — the guided
-    // twin of the manual flow beside it, and the SAME code path a recipe's
-    // place_run step takes. Without it the script is only reachable from a
-    // recipe, because running it bare from the Scripts page injects no
-    // parameters and it fails on the first one by design.
-    void StartPlacementRun(const AlignProc& a, const AlignNominal& n,
-                           const std::string& device);
 
     // Needle page (View menu, full-page): the dispense needle's lever arm — what
     // it currently is, and the button that measures it again. Deliberately a
@@ -1060,6 +1053,12 @@ private:
     // index would silently start pointing at a different point. Empty = show
     // the first one.
     std::string alignNomSel_;
+    // The nominal pane's inline rename. Inline and not a popup: this layer
+    // raises no modal (a run may be blocked on the always-on-top prompt).
+    // `alignNomRenameUid_` empty = not renaming.
+    std::string alignNomRenameUid_;
+    char        alignNomRenameBuf_[48] = "";
+    std::string alignNomRenameErr_;
 
     // Needle page state. The calibration itself lives on Workflow (machine
     // state, not a document) — these are only the run parameters the page
@@ -1206,35 +1205,17 @@ private:
     std::string nomProcUid_;              // procedure being taught against
     std::string nomEditUid_;              // nominal being re-taught ("" = a new one)
     char        nomNameBuf_[48] = "";
-    // The two marks, in MACHINE mm, each latched with the gantry pose it was
-    // taken at — so the operator may jog between them and a mark still means
-    // the same physical place. Drawn by projecting back through the live pose.
-    // TWO or FOUR of them: two opposite corners are the quick way to a centre,
-    // four are the honest one - a corner that lands off the feature shifts a
-    // 2-mark centre by half its error and looks exactly like a good mark, and
-    // the spread across four is the only thing that can see it. Same trade the
-    // registration's imprint makes.
-    static constexpr int kNomMarkMax = 4;
+    // The marks, in MACHINE mm, each latched with the gantry pose it was taken
+    // at — so the operator may jog between them and a mark still means the same
+    // physical place. Drawn by projecting back through the live pose. 1, 2 or 3
+    // of them, and the nominal is their average.
+    static constexpr int kNomMarkMax = kAlignNominalTeachMax;
     AlignPoint  nomPt_[kNomMarkMax];
-    bool        nomHave_[kNomMarkMax] = {false, false, false, false};
-    int         nomCount_   = 2;          // 2 or 4 - how many marks are asked for
+    bool        nomHave_[kNomMarkMax] = {false, false, false};
+    int         nomCount_   = 1;          // 1..3 - how many marks are asked for
     int         nomActive_  = 0;          // which mark "Set" will write
-    // The registered tool whose tip is drawn on this page, and the footprint box
-    // around it. The box is a VIEWING aid - it is never stored on the nominal:
-    // a nominal is a point on the part, and how wide the gripper is has nothing
-    // to do with where that point is. Its size persists in UiSettings because
-    // re-typing the tool's width at every teach is how a viewing aid stops
-    // being used.
-    char        nomToolDev_[32] = "";
-    float       nomBoxW_ = 1.000f, nomBoxH_ = 1.000f;   // mm
-    bool        nomBoxDrag_ = false;      // a corner drag is in progress
-    bool        nomBoxWasDrag_ = false;   // ...edge-detected, to persist on release
     float       nomPx_ = 0.0f, nomPy_ = 0.0f;   // crosshair, camera px
     float       nomZoom_ = 1.5f;          // same default as the pick window
-    // Overlay only: rotates the envelope box the two marks bound, for a part
-    // whose footprint sits at an angle. It changes nothing that gets saved —
-    // the nominal is the midpoint, and the midpoint does not rotate.
-    float       nomEnvDeg_ = 0.0f;
     std::string nomErr_;                  // why the last Save refused
 
     // Placement page state. Nothing here is persisted: a measurement of where
@@ -1255,14 +1236,6 @@ private:
     // refused and the operator has to raise it deliberately.
     float       plcMaxMM_ = 2.0f;
     std::string plcLastMove_;   // what was last issued, to compare the re-measure against
-    // Guided-run settings, the script's loop contract (place_run's defaults).
-    // align_first defaults ON: the live frame is cleared at program start, DUT
-    // open and product load, so a placement that assumed one would fail about
-    // half the times it was used.
-    bool        plcAlignFirst_ = true;
-    int         plcTries_ = 2;
-    float       plcTolMM_ = 0.02f;
-    std::string plcStartErr_;   // why the last guided run refused to start
     // Repeatability check: repeated measurements of the SAME, stationary
     // object. Their spread is the MARKING error — the floor under any
     // placement, and the only thing that says whether a leftover residual is a

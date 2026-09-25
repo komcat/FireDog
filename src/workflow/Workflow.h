@@ -351,9 +351,21 @@ public:
     // Held HERE rather than in an engine Env because a program runs each slot as
     // its OWN engine Start: per-run state would be wiped between the recipe that
     // aligns and the recipe that works.
-    void SetLiveFrame(const std::string& alignUid, const AlignResult& r);
-    bool LiveFrame(const std::string& alignUid, AlignResult* out) const;
+    //
+    // KEPT frames: `align_run keep_frame` (via `align_solve keep`) marks a frame
+    // to survive a PROGRAM START — and only that boundary. At program start
+    // CarryLiveFrames drops every unkept frame and marks the kept ones
+    // `carried`. A carried frame is still wiped by DUT open, product load and
+    // app close (ClearLiveFrames), because each of those can mean a different
+    // part. A recipe consumer only accepts a carried frame when its own
+    // `use_kept_frame` says so (`allowCarried`); re-solving makes it fresh again.
+    // The UI accepts a carried frame (default true) and says so on the page.
+    void SetLiveFrame(const std::string& alignUid, const AlignResult& r, bool keep = false);
+    bool LiveFrame(const std::string& alignUid, AlignResult* out,
+                   bool allowCarried = true) const;
+    bool LiveFrameCarried(const std::string& alignUid) const;   // exists AND carried
     void ClearLiveFrames(const char* reason);
+    void CarryLiveFrames(const char* reason);
     std::size_t LiveFrameCount() const;
 
     // ---- Waffle tray cursors (tray_next / tray_reset / the Waffle Tray page)
@@ -575,8 +587,13 @@ private:
 
     // Live taught frames by alignment uid. Read by worker threads (move_local)
     // and by the UI (the "live" indicator), written by align_solve.
+    struct LiveFrameEntry {
+        AlignResult r;
+        bool keep    = false;   // survives a program start
+        bool carried = false;   // ...and has survived at least one
+    };
     mutable std::mutex                       frameMu_;
-    std::map<std::string, AlignResult>       liveFrames_;
+    std::map<std::string, LiveFrameEntry>    liveFrames_;
 
     // Used waffle-tray cells by tray uid (see TrayNext), and the worker->UI
     // queue that carries a run's changes to the document.

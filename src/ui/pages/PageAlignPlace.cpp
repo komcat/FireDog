@@ -115,35 +115,6 @@ void App::OpenAlignPlace(const AlignProc& a, const std::string& nomUid)
     SwitchPage(Page::AlignPlace);   // every page switch routes through here
 }
 
-// Launch the procedure script with this page's settings. Same channel the
-// Alignment page's Run button uses: parameters go in through
-// LuaEngine::Env::initialCtx, where fd.param reads them — which is exactly what
-// place_run does from a recipe, so the guided run and the production run are
-// one code path. Gated on the WHOLE orchestration, never a subset of engines.
-void App::StartPlacementRun(const AlignProc& a, const AlignNominal& n,
-                            const std::string& device)
-{
-    // The SHIPPED file, always — the same rule ExecutionContext::ResolveScript
-    // applies for place_run. A product that forked this file would go on
-    // skipping whatever step the app added last (place_view was exactly that),
-    // and the symptom would be a camera that simply did not move.
-    const std::string script = SystemScriptPath("placement_procedure.lua");
-    LuaEngine::Env env = session_.MakeLuaEnv();
-    env.initialCtx = {
-        {"place_alignment", a.uid},        // uid, not name: a rename mid-run is harmless
-        {"place_nominal",   n.uid},
-        {"place_device",    device},
-        {"place_align_first", plcAlignFirst_},
-        {"place_tries",     static_cast<double>(plcTries_)},
-        {"place_tol_mm",    static_cast<double>(plcTolMM_)},
-        {"place_max_mm",    static_cast<double>(plcMaxMM_)},
-        {"place_prefix",    std::string("place")},
-    };
-    plcStartErr_.clear();
-    if (!orch_.lua.Start(script, std::move(env), &plcStartErr_))
-        FD_WARN("align", "placement run rejected: %s", plcStartErr_.c_str());
-}
-
 // ---- The page --------------------------------------------------------------
 
 void App::DrawAlignPlacePanel()
@@ -463,78 +434,6 @@ void App::DrawAlignPlacePanel()
         }
     } else if (!plcDevice_.empty()) {
         ImGui::TextColored(kBad, "'%s' is not in the fleet", plcDevice_.c_str());
-    }
-
-    // ---- Guided run ---------------------------------------------------------
-    // The scripted twin of everything below: it prompts for the two marks in
-    // the crosshair pick window, corrects, and re-measures until the residual
-    // is inside tol. Armed like the manual button — a scripted correction is
-    // still a COMPUTED destination, and the arm checkbox is right here.
-    ImGui::SeparatorText("Guided run (placement_procedure.lua)");
-    {
-        const bool running = orch_.lua.Running();
-        // The same flag the manual Move button arms, with its own widget id:
-        // that one lives below the correction, which does not render until both
-        // marks exist — so without a copy here the guided run could never be
-        // armed at all.
-        ImGui::Checkbox("Arm##guided", &jogArmed_);
-        ImGui::SameLine();
-        // On, the script teaches the frame itself, so the run needs no live one
-        // to start — which is what makes this button work on a fresh app.
-        ImGui::Checkbox("align first", &plcAlignFirst_);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Re-teach the frame for THIS part before placing.\n"
-                              "Turn off only when something already aligned it in\n"
-                              "this session - a nominal cannot be used without a\n"
-                              "live frame, and it is cleared at program start,\n"
-                              "DUT open and product load.");
-        ImGui::SetNextItemWidth(70.0f);
-        ImGui::InputInt("tries", &plcTries_, 0, 0);
-        if (plcTries_ < 1) plcTries_ = 1;
-        if (plcTries_ > 5) plcTries_ = 5;
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80.0f);
-        ImGui::InputFloat("tol mm", &plcTolMM_, 0.0f, 0.0f, "%.4f");
-        if (plcTolMM_ < 0.0001f) plcTolMM_ = 0.0001f;
-
-        // No live frame needed when the run teaches one — that is the whole
-        // point of align_first, and requiring both would make the button dead
-        // on exactly the fresh-app case it exists for.
-        const bool canRun = nom && (haveLive || plcAlignFirst_) &&
-                            mover && mover->IsConnected() &&
-                            jogArmed_ && !orch_.Busy();
-        ImGui::BeginDisabled(!canRun);
-        if (ImGui::Button("Run guided placement", ImVec2(200.0f, 0.0f)))
-            StartPlacementRun(*a, *nom, plcDevice_);
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!running);
-        if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
-        ImGui::EndDisabled();
-
-        if (!nom)                                ImGui::TextDisabled("pick a nominal");
-        else if (!haveLive && !plcAlignFirst_)
-            ImGui::TextDisabled("no live frame - tick 'align first' or run the alignment");
-        else if (!mover || !mover->IsConnected())ImGui::TextDisabled("mover not connected");
-        else if (!jogArmed_)                     ImGui::TextDisabled("arm first");
-        else if (orch_.Busy() && !running)       ImGui::TextDisabled("another run is active");
-        else {
-            // Say whether the camera will move: with a view taught the run is
-            // self-contained, without one the object has to be in front of the
-            // lens already, and those are very different instructions.
-            const char* view = AlignNominalView(*a, *nom) ? ", drives to the view" : "";
-            if (plcAlignFirst_)
-                ImGui::TextDisabled("teaches the frame%s, then marks the object", view);
-            else
-                ImGui::TextDisabled("marks the object%s, corrects, re-measures", view);
-        }
-        if (!plcStartErr_.empty())
-            ImGui::TextColored(kBad, "%s", plcStartErr_.c_str());
-        if (running) {
-            const LuaEngine::Status lst = orch_.lua.GetStatus();
-            ImGui::TextDisabled("%s  %s", LuaEngine::StateName(lst.state),
-                                lst.error.empty() ? "" : lst.error.c_str());
-        }
     }
 
     // ---- Measurement --------------------------------------------------------

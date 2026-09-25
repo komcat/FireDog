@@ -870,12 +870,12 @@ void App::DrawScriptsPanel()
             std::error_code   ec;
             if (!std::filesystem::equivalent(ed.path, shipped, ec))
                 ImGui::TextColored(kColWarn,
-                                   "STANDARD procedure - align_run/place_run and the "
+                                   "STANDARD procedure - align_run and the "
                                    "page buttons are served from %s, never this copy",
                                    shipped.c_str());
             else
                 ImGui::TextDisabled("standard procedure - kept in step with the "
-                                    "align_/place_ commands; a product cannot fork it");
+                                    "align_ commands; a product cannot fork it");
         }
         if (session_.ScriptsDirUsed() == "config/scripts")
             ImGui::TextDisabled("shipped scripts folder: a rebuild recopies the repo's "

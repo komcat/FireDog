@@ -406,7 +406,11 @@ void App::CentreCameraOnNominal(const AlignProc& a, const AlignNominal& n)
         if (hardware_.MotionName(i) != a.device) continue;
         IMotionController* dev = hardware_.MotionDevice(i);
         if (!dev || !dev->IsConnected()) return;
-        const std::vector<std::pair<std::string, double>> targets = {{"X", mx}, {"Y", my}};
+        // Z to the frame's working height (where E1/E2 were marked), exactly as
+        // move_to_nominal does by default - the page and the recipe step must
+        // arrive at the same pose. A frame with no recorded Z leaves Z alone.
+        std::vector<std::pair<std::string, double>> targets = {{"X", mx}, {"Y", my}};
+        if (live.hasZ) targets.emplace_back("Z", live.z);
         if (!workflow_.MoveToPosition(i, targets))
             FD_WARN("align", "centre on '%s' rejected", n.name.c_str());
         else
@@ -1334,68 +1338,50 @@ void App::DrawAlignNominalList(AlignProc& a)
 {
     const bool busy = orch_.Busy();
 
-    // The four primary buttons carry their step number, because nothing about a
-    // row of equal-looking SmallButtons says which one comes first, and the
-    // answer is not guessable: 3 and 4 both LOOK like ways to use the nominal,
-    // but 3 only drives the camera to check it. The maintenance buttons
-    // (Go/Clear view, Re-teach, Delete) are deliberately left unnumbered and
-    // pushed to the right of a gap - they are not part of the sequence, and
-    // numbering them would claim they were.
+    // Two numbered steps, because that is all a nominal is now: a point taught
+    // in the local frame, and a camera driven onto it. The maintenance buttons
+    // (Rename, Re-teach, Delete) are unnumbered and pushed right of a gap -
+    // they are not part of the sequence, and numbering them would claim they
+    // were.
     ImGui::SeparatorText("Nominals (local)");
-    ImGui::TextDisabled("1 add the point   2 where the gripped object is watched from   "
-                        "3 check it   4 place onto it");
+    ImGui::TextDisabled("1 add the point   2 move the camera to it");
 
-    // The camera's own device, for the view buttons: teaching one captures its
-    // live pose, so an unconnected device can only be told about, not asked.
+    // The camera's own device: an unconnected one can be told about, not moved.
     IMotionController* cam = nullptr;
     for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
         if (hardware_.MotionName(i) == a.device) { cam = hardware_.MotionDevice(i); break; }
     }
     const bool camLive = cam && cam->IsConnected();
 
-    // The step pane is this list's alone now, so both children take whatever
-    // height is left rather than a fixed nine lines: a roll of nominals is
-    // exactly the thing that grows, and it used to scroll inside a box with
-    // empty pane below it.
+    // Both children take whatever height is left: a roll of nominals is
+    // exactly the thing that grows.
     const float paneH = 0.0f;
 
     // ---- Left: New, then the roll of taught points --------------------------
-    // A THIRD of the cell for the roll, never less than 150 px: it holds names,
-    // and the pane beside it holds six buttons that must not wrap.
     float listW = ImGui::GetContentRegionAvail().x * 0.33f;
     if (listW < 150.0f) listW = 150.0f;
     ImGui::BeginChild("alnomlist", ImVec2(listW, paneH), ImGuiChildFlags_Borders);
     ImGui::BeginDisabled(busy);
     // "New", not "Teach": this button and the pane's "Re-teach" open the SAME
-    // page, and the only difference is whether a uid is carried in. Calling
-    // both of them "teach" said nothing about the one thing that separates
-    // them — this one makes a nominal that did not exist, that one re-marks the
-    // selected point and keeps everything hanging off its uid.
+    // page, and the only difference is whether a uid is carried in.
     if (ImGui::SmallButton("1. New nominal...")) OpenAlignNominalTeach(a, "");
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("STEP 1 - ADD a nominal: mark two features on the live image;\n"
-                          "their MIDPOINT is stored in this frame's local coordinates, so\n"
-                          "it names the same place on the part however the next one is\n"
-                          "loaded. To re-mark one that already exists, select it and use\n"
-                          "Re-teach - this one always makes a new nominal.");
+        ImGui::SetTooltip("STEP 1 - ADD a nominal: put the crosshair on 1, 2 or 3\n"
+                          "positions on the live image; their AVERAGE is stored in\n"
+                          "this frame's local coordinates, so it names the same place\n"
+                          "on the part however the next one is loaded. To re-mark one\n"
+                          "that already exists, select it and use Re-teach.");
     ImGui::Separator();
     if (a.nominals.empty()) ImGui::TextDisabled("none taught yet");
     for (const AlignNominal& n : a.nominals) {
         // Selection is by uid, so a row keeps naming the same point when one
-        // above it is deleted. "(no view)" is the one fact worth carrying into
-        // the list rather than leaving to the pane: without one, step 4 opens
-        // looking wherever the gantry happens to be standing.
-        const bool hasView = AlignNominalView(a, n) != nullptr;
-        char row[80];
-        std::snprintf(row, sizeof(row), "%s%s", n.name.c_str(),
-                      hasView ? "" : "   (no view)");
+        // above it is deleted.
         ImGui::PushID(n.uid.c_str());
-        if (ImGui::Selectable(row, alignNomSel_ == n.uid)) alignNomSel_ = n.uid;
+        if (ImGui::Selectable(n.name.c_str(), alignNomSel_ == n.uid)) alignNomSel_ = n.uid;
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("local X %.4f  Y %.4f mm\ntaught %s\ncamera view: %s",
-                              n.lx, n.ly, n.taughtAt.c_str(),
-                              hasView ? "taught" : "none");
+            ImGui::SetTooltip("local X %.4f  Y %.4f mm\n%d point(s), taught %s",
+                              n.lx, n.ly, n.points, n.taughtAt.c_str());
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -1409,6 +1395,11 @@ void App::DrawAlignNominalList(AlignProc& a)
         sel = &a.nominals.front();
         alignNomSel_ = sel->uid;
     }
+    // A rename in progress belongs to ONE nominal; selecting another abandons it.
+    if (!alignNomRenameUid_.empty() && (!sel || sel->uid != alignNomRenameUid_)) {
+        alignNomRenameUid_.clear();
+        alignNomRenameErr_.clear();
+    }
 
     // ---- Right: everything you can do to the SELECTED nominal ---------------
     // Deletion is DEFERRED out of this child: erasing from the vector the pane
@@ -1420,165 +1411,110 @@ void App::DrawAlignNominalList(AlignProc& a)
     } else {
         AlignNominal& n = *sel;
         ImGui::PushID(n.uid.c_str());
-        ImGui::TextUnformatted(n.name.c_str());
-        ImGui::TextDisabled("  X %.4f  Y %.4f mm   taught %s", n.lx, n.ly,
-                            n.taughtAt.c_str());
+
+        // ---- Name, with an inline rename ------------------------------------
+        // Inline rather than a popup: this layer raises no modal, because a run
+        // may be blocked on the always-on-top prompt window.
+        if (alignNomRenameUid_ == n.uid) {
+            ImGui::SetNextItemWidth(200.0f);
+            const bool enter = ImGui::InputText("##nomrename", alignNomRenameBuf_,
+                                                sizeof(alignNomRenameBuf_),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(busy);
+            const bool ok = ImGui::SmallButton("OK");
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Cancel")) {
+                alignNomRenameUid_.clear();
+                alignNomRenameErr_.clear();
+            } else if ((enter || ok) && !busy) {
+                std::string name = alignNomRenameBuf_;
+                while (!name.empty() && (name.front() == ' ' || name.front() == '\t'))
+                    name.erase(name.begin());
+                while (!name.empty() && (name.back() == ' ' || name.back() == '\t'))
+                    name.pop_back();
+                // A name is how a script addresses a nominal, so two of them
+                // under one procedure would make that lookup a coin toss.
+                const AlignNominal* clash = name.empty() ? nullptr
+                                                         : FindAlignNominal(a, name);
+                if (name.empty()) {
+                    alignNomRenameErr_ = "a nominal needs a name";
+                } else if (clash && clash->uid != n.uid) {
+                    alignNomRenameErr_ = "'" + name + "' already exists in this procedure";
+                } else {
+                    if (name != n.name) {
+                        FD_INFO("align", "'%s': nominal '%s' renamed to '%s'",
+                                a.name.c_str(), n.name.c_str(), name.c_str());
+                        n.name = name;
+                        session_.SaveAligns();
+                    }
+                    alignNomRenameUid_.clear();
+                    alignNomRenameErr_.clear();
+                }
+            }
+            if (!alignNomRenameErr_.empty())
+                ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s",
+                                   alignNomRenameErr_.c_str());
+        } else {
+            ImGui::TextUnformatted(n.name.c_str());
+            ImGui::SameLine(0.0f, 16.0f);
+            ImGui::BeginDisabled(busy);
+            if (ImGui::SmallButton("Rename")) {
+                alignNomRenameUid_ = n.uid;
+                std::snprintf(alignNomRenameBuf_, sizeof(alignNomRenameBuf_), "%s",
+                              n.name.c_str());
+                alignNomRenameErr_.clear();
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Change this nominal's name. Recipe steps store the\n"
+                                  "nominal's uid, so they follow the rename; a script\n"
+                                  "or a typed step that names it by its OLD name will\n"
+                                  "no longer find it.");
+        }
+        ImGui::TextDisabled("  local X %.4f  Y %.4f mm   %d point(s)   taught %s",
+                            n.lx, n.ly, n.points, n.taughtAt.c_str());
         ImGui::Separator();
 
-        // The CAMERA VIEW for this nominal — where the gantry stands to see the
-        // object being placed here, which is neither the nominal's own XY nor
-        // its focus height. Taught from wherever the camera is now; a placement
-        // drives here itself, so nothing in front of it has to.
-        // NOTE: `vp` points into the positions vector; it is re-resolved below,
-        // after the buttons that can reallocate or erase from it.
-        const SavedPos* vp = AlignNominalView(a, n);
-        ImGui::BeginDisabled(busy || !camLive);
-        if (ImGui::SmallButton(vp ? "2. Re-teach view" : "2. Teach view"))
-            TeachAlignNominalView(a, n);
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("STEP 2 - The view of the GRIPPED OBJECT, not of the bare\n"
-                              "nominal. Grip a real one, bring it to where it will hover\n"
-                              "over this point, then jog %s until its two features are\n"
-                              "sharp and centred and press this.\n"
-                              "The Z that focuses the part surface does NOT focus an\n"
-                              "object held above it: teach this with an empty gripper and\n"
-                              "every mark - and every model cut from one - comes out\n"
-                              "blurred. A placement drives here before it marks, so\n"
-                              "nothing in front of the run has to.",
-                              a.device.c_str());
-        // Same gap as on the row below: what follows checks or undoes step 2,
-        // it does not advance the sequence.
-        ImGui::SameLine(0.0f, 24.0f);
-        // Go: a plain UI move to a pose a human taught, like a station's — not
-        // the armed class, which is for COMPUTED destinations.
-        ImGui::BeginDisabled(busy || !camLive || !vp);
-        if (ImGui::SmallButton("Go view")) GoToAlignNominalView(a, n);
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(busy || !vp);
-        if (ImGui::SmallButton("Clear view")) DropAlignNominalView(a, n);
-        ImGui::EndDisabled();
-        // ---- The camera's FOCUSED view of the nominal itself ----------------
-        // Two buttons in the order they are used: centre the camera on the
-        // point (computed from the live frame, so it is armed), focus, then
-        // write the pose down. The Z is why it is worth storing at all - the
-        // frame is 2-D and hands back an XY, while the height that focuses
-        // this point on this substrate exists nowhere else once the stage has
-        // moved.
+        // ---- Step 2: move the camera onto the nominal -----------------------
+        // Computed from the LIVE frame, so it is armed and needs a live frame -
+        // the same rule the probe's Move here follows. XY only: the frame is
+        // 2-D, so Z is left where it is.
         {
             AlignResult liveF;
             const bool  haveLiveF = workflow_.LiveFrame(a.uid, &liveF);
-            const SavedPos* cp = AlignNominalCamPos(a, n);
 
-            // The same shared flag the Jog window and the probe below arm, put
-            // here because this is where it is needed: a disabled button whose
+            // The same shared flag the Jog window and the probe arm, put here
+            // because this is where it is needed: a disabled button whose
             // switch is two panels away reads as broken.
             ImGui::Checkbox("Arm", &jogArmed_);
             ImGui::SameLine();
             ImGui::BeginDisabled(busy || !camLive || !haveLiveF || !jogArmed_);
-            if (ImGui::SmallButton("Centre camera")) CentreCameraOnNominal(a, n);
+            if (ImGui::SmallButton("2. Go to nominal")) CentreCameraOnNominal(a, n);
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("Drive %s so THIS nominal sits under the crosshair:\n"
-                                  "local (%.4f, %.4f) through the LIVE frame. XY only -\n"
-                                  "the frame is 2-D, so Z is left where it is and the\n"
-                                  "focus is yours to set next.\n"
+                ImGui::SetTooltip("STEP 2 - Drive %s so THIS nominal sits under the\n"
+                                  "crosshair: local (%.4f, %.4f) through the LIVE frame.\n"
+                                  "Z goes to the frame's working height (where E1/E2\n"
+                                  "were marked); an older frame with no Z leaves Z.\n"
                                   "Needs a live frame and Arm: the destination is\n"
-                                  "COMPUTED, so a stale frame drives somewhere nobody\n"
-                                  "chose - the same rule Move here follows.",
+                                  "COMPUTED, so a stale frame would drive somewhere\n"
+                                  "nobody chose.",
                                   a.device.c_str(), n.lx, n.ly);
-            ImGui::SameLine();
-            ImGui::BeginDisabled(busy || !camLive);
-            if (ImGui::SmallButton(cp ? "Re-save cam focus" : "Save cam focus"))
-                TeachAlignNominalCamPos(a, n);
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("Store where %s is standing NOW - X, Y and the\n"
-                                  "focused Z - as this nominal's camera focus\n"
-                                  "position. Centre first, focus on the point, then\n"
-                                  "press this.\n"
-                                  "It is NOT the object view above: that one looks at a\n"
-                                  "part held above this spot and is out of focus on the\n"
-                                  "substrate by the height of the grip.",
-                                  a.device.c_str());
-            ImGui::SameLine(0.0f, 24.0f);
-            ImGui::BeginDisabled(busy || !camLive || !cp);
-            if (ImGui::SmallButton("Go focus")) GoToAlignNominalCamPos(a, n);
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            ImGui::BeginDisabled(busy || !cp);
-            if (ImGui::SmallButton("Clear focus")) DropAlignNominalCamPos(a, n);
-            ImGui::EndDisabled();
-            // Re-resolved after the buttons that can push into or erase from
-            // the positions vector `cp` points into.
-            cp = AlignNominalCamPos(a, n);
-            if (cp) {
-                std::string line;
-                for (const auto& [axis, v] : cp->vals) {
-                    char buf[48];
-                    std::snprintf(buf, sizeof(buf), "%s%s %.3f", line.empty() ? "" : "  ",
-                                  axis.c_str(), v);
-                    line += buf;
-                }
-                ImGui::TextDisabled("   cam focus  %s", line.c_str());
-            } else {
-                ImGui::TextDisabled("   cam focus  none - centre, focus, then save");
-            }
+            if (!haveLiveF)
+                ImGui::TextDisabled("   no LIVE frame - run the alignment first");
+            else if (!camLive)
+                ImGui::TextDisabled("   %s is not connected", a.device.c_str());
         }
 
-        // Re-resolve: `vp` points INTO the positions vector, and both buttons
-        // above can push into it or erase from it.
-        vp = AlignNominalView(a, n);
-        if (vp) {
-            // A private position is not on the Motion page, so its numbers only
-            // exist here.
-            std::string line;
-            for (const auto& [axis, v] : vp->vals) {
-                char buf[48];
-                std::snprintf(buf, sizeof(buf), "%s%s %.3f", line.empty() ? "" : "  ",
-                              axis.c_str(), v);
-                line += buf;
-            }
-            ImGui::TextDisabled("  view  %s", line.c_str());
-        } else {
-            ImGui::TextDisabled("  view  none - a placement will not move the camera");
-        }
-
+        // Then the two that undo rather than advance.
         ImGui::BeginDisabled(busy);
-        // Use: copy into the local->machine probe above. The probe is what
-        // "Move here" reads, so this is the only wiring a nominal needs to
-        // become a destination — and it still goes through the live-frame gate.
-        if (ImGui::SmallButton("3. Use")) {
-            alignProbeX_ = n.lx;
-            alignProbeY_ = n.ly;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("STEP 3 - Load this nominal into the local X / local Y\n"
-                              "boxes above. Tick Arm, then Move here drives the camera\n"
-                              "to it - which is how you check the point is where you\n"
-                              "think it is. Needs a LIVE frame: run the procedure first.");
-        ImGui::SameLine();
-        // Place: measure where a gripped object actually is and work out the
-        // correction onto this nominal. Opening it drives the CAMERA to this
-        // nominal's view (step 2) — the marking it asks for is made through the
-        // camera, so it has to be looking at the right place first. The OBJECT
-        // does not move until it is asked to, on that page.
-        if (ImGui::SmallButton("4. Place...")) OpenAlignPlace(a, n.uid);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("STEP 4 - Drives %s to this nominal's camera view,\n"
-                              "then opens the page to mark the gripped object; the\n"
-                              "correction onto this nominal is computed from it. The\n"
-                              "object itself does not move until you ask for it there.",
-                              a.device.c_str());
-        // A gap, then the two that undo rather than advance.
-        ImGui::SameLine(0.0f, 24.0f);
         if (ImGui::SmallButton("Re-teach")) OpenAlignNominalTeach(a, n.uid);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Re-mark the two features of THIS nominal, on the part that\n"
-                              "is on the machine now. Same page as step 1, but it keeps\n"
-                              "the uid - so its camera view, its detection models and any\n"
-                              "recipe step naming it all survive. (Delete + New would not.)");
+            ImGui::SetTooltip("Re-mark THIS nominal on the part that is on the machine\n"
+                              "now. Same page as step 1, but it keeps the uid - so any\n"
+                              "recipe step naming it survives. (Delete + New would not.)");
         ImGui::SameLine();
         if (ImGui::SmallButton("Delete")) dropUid = n.uid;
         ImGui::EndDisabled();
@@ -1587,6 +1523,8 @@ void App::DrawAlignNominalList(AlignProc& a)
     ImGui::EndChild();
 
     // The deferred delete, now that nothing points into the vector any more.
+    // It still sweeps the private poses and models an older nominal may own,
+    // or they would linger as hidden orphans.
     if (!dropUid.empty()) {
         for (std::size_t i = 0; i < a.nominals.size(); ++i) {
             if (a.nominals[i].uid != dropUid) continue;
@@ -1691,7 +1629,14 @@ void App::DrawAlignFramePanel()
     ImGui::TextUnformatted("Local frame (O1)");
     ImGui::Separator();
 
-    if (haveLive) {
+    if (haveLive && workflow_.LiveFrameCarried(a.uid)) {
+        // Survived a program start because its align_run said keep_frame.
+        ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.95f, 1.0f), "KEPT  taught %s",
+                           live.capturedAt.c_str());
+        ImGui::TextDisabled("carried from an earlier program run: only steps");
+        ImGui::TextDisabled("with use_kept_frame use it. DUT open or product");
+        ImGui::TextDisabled("load clears it.");
+    } else if (haveLive) {
         ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "LIVE  taught %s",
                            live.capturedAt.c_str());
         ImGui::TextDisabled("usable by move_local until the next program start,");
@@ -1714,6 +1659,8 @@ void App::DrawAlignFramePanel()
     ImGui::Text("origin   %.4f, %.4f mm", r.originX, r.originY);
     ImGui::Text("theta    %.4f deg", r.thetaDeg);
     ImGui::Text("span     %.4f mm", r.spanMm);
+    if (r.hasZ) ImGui::Text("z        %.4f mm", r.z);
+    else        ImGui::TextDisabled("z        not recorded - re-run to record");
     ImGui::Spacing();
     ImGui::SeparatorText("Marked points (machine mm)");
     ImGui::Text("E1  %.4f, %.4f", r.e1.wx, r.e1.wy);

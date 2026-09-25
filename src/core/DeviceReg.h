@@ -46,8 +46,8 @@
 //
 // What it is NOT good enough for is the final placement — a seeded rotation and
 // one measured point get a tip close, nowhere near the 20 µm a placement
-// converges to. placement_procedure.lua keeps its measure/correct/re-measure
-// loop; this only means the loop lands on pass 1 instead of pass 2. See
+// converges to. The gripped-object measurement (grip_measure,
+// grip_move_to_camera) closes the last step; this only gets it close. See
 // docs/device-registration-design.md.
 #pragma once
 

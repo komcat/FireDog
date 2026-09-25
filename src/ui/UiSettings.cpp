@@ -45,8 +45,6 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("show_vision_marks")) s.showVisionMarks = j["show_vision_marks"].get<bool>();
         if (j.contains("show_pos_labels")) s.showPosLabels = j["show_pos_labels"].get<bool>();
         if (j.contains("pos_labels_hidden")) s.posLabelsHidden = j["pos_labels_hidden"].get<bool>();
-        if (j.contains("nom_box_w")) s.nomBoxW = j["nom_box_w"].get<float>();
-        if (j.contains("nom_box_h")) s.nomBoxH = j["nom_box_h"].get<float>();
         if (j.contains("show_gripper_marks")) s.showGripperMarks = j["show_gripper_marks"].get<bool>();
         if (j.contains("aux_panel_open")) s.auxPanelOpen = j["aux_panel_open"].get<bool>();
         if (j.contains("chart_scope"))   s.chartScope  = j["chart_scope"].get<bool>();
@@ -140,8 +138,6 @@ bool UiSettings::Save(const std::string& path) const
     j["show_vision_marks"] = showVisionMarks;
     j["show_pos_labels"]   = showPosLabels;
     j["pos_labels_hidden"]  = posLabelsHidden;
-    j["nom_box_w"]          = nomBoxW;
-    j["nom_box_h"]          = nomBoxH;
     j["show_gripper_marks"] = showGripperMarks;
     j["aux_panel_open"]     = auxPanelOpen;
     j["chart_scope"]   = chartScope;

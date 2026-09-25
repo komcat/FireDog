@@ -10,11 +10,13 @@
 --   align_name    the procedure's uid or name           (required)
 --   align_prefix  ctx prefix for the captured points    (default "frame")
 --   align_tol_mm / align_timeout_ms   station arrival contract
+--   align_keep    keep the frame across program starts  (default false)
 
 local NAME   = fd.param("align_name", "")
 local PREFIX = fd.param("align_prefix", "frame")
 local TOL    = fd.param("align_tol_mm", 0.01)
 local TMO    = fd.param("align_timeout_ms", 60000)
+local KEEP   = fd.param("align_keep", false)
 
 if NAME == "" then
     error("align_name is not set - name the alignment procedure to run")
@@ -30,7 +32,7 @@ fd.align_station{ alignment = NAME, station = 2, ctx_prefix = PREFIX,
                   tol_mm = TOL, timeout_ms = TMO,
                   message = "Mark E2 (a point on the local X+ axis), then OK" }
 
-fd.align_solve{ alignment = NAME, ctx_prefix = PREFIX, save = true }
+fd.align_solve{ alignment = NAME, ctx_prefix = PREFIX, save = true, keep = KEEP }
 
 fd.logf("O1: origin (%.4f, %.4f) mm, theta %.4f deg, span %.4f mm",
         fd.ctx[PREFIX .. "_origin_x"], fd.ctx[PREFIX .. "_origin_y"],

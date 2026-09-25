@@ -84,8 +84,6 @@ int App::Run()
         showVisionMarks_ = ui.showVisionMarks;
         showPosLabels_   = ui.showPosLabels;
         posLabelsHidden_ = ui.posLabelsHidden;
-        if (ui.nomBoxW > 0.0f) nomBoxW_ = ui.nomBoxW;
-        if (ui.nomBoxH > 0.0f) nomBoxH_ = ui.nomBoxH;
         showGripperMarks_ = ui.showGripperMarks;
         auxPanelOpen_     = ui.auxPanelOpen;
         chartScope_      = ui.chartScope;
@@ -507,8 +505,6 @@ void App::SaveUiSettings()
     s.showVisionMarks = showVisionMarks_;
     s.showPosLabels   = showPosLabels_;
     s.posLabelsHidden = posLabelsHidden_;
-    s.nomBoxW = nomBoxW_;
-    s.nomBoxH = nomBoxH_;
     s.showGripperMarks = showGripperMarks_;
     s.auxPanelOpen     = auxPanelOpen_;
     s.chartScope  = chartScope_;

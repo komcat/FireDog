@@ -56,6 +56,12 @@ struct AlignPoint {
     double gx = 0.0, gy = 0.0;    // gantry XY at capture (mm, machine frame)
     double px = 0.0, py = 0.0;    // crosshair position, absolute camera pixels
     double wx = 0.0, wy = 0.0;    // world point = gantry + pixel offset (mm)
+    // Gantry Z at capture, AXIS space, read straight off the device - the
+    // height the camera was focused at when this point was marked. `hasZ` is
+    // false for a device with no Z and for every point written before Z was
+    // recorded; a missing Z must never read as Z = 0.
+    double gz = 0.0;
+    bool   hasZ = false;
 };
 
 // The taught frame. `valid` is false until a solve succeeds.
@@ -66,6 +72,13 @@ struct AlignResult {
     double      originX = 0.0, originY = 0.0;   // == e1.wx / e1.wy
     double      thetaDeg = 0.0;                 // E1 -> E2 direction
     double      spanMm = 0.0;                   // |E1 -> E2|, diagnostic
+    // The frame's working height: the MEAN gantry Z of E1 and E2, in the
+    // device's own axis space (never through AxisTransform - gantry-main
+    // inverts Z). The frame is 2-D, so this is not transformed by it; it is the
+    // focus height the part was measured at, which is what move_to_nominal
+    // drives to by default. `hasZ` only when BOTH points carried one.
+    double      z = 0.0;
+    bool        hasZ = false;
 };
 
 // ---- the guard band, and the record of what each run measured -------------
@@ -113,17 +126,22 @@ struct AlignRun {
     bool   ok      = true;
 };
 
+// The most marks a nominal record can hold (p1..p4). The teach page asks for at
+// most kAlignNominalTeachMax; the fourth slot exists for older files.
+inline constexpr int kAlignNominalMarksMax = 4;
+inline constexpr int kAlignNominalTeachMax = 3;
+
 // One taught NOMINAL: a target point on the part, held in LOCAL (O1)
 // coordinates so it travels with the part instead of with the machine. Teach it
 // once against a part whose frame was just taught, and every later part gets
 // the same point at its own placement, because the frame moved and the local
 // coordinate did not.
 //
-// It is taught as the MIDPOINT of two operator-marked features. Two marks
-// rather than one because the interesting point is usually the CENTRE of
-// something — a die, a pocket, a footprint — and a centre is a place with no
-// feature under it to aim at. Marking two opposite corners puts the crosshair
-// on something real both times; the midpoint is then arithmetic, not judgement.
+// It is taught as the AVERAGE of 1, 2 or 3 crosshair marks. One mark is the
+// point itself. Two or three are there because the interesting point is often
+// the CENTRE of something — a die, a pocket, a footprint — with no feature under
+// it to aim at: mark corners and the centre is arithmetic, not judgement. The
+// same number of marks on ONE feature averages the pick noise down instead.
 //
 // Only `lx`/`ly` are consumed. Everything below them is the record of how the
 // point was taught, kept for the same reason AlignResult keeps its E points: a
@@ -132,21 +150,15 @@ struct AlignNominal {
     std::string uid;
     std::string name = "nominal";
     double      lx = 0.0, ly = 0.0;   // LOCAL (O1) mm — the only field a run uses
-    // The marks it was taught from, machine mm. TWO or FOUR: two opposite
-    // corners give the centre in one stroke, four give it as the average of a
-    // ring — the same trade the registration imprint makes, and for the same
-    // reason. A corner that lands off the feature shifts a 2-mark centre by half
-    // its error and looks exactly like a good mark; with four, it shows up as a
-    // spread that does not match the part.
-    //
-    // p1/p2 keep their names and their meaning so every file and every consumer
-    // written before this still reads: `points` is 2 unless somebody marked four.
+    // The marks it was taught from, machine mm. The page asks for 1..3; `p4`
+    // and `points == 4` survive only because files taught on the older 2-or-4
+    // page carry them, and a file must go on reading.
     AlignPoint  p1, p2, p3, p4;
-    int         points = 2;           // 2 or 4 — how many of the above are real
+    int         points = 2;           // 1..4 — how many of the above are real
     double      mx = 0.0, my = 0.0;   // CENTRE, machine mm, AT TEACH TIME
-    // Two marks: the separation. Four: twice the mean distance from the centre,
-    // so one number means the same thing either way — a width across the marks.
-    // Diagnostic, like AlignResult::spanMm.
+    // One mark: 0. Two: the separation. Three or more: twice the mean distance
+    // from the centre, so one number means the same thing either way — a width
+    // across the marks. Diagnostic, like AlignResult::spanMm.
     double      spanMm = 0.0;
     std::string taughtAt;             // "2026-08-01T10:22:31"
     std::string frameAt;              // capturedAt of the frame it was converted through
@@ -314,9 +326,8 @@ void AlignMachineToLocal(const AlignResult& r, double mx, double my,
 // would then be re-projected by the next frame into somewhere no part has ever
 // been. There is no minimum span here (unlike the frame): a nominal is a point,
 // so two coincident marks are merely a point, not a meaningless direction.
-// The N-mark form: 2 or 4 marks, whose CENTRE is the target. Anything else is
-// refused rather than averaged — a 3-mark ring has no centre worth the name, and
-// silently accepting one would put a nominal somewhere nobody chose.
+// The N-mark form: 1..kAlignNominalMarksMax marks, whose AVERAGE is the target.
+// The teach page offers 1, 2 or 3; 4 is accepted because older files hold it.
 bool SolveAlignNominalN(const AlignResult& frame, const AlignPoint* pts, int n,
                         AlignNominal* out, std::string* err);
 

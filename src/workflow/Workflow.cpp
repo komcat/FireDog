@@ -497,19 +497,56 @@ std::vector<std::pair<std::string, VisionReliability>> Workflow::TakeVisionRelia
     return std::exchange(visionRelQueue_, {});
 }
 
-void Workflow::SetLiveFrame(const std::string& alignUid, const AlignResult& r)
+void Workflow::SetLiveFrame(const std::string& alignUid, const AlignResult& r, bool keep)
 {
     const std::lock_guard<std::mutex> lock(frameMu_);
-    liveFrames_[alignUid] = r;
+    LiveFrameEntry& e = liveFrames_[alignUid];
+    e.r       = r;
+    e.keep    = keep;
+    e.carried = false;   // a fresh solve is this program's own frame
 }
 
-bool Workflow::LiveFrame(const std::string& alignUid, AlignResult* out) const
+bool Workflow::LiveFrame(const std::string& alignUid, AlignResult* out,
+                         bool allowCarried) const
 {
     const std::lock_guard<std::mutex> lock(frameMu_);
     const auto it = liveFrames_.find(alignUid);
-    if (it == liveFrames_.end() || !it->second.valid) return false;
-    if (out) *out = it->second;
+    if (it == liveFrames_.end() || !it->second.r.valid) return false;
+    if (it->second.carried && !allowCarried) return false;
+    if (out) *out = it->second.r;
     return true;
+}
+
+bool Workflow::LiveFrameCarried(const std::string& alignUid) const
+{
+    const std::lock_guard<std::mutex> lock(frameMu_);
+    const auto it = liveFrames_.find(alignUid);
+    return it != liveFrames_.end() && it->second.r.valid && it->second.carried;
+}
+
+void Workflow::CarryLiveFrames(const char* reason)
+{
+    std::size_t dropped = 0, kept = 0;
+    {
+        const std::lock_guard<std::mutex> lock(frameMu_);
+        for (auto it = liveFrames_.begin(); it != liveFrames_.end();) {
+            if (it->second.keep) {
+                it->second.carried = true;
+                ++kept;
+                ++it;
+            } else {
+                it = liveFrames_.erase(it);
+                ++dropped;
+            }
+        }
+    }
+    if (dropped > 0)
+        FD_INFO("align", "live taught frame(s) cleared: %s (%zu dropped) - "
+                         "re-run the alignment before any move_local",
+                reason ? reason : "reset", dropped);
+    if (kept > 0)
+        FD_INFO("align", "%s: %zu KEPT frame(s) carried over - usable only by steps "
+                         "with use_kept_frame on", reason ? reason : "reset", kept);
 }
 
 void Workflow::ClearLiveFrames(const char* reason)

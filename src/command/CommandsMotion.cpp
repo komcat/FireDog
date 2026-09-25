@@ -645,6 +645,68 @@ CommandResult ExecReadPosition(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// ---- check_position ------------------------------------------------------
+// Is the device AT a saved position right now? Writes the answer into ctx and
+// moves nothing, so an `if` step can skip a move that is already done:
+//     check_position hex-left home  ->  if hex_left_at == false: move_to_position
+// Never fails for "not there" - that is an answer, not an error. It fails only
+// when it cannot answer (device down, position missing, no shared axes).
+//
+// Every axis the position defines AND the device reports is compared. Rotary
+// axes (U/V/W, A/B/C) use tol_deg, the rest tol_mm: one tolerance across both
+// would be either too tight for an angle or too loose for a length.
+CommandResult ExecCheckPosition(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    const SavedPos* pos = ctx.FindPosition(device, p.GetString("position"));
+    if (!pos) return CommandResult::Fail("position uid not found");
+
+    // Fresh pose, same rule as read_position: the idle poll cache can be a
+    // second old, and a pose from before the last move answers the wrong question.
+    m->RequestFastPoll();
+    if (!ctx.Sleep(120)) return CommandResult::Fail("stopped");
+    const std::map<std::string, double> live = m->Positions();
+
+    const double tolMm  = p.GetDouble("tol_mm");
+    const double tolDeg = p.GetDouble("tol_deg");
+    const auto isRotary = [](const std::string& a) {
+        return a == "U" || a == "V" || a == "W" || a == "A" || a == "B" || a == "C";
+    };
+
+    bool        at = true;
+    int         compared = 0;
+    double      worst = 0.0;       // largest linear error, mm
+    std::string offAxis;           // first axis out of tolerance
+    for (const auto& [axis, want] : pos->vals) {
+        const auto it = live.find(axis);
+        if (it == live.end()) continue;   // an axis the device does not report
+        ++compared;
+        const double d   = std::fabs(it->second - want);
+        const bool   rot = isRotary(axis);
+        if (!rot && d > worst) worst = d;
+        if (d > (rot ? tolDeg : tolMm)) {
+            if (at) offAxis = axis;
+            at = false;
+        }
+    }
+    if (compared == 0)
+        return CommandResult::Fail("position '" + std::string(pos->name) +
+                                   "' shares no axes with '" + device + "'");
+
+    const std::string prefix = p.GetString("ctx_prefix");
+    ctx.CtxSet(prefix + "_at", at);
+    ctx.CtxSet(prefix + "_dist_mm", worst);
+    FD_INFO("motion", "check_position %s '%s': %s (worst linear %.4f mm%s%s)",
+            device.c_str(), pos->name, at ? "AT position" : "NOT at position", worst,
+            offAxis.empty() ? "" : ", first off axis ", offAxis.c_str());
+    return CommandResult::Success();
+}
+
 // Coordinated absolute move to explicit AXIS coordinates — the frameless twin of
 // move_local, for a caller that computed the numbers itself.
 //
@@ -876,6 +938,21 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "ctx prefix for the axis values"},
                   },
                   CommandSpec::Needs::None, ExecReadPosition});
+
+    reg.Register({"check_position", "Motion",
+                  "Is the device AT a saved position? Writes <prefix>_at (true/false) "
+                  "and <prefix>_dist_mm; moves nothing - follow it with an if step",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
+                      {"position", PT::PositionUid, true, {}, 0, 0, {}, "saved position uid"},
+                      {"tol_mm", PT::Double, false, 0.01, 0.0001, 10.0, {},
+                       "linear axes (X/Y/Z): within this counts as AT the position"},
+                      {"tol_deg", PT::Double, false, 0.01, 0.0001, 10.0, {},
+                       "rotary axes (U/V/W): within this counts as AT the position"},
+                      {"ctx_prefix", PT::String, false, "pos", 0, 0, {},
+                       "result goes to <prefix>_at / <prefix>_dist_mm"},
+                  },
+                  CommandSpec::Needs::None, ExecCheckPosition});
 
     reg.Register({"move_axis_to", "Motion",
                   "Coordinated absolute move to explicit axis coordinates; axes not "

@@ -195,7 +195,7 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   },
                   CommandSpec::Needs::None, ExecNeedleOffsetSave});
 
-    // The two script launchers. Same shape as align_run / place_run: set the ctx
+    // The two script launchers. Same shape as align_run: set the ctx
     // the script reads with fd.param, resolve the file, run it inline on this
     // worker. One step in a recipe, one button on a page, one file.
     CommandRegistry* rp = &reg;

@@ -49,14 +49,13 @@ std::string CtxValueToString(const CtxValue& v);
 //
 // The procedures the app launches from its own buttons and keeps in step with
 // the command family: alignment_procedure.lua, alignment_repeat.lua,
-// placement_procedure.lua and needle_calibration.lua. They are STANDARD — every
+// needle_calibration.lua and the rest IsSystemScript names. They are STANDARD — every
 // product runs the shipped copy, and a file of the same name in a product's
 // scripts folder is ignored (with a warning).
 //
 // A forked copy is how a product silently loses a step the app added later: the
-// day placement_procedure.lua grew its place_view call, every product carrying
-// its own copy would have gone on skipping it, and the symptom would have been
-// a camera that simply did not move. Product-specific scripts — a scan, a
+// day a standard script grows a call, every product carrying its own copy goes
+// on skipping it, and the symptom is a step that silently never happens. Product-specific scripts — a scan, a
 // bring-up sequence — keep the override; these are not that.
 //
 // The repeatability sweep is here for a third reason: it is the source of a
@@ -239,9 +238,8 @@ public:
     void                    CtxSet(const std::string& key, CtxValue v);
     std::optional<CtxValue> CtxGet(const std::string& key) const;
     // Remove a key. For a measurement a later step must NOT silently reuse:
-    // place_move drops the object marks it just consumed, so a second solve
-    // has to be given fresh ones rather than re-deriving a correction that has
-    // already been applied. Missing keys are not an error.
+    // a consumed mark dropped here has to be re-taken rather than re-deriving a
+    // correction that has already been applied. Missing keys are not an error.
     void                    CtxErase(const std::string& key);
     std::vector<std::pair<std::string, CtxValue>> CtxSnapshot() const;
     // Replace "{key}" occurrences with ctx values (unknown keys left as-is).

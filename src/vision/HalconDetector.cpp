@@ -727,7 +727,7 @@ bool HalconDetector::Detect(const unsigned char* rgb, int w, int h, VisionDetect
     }
 
     // Pre-processing, between the crop and the method — the ONE place it is
-    // applied at run time. Every caller (align_station, place_mark,
+    // applied at run time. Every caller (align_station, grip_measure,
     // vision_detect, vision_test, the teach page's Detect) funnels through
     // Workflow::Detect to here, so a chain cannot be honoured on one path and
     // forgotten on another.

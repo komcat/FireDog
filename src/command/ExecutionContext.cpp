@@ -55,7 +55,7 @@ ExecutionContext::ExecutionContext(Workflow& wf, HardwareManager& hw,
 bool IsSystemScript(const std::string& pathOrFile)
 {
     const std::string file = std::filesystem::path(pathOrFile).filename().string();
-    return file == "alignment_procedure.lua" || file == "placement_procedure.lua" ||
+    return file == "alignment_procedure.lua" ||
            file == "needle_calibration.lua" || file == "alignment_repeat.lua" ||
            file == "device_reg_check.lua" || file == "grip_measure.lua" ||
            file == "xcan_to_target.lua" || file == "xcan_two_lens.lua";
@@ -78,7 +78,7 @@ std::string ExecutionContext::ResolveScript(const std::string& path) const
 
     // A SYSTEM procedure is never taken from a product, and never from wherever
     // the caller pointed either: these two files are edited in lockstep with the
-    // commands they call, so "the placement procedure" has to mean one file on
+    // commands they call, so "the alignment procedure" has to mean one file on
     // every machine. The warning names the copy being ignored — silently
     // redirecting would be the same trap in the other direction.
     if (const std::string sys = SystemScriptPath(file); !sys.empty()) {

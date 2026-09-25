@@ -53,9 +53,8 @@ namespace {
 using PT = ParamType;
 
 // ctx key for one component of a marked point: "<prefix>_p1_wx".
-// Deliberately the SAME shape place_mark uses (CommandsAlign.cpp): an operator
-// reading two runs side by side should not have to learn two spellings of the
-// same idea.
+// The same `_pN_` shape the retired place_mark used, so records written by
+// either read alike.
 std::string MarkKey(const std::string& prefix, int index, const char* field)
 {
     char buf[64];
@@ -152,9 +151,9 @@ CommandResult ExecGripProfile(ExecutionContext& ctx, const ParamValues& p)
 //
 // One point on the object: detected when the profile says auto, marked with the
 // crosshair when it says manual, and marked by hand as a FALLBACK when a
-// detection was asked for and did not arrive. A near-twin of place_mark, and
-// deliberately so - the two answer the same question about different things,
-// and an operator who has learned one window has learned both.
+// detection was asked for and did not arrive. It uses the
+// same pick window as align_station, so an operator who has learned one has
+// learned both.
 //
 // Nothing drives here. The object has to be in view already, which grip_measure
 // arranges above this step; keeping the move out is what lets the two marks come
@@ -252,7 +251,7 @@ CommandResult ExecGripMark(ExecutionContext& ctx, const ParamValues& p)
         req.label = lbl;
     }
     // Two opposite edges of an object is exactly what the two-mark mode asks
-    // for, so the corner diagrams belong here as they do on place_mark.
+    // for, so the corner diagrams belong here.
     req.stepIcons = (marks == 2);
 
     // Where the tool is, as a hint. This is the point the whole measurement is

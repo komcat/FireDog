@@ -966,8 +966,8 @@ void App::DrawDeviceRegPanel()
     //
     // It stays an APPROACH. Nothing here closes a loop, so it must never be
     // read as a placement - the rotation is typed, the tip is one point, and
-    // the last 20 um belongs to placement_procedure.lua measuring and
-    // correcting.
+    // the last 20 um belongs to the gripped-object measure and correct
+    // (grip_measure / grip_move_to_camera).
     ImGui::SeparatorText("Send the tool here");
     {
         double rx = 0.0, ry = 0.0, rz = 0.0;
