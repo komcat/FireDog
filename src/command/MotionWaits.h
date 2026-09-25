@@ -79,12 +79,20 @@ CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int 
                                const ParamValues& p, const std::string& what);
 
 // The three parameters MoveWithApproach reads, as a shared schema fragment —
-// two TUs register them, so they are here rather than file-local like
-// CommandsMotion's VelocityParam/ExposureParam. All three carry the "Approach"
-// group, which folds them away in the editor until one is set.
+// more than one TU registers them. All three carry the "Approach" group, which
+// folds them away in the editor until one is set.
 ParamSpec ApproachVelocityParam(bool required = false);
 ParamSpec ApproachMmParam();
 ParamSpec ApproachPctParam();
+
+// The two optional pre-move params every mover appends, and the step that
+// applies them before the move: a device velocity override (persists on the
+// device, like the Jog panel's) and a camera exposure issued BEFORE travelling
+// so vision is ready on arrival. Shared for the same reason as the approach
+// triple — a second copy is a mover that quietly ignores velocity_mm_s.
+ParamSpec VelocityParam();
+ParamSpec ExposureParam();
+CommandResult ApplyPreMove(ExecutionContext& ctx, int idx, const ParamValues& p);
 
 // ---- teach: fine-tune after arrival, save into the position -----------------
 // The optional `teach` Bool every saved-position mover declares. When set, the

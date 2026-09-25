@@ -61,7 +61,13 @@ bool App::StartWatchedMove(const std::string& device, const std::string& posUid,
     for (const SavedPos& sp : pit->second)
         if (sp.uid == posUid) { pos = &sp; break; }
     if (!pos) return false;
+    return StartWatchedMove(device, pos->vals, what);
+}
 
+bool App::StartWatchedMove(const std::string& device,
+                           const std::map<std::string, double>& pose,
+                           const std::string& what)
+{
     for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
         if (hardware_.MotionName(i) != device) continue;
         IMotionController* dev = hardware_.MotionDevice(i);
@@ -69,8 +75,8 @@ bool App::StartWatchedMove(const std::string& device, const std::string& posUid,
 
         std::vector<std::pair<std::string, double>> targets;
         for (const std::string& ax : dev->Axes()) {
-            const auto it = pos->vals.find(ax);
-            if (it != pos->vals.end()) targets.emplace_back(ax, it->second);
+            const auto it = pose.find(ax);
+            if (it != pose.end()) targets.emplace_back(ax, it->second);
         }
         if (targets.empty()) return false;
         if (!workflow_.MoveToPosition(i, targets)) return false;

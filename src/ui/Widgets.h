@@ -15,7 +15,8 @@
 
 #include "imgui.h"
 
-#include "hardware/IDevice.h"   // ConnState
+#include "core/SavedPositions.h"   // SavedPos / SavedPosMap (TaughtPosePicker)
+#include "hardware/IDevice.h"      // ConnState
 
 namespace firedog {
 
@@ -426,6 +427,16 @@ void        DeviceStatusLine(ConnState s, const char* name);
 // panel size. `vertical` = a tall bar that resizes left/right; otherwise a wide
 // bar that resizes up/down.
 bool Splitter(const char* id, bool vertical, float thickness, float length);
+
+// The "or taught..." combo: a saved position of `device` to take a pose from.
+// Returns the picked one for this frame only — the caller resolves it to
+// COORDINATES on the spot (App::AdoptDeviceRegPose says why a record must not
+// hold a position uid). Hidden positions are withheld: they are the alignment
+// and grip systems' private poses and are noise to somebody teaching a pose.
+// Same rule the recipe picker follows — `hidden` governs what is OFFERED,
+// never what resolves. Shared by the Registration and Waffle Tray pages.
+const SavedPos* TaughtPosePicker(const char* id, const SavedPosMap& all,
+                                 const std::string& device);
 
 // One line of text drawn as large as `box` allows and centred in it, from the
 // current cursor. The font is sized off the box height and shrunk to fit the

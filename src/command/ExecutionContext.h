@@ -335,3 +335,9 @@ std::optional<bool> EvalCondition(const nlohmann::json& cond, ExecutionContext& 
 std::string CheckConditionShape(const nlohmann::json& cond);
 
 } // namespace firedog
+// A numeric ctx value, with *found telling a missing or non-numeric key apart
+// from a genuine 0.0. Shared by the align, grip and tray commands — every
+// "<prefix>_<field>" read goes through this one so a string where a number
+// was expected fails the same way everywhere.
+double CtxNumber(const ExecutionContext& ctx, const std::string& key, bool* found);
+

@@ -69,14 +69,6 @@ std::string PointKey(const std::string& prefix, int station, const char* field)
     return buf;
 }
 
-double CtxNumber(ExecutionContext& ctx, const std::string& key, bool* found)
-{
-    const auto v = ctx.CtxGet(key);
-    if (!v || !std::holds_alternative<double>(*v)) { if (found) *found = false; return 0.0; }
-    if (found) *found = true;
-    return std::get<double>(*v);
-}
-
 // The world point of an already-captured station, straight out of ctx. False
 // when that station has not been captured in this run under this prefix.
 bool CtxWorldPoint(ExecutionContext& ctx, const std::string& prefix, int station,

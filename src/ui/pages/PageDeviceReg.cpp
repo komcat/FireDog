@@ -76,36 +76,8 @@ int MotionIndexOf(const HardwareManager& hw, const std::string& name)
     return -1;
 }
 
-// A device's taught positions, offered as a source for one of the three poses.
-// Returns the picked one for this frame only — the caller resolves it to
-// coordinates immediately (App::AdoptDeviceRegPose says why).
-//
-// Hidden positions are withheld: they are the alignment system's private
-// `algn_...` poses and are noise to somebody teaching a registration. Same rule
-// the recipe picker follows — `hidden` governs what is OFFERED, never what
-// resolves.
-const SavedPos* TaughtPosePicker(const char* id, const SavedPosMap& all,
-                                 const std::string& device)
-{
-    const SavedPos* picked = nullptr;
-    ImGui::SetNextItemWidth(140.0f);
-    if (!ImGui::BeginCombo(id, "or taught...")) return nullptr;
-
-    const auto it = all.find(device);
-    if (it == all.end() || it->second.empty()) {
-        ImGui::TextDisabled("no taught positions for '%s'", device.c_str());
-    } else {
-        bool any = false;
-        for (const SavedPos& sp : it->second) {
-            if (sp.hidden) continue;
-            any = true;
-            if (ImGui::Selectable(sp.name)) picked = &sp;
-        }
-        if (!any) ImGui::TextDisabled("only system positions taught");
-    }
-    ImGui::EndCombo();
-    return picked;
-}
+// The "or taught..." picker that used to live here is TaughtPosePicker in
+// ui/Widgets — the Waffle Tray page sources its corners the same way.
 
 void DeviceCombo(const char* label, char* buf, std::size_t n,
                  const HardwareManager& hw, const char* tip)

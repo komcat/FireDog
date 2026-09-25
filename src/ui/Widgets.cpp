@@ -1075,6 +1075,29 @@ float MeasuredHz(const std::vector<float>& t) {
     return static_cast<float>(count - 1) / span;
 }
 
+const SavedPos* TaughtPosePicker(const char* id, const SavedPosMap& all,
+                                 const std::string& device)
+{
+    const SavedPos* picked = nullptr;
+    ImGui::SetNextItemWidth(140.0f);
+    if (!ImGui::BeginCombo(id, "or taught...")) return nullptr;
+
+    const auto it = all.find(device);
+    if (it == all.end() || it->second.empty()) {
+        ImGui::TextDisabled("no taught positions for '%s'", device.c_str());
+    } else {
+        bool any = false;
+        for (const SavedPos& sp : it->second) {
+            if (sp.hidden) continue;
+            any = true;
+            if (ImGui::Selectable(sp.name)) picked = &sp;
+        }
+        if (!any) ImGui::TextDisabled("only system positions taught");
+    }
+    ImGui::EndCombo();
+    return picked;
+}
+
 void OpenFolderInExplorer(const std::string& dir)
 {
     if (dir.empty()) return;

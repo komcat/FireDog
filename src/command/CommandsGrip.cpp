@@ -63,14 +63,6 @@ std::string MarkKey(const std::string& prefix, int index, const char* field)
     return buf;
 }
 
-double CtxNumber(ExecutionContext& ctx, const std::string& key, bool* found)
-{
-    const auto v = ctx.CtxGet(key);
-    if (!v || !std::holds_alternative<double>(*v)) { if (found) *found = false; return 0.0; }
-    if (found) *found = true;
-    return std::get<double>(*v);
-}
-
 // How many marks this profile's mode needs. One place, because the script asks
 // it to decide how many grip_mark steps to issue and grip_apply asks it to
 // decide what to read back — and those two disagreeing is a run that measures

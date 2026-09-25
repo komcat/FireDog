@@ -28,6 +28,14 @@ std::string CtxValueToString(const CtxValue& v)
     return std::get<std::string>(v);
 }
 
+double CtxNumber(const ExecutionContext& ctx, const std::string& key, bool* found)
+{
+    const auto v = ctx.CtxGet(key);
+    if (!v || !std::holds_alternative<double>(*v)) { if (found) *found = false; return 0.0; }
+    if (found) *found = true;
+    return std::get<double>(*v);
+}
+
 ExecutionContext::ExecutionContext(Workflow& wf, HardwareManager& hw,
                                    SavedPosMap& positions,
                                    const MotionMapSet& maps,

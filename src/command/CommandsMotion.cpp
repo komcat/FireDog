@@ -302,14 +302,12 @@ CommandResult TeachAfterMove(ExecutionContext& ctx, IMotionController* m,
     return CommandResult::Success();
 }
 
-// ---- File-local from here on ------------------------------------------------
-namespace {
-
 // Optional pre-move actions shared by EVERY motion command: a device velocity
 // override (persists on the device — same semantics as the Jog panel; there
 // is no read-back to restore from) and a camera exposure change issued BEFORE
 // the move, so the sensor settles while the axes travel and vision is ready
-// on arrival.
+// on arrival. Declared in MotionWaits.h since CommandsTray.cpp's mover needs
+// the same pre-move as the saved-position movers here.
 CommandResult ApplyPreMove(ExecutionContext& ctx, int idx, const ParamValues& p)
 {
     const double vel = p.GetDouble("velocity_mm_s");
@@ -332,6 +330,9 @@ ParamSpec ExposureParam()
     return {"exposure_us", ParamType::Double, false, 0.0, 0, 0, {},
             "optional camera exposure set BEFORE moving (vision-ready on arrival); 0 = leave"};
 }
+
+// ---- File-local from here on ------------------------------------------------
+namespace {
 
 CommandResult ExecMoveToPosition(ExecutionContext& ctx, const ParamValues& p)
 {

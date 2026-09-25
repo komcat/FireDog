@@ -187,6 +187,11 @@ private:
     // every page until the axes arrive. Definitions in MainWindow.cpp.
     bool StartWatchedMove(const std::string& device, const std::string& posUid,
                           const std::string& what);
+    // The same, to a pose given as axis values (a computed one — a waffle tray
+    // cell — has no uid). The uid form resolves the position and calls this.
+    bool StartWatchedMove(const std::string& device,
+                          const std::map<std::string, double>& pose,
+                          const std::string& what);
     void UpdateMoveWatch(float dt);   // arrival poll; called from Update()
     void DrawMoveStatusBar();   // the banner, drawn by the main frame
     void DrawLeftPanel();      // 20% column: hardware status + DUT + display
