@@ -365,18 +365,70 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
         ImGui::EndPopup();
     }
 
-    const int cols = 7 + static_cast<int>(axes.size());
+    // ---- The selected row and its toolbar --------------------------------
+    // One selection, six actions above the table, instead of six buttons on
+    // every row: the table is names and numbers again, and an action lands on
+    // the row the operator can see is highlighted. The selection is a uid
+    // (App::posSelUid_) so a device switch or a delete cannot re-aim it.
+    int sel = -1;
+    for (size_t r = 0; r < saved.size(); ++r)
+        if (saved[r].uid == posSelUid_) { sel = static_cast<int>(r); break; }
+    if (sel >= 0 && saved[static_cast<size_t>(sel)].hidden && !showHiddenPos_)
+        sel = -1;   // a hidden selection is not a visible target
+    const SavedPos* selPos = (sel >= 0) ? &saved[static_cast<size_t>(sel)] : nullptr;
+
+    if (selPos) ImGui::Text("Selected: %s", selPos->name);
+    else        ImGui::TextDisabled("Selected: (click a row; double-click = Move)");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!selPos);
+    // Move and Update both hand off to a confirmation dialog below: one
+    // drives the machine, the other overwrites a taught place, and neither
+    // should happen on a single click.
+    if (ImGui::SmallButton("Move")) {
+        moveRow_     = sel;
+        openMovePos_ = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Update")) {
+        updRow_     = sel;
+        updSecond_  = false;
+        openUpdPos_ = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Edit")) {   // type the axis values directly
+        editRow_ = sel;
+        editVals_.clear();
+        for (const auto& a : axes) {
+            const auto it = selPos->vals.find(a);
+            editVals_[a] = (it != selPos->vals.end()) ? it->second : 0.0;
+        }
+        openEditPos_ = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Rename")) {
+        renameRow_ = sel;
+        std::snprintf(renameBuf_, sizeof(renameBuf_), "%s", selPos->name);
+        openRenamePos_ = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Hist")) {   // this row's change journal
+        posHistDevice_ = devName;
+        posHistUid_    = selPos->uid;
+        showPosHist_   = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Delete")) {   // confirmed via dialog before erasing
+        deleteRow_     = sel;
+        openDeletePos_ = true;
+    }
+    ImGui::EndDisabled();
+
+    const int cols = 1 + static_cast<int>(axes.size());
     if (ImGui::BeginTable("savedpos", cols,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
             ImVec2(0.0f, ImGui::GetContentRegionAvail().y))) {   // fill the panel
-        ImGui::TableSetupColumn("##move", ImGuiTableColumnFlags_WidthFixed);
-        ImGui::TableSetupColumn("##upd",  ImGuiTableColumnFlags_WidthFixed);
-        ImGui::TableSetupColumn("##edit", ImGuiTableColumnFlags_WidthFixed);
-        ImGui::TableSetupColumn("Name",   ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("##ren",  ImGuiTableColumnFlags_WidthFixed);
-        ImGui::TableSetupColumn("##hist", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
         for (const auto& a : axes) ImGui::TableSetupColumn(a.c_str(), ImGuiTableColumnFlags_WidthFixed);
-        ImGui::TableSetupColumn("##del",  ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableHeadersRow();
 
         for (size_t r = 0; r < saved.size(); ++r) {
@@ -387,56 +439,26 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             if (sp.hidden)   // revealed hidden row — dim the whole row's text
                 ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 
-            // Move and Upd both hand off to a confirmation dialog below: one
-            // drives the machine, the other overwrites a taught place, and
-            // neither should happen on a single click in a dense table.
             ImGui::TableSetColumnIndex(0);
-            if (ImGui::SmallButton("Move")) {
-                moveRow_     = static_cast<int>(r);
-                openMovePos_ = true;
-            }
-            ImGui::TableSetColumnIndex(1);
-            if (ImGui::SmallButton("Upd")) {
-                updRow_     = static_cast<int>(r);
-                updSecond_  = false;
-                openUpdPos_ = true;
-            }
-            ImGui::TableSetColumnIndex(2);
-            if (ImGui::SmallButton("Edit")) {   // type the axis values directly
-                editRow_ = static_cast<int>(r);
-                editVals_.clear();
-                for (const auto& a : axes) {
-                    const auto it = sp.vals.find(a);
-                    editVals_[a] = (it != sp.vals.end()) ? it->second : 0.0;
+            const bool isSel = static_cast<int>(r) == sel;
+            if (ImGui::Selectable(sp.name, isSel,
+                                  ImGuiSelectableFlags_SpanAllColumns |
+                                      ImGuiSelectableFlags_AllowDoubleClick)) {
+                posSelUid_ = sp.uid;
+                // A double-click is the one-gesture Move; it still lands on
+                // the confirmation dialog, never straight on the axes.
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    moveRow_     = static_cast<int>(r);
+                    openMovePos_ = true;
                 }
-                openEditPos_ = true;
             }
-            ImGui::TableSetColumnIndex(3);
-            ImGui::TextUnformatted(sp.name);   // read-only — rename via the Rename dialog
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("uid: %s", sp.uid.c_str());
-            ImGui::TableSetColumnIndex(4);
-            if (ImGui::SmallButton("Rename")) {
-                renameRow_ = static_cast<int>(r);
-                std::snprintf(renameBuf_, sizeof(renameBuf_), "%s", sp.name);
-                openRenamePos_ = true;
-            }
-            ImGui::TableSetColumnIndex(5);
-            if (ImGui::SmallButton("Hist")) {   // this row's change journal
-                posHistDevice_ = devName;
-                posHistUid_    = sp.uid;
-                showPosHist_   = true;
-            }
 
-            int c = 6;
+            int c = 1;
             for (const auto& a : axes) {
                 ImGui::TableSetColumnIndex(c++);
                 const auto it = sp.vals.find(a);
                 ImGui::Text("%.4f", (it != sp.vals.end()) ? it->second : 0.0);
-            }
-            ImGui::TableSetColumnIndex(c);
-            if (ImGui::SmallButton("X")) {   // confirmed via dialog before erasing
-                deleteRow_     = static_cast<int>(r);
-                openDeletePos_ = true;
             }
             if (sp.hidden) ImGui::PopStyleColor();
             ImGui::PopID();

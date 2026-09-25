@@ -842,6 +842,12 @@ private:
     // reflects it immediately; Save also writes config/motion_transforms.json.
     std::map<std::string, AxisTransform> transformCfg_;
 
+    // The Positions tab's selected row, by uid: the toolbar above the table
+    // acts on it (Move / Update / Edit / Rename / Hist / Delete) instead of a
+    // button per row. A uid rather than an index, so a device switch, a
+    // delete or a reorder cannot land the action on a different row.
+    std::string posSelUid_;
+
     // Rename-position dialog (name is a label; the uid never changes).
     bool openRenamePos_ = false;    // row Rename button -> popup handoff
     int  renameRow_     = -1;       // row index in the selected device's list
