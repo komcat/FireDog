@@ -41,14 +41,46 @@ struct AlignLighting {
 };
 
 // One of the two stations the procedure visits.
+// How many detection tiers an auto station can try before the manual pick.
+inline constexpr int kAlignDetectTiers = 3;
+
 struct AlignStation {
     std::string   posUid;                  // SavedPos uid on the procedure's device
-    double        exposureUs = 0.0;        // 0 = leave the camera exposure alone
+    // The MANUAL pick's exposure (manual stations, and the manual fallback of an
+    // auto one). An auto tier uses its detection model's own exposure - each
+    // tier is tuned at its own - and falls back to this only when its model
+    // carries none, which is what every procedure taught before tiers did.
+    // 0 = leave the camera exposure alone.
+    double        exposureUs = 0.0;
     AlignLighting lighting;
     std::string   mode = "manual";         // "manual" (crosshair) | "auto" (detector)
-    std::string   detector;                // auto placeholder: model/pattern name
-    bool          autoFallbackManual = false;   // auto unavailable -> ask the operator
+    // Auto: up to three detection models, tried in order until one finds the
+    // point - for parts whose reflection or colour varies enough that one model
+    // cannot cover them. Tier 1 is `detector` (the name every older file uses);
+    // tiers 2 and 3 run only when switched on, and tier 3 only after tier 2.
+    // Each is PRIVATE to this station and tier (see StationDetectorName).
+    std::string   detector;                // tier 1
+    std::string   detector2, detector3;    // tiers 2 and 3
+    bool          useTier2 = false;        // tier 1 missed -> try tier 2
+    bool          useTier3 = false;        // tier 2 missed -> try tier 3
+    bool          autoFallbackManual = false;   // every tier missed -> ask the operator
 };
+
+// Tier `t` (1..kAlignDetectTiers) of a station: its model uid, and whether the
+// station runs it at all. Tier 1 always runs on an auto station; tier 3 needs
+// tier 2 on, so the order can never skip a step.
+inline const std::string& AlignTierDetector(const AlignStation& s, int t)
+{
+    return t == 3 ? s.detector3 : (t == 2 ? s.detector2 : s.detector);
+}
+inline std::string& AlignTierDetector(AlignStation& s, int t)
+{
+    return t == 3 ? s.detector3 : (t == 2 ? s.detector2 : s.detector);
+}
+inline bool AlignTierOn(const AlignStation& s, int t)
+{
+    return t == 1 || (t == 2 && s.useTier2) || (t == 3 && s.useTier2 && s.useTier3);
+}
 
 // One captured E point. The world point is what the frame is built from; the
 // gantry pose and the raw pixel are kept so a capture can be audited later.

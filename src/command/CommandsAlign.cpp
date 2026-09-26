@@ -21,15 +21,23 @@
 #include "command/LuaEngine.h"      // RunLuaFile (align_run)
 #include "command/MotionWaits.h"    // WaitArrive / WaitSettle / ResolveMotion
 #include "core/AlignFrame.h"
+#include "core/DutSession.h"         // ImagesDir / InsertImage — the attempt crops
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"
 #include "hardware/motion/IMotionController.h"
 #include "vision/HalconDetector.h"   // Available() — the licence gate for auto mode
 #include "workflow/Workflow.h"
 
+#include <stb_image_write.h>         // implementation lives in CommandsDut.cpp
+
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <utility>
@@ -59,6 +67,126 @@ CommandResult ApplyLighting(ExecutionContext& ctx, const AlignLighting& l)
         return CommandResult::Success();
     }
     return CommandResult::Fail("lighting: unknown kind '" + l.kind + "'");
+}
+
+// ---- detection attempt crops ------------------------------------------------
+// Every auto attempt at a station files a picture of what it looked at: a crop
+// of HALF the frame (50% of each side), centred on the point it found - or, on a
+// miss, on its search ROI, else the image centre - with a cross on the hit. A
+// miss is the case that matters most: "it did not find E2" is only answerable by
+// looking, and the frame is gone by the time anybody asks.
+//
+// With a DUT open the crop goes into that part's record (images/ + an image
+// entry, exactly like dut_capture_image). Without one - the Alignment page, a
+// Frame check sweep - it goes to logs/align_attempts/, which is pruned to the
+// newest kAttemptKeep files so a repeatability sweep cannot fill the disk.
+// A failure to file is logged and never fails the station: the picture is
+// evidence about the detection, not part of it.
+constexpr std::size_t kAttemptKeep = 300;
+
+std::string AttemptStamp()
+{
+    using namespace std::chrono;
+    const auto   now = system_clock::now();
+    const time_t t   = system_clock::to_time_t(now);
+    const int    ms  = static_cast<int>(
+        duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000);
+    std::tm tm{};
+    gmtime_s(&tm, &t);
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d%02d%02d_%02d%02d%02d_%03d",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                  tm.tm_min, tm.tm_sec, ms);
+    return buf;
+}
+
+void SaveDetectAttemptCrop(ExecutionContext& ctx, const AlignProc& proc, int station,
+                           int tier, const VisionModel& model, const VisionDetection& det)
+{
+    std::vector<unsigned char> rgb;
+    int w = 0, h = 0;
+    unsigned long long seq = 0;
+    if (!ctx.Hw().Camera().GetLatestFrameSeq(rgb, w, h, seq) || w <= 0 || h <= 0 ||
+        rgb.size() < static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 3) {
+        FD_WARN("align", "E%d detection %d: no frame to file", station, tier);
+        return;
+    }
+
+    // Centre: the hit, else the ROI, else the image centre.
+    double cx = 0.5 * w, cy = 0.5 * h;
+    if (det.ok) {
+        cx = det.xPx;
+        cy = det.yPx;
+    } else if (model.roi.enabled && model.roi.w > 0 && model.roi.h > 0) {
+        cx = model.roi.x + 0.5 * model.roi.w;
+        cy = model.roi.y + 0.5 * model.roi.h;
+    }
+    const int cw = (std::max)(1, w / 2), ch = (std::max)(1, h / 2);
+    int x0 = static_cast<int>(cx) - cw / 2, y0 = static_cast<int>(cy) - ch / 2;
+    x0 = (std::max)(0, (std::min)(x0, w - cw));
+    y0 = (std::max)(0, (std::min)(y0, h - ch));
+
+    std::vector<unsigned char> crop(static_cast<std::size_t>(cw) * ch * 3);
+    for (int y = 0; y < ch; ++y)
+        std::memcpy(&crop[static_cast<std::size_t>(y) * cw * 3],
+                    &rgb[(static_cast<std::size_t>(y0 + y) * w + x0) * 3],
+                    static_cast<std::size_t>(cw) * 3);
+    // A cross on the hit (green), so the picture says WHICH point it reported.
+    if (det.ok) {
+        const int hx = static_cast<int>(det.xPx) - x0, hy = static_cast<int>(det.yPx) - y0;
+        const int arm = (std::max)(6, cw / 40);
+        const auto px = [&](int x, int y) {
+            if (x < 0 || y < 0 || x >= cw || y >= ch) return;
+            unsigned char* p = &crop[(static_cast<std::size_t>(y) * cw + x) * 3];
+            p[0] = 40; p[1] = 255; p[2] = 60;
+        };
+        for (int d = -arm; d <= arm; ++d) { px(hx + d, hy); px(hx, hy + d); }
+    }
+
+    std::string safe = proc.name;
+    for (char& c : safe) {
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                        (c >= 'A' && c <= 'Z') || c == '-' || c == '_';
+        if (!ok) c = '_';
+    }
+    char tail[96];
+    std::snprintf(tail, sizeof(tail), "_E%d_det%d_%s_", station, tier, det.ok ? "hit" : "miss");
+    const std::string file = "align_" + safe + tail + AttemptStamp() + ".png";
+
+    const std::string dutDir = DutSession::Instance().ImagesDir();
+    const std::string dir    = dutDir.empty() ? std::string("logs/align_attempts") : dutDir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const std::string path = dir + "/" + file;
+    if (!stbi_write_png(path.c_str(), cw, ch, 3, crop.data(), cw * 3)) {
+        FD_WARN("align", "could not write detection crop %s", path.c_str());
+        return;
+    }
+    if (!dutDir.empty()) {
+        char key[48];
+        std::snprintf(key, sizeof(key), "align_E%d_det%d", station, tier);
+        std::string err;
+        if (!DutSession::Instance().InsertImage(key, "images/" + file, &err))
+            FD_WARN("align", "detection crop not recorded: %s", err.c_str());
+        return;
+    }
+
+    // The fallback folder is pruned: newest kAttemptKeep stay.
+    std::vector<std::filesystem::directory_entry> files;
+    for (const auto& de : std::filesystem::directory_iterator(dir, ec))
+        if (de.is_regular_file(ec)) files.push_back(de);
+    if (files.size() > kAttemptKeep) {
+        // Names END in the UTC stamp (YYYYMMDD_HHMMSS_mmm, 19 chars), so sort
+        // on that: the procedure name in front would otherwise group by name.
+        std::sort(files.begin(), files.end(), [](const auto& l, const auto& r) {
+            const std::string a = l.path().stem().string(), b = r.path().stem().string();
+            const std::string sa = a.size() >= 19 ? a.substr(a.size() - 19) : a;
+            const std::string sb = b.size() >= 19 ? b.substr(b.size() - 19) : b;
+            return sa < sb;
+        });
+        for (std::size_t i = 0; i + kAttemptKeep < files.size(); ++i)
+            std::filesystem::remove(files[i].path(), ec);
+    }
 }
 
 // ctx key for one component of a captured point: "<prefix>_e1_wx" etc.
@@ -160,32 +288,48 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     const auto targets = TargetsOf(*pos, m);
     if (targets.empty()) return CommandResult::Fail("station position shares no axes with device");
 
-    // Resolve the detector BEFORE moving, so a mis-typed model name costs no
-    // travel — but do not act on the failure yet: whether it is fatal depends on
-    // auto_fallback_manual, and that decision belongs beside the capture.
-    const VisionModel* model = nullptr;
-    std::string autoErr;
+    // The tiers this station will try, in order, each resolved BEFORE moving so
+    // a missing model costs no travel. A tier that cannot run (no model, no
+    // licence) is not fatal on its own: it is recorded and the next tier gets
+    // its turn, exactly as if it had run and missed.
+    struct Tier {
+        int                tier  = 1;
+        const VisionModel* model = nullptr;
+        std::string        err;          // why it cannot run, "" = runnable
+    };
+    std::vector<Tier> tiers;
     if (st.mode == "auto") {
-        model = ctx.FindVisionModel(st.detector);
-        if (!model) {
-            autoErr = st.detector.empty()
-                ? "station " + std::to_string(station) + " is set to auto but names "
-                  "no detection model"
-                : "station " + std::to_string(station) + " names no detection model '" +
-                  st.detector + "'";
-        } else if (std::string why; !HalconDetector::Available(&why)) {
-            autoErr = "cannot run detection model '" + model->name + "': " + why;
+        std::string licence;
+        const bool halconOk = HalconDetector::Available(&licence);
+        for (int t = 1; t <= kAlignDetectTiers; ++t) {
+            if (!AlignTierOn(st, t)) continue;
+            Tier tr;
+            tr.tier  = t;
+            tr.model = ctx.FindVisionModel(AlignTierDetector(st, t));
+            if (!tr.model)
+                tr.err = "detection " + std::to_string(t) + ": no detection model taught";
+            else if (!halconOk)
+                tr.err = "detection " + std::to_string(t) + ": cannot run '" +
+                         tr.model->name + "': " + licence;
+            tiers.push_back(std::move(tr));
         }
     }
+    // The exposure for a tier: its model's own, else the station's (what every
+    // procedure taught before tiers used). 0 = leave the camera alone.
+    const auto tierExposure = [&](const Tier& tr) {
+        return (tr.model && tr.model->exposureUs > 0.0) ? tr.model->exposureUs
+                                                        : st.exposureUs;
+    };
 
-    // Exposure BEFORE the move, so the sensor settles while the axes travel.
-    // The station's own setting wins; a model carries the exposure it was tuned
-    // at, which is what makes a taught detector reproducible on its own.
-    const double expoUs = st.exposureUs > 0.0
-        ? st.exposureUs
-        : (model ? model->exposureUs : 0.0);
-    if (expoUs > 0.0 && !ctx.Wf().SetCameraExposure(expoUs))
-        return CommandResult::Fail("camera exposure change rejected (camera connected?)");
+    // Exposure BEFORE the move, so the sensor settles while the axes travel:
+    // the first tier's on an auto station, the manual pick's otherwise.
+    const double expo0 = (!tiers.empty()) ? tierExposure(tiers.front()) : st.exposureUs;
+    double expoNow = 0.0;   // what was last applied, so a tier at the same value skips it
+    if (expo0 > 0.0) {
+        if (!ctx.Wf().SetCameraExposure(expo0))
+            return CommandResult::Fail("camera exposure change rejected (camera connected?)");
+        expoNow = expo0;
+    }
     const CommandResult light = ApplyLighting(ctx, st.lighting);
     if (!light.ok) return light;
 
@@ -214,84 +358,130 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     AlignPoint e;
     bool       haveE  = false;
     const std::string prefix = p.GetString("ctx_prefix");
+    std::string        autoErr;              // every tier's reason, joined
+    const VisionModel* lastModel = nullptr;  // shown to the operator on a fallback
+    int                foundTier = 0;
 
-    if (!manual && autoErr.empty()) {
-        // Prove the frame is post-move before believing it: frame #1 may have
-        // been integrating while the stage travelled, frame #2 is wholly from
-        // the station. Same gate auto_focus uses.
+    // Prove the frame is post-change before believing it: a frame may have been
+    // integrating while the stage travelled, or at the previous exposure. Same
+    // gate auto_focus uses. False = stopped.
+    const auto waitFresh = [&]() -> bool {
         const int fresh = p.GetInt("fresh_frames");
-        if (fresh > 0) {
-            const unsigned long long seq0 = ctx.Wf().CameraFrameSeq();
-            const auto fr = ctx.WaitUntil(
-                [&] {
-                    return ctx.Wf().CameraFrameSeq() >=
-                           seq0 + static_cast<unsigned long long>(fresh);
-                },
-                2000, 10);
-            if (fr == ExecutionContext::WaitResult::Stopped)
-                return CommandResult::Fail("stopped");
-            if (fr == ExecutionContext::WaitResult::Timeout)
-                FD_WARN("align", "'%s' station %d: no new frame within 2000 ms - "
-                                 "detecting on the latest frame (feed stalled?)",
-                        proc->name.c_str(), station);
+        if (fresh <= 0) return true;
+        const unsigned long long seq0 = ctx.Wf().CameraFrameSeq();
+        const auto fr = ctx.WaitUntil(
+            [&] {
+                return ctx.Wf().CameraFrameSeq() >=
+                       seq0 + static_cast<unsigned long long>(fresh);
+            },
+            2000, 10);
+        if (fr == ExecutionContext::WaitResult::Stopped) return false;
+        if (fr == ExecutionContext::WaitResult::Timeout)
+            FD_WARN("align", "'%s' station %d: no new frame within 2000 ms - "
+                             "detecting on the latest frame (feed stalled?)",
+                    proc->name.c_str(), station);
+        return true;
+    };
+    const auto addErr = [&](const std::string& why) {
+        autoErr += (autoErr.empty() ? "" : "; ") + why;
+    };
+
+    for (std::size_t ti = 0; ti < tiers.size(); ++ti) {
+        const Tier& tr = tiers[ti];
+        if (!tr.err.empty()) {
+            addErr(tr.err);
+            continue;
         }
+        lastModel = tr.model;
+        // Each tier at its own exposure, then frames taken at it.
+        const double ex = tierExposure(tr);
+        if (ex > 0.0 && ex != expoNow) {
+            if (!ctx.Wf().SetCameraExposure(ex))
+                return CommandResult::Fail("camera exposure change rejected (camera connected?)");
+            expoNow = ex;
+        }
+        if (!waitFresh()) return CommandResult::Fail("stopped");
 
         VisionDetection det;
-        ctx.Wf().Detect(*model, ctx.VisionDir(), &det);
-        if (det.ok) {
-            pick.px   = det.xPx;
-            pick.py   = det.yPx;
-            pick.dxMM = det.dxMM;
-            pick.dyMM = det.dyMM;
-            FD_INFO("align", "'%s' E%d: '%s' found at (%.2f, %.2f) px, score %.3f",
-                    proc->name.c_str(), station, model->name.c_str(),
-                    det.xPx, det.yPx, det.score);
-
-            // Is the point the detector found where E2 is ALLOWED to be? A
-            // detector that locks onto the wrong instance of a repeated feature
-            // succeeds with a high score and a frame wrong by the pitch between
-            // them — the score says the match was good, not that it was the
-            // right one. Out of band it is treated exactly like a detection
-            // failure, so the existing rule decides what happens: ask the
-            // operator if the station allows a fallback, fail if it does not.
-            const CommandResult cap = CaptureWorldPoint(ctx, m, pick, &e);
-            if (!cap.ok) return cap;
-            haveE = true;
-            double e1x = 0.0, e1y = 0.0;
-            if (proc->guard.enabled && station == 2 &&
-                CtxWorldPoint(ctx, prefix, 1, &e1x, &e1y)) {
-                AlignPoint e1;
-                e1.wx = e1x;
-                e1.wy = e1y;
-                double span = 0.0, theta = 0.0;
-                AlignSpanTheta(e1, e, &span, &theta);
-                if (!AlignGuardCheck(proc->guard, span, theta)) {
-                    char buf[224];
-                    std::snprintf(buf, sizeof(buf),
-                                  "'%s' found a point OUT OF BAND: span %.4f mm "
-                                  "(%.4f +/- %.4f), theta %.3f deg (%.3f +/- %.3f)",
-                                  model->name.c_str(), span, proc->guard.spanMm,
-                                  proc->guard.spanTolMm, theta, proc->guard.thetaDeg,
-                                  proc->guard.thetaTolDeg);
-                    autoErr = buf;
-                    haveE   = false;   // the operator's mark replaces it
-                }
-            }
-        } else {
-            autoErr = "'" + model->name + "': " + det.error;
+        ctx.Wf().Detect(*tr.model, ctx.VisionDir(), &det);
+        SaveDetectAttemptCrop(ctx, *proc, station, tr.tier, *tr.model, det);
+        if (!det.ok) {
+            addErr("detection " + std::to_string(tr.tier) + " '" + tr.model->name +
+                   "': " + det.error);
+            FD_INFO("align", "'%s' E%d: detection %d missed (%s)%s", proc->name.c_str(),
+                    station, tr.tier, det.error.c_str(),
+                    ti + 1 < tiers.size() ? " - trying the next" : "");
+            continue;
         }
+        ExecutionContext::PickResult cand;
+        cand.px   = det.xPx;
+        cand.py   = det.yPx;
+        cand.dxMM = det.dxMM;
+        cand.dyMM = det.dyMM;
+        FD_INFO("align", "'%s' E%d: detection %d '%s' found at (%.2f, %.2f) px, score %.3f",
+                proc->name.c_str(), station, tr.tier, tr.model->name.c_str(),
+                det.xPx, det.yPx, det.score);
+
+        // Is the point the detector found where E2 is ALLOWED to be? A detector
+        // that locks onto the wrong instance of a repeated feature succeeds with
+        // a high score and a frame wrong by the pitch between them. Out of band
+        // counts as a MISS for this tier, so the next tier (or the operator)
+        // gets its turn.
+        AlignPoint cp;
+        const CommandResult cap = CaptureWorldPoint(ctx, m, cand, &cp);
+        if (!cap.ok) return cap;
+        double e1x = 0.0, e1y = 0.0;
+        if (proc->guard.enabled && station == 2 &&
+            CtxWorldPoint(ctx, prefix, 1, &e1x, &e1y)) {
+            AlignPoint e1;
+            e1.wx = e1x;
+            e1.wy = e1y;
+            double span = 0.0, theta = 0.0;
+            AlignSpanTheta(e1, cp, &span, &theta);
+            if (!AlignGuardCheck(proc->guard, span, theta)) {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                              "detection %d '%s' found a point OUT OF BAND: span %.4f mm "
+                              "(%.4f +/- %.4f), theta %.3f deg (%.3f +/- %.3f)",
+                              tr.tier, tr.model->name.c_str(), span, proc->guard.spanMm,
+                              proc->guard.spanTolMm, theta, proc->guard.thetaDeg,
+                              proc->guard.thetaTolDeg);
+                addErr(buf);
+                continue;
+            }
+        }
+        pick      = cand;
+        e         = cp;
+        haveE     = true;
+        foundTier = tr.tier;
+        break;
+    }
+    // Which tier found it: 0 = none (manual, or every tier missed). A later
+    // tier doing the work is worth a warning - it is how a drifting part or a
+    // dimming light shows up before tier 1 stops working altogether.
+    if (!manual) {
+        ctx.CtxSet(prefix + "_e" + std::to_string(station) + "_tier",
+                   static_cast<double>(foundTier));
+        if (foundTier > 1)
+            FD_WARN("align", "'%s' E%d: found by detection %d (earlier detection missed)",
+                    proc->name.c_str(), station, foundTier);
     }
 
-    // A failure anywhere in the auto path lands here. Falling back is opt-in
-    // BECAUSE a silent fallback would let a procedure claim to be automatic
-    // while a human placed every point.
-    if (!manual && !autoErr.empty()) {
+    // Every tier missed (or none could run). Falling back is opt-in BECAUSE a
+    // silent fallback would let a procedure claim to be automatic while a human
+    // placed every point.
+    if (!manual && foundTier == 0) {
+        if (autoErr.empty()) autoErr = "no detection could run";
         if (!st.autoFallbackManual)
             return CommandResult::Fail(autoErr +
                 " (set auto_fallback_manual or switch the station to manual)");
         FD_WARN("align", "'%s' station %d: %s - asking the operator",
                 proc->name.c_str(), station, autoErr.c_str());
         manual = true;
+        // The operator marks at the MANUAL exposure when one is set - a
+        // detection tier's exposure may be tuned for a filter, not for eyes.
+        if (st.exposureUs > 0.0 && st.exposureUs != expoNow)
+            ctx.Wf().SetCameraExposure(st.exposureUs);
     }
 
     if (manual) {
@@ -302,7 +492,7 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
         // manual by design has no taught point to show, and showing one would
         // claim a precision the procedure never asked for.
         req.autoError   = autoErr;
-        if (!autoErr.empty() && model) req.detectorUid = model->uid;
+        if (!autoErr.empty() && lastModel) req.detectorUid = lastModel->uid;
         req.message   = ctx.Substitute(p.GetString("message"));
         if (req.message.empty()) {
             char buf[96];

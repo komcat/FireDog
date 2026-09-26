@@ -495,6 +495,38 @@ taught patch only mean anything at the pose and exposure they were tuned at, so
 a model that happens to suit a second station is a coincidence rather than a
 reuse. Detail in `docs/vision-detection-design.md` §2.
 
+### Detection tiers, and the attempt crops
+
+A real part varies — reflection, colour, a coating — more than one model can
+cover. So an auto station carries up to **three detection tiers**, tried in
+order until one finds the point: tier 1 (`detector`, named
+`vdet_<procUid>_<station>` as before, so older procedures keep their model),
+then tier 2 and tier 3 (`detector2/3`, named `…_t2` / `…_t3`), each only when its
+"fall back to detection N" box is on (`useTier2/3`; tier 3 needs tier 2). After
+the last tier comes the manual pick, if `autoFallbackManual` allows it; else the
+station fails with every tier's reason.
+
+Each tier runs at **its own exposure, which is its model's** (`VisionModel::
+exposureUs`, the same field the teach page edits) — one number per tier, never a
+station value and a model value that could disagree. A model with no exposure
+falls back to the station's `exposureUs`, which is now the **manual pick's**
+exposure (it used to override the model; every older procedure keeps working
+because its models mostly carried none). Between tiers the exposure is applied
+and `fresh_frames` new frames are awaited before detecting.
+
+A tier that finds a point **out of the guard band** counts as a miss, so the next
+tier gets its turn. A tier that cannot run (no model, no licence) is recorded and
+skipped. The tier that found the point goes to ctx as `<prefix>_e<N>_tier`
+(0 = none), and a tier above 1 doing the work is logged as a warning — it is how
+a drifting part or a dimming light shows before tier 1 stops working entirely.
+
+**Every attempt files a crop**: half the frame (50 % of each side) centred on the
+hit, else the model's ROI, else the image centre, with a green cross on a hit.
+With a DUT open it goes into that part's record (`images/`, entry
+`align_E<N>_det<tier>`); without one, to `logs/align_attempts/`, pruned to the
+newest 300. Filing never fails the station — the picture is evidence about the
+detection, not part of it.
+
 ## 6b. Nominals — targets expressed in the frame
 
 A frame on its own only says where the part is. The thing an operator actually

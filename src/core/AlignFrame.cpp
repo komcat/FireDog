@@ -43,6 +43,10 @@ nlohmann::json StationToJson(const AlignStation& s)
     j["exposure_us"]          = s.exposureUs;
     j["mode"]                 = s.mode;
     j["detector"]             = s.detector;
+    j["detector2"]            = s.detector2;
+    j["detector3"]            = s.detector3;
+    j["use_tier2"]            = s.useTier2;
+    j["use_tier3"]            = s.useTier3;
     j["auto_fallback_manual"] = s.autoFallbackManual;
     j["lighting"]             = LightingToJson(s.lighting);
     return j;
@@ -56,6 +60,10 @@ AlignStation StationFromJson(const nlohmann::json& j)
     s.exposureUs         = j.value("exposure_us", 0.0);
     s.mode               = j.value("mode", "manual");
     s.detector           = j.value("detector", "");
+    s.detector2          = j.value("detector2", "");
+    s.detector3          = j.value("detector3", "");
+    s.useTier2           = j.value("use_tier2", false);
+    s.useTier3           = j.value("use_tier3", false);
     s.autoFallbackManual = j.value("auto_fallback_manual", false);
     if (j.contains("lighting")) s.lighting = LightingFromJson(j["lighting"]);
     return s;

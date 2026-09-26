@@ -429,9 +429,10 @@ private:
     // and nothing to name by hand. The model is named `vdet_<procUid>_<station>`
     // and that name IS the ownership record — hence the two maintenance calls.
     void DrawVisionTeachPanel();                         // page body (takeover frame)
-    void OpenVisionTeach(AlignProc& a, int station);     // creates the model, switches page
+    // Creates the station's tier-`tier` model (1..kAlignDetectTiers), switches page.
+    void OpenVisionTeach(AlignProc& a, int station, int tier = 1);
     void ResetVisionTeachState();                        // both openers start here
-    const VisionModel* StationDetector(const AlignProc& a, int station) const;
+    const VisionModel* StationDetector(const AlignProc& a, int station, int tier = 1) const;
     void DropAlignStationDetectors(const AlignProc& a);  // with the procedure
     void CopyAlignStationDetectors(const AlignProc& src, AlignProc& dst);
     // The same page and the same private-ownership rule, for the two marks that
@@ -451,6 +452,13 @@ private:
     void DropNominalDetectors(const AlignProc& a, const AlignNominal& n);
     // Copy a model under a new private name, patch file included; "" on failure.
     std::string CopyVisionModelAs(const VisionModel& src, const std::string& newName);
+    // Detection clipboard: Copy takes a model's SETTINGS (method, parameters,
+    // pre-process chain, ROI, exposure) plus its patch bytes into memory; Paste
+    // writes them into a station tier's OWN private model (created if absent).
+    // It never shares a row or a .pgm - the ownership rule stands - and the
+    // pasted model's reliability record is cleared: it was earned somewhere else.
+    void CopyDetectionToClip(const VisionModel& m, const std::string& from);
+    void PasteDetectionToStation(AlignProc& a, int station, int tier);
     void DrawVisionTeachImage(VisionModel& m);           // live image + ROI/box drag
     void DrawVisionCameraFoot(VisionModel& m);           // under the image: camera + zoom
     void DrawVisionTeachParams(VisionModel& m);          // method + parameter form
@@ -1399,8 +1407,19 @@ private:
     // keyed by what it was built from (VisionModelPatchKey), so a model switch,
     // a re-teach or an anchor drag reloads it and nothing else does.
     PatchTex visionTmpl_;       // vision teach page: the NCC patch + its anchor
-    PatchTex alignTmpl_[2];     // Alignment page: station 1/2, or object point 1/2
+    PatchTex alignTmpl_[2];     // object point 1/2 (placement), grip page
+    // Alignment page station cards: one thumbnail per station x detection tier,
+    // index (station - 1) * kAlignDetectTiers + (tier - 1).
+    PatchTex alignTierTmpl_[2 * kAlignDetectTiers];
     PatchTex pickTmpl_;         // the manual-pick window, on the fallback path
+    // The detection clipboard (CopyDetectionToClip). Session-only, never
+    // persisted: a clipboard that survived a restart would paste settings from a
+    // product that is no longer loaded.
+    bool        visionClipHave_ = false;
+    VisionModel visionClip_;
+    std::vector<unsigned char> visionClipGray_;   // the patch, if the model had one
+    int         visionClipW_ = 0, visionClipH_ = 0;
+    std::string visionClipFrom_;                  // "Bench_white E1 det 1", for the tooltip
 
     // Scripts page UI state — the scanned list itself lives in session_.
     int                      scriptSel_ = -1;

@@ -675,12 +675,8 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
         }
 
         ImGui::BeginDisabled(busy);
-        float expo = static_cast<float>(st.exposureUs);
-        ImGui::SetNextItemWidth(140.0f);
-        if (ImGui::InputFloat("exposure (us)", &expo, 0.0f, 0.0f, "%.0f"))
-            st.exposureUs = expo < 0.0f ? 0.0 : static_cast<double>(expo);
-        ImGui::SameLine();
-        ImGui::TextDisabled("(0 = leave)");
+        // (Exposure moved to the right column: it belongs to HOW the point is
+        // found - each detection tier has its own, and so does the manual pick.)
 
         // Lighting is a PLACEHOLDER: no illumination device exists in the hardware
         // config yet, so "none" is the only setting that does anything today. The
@@ -716,79 +712,172 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
         ImGui::BeginDisabled(busy);
         // How the E point is marked. Manual = a crosshair on the live image (plain
         // ImGui over a Pylon frame, so it never depends on a vision licence). Auto =
-        // a taught detection model, which DOES need HALCON — hence the licence line
-        // right here rather than a surprise at run time.
+        // up to three taught detection models tried in order, which DO need
+        // HALCON — hence the licence line right here rather than a surprise at
+        // run time.
         int mode = (st.mode == "auto") ? 1 : 0;
         if (ImGui::RadioButton("Manual (crosshair)", mode == 0)) st.mode = "manual";
         ImGui::SameLine();
         if (ImGui::RadioButton("Auto (detect)", mode == 1)) st.mode = "auto";
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Locate the feature with a taught detection model\n"
+            ImGui::SetTooltip("Locate the feature with taught detection models\n"
                               "(circle/fiducial or gray pattern match). Needs HALCON.");
-        if (st.mode == "auto") {
+
+        // The manual pick's exposure - the station's own, used by a manual
+        // station and by an auto station's manual fallback.
+        const auto manualExposure = [&]() {
+            float expo = static_cast<float>(st.exposureUs);
+            ImGui::SetNextItemWidth(110.0f);
+            if (ImGui::InputFloat("manual exposure (us)", &expo, 0.0f, 0.0f, "%.0f"))
+                st.exposureUs = expo < 0.0f ? 0.0 : static_cast<double>(expo);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Camera exposure while the operator marks the point.\n"
+                                  "0 = leave the camera as it is. Also used by a\n"
+                                  "detection whose model has no exposure of its own.");
+        };
+
+        if (st.mode != "auto") {
+            manualExposure();
+        } else {
             ImGui::Indent();
-
-            // The detection model is PRIVATE to this station — auto-named
-            // `vdet_<procUid>_<n>`, created by the teach window, deleted with the
-            // procedure. There is no picker because there is nothing to pick: the
-            // ROI, threshold and taught patch only mean anything at this station's
-            // pose and exposure. `detector` caches its uid so align_station and any
-            // recipe step resolve it the same way they resolve everything else.
-            const VisionModel* model = StationDetector(a, station);
-
-            if (ImGui::Button(model ? "Teach detection..." : "Set up detection..."))
-                OpenVisionTeach(a, station);
-
             std::string why;
-            if (!HalconDetector::Available(&why)) {
-                ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", why.c_str());
-            } else if (!model) {
-                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
-                                   "no detection set up - this station will fail at run time");
-            } else {
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s%s", model->method.c_str(),
-                                    (model->method == "ncc" && model->templateFile.empty())
-                                        ? "  (no template taught)" : "");
-                // A pre-processed model behaves nothing like a raw one, and the
-                // chain is invisible from here otherwise — an operator reading a
-                // card would have no idea the image was thresholded first.
-                const std::string chain = VisionFilterSummary(*model);
-                if (!chain.empty()) ImGui::TextDisabled("pre-process: %s", chain.c_str());
-                if (model->rel.runs > 0) {
-                    ImGui::TextDisabled("%d/%d ok, sigma %.2f px, tested %s",
-                                        model->rel.ok, model->rel.runs,
-                                        model->rel.stdXPx > model->rel.stdYPx ? model->rel.stdXPx
-                                                                              : model->rel.stdYPx,
-                                        model->rel.testedAt.c_str());
-                } else {
-                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
-                                       "never reliability-tested");
-                }
+            const bool halconOk = HalconDetector::Available(&why);
+            if (!halconOk) ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", why.c_str());
 
-                // The picture the detector matches, with a cross on the point it
-                // REPORTS. It is the only thing on this page that says WHICH point
-                // of the feature a run will use — and it is the same picture the
-                // fallback shows when detection fails and an operator, who did not
-                // tune this model, is asked to mark that point by hand.
-                PatchTex& pt = alignTmpl_[(station == 2) ? 1 : 0];
-                if (EnsurePatchTex(pt, *model)) {
-                    ImGui::BeginGroup();
-                    DrawPatchThumb(pt, 120.0f, 120.0f);
-                    ImGui::EndGroup();
-                    ImGui::SameLine();
-                    ImGui::BeginGroup();
-                    ImGui::TextDisabled("what this station looks for");
-                    ImGui::TextDisabled("the cross is the point it reports");
-                    ImGui::EndGroup();
+            // One block per detection tier. Each model is PRIVATE to this station
+            // AND tier - auto-named `vdet_<procUid>_<n>` (tier 1) or `..._t<k>`,
+            // created by the teach window, deleted with the procedure - because
+            // its ROI, threshold and patch only mean anything at the exposure it
+            // was tuned at. That exposure is the MODEL's, edited here or on the
+            // teach page: one number per tier, never two that could disagree.
+            for (int t = 1; t <= kAlignDetectTiers; ++t) {
+                ImGui::PushID(t);
+                if (t > 1) {
+                    bool& on = (t == 2) ? st.useTier2 : st.useTier3;
+                    ImGui::BeginDisabled(t == 3 && !st.useTier2);
+                    char lbl[48];
+                    std::snprintf(lbl, sizeof(lbl), "fall back to detection %d", t);
+                    ImGui::Checkbox(lbl, &on);
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip(t == 3 && !st.useTier2
+                                              ? "Turn on detection 2 first - the tiers run in order."
+                                              : "When detection %d misses (or finds a point out of\n"
+                                                "band), try detection %d: its own model, taught at\n"
+                                                "its own exposure - for parts whose reflection or\n"
+                                                "colour varies.",
+                                          t - 1, t);
+                    if (!AlignTierOn(st, t)) { ImGui::PopID(); continue; }
                 }
+                ImGui::SeparatorText(t == 1 ? "Detection 1" : (t == 2 ? "Detection 2" : "Detection 3"));
+                const VisionModel* model = StationDetector(a, station, t);
+                if (ImGui::Button(model ? "Teach detection..." : "Set up detection..."))
+                    OpenVisionTeach(a, station, t);
+                // Copy / Paste: reuse a tuned detection's settings on another
+                // tier or station. The paste lands in THIS tier's own private
+                // model (see PasteDetectionToStation) - nothing is shared.
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!model);
+                if (ImGui::SmallButton("Copy") && model) {
+                    char from[160];
+                    std::snprintf(from, sizeof(from), "'%s' E%d detection %d",
+                                  a.name.c_str(), station, t);
+                    CopyDetectionToClip(*model, from);
+                }
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Copy this detection's settings - method, parameters,\n"
+                                      "pre-process chain, ROI, exposure and taught patch.");
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!visionClipHave_);
+                if (ImGui::SmallButton("Paste")) {
+                    if (model) ImGui::OpenPopup("##pasteDet");
+                    else       PasteDetectionToStation(a, station, t);
+                }
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    if (visionClipHave_)
+                        ImGui::SetTooltip("Paste the settings copied from %s (%s)\n"
+                                          "into this detection. Its reliability record is\n"
+                                          "cleared - re-test it at this pose.",
+                                          visionClipFrom_.c_str(), visionClip_.method.c_str());
+                    else
+                        ImGui::SetTooltip("Nothing copied yet - press Copy on another detection.");
+                }
+                // A plain popup, not a modal: a modal would block the prompt
+                // windows a run can be waiting on.
+                if (ImGui::BeginPopup("##pasteDet")) {
+                    ImGui::Text("Replace detection %d's settings with the ones", t);
+                    ImGui::Text("copied from %s?", visionClipFrom_.c_str());
+                    if (ImGui::Button("Replace")) {
+                        PasteDetectionToStation(a, station, t);
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                }
+                // The paste may have created or replaced the model.
+                model = StationDetector(a, station, t);
+                if (model) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s%s", model->method.c_str(),
+                                        (model->method == "ncc" && model->templateFile.empty())
+                                            ? "  (no template taught)" : "");
+                    // The tier's exposure IS its model's. Edited here, saved with
+                    // the vision models when the field is left.
+                    if (VisionModel* mm = FindVisionModel(session_.VisionModels(), model->uid)) {
+                        float ex = static_cast<float>(mm->exposureUs);
+                        ImGui::SetNextItemWidth(110.0f);
+                        if (ImGui::InputFloat("exposure (us)", &ex, 0.0f, 0.0f, "%.0f"))
+                            mm->exposureUs = ex < 0.0f ? 0.0 : static_cast<double>(ex);
+                        if (ImGui::IsItemDeactivatedAfterEdit()) session_.SaveVision();
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("This detection's camera exposure - the one its\n"
+                                              "model was tuned at (same field as the teach page).\n"
+                                              "0 = use the manual exposure.");
+                    }
+                    const std::string chain = VisionFilterSummary(*model);
+                    if (!chain.empty()) ImGui::TextDisabled("pre-process: %s", chain.c_str());
+                    if (model->rel.runs > 0) {
+                        ImGui::TextDisabled("%d/%d ok, sigma %.2f px, tested %s",
+                                            model->rel.ok, model->rel.runs,
+                                            model->rel.stdXPx > model->rel.stdYPx
+                                                ? model->rel.stdXPx : model->rel.stdYPx,
+                                            model->rel.testedAt.c_str());
+                    } else {
+                        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                                           "never reliability-tested");
+                    }
+                    // The picture this tier matches, with a cross on the point
+                    // it REPORTS - the only thing here that says which point of
+                    // the feature a run will use.
+                    PatchTex& pt = alignTierTmpl_[(station - 1) * kAlignDetectTiers + (t - 1)];
+                    if (EnsurePatchTex(pt, *model)) {
+                        DrawPatchThumb(pt, 90.0f, 90.0f);
+                        if (t == 1) {
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("the cross is the\npoint it reports");
+                        }
+                    }
+                } else if (halconOk) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                                       t == 1 ? "no detection set up - this station will fail at run time"
+                                              : "not set up - this tier is skipped at run time");
+                }
+                ImGui::PopID();
             }
 
+            ImGui::Separator();
             ImGui::Checkbox("fall back to a manual pick", &st.autoFallbackManual);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Off, an auto station FAILS when detection does - which is\n"
-                                  "the point: a silent fallback would let a procedure claim\n"
-                                  "to be automatic while a human placed every point.");
+                ImGui::SetTooltip("Off, an auto station FAILS when every detection does -\n"
+                                  "which is the point: a silent fallback would let a\n"
+                                  "procedure claim to be automatic while a human placed\n"
+                                  "every point.");
+            if (st.autoFallbackManual) manualExposure();
+            ImGui::TextDisabled("every attempt files a crop (DUT record, else");
+            ImGui::TextDisabled("logs/align_attempts)");
             ImGui::Unindent();
         }
         ImGui::EndDisabled();

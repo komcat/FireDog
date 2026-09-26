@@ -92,9 +92,15 @@ float LabelledItemWidth()
 //
 // Kept in this TU because it also owns the two maintenance calls (drop with the
 // procedure, copy with a duplicate) — one place knows the convention.
-std::string StationDetectorName(const std::string& procUid, int station)
+//
+// Tier 1 keeps the original `vdet_<procUid>_<station>`, so every procedure
+// taught before tiers existed still finds its model; tiers 2 and 3 append
+// `_t<tier>`.
+std::string StationDetectorName(const std::string& procUid, int station, int tier = 1)
 {
-    return "vdet_" + procUid + "_" + std::to_string(station);
+    std::string n = "vdet_" + procUid + "_" + std::to_string(station);
+    if (tier > 1) n += "_t" + std::to_string(tier);
+    return n;
 }
 
 // The same convention one level down, for the two marks that locate an OBJECT
@@ -280,9 +286,10 @@ VisionRoi RectFromDrag(float x0, float y0, float x1, float y1, int imgW, int img
 
 // ---- Opening / model lifecycle ---------------------------------------------
 
-const VisionModel* App::StationDetector(const AlignProc& a, int station) const
+const VisionModel* App::StationDetector(const AlignProc& a, int station, int tier) const
 {
-    return FindVisionModel(session_.VisionModels(), StationDetectorName(a.uid, station));
+    return FindVisionModel(session_.VisionModels(),
+                           StationDetectorName(a.uid, station, tier));
 }
 
 // Everything the page carries that belongs to the LAST thing it was opened for.
@@ -308,7 +315,7 @@ void App::ResetVisionTeachState()
     visionOwnerPosUid_.clear();
 }
 
-void App::OpenVisionTeach(AlignProc& a, int station)
+void App::OpenVisionTeach(AlignProc& a, int station, int tier)
 {
     // Level checked at the TOP, not left to SwitchPage's refusal: everything
     // below mutates state (the model, the marks, the selections) before it
@@ -348,7 +355,7 @@ void App::OpenVisionTeach(AlignProc& a, int station)
     // Address the model by its canonical private NAME, not by whatever uid the
     // station happens to hold: the name is the ownership record, so this is the
     // one lookup that cannot end up pointing at another station's model.
-    const std::string name = StationDetectorName(a.uid, station);
+    const std::string name = StationDetectorName(a.uid, station, tier);
     VisionModel* m = FindVisionModel(session_.VisionModels(), name);
     if (!m) {
         VisionModel fresh;
@@ -360,11 +367,15 @@ void App::OpenVisionTeach(AlignProc& a, int station)
     }
     visionSelUid_ = m->uid;
 
-    st.detector = m->uid;   // recipes and align_station resolve by uid
+    AlignTierDetector(st, tier) = m->uid;   // align_station resolves by uid
 
     char buf[128];
-    std::snprintf(buf, sizeof(buf), "%s  -  station %d (E%d)",
-                  a.name.c_str(), station, station);
+    if (tier > 1)
+        std::snprintf(buf, sizeof(buf), "%s  -  station %d (E%d)  detection %d",
+                      a.name.c_str(), station, station, tier);
+    else
+        std::snprintf(buf, sizeof(buf), "%s  -  station %d (E%d)",
+                      a.name.c_str(), station, station);
     visionOwnerLabel_ = buf;
 
     // Centre the view on the frame; the ROI takes over once one is set.
@@ -386,13 +397,15 @@ void App::DropAlignStationDetectors(const AlignProc& a)
 {
     int dropped = 0;
     for (int s = 1; s <= 2; ++s) {
-        const VisionModel* m =
-            FindVisionModel(session_.VisionModels(), StationDetectorName(a.uid, s));
-        if (!m) continue;
-        const std::string uid = m->uid;
-        if (visionSelUid_ == uid) visionSelUid_.clear();   // do not leave the page on a corpse
-        workflow_.InvalidateDetector(uid);
-        if (session_.DeleteVisionModel(uid)) ++dropped;
+        for (int t = 1; t <= kAlignDetectTiers; ++t) {
+            const VisionModel* m =
+                FindVisionModel(session_.VisionModels(), StationDetectorName(a.uid, s, t));
+            if (!m) continue;
+            const std::string uid = m->uid;
+            if (visionSelUid_ == uid) visionSelUid_.clear();   // do not leave the page on a corpse
+            workflow_.InvalidateDetector(uid);
+            if (session_.DeleteVisionModel(uid)) ++dropped;
+        }
     }
     if (dropped > 0) {
         session_.SaveVision();
@@ -410,14 +423,17 @@ void App::CopyAlignStationDetectors(const AlignProc& src, AlignProc& dst)
 {
     bool any = false;
     for (int s = 1; s <= 2; ++s) {
-        const VisionModel* sm =
-            FindVisionModel(session_.VisionModels(), StationDetectorName(src.uid, s));
-        if (!sm) continue;
+        for (int t = 1; t <= kAlignDetectTiers; ++t) {
+            const VisionModel* sm =
+                FindVisionModel(session_.VisionModels(), StationDetectorName(src.uid, s, t));
+            if (!sm) continue;
 
-        const std::string uid = CopyVisionModelAs(*sm, StationDetectorName(dst.uid, s));
-        if (uid.empty()) continue;
-        (s == 1 ? dst.s1 : dst.s2).detector = uid;
-        any = true;
+            const std::string uid =
+                CopyVisionModelAs(*sm, StationDetectorName(dst.uid, s, t));
+            if (uid.empty()) continue;
+            AlignTierDetector(s == 1 ? dst.s1 : dst.s2, t) = uid;
+            any = true;
+        }
     }
     // A duplicate's NOMINALS came along with the plain copy, so their private
     // object detectors have to as well — otherwise the copy would silently fall
@@ -461,6 +477,80 @@ std::string App::CopyVisionModelAs(const VisionModel& src, const std::string& ne
     const std::string uid = copy.uid;
     session_.VisionModels().push_back(std::move(copy));
     return uid;
+}
+
+// ---- The detection clipboard -------------------------------------------------
+
+// The patch is read into memory NOW, not at paste time: the source model may be
+// re-taught or deleted before the paste, and a clipboard that followed it would
+// paste something other than what was copied.
+void App::CopyDetectionToClip(const VisionModel& m, const std::string& from)
+{
+    visionClip_ = m;
+    visionClipGray_.clear();
+    visionClipW_ = visionClipH_ = 0;
+    if (!m.templateFile.empty() &&
+        !LoadGrayPgm(session_.VisionDir() + "/" + m.templateFile, &visionClipGray_,
+                     &visionClipW_, &visionClipH_)) {
+        visionClipGray_.clear();
+        visionClipW_ = visionClipH_ = 0;
+        FD_WARN("vision", "copy '%s': its patch %s could not be read - copying the "
+                "settings without it", m.name.c_str(), m.templateFile.c_str());
+    }
+    visionClipHave_ = true;
+    visionClipFrom_ = from;
+    FD_INFO("vision", "detection copied from %s (%s)", from.c_str(), m.method.c_str());
+}
+
+// Into the station tier's OWN model: the private name, uid and patch filename
+// are kept (or minted, exactly as OpenVisionTeach would), everything else comes
+// from the clipboard. The reliability record is cleared - a pasted detector has
+// never been tested at THIS pose, and an inherited "20/20 ok" would say it had.
+void App::PasteDetectionToStation(AlignProc& a, int station, int tier)
+{
+    if (!visionClipHave_) return;
+    AlignStation& st = (station == 1) ? a.s1 : a.s2;
+    const std::string name = StationDetectorName(a.uid, station, tier);
+    VisionModel* m = FindVisionModel(session_.VisionModels(), name);
+    if (!m) {
+        VisionModel fresh;
+        fresh.uid  = GenerateUid();
+        fresh.name = name;
+        session_.VisionModels().push_back(std::move(fresh));
+        m = &session_.VisionModels().back();
+    }
+    const std::string uid = m->uid;
+    const std::string oldPatch = m->templateFile;
+
+    VisionModel pasted = visionClip_;
+    pasted.uid  = uid;
+    pasted.name = name;
+    pasted.rel  = VisionReliability{};
+    pasted.templateFile.clear();
+    if (!visionClipGray_.empty()) {
+        pasted.templateFile = uid + ".pgm";
+        if (!SaveGrayPgm(session_.VisionDir() + "/" + pasted.templateFile,
+                         visionClipGray_.data(), visionClipW_, visionClipH_)) {
+            FD_WARN("vision", "paste into '%s': the patch could not be written",
+                    name.c_str());
+            pasted.templateFile.clear();   // no patch is better than a dangling one
+        }
+    }
+    // A patch the old settings had and the pasted ones do not: drop the file,
+    // or it lingers under this model's uid with nothing pointing at it.
+    if (!oldPatch.empty() && pasted.templateFile.empty())
+        std::remove((session_.VisionDir() + "/" + oldPatch).c_str());
+
+    *m = std::move(pasted);
+    AlignTierDetector(st, tier) = uid;   // align_station resolves by uid
+    session_.SaveVision();
+    workflow_.InvalidateDetector(uid);   // next detect rebuilds from the pasted model
+    // Same filename at the same size is the common case, so the key alone would
+    // keep showing the old picture.
+    alignTierTmpl_[(station - 1) * kAlignDetectTiers + (tier - 1)].key.clear();
+    visionTmpl_.key.clear();
+    FD_INFO("vision", "'%s' E%d detection %d: pasted from %s", a.name.c_str(), station,
+            tier, visionClipFrom_.c_str());
 }
 
 // ---- A nominal's object detectors ------------------------------------------
@@ -952,6 +1042,7 @@ void App::DrawVisionTeachImage(VisionModel& m)
                         visionTmpl_.key.clear();
                         alignTmpl_[0].key.clear();
                         alignTmpl_[1].key.clear();
+                        for (PatchTex& t : alignTierTmpl_) t.key.clear();
                         pickTmpl_.key.clear();
                         visionErr_.clear();
                         visionHaveDet_ = false;
