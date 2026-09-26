@@ -929,6 +929,20 @@ private:
     int         afDirIndex_ = 0;   // 0 = Z- (down), see kAfDirections
     std::string afErr_;
 
+    // Jog tab "Tool -> cam" / "Cam -> tool": the registered move_tool_to_camera
+    // and move_camera_to_tool commands, started as a one-step ad-hoc recipe
+    // (StartQuickRegMove) exactly like the autofocus button - so every refusal
+    // (no registration, rotation guard, unverified, ceiling) is the command's,
+    // never a second copy here. The Z offset defaults to the command's own -2
+    // (a stand-off on this machine), not the Registration page's 0 (a touch):
+    // a one-click button in a jog window must not default to contact.
+    std::string jogRegTool_;             // chosen tool when the camera device is selected
+    double      jogRegZOff_    = -2.0;   // move_tool_to_camera z_offset_mm
+    bool        jogRegUnver_   = false;  // move_tool_to_camera allow_unverified
+    std::string regMoveErr_;             // the last start rejection
+    void DrawJogRegRow(const std::string& selected);
+    void StartQuickRegMove(bool toolToCam, const std::string& tool);
+
     // Window visibility (View menu) + jog arming.
     bool showAux_  = true;
     bool showJog_  = true;

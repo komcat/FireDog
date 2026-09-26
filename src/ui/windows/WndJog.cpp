@@ -646,6 +646,144 @@ void App::StartQuickAutoFocus()
         FD_WARN("vision", "autofocus not started: %s", afErr_.c_str());
 }
 
+// ---- Tool -> cam / Cam -> tool ----------------------------------------------
+//
+// Which tool: the selected jog device when it is registered itself, else - with
+// the camera's device selected - one of the tools registered against it. Both
+// buttons run the registration commands on the engine worker (an approach can
+// take seconds; the UI thread never waits), so their refusals are the ones a
+// recipe step gets, word for word.
+namespace {
+constexpr const char* kQuickRegMoveName = "Quick registered move";
+}
+
+void App::StartQuickRegMove(bool toolToCam, const std::string& tool)
+{
+    regMoveErr_.clear();
+    RecipeStep step;
+    if (toolToCam) {
+        step.type     = "move_tool_to_camera";
+        step.nickname = "Tool '" + tool + "' to camera";
+        step.params   = {
+            {"device", tool},
+            {"z_offset_mm", jogRegZOff_},
+            {"allow_unverified", jogRegUnver_},
+        };
+    } else {
+        step.type     = "move_camera_to_tool";
+        step.nickname = "Camera to tool '" + tool + "'";
+        step.params   = {{"device", tool}};   // XY only: the command's default
+    }
+
+    Recipe one;
+    one.uid  = "quick-regmove";
+    one.name = kQuickRegMoveName;
+    one.steps.push_back(std::move(step));
+
+    if (!orch_.recipe.Start(one, session_.MakeRecipeEnv(), &regMoveErr_))
+        FD_WARN("devreg", "%s not started: %s",
+                toolToCam ? "tool to camera" : "camera to tool", regMoveErr_.c_str());
+}
+
+void App::DrawJogRegRow(const std::string& selected)
+{
+    // Candidates: the selected device if it is a registered tool; otherwise the
+    // tools registered AGAINST it (the camera's device is selected).
+    std::vector<std::string> tools;
+    const DeviceReg selReg = workflow_.DeviceRegFor(selected);
+    if (selReg.valid) {
+        tools.push_back(selected);
+    } else {
+        for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+            const std::string& nm = hardware_.MotionName(i);
+            if (nm == selected) continue;
+            const DeviceReg r = workflow_.DeviceRegFor(nm);
+            if (r.valid && r.refDevice == selected) tools.push_back(nm);
+        }
+    }
+    if (tools.empty()) return;   // nothing registered here: no row at all
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Registered tool");
+    std::string tool = tools.front();
+    if (tools.size() > 1) {
+        if (std::find(tools.begin(), tools.end(), jogRegTool_) == tools.end())
+            jogRegTool_ = tools.front();
+        tool = jogRegTool_;
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##regtool", tool.c_str())) {
+            for (const std::string& t : tools)
+                if (ImGui::Selectable(t.c_str(), t == tool)) jogRegTool_ = t;
+            ImGui::EndCombo();
+        }
+    } else {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tool.c_str());
+    }
+    const DeviceReg reg = workflow_.DeviceRegFor(tool);
+    if (!reg.verified)
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "unverified registration");
+
+    const bool busy  = orch_.Busy();
+    const bool ready = jogArmed_ && !busy;
+    const float half = ImGui::GetContentRegionAvail().x * 0.5f
+                     - ImGui::GetStyle().ItemSpacing.x * 0.5f;
+    ImGui::BeginDisabled(!ready);
+    if (ImGui::Button("Tool -> cam", ImVec2(half, 0.0f))) StartQuickRegMove(true, tool);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Move '%s' so its tip goes to the point the camera\n"
+                          "('%s') is looking at, Z offset %+.3f mm from the\n"
+                          "focused plane (negative = stand off, on this machine).\n"
+                          "An APPROACH through the registration - move_tool_to_camera.",
+                          tool.c_str(), reg.refDevice.c_str(), jogRegZOff_);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ready);
+    if (ImGui::Button("Cam -> tool", ImVec2(-FLT_MIN, 0.0f))) StartQuickRegMove(false, tool);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Move the camera ('%s') over '%s's predicted tip,\n"
+                          "X and Y only. The tool does not move.\n"
+                          "move_camera_to_tool.",
+                          reg.refDevice.c_str(), tool.c_str());
+
+    ImGui::SetNextItemWidth(80.0f);
+    ImGui::InputDouble("Z off##reg", &jogRegZOff_, 0.0, 0.0, "%.3f");
+    jogRegZOff_ = std::clamp(jogRegZOff_, -100.0, 100.0);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Tool -> cam only: offset from the camera's focused Z.\n"
+                          "NEGATIVE stands the tool off the surface on this machine;\n"
+                          "0 sends the tip ONTO the focused surface - a touch.");
+    ImGui::SameLine();
+    ImGui::Checkbox("unverified##reg", &jogRegUnver_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Tool -> cam: allow a registration whose check has not been run.");
+
+    if (!jogArmed_)  ImGui::TextDisabled("arm jog first");
+    else if (busy)   ImGui::TextDisabled("another run is active");
+
+    // Progress / result, only for OUR run - the engine is shared.
+    const RecipeEngine::Status rs = orch_.recipe.GetStatus();
+    if (rs.recipeName == kQuickRegMoveName) {
+        if (rs.state == RecipeEngine::State::Running) {
+            ImGui::TextUnformatted(rs.currentStep.c_str());
+        } else if (!rs.error.empty() && (rs.state == RecipeEngine::State::Failed ||
+                                         rs.state == RecipeEngine::State::Stopped)) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", rs.error.c_str());
+            ImGui::PopTextWrapPos();
+        } else if (rs.state == RecipeEngine::State::Completed) {
+            ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "arrived");
+        }
+    }
+    if (!regMoveErr_.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", regMoveErr_.c_str());
+        ImGui::PopTextWrapPos();
+    }
+}
+
 // Jog controls (its own window). Buttons + W/D·A/S·R/F keys route through the
 // workflow, which maps global direction -> local axis via the device transform.
 // Everything but Stop is gated by the Arm toggle.
@@ -885,6 +1023,8 @@ void App::DrawJogPanel()
         ImGui::EndGroup();
     }
     ImGui::EndDisabled();
+
+    DrawJogRegRow(dev->Name());
 
     // --- Keyboard shortcuts (this window focused): one action per key press ---
     // Q/E pick the step size (down/up the array); A/D = Left/Right, W/S =
