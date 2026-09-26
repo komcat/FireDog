@@ -494,6 +494,34 @@ bool App::IsOperatorCtxKey(const std::string& key)
     return true;
 }
 
+bool App::IsSystemCtxKey(const std::string& key)
+{
+    // Built once: the registry is complete before the first frame and never
+    // changes after. Every command's DEFAULT ctx_prefix is a family a command
+    // writes when nobody named one; the rest are the fixed families the
+    // standard scripts write. Read off the registry rather than typed, so a new
+    // command's prefix is hidden without anybody remembering to add it here.
+    if (sysCtxPrefixes_.empty()) {
+        for (const CommandSpec* spec : orch_.registry.List()) {
+            for (const ParamSpec& p : spec->params) {
+                if (p.name != "ctx_prefix" || !p.defaultValue.is_string()) continue;
+                const std::string d = p.defaultValue.get<std::string>();
+                if (!d.empty()) sysCtxPrefixes_.push_back(d);
+            }
+        }
+        for (const char* f : {"frame", "xcan", "xtl", "climb", "raster", "disp", "ndl",
+                              "reg", "grip", "tray", "cell"})
+            sysCtxPrefixes_.push_back(f);
+    }
+    for (const std::string& pre : sysCtxPrefixes_) {
+        if (key.size() < pre.size() || key.compare(0, pre.size(), pre) != 0) continue;
+        if (key.size() == pre.size()) return true;
+        const char sep = key[pre.size()];
+        if (sep == '_' || sep == '.') return true;
+    }
+    return false;
+}
+
 void App::DrainCycleVars()
 {
     const bool eng = orch_.recipe.Running();
@@ -626,10 +654,34 @@ void App::DrawRunValuesPanel()
         }
     }
 
-    ImGui::SeparatorText(shown.empty() ? "Values"
-                                       : ("Values (" + std::to_string(shown.size()) + ")").c_str());
+    // "mine only": drop the program context (frame_*, pos_*, xcan_* ...) and
+    // keep what a recipe author named. Display only - the DUT record and the
+    // run context are untouched.
+    const std::size_t total = shown.size();
+    if (runValsUserOnly_) {
+        for (auto it = shown.begin(); it != shown.end();) {
+            if (IsSystemCtxKey(it->first)) it = shown.erase(it);
+            else ++it;
+        }
+    }
+    char head[64];
+    if (total == 0)
+        std::snprintf(head, sizeof(head), "Values");
+    else if (runValsUserOnly_)
+        std::snprintf(head, sizeof(head), "Values (%zu of %zu)", shown.size(), total);
+    else
+        std::snprintf(head, sizeof(head), "Values (%zu)", total);
+    ImGui::SeparatorText(head);
+    if (ImGui::Checkbox("user values only", &runValsUserOnly_)) SaveUiSettings();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Hide the program context commands write under their\n"
+                          "default prefixes (frame_, pos_, nom_, pick_, xcan_,\n"
+                          "grip_, tray_ ...) and keep the values a recipe named\n"
+                          "itself. Display only - nothing is removed from the\n"
+                          "run or the DUT record.");
     if (shown.empty()) {
-        ImGui::TextDisabled("Nothing measured yet this cycle.");
+        ImGui::TextDisabled(total == 0 ? "Nothing measured yet this cycle."
+                                       : "No user values - untick to see all.");
         return;
     }
     // Two columns so the numbers line up in a column the eye can run down; the

@@ -92,6 +92,7 @@ int App::Run()
         lastProduct      = ui.lastProduct;
         posPad_          = ui.posPad;
         runReadouts_     = ui.runReadouts;
+        runValsUserOnly_ = ui.runValsUserOnly;
         if (runReadouts_.size() > 4) runReadouts_.resize(4);
         quickIo_         = ui.quickIo;
     }
@@ -513,6 +514,7 @@ void App::SaveUiSettings()
     s.lastProduct = session_.Product().name;
     s.posPad      = posPad_;
     s.runReadouts = runReadouts_;
+    s.runValsUserOnly = runValsUserOnly_;
     s.quickIo     = quickIo_;
     // The window's own geometry comes from the host, which is the only thing
     // that knows it — App never tracks a size it does not set.

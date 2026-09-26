@@ -112,9 +112,15 @@ void App::DrawRecipePromptWindow()
         // Barcode scanners type + Enter, so Enter submits like OK.
         if (newPrompt || ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         ImGui::SetNextItemWidth(-FLT_MIN);   // full width, like everything else here
+        // Twice the prompt's own size: what is typed (usually a serial) is the
+        // thing the operator checks against the part, and a mistyped digit has
+        // to be visible from where they are standing. Pushed around the box
+        // only, so the message and the buttons keep their size.
+        ImGui::PushFont(nullptr, promptFont * 2.0f);
         submit = ImGui::InputText("##promptin", promptInputBuf_,
                                   sizeof(promptInputBuf_),
                                   ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopFont();
     }
     ImGui::Separator();
     // The two answers split the row. They scale with the font as before, but a

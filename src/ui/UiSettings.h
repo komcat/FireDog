@@ -132,6 +132,7 @@ struct UiSettings {
     // at most four. A station layout like the pad below: which numbers an
     // operator wants in view during a run is a property of the bench.
     std::vector<RunReadout> runReadouts;
+    bool runValsUserOnly = false;   // Values panel: hide program-context keys
 
     // Jog window "Pos" tab: the 3x3 quick-move pad, device name -> nine saved
     // position UIDs ("" = unassigned slot). Keyed by DEVICE NAME, not fleet

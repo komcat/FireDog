@@ -546,6 +546,11 @@ private:
     void DrawRunValuesPanel();      // the Run page's right-column "Values" list
     void DrawRunReadouts();         // the pinned instrument readouts under it
     static bool IsOperatorCtxKey(const std::string& key);   // hides engine scratch
+    // True for a key under a prefix a COMMAND or standard script writes by
+    // default (the registry's ctx_prefix defaults + the scripts' families).
+    // A heuristic by name: a user who points ctx_prefix at their own name gets
+    // a user key; one who reuses a default prefix gets a system one.
+    bool IsSystemCtxKey(const std::string& key);
     // Program Organizer (its own window, opened by the Run strip's Edit box):
     // recipe library | 1st slot tree | aisle | 2nd slot tree. The ONLY
     // program-editing surface. `panel` is 0 (1st) or 1 (2nd) throughout: each
@@ -1515,6 +1520,11 @@ private:
         std::string source;   // recipe name that last wrote it
     };
     std::map<std::string, CycleVar> cycleVars_;
+    // Values panel filter: show only keys a recipe author named, hiding the
+    // program context commands and standard scripts write under their default
+    // prefixes (frame_*, pos_*, xcan_* ...). Persisted in UiSettings.
+    bool runValsUserOnly_ = false;
+    std::vector<std::string> sysCtxPrefixes_;   // built once, see IsSystemCtxKey
     // Instrument readouts pinned under the Values list: DataBus topics chosen
     // by the operator (persisted in UiSettings), with the last value pulled
     // for each. Refreshed on a timer, not per frame — these are glanced at,

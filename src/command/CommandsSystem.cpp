@@ -503,14 +503,13 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                                          : CommandResult::Fail(err);
                   }});
 
-    // xcan_two_lens: the Run page's "6800 uA / Left Coarse" sequence as a
-    // step. Left coarse to the target; short of it, ONE left follow-up picked
-    // by the signal (coarse again in the coarse band, fine above the fine
-    // band, nothing below); still short, ONE right coarse pass; then exit as
-    // is. Same standard-script deal as xcan_to_target.
+    // xcan_two_lens: the Run page's "6800 uA" sequence as a step. A FIXED
+    // order - left coarse, left coarse again, left fine, right coarse - that
+    // exits the moment any pass reaches the target, else exits as is after the
+    // fourth. Same standard-script deal as xcan_to_target.
     reg.Register({"xcan_two_lens", "Motion",
-                  "XCAN two lens (xcan_two_lens.lua): left coarse, one banded left "
-                  "follow-up, one right coarse, exit as is",
+                  "XCAN two lens (xcan_two_lens.lua): left coarse, left coarse, "
+                  "left fine, right coarse - exit at the target, else as is",
                   {
                       {"left", PT::DeviceHexapod, true, {}, 0, 0, {}, "left hexapod"},
                       {"right", PT::DeviceHexapod, true, {}, 0, 0, {}, "right hexapod"},
@@ -530,10 +529,11 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"fine_steps_um", PT::String, false, "2,1,0.5", 0, 0, {},
                        "the Fine ladder (um)"},
                       {"coarse_band_ua", PT::Double, false, 800.0, 0.0001, 1e9, {},
-                       "after the first pass, from this signal up the left follow-up "
-                       "is coarse again; below it there is none"},
+                       "IGNORED - the pass order is now fixed. Kept so saved recipes "
+                       "that set it still load"},
                       {"fine_band_ua", PT::Double, false, 1500.0, 0.0001, 1e9, {},
-                       "from this signal up the left follow-up is the fine ladder"},
+                       "IGNORED - the pass order is now fixed. Kept so saved recipes "
+                       "that set it still load"},
                       {"settle_min_ms", PT::Int, false, 0, 0, 5000, {},
                        "extra mechanical-settle floor before each sample (ms)"},
                       {"velocity_mm_s", PT::Double, false, 1.0, 0.0, 100.0, {},

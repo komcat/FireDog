@@ -1,23 +1,22 @@
--- XCAN two lens: left coarse to target, one signal-banded left follow-up, then one right coarse pass
+-- XCAN two lens: left coarse, left coarse again, left fine, right coarse - exit at the target
 --
 -- The two-lens sequence as the operator drives it from the Run page's XCAN
--- band (6800 uA target, Left Coarse), written down so a recipe runs it the
--- same way every time:
+-- band (6800 uA target), written down so a recipe runs it the same way every
+-- time. A FIXED order of up to four passes, and the script exits the moment
+-- any pass reaches the target:
 --
---   1. LEFT coarse ladder, adaptive over [zone_low, target], exit at target.
---      If the target was not reached, the feedback after the pass picks ONE
---      follow-up on the left hexapod:
---         below `coarse_band_ua`             nothing - not enough light to climb on
---         [coarse_band_ua, fine_band_ua)     the coarse ladder once more
---         at or above `fine_band_ua`         the fine ladder once
---   2. Still short of the target: ONE coarse pass on the RIGHT hexapod.
---   3. Exit as is. The stage stays wherever the last pass left it, and the
---      result goes to ctx; the step fails only when `fail_if_missed` is set.
+--   1. LEFT  coarse ladder
+--   2. LEFT  coarse ladder again
+--   3. LEFT  fine ladder
+--   4. RIGHT coarse ladder
+--   then exit as is. The stage stays wherever the last pass left it, and the
+--   result goes to ctx; the step fails only when `fail_if_missed` is set.
 --
+-- Every pass is adaptive over [zone_low, zone_high] and exits at the target.
 -- Every pass is fd.xcan (hexapod_align.lua), so the scan has one
--- implementation; this file only decides which hexapod, which ladder and
--- how many times. "Reached" is the pass's own exit flag OR a fresh reading
--- at or above the target after it.
+-- implementation; this file only decides which hexapod, which ladder and in
+-- what order. "Reached" is the pass's own exit flag OR a fresh reading at or
+-- above the target after it.
 --
 -- Parameters (fd.param -> ctx keys; a recipe sets them with ctx_set steps
 -- before its run_script step, or leaves the defaults):
@@ -30,12 +29,11 @@
 --   xtl_zone_high_ua     adaptive zone upper limit, uA       (default 0 = the target)
 --   xtl_coarse_steps_um  the Coarse ladder                   (default "10,5,2,1")
 --   xtl_fine_steps_um    the Fine ladder                     (default "2,1,0.5")
---   xtl_coarse_band_ua   left follow-up is coarse from here  (default 800)
---   xtl_fine_band_ua     left follow-up is fine from here    (default 1500)
 --   xtl_settle_min_ms    settle floor before each sample     (default 0)
 --   xtl_velocity_mm_s    scan velocity (0 = keep current)    (default 1)
 --   xtl_trace            per-sample CSV trace, 1/0           (default 0)
 --   xtl_fail_if_missed   error when the target is not reached (default 0: exit as is)
+--   (xtl_coarse_band_ua / xtl_fine_band_ua are no longer read - the order is fixed.)
 --
 -- Results (ctx, for dut_record / if steps):
 --   xtl_reached    true when a pass reached the target
@@ -55,8 +53,6 @@ local P = {
   zone_high_ua   = fd.param("xtl_zone_high_ua", 0),
   coarse_steps   = fd.param("xtl_coarse_steps_um", "10,5,2,1"),
   fine_steps     = fd.param("xtl_fine_steps_um", "2,1,0.5"),
-  coarse_band_ua = fd.param("xtl_coarse_band_ua", 800),
-  fine_band_ua   = fd.param("xtl_fine_band_ua", 1500),
   settle_min_ms  = math.floor(tonumber(fd.param("xtl_settle_min_ms", 0)) or 0),
   velocity_mm_s  = fd.param("xtl_velocity_mm_s", 1),
   trace          = flag(fd.param("xtl_trace", 0)),
@@ -66,10 +62,6 @@ if P.zone_high_ua <= 0 then P.zone_high_ua = P.target_ua end
 
 if P.target_ua <= 0 then
   error("xtl_target_ua must be > 0 - the script has nothing to reach")
-end
-if P.coarse_band_ua >= P.fine_band_ua then
-  error(string.format("xtl_coarse_band_ua (%g) must be below xtl_fine_band_ua (%g)",
-                      P.coarse_band_ua, P.fine_band_ua))
 end
 if P.zone_low_ua >= P.zone_high_ua then
   error(string.format("xtl_zone_low_ua (%g) must be below the zone high (%g)",
@@ -114,26 +106,22 @@ local function climb(label, device, steps)
   return hit or now >= P.target_ua, now
 end
 
--- 1. Left coarse, then one banded follow-up on the left.
-local reached, now = climb("left coarse", P.left, P.coarse_steps)
+-- The fixed order. Each entry runs only while the target is still unreached;
+-- the first pass that reaches it ends the sequence.
+local SEQUENCE = {
+  { "left coarse",   P.left,  P.coarse_steps },
+  { "left coarse 2", P.left,  P.coarse_steps },
+  { "left fine",     P.left,  P.fine_steps   },
+  { "right coarse",  P.right, P.coarse_steps },
+}
 
-if not reached then
-  if now >= P.fine_band_ua then
-    reached, now = climb("left fine", P.left, P.fine_steps)
-  elseif now >= P.coarse_band_ua then
-    reached, now = climb("left coarse 2", P.left, P.coarse_steps)
-  else
-    fd.logf("xcan_two_lens: %.4g uA is below the %g uA coarse band - no left follow-up",
-            now, P.coarse_band_ua)
-  end
+local reached, now = false, 0
+for _, pass in ipairs(SEQUENCE) do
+  reached, now = climb(pass[1], pass[2], pass[3])
+  if reached then break end
 end
 
--- 2. Still short: one coarse pass on the right hexapod.
-if not reached then
-  reached, now = climb("right coarse", P.right, P.coarse_steps)
-end
-
--- 3. Exit as is.
+-- Exit as is.
 fd.ctx.xtl_reached = reached
 fd.ctx.xtl_passes  = passes
 

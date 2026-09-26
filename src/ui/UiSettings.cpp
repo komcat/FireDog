@@ -61,6 +61,8 @@ UiSettings UiSettings::Load(const std::string& path)
         // the whole settings file.
         // Readouts: an object per row; a bare string (the first version of the
         // field) is a topic with no limit.
+        if (j.contains("run_vals_user_only"))
+            s.runValsUserOnly = j["run_vals_user_only"].get<bool>();
         if (j.contains("run_readouts") && j["run_readouts"].is_array()) {
             for (const auto& v : j["run_readouts"]) {
                 if (s.runReadouts.size() >= 4) break;
@@ -153,6 +155,7 @@ bool UiSettings::Save(const std::string& path) const
     for (const RunReadout& r : runReadouts)
         ro.push_back({{"topic", r.topic}, {"mode", r.mode}, {"lo", r.lo}, {"hi", r.hi}});
     j["run_readouts"]  = ro;
+    j["run_vals_user_only"] = runValsUserOnly;
     nlohmann::json pad = nlohmann::json::object();
     for (const auto& kv : posPad) pad[kv.first] = kv.second;
     j["pos_pad"] = pad;
