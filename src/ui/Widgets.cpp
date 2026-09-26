@@ -413,6 +413,18 @@ const char* StepIconFile(const char* type)
         {"pulse_output",         "IO"},
         {"wait_input",           "IO"},
         {"clear_latch",          "IO"},
+        // Structure: a loop and an if each get their OWN glyph (and neither
+        // shares GROUP's), for the reason given above.
+        {"loop",                 "Loop_command"},
+        {"if",                   "IF icon"},
+        // The frame- and tray-relative moves take their family's glyph rather
+        // than move_default: WHERE the target comes from (a taught frame, a
+        // tray cell) is what sets them apart from a move to a saved position.
+        // Listed here because the move_ prefix below would claim them.
+        {"move_local",           "align command"},
+        {"move_to_nominal",      "align command"},
+        {"move_to_cell",         "tray command"},
+        {"move_to_active_cell",  "tray command"},
     };
     for (const Row& r : kExact)
         if (std::strcmp(r.type, type) == 0) return r.file;
@@ -423,6 +435,9 @@ const char* StepIconFile(const char* type)
     // naming a picture nobody drew.
     if (std::strncmp(type, "move_", 5) == 0) return "move_default";
     if (std::strncmp(type, "dut_",  4) == 0) return "data";
+    if (std::strncmp(type, "align_",   6) == 0) return "align command";
+    if (std::strncmp(type, "nominal_", 8) == 0) return "align command";
+    if (std::strncmp(type, "tray_",    5) == 0) return "tray command";
     return nullptr;
 }
 
