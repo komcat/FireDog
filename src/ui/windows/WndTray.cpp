@@ -67,6 +67,31 @@ void App::DrawTrayWindow()
     if (!t) {
         ImGui::TextDisabled("No tray. Teach one on the Waffle Tray page (F10).");
     } else {
+        // Left strip: < / > step through the trays, wrapping at either end. It
+        // moves the same traySel_ the combo and the page use - a view choice,
+        // so it stays live during a run exactly like the combo.
+        const int n = static_cast<int>(list.size());
+        const float stripW = 44.0f;
+        ImGui::BeginChild("traywinnav", ImVec2(stripW, 0.0f), ImGuiChildFlags_None);
+        const ImVec2 btn(stripW - ImGui::GetStyle().WindowPadding.x * 2.0f, 40.0f);
+        ImGui::BeginDisabled(n < 2);
+        if (ImGui::Button("<", btn)) {
+            traySel_ = (traySel_ + n - 1) % n;
+            trayMsg_.clear();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Previous tray");
+        if (ImGui::Button(">", btn)) {
+            traySel_ = (traySel_ + 1) % n;
+            trayMsg_.clear();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next tray");
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("%d/%d", traySel_ + 1, n);
+        ImGui::EndChild();
+        // Re-resolve: a click above changed the selection this frame.
+        t = &list[static_cast<std::size_t>(traySel_)];
+
+        ImGui::SameLine();
         ImGui::BeginChild("traywingrid", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
         DrawTrayGrid(t, orch_.Busy());
         ImGui::EndChild();
