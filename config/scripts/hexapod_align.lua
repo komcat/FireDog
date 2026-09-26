@@ -106,14 +106,22 @@ local function pos(axis)
   return v
 end
 
+-- Move time since the last logged sample (ms), for the scan log: what each
+-- sample cost in motion (a recovery is several moves, so it accumulates).
+local MOVE_MS = 0
+
 local function move_abs(axis, target)
+  local t0 = fd.clock()
   fd.move_relative{ device = P.device, axis = axis, delta_mm = target - pos(axis),
                     tol_mm = P.tol_mm, timeout_ms = P.move_timeout }
+  MOVE_MS = MOVE_MS + (fd.clock() - t0) * 1000.0
 end
 
 local function move_rel(axis, delta)
+  local t0 = fd.clock()
   fd.move_relative{ device = P.device, axis = axis, delta_mm = delta,
                     tol_mm = P.tol_mm, timeout_ms = P.move_timeout }
+  MOVE_MS = MOVE_MS + (fd.clock() - t0) * 1000.0
 end
 
 -- One sample per measure (bobcat: single sample in the loop, no averaging).
@@ -127,17 +135,25 @@ end
 local FRESH = tonumber(P.fresh_samples) or 0
 local settle_warned = false
 
+-- How the LAST measure() went, for the scan log: the publish count it started
+-- from (n0), the fresh publishes it got, how long it waited, and whether the
+-- settle_ms ceiling cut the wait short (a possibly stale sample).
+local M = { n0 = 0, got = 0, wait_ms = 0, timeout = false }
+
 local function measure()
+  local mt0 = fd.clock()
+  local _, n0 = fd.read(P.topic)
+  M.n0, M.timeout = n0, false
   if FRESH <= 0 then
     fd.sleep(P.settle_ms)                        -- original blind settle
   else
-    local _, n0 = fd.read(P.topic)
     if P.settle_min_ms > 0 then fd.sleep(P.settle_min_ms) end
     local t0 = fd.clock()
     while true do
       local _, n = fd.read(P.topic)
       if n >= n0 + FRESH then break end
       if (fd.clock() - t0) * 1000.0 >= P.settle_ms then
+        M.timeout = true
         if not settle_warned then
           settle_warned = true
           fd.logf("measure: only %d/%d fresh samples on %s within %g ms - using latest",
@@ -150,8 +166,9 @@ local function measure()
   end
   local t0 = fd.clock()
   while true do
-    local v = fd.read(P.topic)
+    local v, n = fd.read(P.topic)
     if v ~= nil then
+      M.got, M.wait_ms = n - n0, (fd.clock() - mt0) * 1000.0
       if P.exit_threshold ~= 0 and v >= P.exit_threshold and not exit_hit then
         exit_hit = true
         fd.logf("exit threshold reached: %.4g >= %.4g", v, P.exit_threshold)
@@ -173,8 +190,10 @@ local function goto_snapshot(s)
   for _, a in ipairs(AXES) do move_abs(a, s[a]) end
 end
 
--- ---- Optional per-sample trace (align_trace=1) ------------------------------
--- One CSV line per measured sample, for offline algorithm analysis:
+-- ---- Per-sample record: scan log (always) + CSV trace (align_trace=1) -------
+-- Every measured sample goes to fd.scanlog - the silent dataset under
+-- data/xcan/ (docs/xcan-dataset.md); C++ adds the full pose and the raw
+-- readings after M.n0. With align_trace=1 it is ALSO one CSV line:
 --   xcan,seq,t_s,phase,axis,dir,step_um,<axis>=pos...,v=value,dv=delta,dmove,note
 -- dv / dmove are the change vs the PREVIOUS sample (value and per-axis um),
 -- so the whole walk can be replayed. Lines land in the log band AND the
@@ -183,6 +202,12 @@ local TRACE = (P.trace == true) or ((tonumber(P.trace) or 0) ~= 0)
 local T  = { n = 0, t0 = fd.clock(), v = nil, pos = nil }   -- previous sample
 local TC = { phase = "base", axis = "-", dir = 0, step = 0 } -- current context
 local function trace(v, note)
+  fd.scanlog.sample{ phase = TC.phase, axis = TC.axis, dir = TC.dir,
+                     step_um = TC.step * 1000, v = v, note = note or "",
+                     n0 = M.n0, fresh_req = FRESH, fresh_got = M.got,
+                     wait_ms = M.wait_ms, settle_timeout = M.timeout,
+                     move_ms = MOVE_MS }
+  MOVE_MS = 0
   if not TRACE then return end
   T.n = T.n + 1
   local p    = snapshot()
@@ -320,6 +345,12 @@ if TRACE then
           P.axes)
 end
 
+-- Open the scan record: P is the whole resolved policy (off-policy learning
+-- needs the parameters that produced the trajectory).
+fd.scanlog.begin{ kind = "xcan", device = P.device, topic = P.topic,
+                  axes = P.axes, params = P }
+local passes_run, passes_skipped = 0, 0
+
 -- Averaged baseline (bobcat averages ONLY the baseline).
 local carryV = nil   -- fresh sample at the current point, reused as next start
 local sum = 0
@@ -352,7 +383,9 @@ for _, step in ipairs(STEPS) do
       skip = true
     end
   end
+  if skip then passes_skipped = passes_skipped + 1 end
   if not skip then
+  passes_run = passes_run + 1
   fd.logf("pass @ %g um", step * 1000)
   for _, axis in ipairs(AXES) do
     local _, curV = scan_axis(axis, step, carryV)
@@ -391,6 +424,11 @@ if not exit_hit and gpeak.pos ~= nil and gpeak.v > finalV then
   finalV = measure()
   trace(finalV, "final@gpeak")
 end
+
+fd.scanlog.finish{ baseline = baseline, final = finalV, exit_hit = exit_hit,
+                   exit_threshold = P.exit_threshold,
+                   gain = (baseline > 0 and finalV > 0) and (finalV / baseline) or 0,
+                   passes_run = passes_run, passes_skipped = passes_skipped }
 
 fd.ctx.align_baseline = baseline
 fd.ctx.align_best     = finalV

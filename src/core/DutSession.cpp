@@ -107,6 +107,18 @@ DutSession::Info DutSession::GetInfo() const
     return i;
 }
 
+std::string DutSession::ProductUid() const
+{
+    const std::scoped_lock lock(mu_);
+    return prodUid_;
+}
+
+nlohmann::json DutSession::OperatorInfo() const
+{
+    const std::scoped_lock lock(mu_);
+    return opId_.empty() ? nlohmann::json() : OperatorJson();
+}
+
 std::string DutSession::BrowseDir() const
 {
     const std::scoped_lock lock(mu_);

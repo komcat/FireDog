@@ -1,6 +1,7 @@
 // DataBus.cpp
 #include "core/DataBus.h"
 
+#include <algorithm>
 #include <memory>
 
 namespace firedog {
@@ -74,6 +75,16 @@ size_t DataStream::Count() const
     return count_;
 }
 
+std::vector<std::pair<double, double>> DataStream::Tail(size_t sinceCount, size_t maxN) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    // The ring's back is publish #count_, so the newest (count_ - sinceCount)
+    // entries are the ones published after sinceCount.
+    size_t n = count_ > sinceCount ? count_ - sinceCount : 0;
+    n = std::min({n, ring_.size(), maxN});
+    return {ring_.end() - static_cast<std::ptrdiff_t>(n), ring_.end()};
+}
+
 DataBus& DataBus::Instance()
 {
     static DataBus instance;
@@ -88,6 +99,13 @@ DataStream& DataBus::Stream(const std::string& topic)
         it = streams_.emplace(topic, std::make_unique<DataStream>()).first;
     }
     return *it->second;   // node-based map: reference stays valid across rehash
+}
+
+DataStream* DataBus::Find(const std::string& topic)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = streams_.find(topic);
+    return it == streams_.end() ? nullptr : it->second.get();
 }
 
 std::vector<std::string> DataBus::Topics() const

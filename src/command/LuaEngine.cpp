@@ -6,6 +6,8 @@
 #include "core/DataBus.h"
 #include "core/DutSession.h"
 #include "core/Log.h"
+#include "core/ScanLog.h"
+#include "core/Topics.h"
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
 
@@ -19,6 +21,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 
 namespace firedog {
 
@@ -122,6 +125,20 @@ const std::vector<LuaFdBuiltin>& LuaFdBuiltins()
         {"dut.is_open", "dut.is_open()", "fd.dut.is_open() -> bool"},
         {"dut.serial", "dut.serial()", "fd.dut.serial() -> string"},
         {"dut.product", "dut.product()", "fd.dut.product() -> string"},
+        {"scanlog", "scanlog.",
+         "fd.scanlog : the silent per-scan dataset (data/xcan/, docs/xcan-dataset.md)"},
+        {"scanlog.begin", "scanlog.begin(",
+         "fd.scanlog.begin{kind, device, topic, axes, params} -> scan_id : open a scan "
+         "record; DUT, operator, pose, SMU and scanlog_* ctx tags are added"},
+        {"scanlog.sample", "scanlog.sample(",
+         "fd.scanlog.sample{phase, axis, dir, step_um, v, note, n0, ...} : one "
+         "measurement; the 6-axis pose and the raw readings after n0 are added"},
+        {"scanlog.finish", "scanlog.finish(",
+         "fd.scanlog.finish{...} : close and write the record (status ok); an unfinished "
+         "one is written as error / stopped when the script ends"},
+        {"scanlog.new_group", "scanlog.new_group(",
+         "fd.scanlog.new_group(caller) -> id : one id for several scans of one alignment "
+         "(set it as ctx scanlog_group)"},
         {"run_recipe", "run_recipe(",
          "fd.run_recipe(uid_or_name) : run a library recipe inline on this worker "
          "(not available to a script a recipe's run_script started)"},
@@ -178,6 +195,102 @@ nlohmann::json LuaValueToJson(const sol::object& v, std::string* err)
     }
 }
 
+// Any Lua value -> json for the scan log: tables recurse (a 1..n sequence
+// becomes an array, anything else an object), numbers stay doubles, and what
+// json cannot carry (functions, userdata) becomes null rather than an error —
+// a dataset record must never be the reason a scan fails.
+nlohmann::json LuaToJsonDeep(const sol::object& v, int depth = 0)
+{
+    switch (v.get_type()) {
+    case sol::type::boolean: return v.as<bool>();
+    case sol::type::number:  return v.as<double>();
+    case sol::type::string:  return v.as<std::string>();
+    case sol::type::table: {
+        if (depth > 8) return {};
+        const sol::table t = v.as<sol::table>();
+        const std::size_t n = t.size();
+        std::size_t keys = 0;
+        for (const auto& kv : t) { (void)kv; ++keys; }
+        if (n > 0 && n == keys) {
+            nlohmann::json a = nlohmann::json::array();
+            for (std::size_t i = 1; i <= n; ++i)
+                a.push_back(LuaToJsonDeep(t.get<sol::object>(i), depth + 1));
+            return a;
+        }
+        nlohmann::json o = nlohmann::json::object();
+        for (const auto& [k, x] : t) {
+            std::string key;
+            if (k.get_type() == sol::type::string) key = k.as<std::string>();
+            else if (k.get_type() == sol::type::number) {
+                char b[32];
+                std::snprintf(b, sizeof(b), "%g", k.as<double>());
+                key = b;
+            } else continue;
+            o[key] = LuaToJsonDeep(x, depth + 1);
+        }
+        return o;
+    }
+    default: return {};
+    }
+}
+
+nlohmann::json CtxValueToJson(const CtxValue& v)
+{
+    if (std::holds_alternative<bool>(v)) return std::get<bool>(v);
+    if (std::holds_alternative<double>(v)) return std::get<double>(v);
+    return std::get<std::string>(v);
+}
+
+// Readings of a stream that exists, else null (the scan log's aux block).
+nlohmann::json LatestOrNull(const std::string& topic)
+{
+    const DataStream* s = DataBus::Instance().Find(topic);
+    if (!s || s->Count() == 0) return {};
+    return s->LatestValue();
+}
+
+// The scan header's machine/part context, filled in C++ so every script that
+// logs a scan gets the same one: DUT + operator, the wrapper tags a caller
+// set as scanlog_* ctx keys, the start pose, the SMU setup and the aux streams.
+void FillScanHeader(nlohmann::json& h, ExecutionContext& ctx, const std::string& script)
+{
+    h["script"] = script;
+
+    const DutSession& dut = DutSession::Instance();
+    const DutSession::Info di = dut.GetInfo();
+    h["product"]     = di.product;
+    h["product_uid"] = dut.ProductUid();
+    h["dut_open"]    = di.open;
+    h["serial"]      = di.open ? nlohmann::json(di.serial) : nlohmann::json();
+    h["operator"]    = dut.OperatorInfo();
+
+    nlohmann::json tags = nlohmann::json::object();
+    constexpr std::string_view kTag = "scanlog_";
+    for (const auto& [k, v] : ctx.CtxSnapshot()) {
+        if (k.size() <= kTag.size() || k.compare(0, kTag.size(), kTag) != 0) continue;
+        // A wrapper clears its tags to "" (fd.ctx cannot erase): absent.
+        if (std::holds_alternative<std::string>(v) && std::get<std::string>(v).empty())
+            continue;
+        tags[k.substr(kTag.size())] = CtxValueToJson(v);
+    }
+    h["context"] = tags;
+
+    h["start_pose"] = ScanLog::PoseOf(h.value("device", std::string()));
+
+    if (ISmu* k = ctx.Hw().Keithley(); k && k->IsConnected()) {
+        const SmuConfig c = k->GetConfig();
+        h["smu"] = {{"model", k->ModelName()},   {"nplc", c.nplc},
+                    {"auto_range", c.autoRange}, {"fixed_range_a", c.fixedRange},
+                    {"bias_v", k->BiasVolts()},  {"output_on", k->OutputOn()}};
+    } else {
+        h["smu"] = nullptr;
+    }
+    h["aux"] = {{"ch1_a", LatestOrNull(topics::kKeithleyCh1)},
+                {"ch2_a", LatestOrNull(topics::kKeithleyCh2)},
+                {"laser_ma", LatestOrNull(topics::kCldCurrent)},
+                {"tec_c", LatestOrNull(topics::kCldTemp)}};
+}
+
 sol::object CtxValueToLua(sol::this_state ts, const CtxValue& v)
 {
     if (std::holds_alternative<bool>(v)) return sol::make_object(ts, std::get<bool>(v));
@@ -197,6 +310,9 @@ std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
                        bool allowRunRecipe, LuaEngine* engine)
 {
     std::string firstErr;
+    // Outlives the Lua state, so a scan the script never finished (an error,
+    // Stop) is still written below — labelled by how it ended.
+    ScanLog scanlog;
     try {
         sol::state lua;
         lua.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
@@ -387,6 +503,51 @@ std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
             fd["ctx"] = ctxT;
         }
 
+        // fd.scanlog: the silent per-scan dataset (core/ScanLog.h,
+        // docs/xcan-dataset.md). The script says what it decided; C++ adds
+        // what the script cannot see — the full pose, the individual
+        // readings, the part, the operator, the instrument setup.
+        {
+            sol::table sl = lua.create_table();
+            sl.set_function("begin", [&scanlog, &ctx, &path](sol::table t) {
+                nlohmann::json h = LuaToJsonDeep(t);
+                if (!h.is_object()) h = nlohmann::json::object();
+                FillScanHeader(h, ctx, path);
+                return scanlog.Begin(std::move(h));
+            });
+            // n0 = the topic's publish count when the measurement started: the
+            // readings after it (plus the one before) are the sample's raw.
+            sl.set_function("sample", [&scanlog](sol::table t) {
+                if (!scanlog.Active()) return;
+                nlohmann::json s = LuaToJsonDeep(t);
+                if (!s.is_object()) return;
+                s["pose"] = ScanLog::PoseOf(scanlog.Device());
+                const auto n0 = s.find("n0");
+                if (n0 != s.end() && n0->is_number() && !scanlog.Topic().empty()) {
+                    const double c = n0->get<double>();
+                    const std::size_t since = c >= 1.0 ? static_cast<std::size_t>(c) - 1 : 0;
+                    nlohmann::json raw = nlohmann::json::array();
+                    if (const DataStream* ds = DataBus::Instance().Find(scanlog.Topic())) {
+                        for (const auto& [ts, v] : ds->Tail(since, 64))
+                            raw.push_back(nlohmann::json::array({ts, v}));
+                    }
+                    s["raw"] = std::move(raw);
+                }
+                scanlog.Sample(std::move(s));
+            });
+            sl.set_function("finish", [&scanlog](sol::optional<sol::table> t) {
+                if (!scanlog.Active()) return;
+                nlohmann::json r = t ? LuaToJsonDeep(*t) : nlohmann::json::object();
+                if (!r.is_object()) r = nlohmann::json::object();
+                r["final_pose"] = ScanLog::PoseOf(scanlog.Device());
+                scanlog.Finish(std::move(r), "ok");
+            });
+            sl.set_function("new_group", [](const std::string& caller) {
+                return ScanLog::NewGroupId(caller);
+            });
+            fd["scanlog"] = sl;
+        }
+
         // print -> Logger; fd.logf = printf-style convenience.
         lua.script(R"(
             function print(...)
@@ -413,6 +574,15 @@ std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
     } catch (...) {
         FD_ERROR("script", "non-standard engine exception");
         firstErr = "unknown error";
+    }
+    if (scanlog.Active()) {
+        nlohmann::json r = nlohmann::json::object();
+        r["final_pose"] = ScanLog::PoseOf(scanlog.Device());
+        const char* status = firstErr.empty()                          ? "incomplete"
+                           : (ctx.ShouldStop() ||
+                              firstErr.find("stopped") != std::string::npos) ? "stopped"
+                                                                             : "error";
+        scanlog.Finish(std::move(r), status, firstErr);
     }
     return firstErr;
 }

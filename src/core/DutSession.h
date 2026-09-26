@@ -51,6 +51,12 @@ public:
     };
     Info GetInfo() const;
 
+    // Read-only views of the App wiring, for records written outside the DUT
+    // (the xcan scan log): the loaded product's uid, and the signed-in
+    // operator as {id, name, level} — null when nobody is signed in.
+    std::string    ProductUid() const;
+    nlohmann::json OperatorInfo() const;
+
     // Folder for the UI's "open data folder" shortcut: the open record's own
     // folder, else the product's data/ root ("" when no product is set).
     std::string BrowseDir() const;

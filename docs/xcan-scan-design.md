@@ -100,6 +100,11 @@ xcan,seq,t_s,phase,axis,dir,step_um,<axis>=pos...,v=value,dv=delta,dmove_um,note
 drop-break | return-to-best | axis-done | recovered | baseline | final | final@gpeak`.
 `dv`/`dmove` are deltas vs the previous sample, so a whole walk is replayable offline.
 
+The trace is the human-readable view. **Every scan, traced or not, also writes a
+machine-readable record** to `data/xcan/` through `fd.scanlog`, with the full 6-axis
+pose and the raw readings behind each sample — the ML dataset. See
+[`xcan-dataset.md`](xcan-dataset.md).
+
 ---
 
 ## 3. Adaptive step ladder (`align_adaptive`)

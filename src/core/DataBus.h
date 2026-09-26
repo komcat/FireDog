@@ -33,6 +33,12 @@ public:
     double LatestValue() const;
     size_t Count() const;
 
+    // The (t, value) samples published AFTER publish count `sinceCount` (the
+    // counter Count() returns), oldest first, at most `maxN` of the newest.
+    // Anything already evicted from the ring is simply absent. This is how a
+    // scan log sees the individual readings behind one measurement.
+    std::vector<std::pair<double, double>> Tail(size_t sinceCount, size_t maxN) const;
+
 private:
     mutable std::mutex                       mutex_;
     std::deque<std::pair<double, double>>    ring_;      // (t, value)
@@ -50,6 +56,10 @@ public:
 
     // Get (creating if needed) the stream for a topic. The reference is stable.
     DataStream& Stream(const std::string& topic);
+
+    // The stream for a topic if something already created it, else null —
+    // for a reader that must not make a topic appear in Topics() by asking.
+    DataStream* Find(const std::string& topic);
 
     std::vector<std::string> Topics() const;
 

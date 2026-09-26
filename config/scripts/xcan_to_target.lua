@@ -71,6 +71,24 @@ local function live_ua()
   return v * 1e6
 end
 
+-- Scan-log tags (docs/xcan-dataset.md): every pass's record carries the same
+-- group, its pass number and stage, so the dataset sees one alignment, not N
+-- unrelated scans. Cleared on every exit, error included, so a later plain
+-- xcan in the same run is not filed under this group.
+local GROUP = fd.scanlog.new_group("xcan_to_target")
+local function tag(pass, stage)
+  fd.ctx.scanlog_caller    = "xcan_to_target"
+  fd.ctx.scanlog_group     = GROUP
+  fd.ctx.scanlog_pass      = pass
+  fd.ctx.scanlog_stage     = stage
+  fd.ctx.scanlog_target_ua = P.target_ua
+end
+local function untag()
+  for _, k in ipairs({ "caller", "group", "pass", "stage", "target_ua" }) do
+    fd.ctx["scanlog_" .. k] = ""
+  end
+end
+
 -- One climb. Returns true when the target was reached.
 local function climb(label, steps, adaptive)
   fd.logf("xcan_to_target: %s on %s, ladder %s um%s, target %g uA",
@@ -98,14 +116,22 @@ local function climb(label, steps, adaptive)
 end
 
 local passes  = 1
-local reached = climb("pass 1 (coarse)", P.steps_um, P.adaptive)
+local reached = false
 
-for i = 1, P.retries do
-  if reached then break end
-  passes = passes + 1
-  reached = climb(string.format("retry %d of %d (fine)", i, P.retries),
-                  P.fine_steps_um, P.fine_adaptive)
-end
+local ok, err = pcall(function()
+  tag(1, "coarse")
+  reached = climb("pass 1 (coarse)", P.steps_um, P.adaptive)
+
+  for i = 1, P.retries do
+    if reached then break end
+    passes = passes + 1
+    tag(passes, "fine")
+    reached = climb(string.format("retry %d of %d (fine)", i, P.retries),
+                    P.fine_steps_um, P.fine_adaptive)
+  end
+end)
+untag()
+if not ok then error(err, 0) end
 
 fd.ctx.xcan_reached = reached
 fd.ctx.xcan_passes  = passes

@@ -115,11 +115,27 @@ local SEQUENCE = {
   { "right coarse",  P.right, P.coarse_steps },
 }
 
+-- Scan-log tags (docs/xcan-dataset.md): every pass's record carries the same
+-- group, its pass number, stage and lens, so the dataset sees one alignment.
+-- Cleared on every exit, error included.
+local GROUP = fd.scanlog.new_group("xcan_two_lens")
+local TAGS  = { "caller", "group", "pass", "stage", "lens", "target_ua" }
+
 local reached, now = false, 0
-for _, pass in ipairs(SEQUENCE) do
-  reached, now = climb(pass[1], pass[2], pass[3])
-  if reached then break end
-end
+local ok, err = pcall(function()
+  for i, pass in ipairs(SEQUENCE) do
+    fd.ctx.scanlog_caller    = "xcan_two_lens"
+    fd.ctx.scanlog_group     = GROUP
+    fd.ctx.scanlog_pass      = i
+    fd.ctx.scanlog_stage     = pass[1]
+    fd.ctx.scanlog_lens      = (pass[2] == P.right) and "right" or "left"
+    fd.ctx.scanlog_target_ua = P.target_ua
+    reached, now = climb(pass[1], pass[2], pass[3])
+    if reached then break end
+  end
+end)
+for _, k in ipairs(TAGS) do fd.ctx["scanlog_" .. k] = "" end
+if not ok then error(err, 0) end
 
 -- Exit as is.
 fd.ctx.xtl_reached = reached
