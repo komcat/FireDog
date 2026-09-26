@@ -413,6 +413,12 @@ const char* StepIconFile(const char* type)
         {"pulse_output",         "IO"},
         {"wait_input",           "IO"},
         {"clear_latch",          "IO"},
+        // Time passing with nothing moving: a fixed delay, or a wait on a
+        // condition. wait_input keeps IO - the pin is the news there.
+        {"delay",                "delay icon"},
+        {"wait_until",           "delay icon"},
+        {"log",                  "log"},
+        {"run_script",           "script icon"},
         // Structure: a loop and an if each get their OWN glyph (and neither
         // shares GROUP's), for the reason given above.
         {"loop",                 "Loop_command"},
