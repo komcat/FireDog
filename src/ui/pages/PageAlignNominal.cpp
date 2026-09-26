@@ -374,6 +374,7 @@ void App::DrawAlignNominalPanel()
                     tgt->spanMm   = n.spanMm;
                     tgt->taughtAt = n.taughtAt;
                     tgt->frameAt  = n.frameAt;
+                    tgt->tunedAt.clear();   // a fresh teach supersedes any tune
                     n = *tgt;
                 } else {
                     n.uid = GenerateUid();

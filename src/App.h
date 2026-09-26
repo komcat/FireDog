@@ -199,7 +199,10 @@ private:
     void UpdateMoveWatch(float dt);   // arrival poll; called from Update()
     void DrawMoveStatusBar();   // the banner, drawn by the main frame
     void DrawLeftPanel();      // 20% column: hardware status + DUT + display
-    void DrawDutBlock();       // active-DUT status + open/close (Overview left)
+    // Active-DUT status + open/close (Overview left, top of the Run deck).
+    // `serialScale` = the serial's font size as a multiple of the body size,
+    // before it shrinks to fit the row.
+    void DrawDutBlock(float serialScale = 2.0f);
     void DrawMiddlePanel();    // main content: vision image + overlay
     void DrawLowerPanel();     // 15%-height strip: log viewer
     void DrawRightPanel();     // 15% column: Overview placeholder
@@ -334,6 +337,11 @@ private:
     // from DrawAlignFramePanel, which only reports what was taught.
     void DrawAlignFrameActions(AlignProc& a);
     void DrawAlignNominalList(AlignProc& a);
+    // The local-frame map under the nominal pane: E1, E2, the O1 axes and every
+    // nominal, `sel` highlighted, plus an optional ghost at (gx, gy) - the Tune
+    // preview. Read-only; a click on a nominal selects it (alignNomSel_).
+    void DrawAlignNominalMap(const AlignProc& a, const AlignNominal* sel,
+                             bool ghost, double gx, double gy);
     void DrawAlignNominalPanel();                  // page body (takeover frame)
     void OpenAlignNominalTeach(const AlignProc& a, const std::string& nomUid);
     // Placement page: measure where a gripped object actually is (the same two
@@ -594,11 +602,13 @@ private:
     // position of that device. Bottom-left of the image box; pure readout,
     // drawn straight onto `dl` so it can never eat a click meant for the image.
     void DrawAuxPositionLabels(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail);
-    // The registered devices' tool tips, projected onto the live image. Its
-    // "no tip:" lines stack up from the bottom-right corner, `bottomInset`
-    // above it - the grip readout's plate sits in that corner.
-    void DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
-                             const ImVec2& center, float scale, float bottomInset);
+    // The registered devices' tool tips, projected onto the live image. Each
+    // tip is marked by its NAME and edge arrow only; its dZ and the "no tip:"
+    // lines stack up from the bottom-right corner, `bottomInset` above it - the
+    // grip readout's plate sits in that corner. Returns the height it used, so
+    // the cursor readout can stack above it.
+    float DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
+                              const ImVec2& center, float scale, float bottomInset);
     // The last grip measurement (auxGrip_): the object's cross on the image
     // and a plate in the bottom-right corner. Returns the plate's height so
     // the "no tip:" lines can stack above it; 0 when there is nothing shown.
@@ -1059,6 +1069,12 @@ private:
     std::string alignNomRenameUid_;
     char        alignNomRenameBuf_[48] = "";
     std::string alignNomRenameErr_;
+    // The nominal pane's Tune: edit lx/ly by hand, previewed on the map until
+    // OK. `alignNomTuneUid_` empty = not tuning. Mode 0 = absolute (the boxes
+    // ARE the new lx/ly), 1 = offset (the boxes are added to the current ones).
+    std::string alignNomTuneUid_;
+    int         alignNomTuneMode_ = 0;
+    double      alignNomTuneX_ = 0.0, alignNomTuneY_ = 0.0;
 
     // Needle page state. The calibration itself lives on Workflow (machine
     // state, not a document) — these are only the run parameters the page

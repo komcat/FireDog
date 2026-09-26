@@ -18,10 +18,12 @@
 
 #include "command/ExecutionContext.h"   // SystemScriptPath — the standard procedures
 #include "core/Log.h"
+#include "core/Product.h"   // NowStamp - a hand-tuned nominal is stamped
 #include "vision/HalconDetector.h"   // Available() — auto stations need a licence
 
 #include <cfloat>    // FLT_MIN — the step buttons fill their column
 #include <cmath>     // fabs — the guard band's deviations
+#include <algorithm> // min/max - the nominal map's bounds
 #include <cstddef>
 #include <cstdio>
 #include <string>
@@ -1395,11 +1397,14 @@ void App::DrawAlignNominalList(AlignProc& a)
         sel = &a.nominals.front();
         alignNomSel_ = sel->uid;
     }
-    // A rename in progress belongs to ONE nominal; selecting another abandons it.
+    // A rename or tune in progress belongs to ONE nominal; selecting another
+    // abandons it (a tune previewed against one point must not land on another).
     if (!alignNomRenameUid_.empty() && (!sel || sel->uid != alignNomRenameUid_)) {
         alignNomRenameUid_.clear();
         alignNomRenameErr_.clear();
     }
+    if (!alignNomTuneUid_.empty() && (!sel || sel->uid != alignNomTuneUid_))
+        alignNomTuneUid_.clear();
 
     // ---- Right: everything you can do to the SELECTED nominal ---------------
     // Deletion is DEFERRED out of this child: erasing from the vector the pane
@@ -1518,6 +1523,81 @@ void App::DrawAlignNominalList(AlignProc& a)
         ImGui::SameLine();
         if (ImGui::SmallButton("Delete")) dropUid = n.uid;
         ImGui::EndDisabled();
+
+        // ---- Tune: edit the stored point by hand ----------------------------
+        // Absolute (type the new local X/Y) or offset (add dX/dY to the current
+        // one). Nothing is written until OK; until then the new spot is a ghost
+        // on the map, so the operator sees where it lands before committing.
+        // Local coordinates only - the same numbers every run converts through
+        // its own live frame, so a tune applies to every part from now on.
+        ImGui::SeparatorText("Tune");
+        double ghostX = 0.0, ghostY = 0.0;
+        bool   ghost  = false;
+        if (alignNomTuneUid_ != n.uid) {
+            ImGui::BeginDisabled(busy);
+            if (ImGui::SmallButton("Tune...")) {
+                alignNomTuneUid_  = n.uid;
+                alignNomTuneMode_ = 0;
+                alignNomTuneX_    = n.lx;
+                alignNomTuneY_    = n.ly;
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Edit this nominal's local X/Y by hand - absolute, or\n"
+                                  "as an offset added to the current values. Previewed\n"
+                                  "on the map; nothing is saved until OK.");
+            if (!n.tunedAt.empty()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("hand-tuned %s", n.tunedAt.c_str());
+            }
+        } else {
+            int mode = alignNomTuneMode_;
+            ImGui::RadioButton("absolute", &mode, 0);
+            ImGui::SameLine();
+            ImGui::RadioButton("offset", &mode, 1);
+            // Switching mode keeps the SAME target: the boxes are re-expressed,
+            // so flipping the radio never moves the ghost.
+            if (mode != alignNomTuneMode_) {
+                if (mode == 1) { alignNomTuneX_ -= n.lx; alignNomTuneY_ -= n.ly; }
+                else           { alignNomTuneX_ += n.lx; alignNomTuneY_ += n.ly; }
+                alignNomTuneMode_ = mode;
+            }
+            const bool off = alignNomTuneMode_ == 1;
+            ImGui::SetNextItemWidth(130.0f);
+            ImGui::InputDouble(off ? "dX mm" : "local X mm", &alignNomTuneX_,
+                               0.001, 0.01, "%.4f");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(130.0f);
+            ImGui::InputDouble(off ? "dY mm" : "local Y mm", &alignNomTuneY_,
+                               0.001, 0.01, "%.4f");
+            ghostX = off ? n.lx + alignNomTuneX_ : alignNomTuneX_;
+            ghostY = off ? n.ly + alignNomTuneY_ : alignNomTuneY_;
+            ghost  = true;
+            const double mdx = ghostX - n.lx, mdy = ghostY - n.ly;
+            ImGui::TextDisabled("  new local  X %.4f  Y %.4f mm   (moves %.4f mm)",
+                                ghostX, ghostY, std::sqrt(mdx * mdx + mdy * mdy));
+            ImGui::BeginDisabled(busy);
+            if (ImGui::SmallButton("OK")) {
+                FD_INFO("align", "'%s': nominal '%s' tuned local (%.4f, %.4f) -> "
+                                 "(%.4f, %.4f) mm",
+                        a.name.c_str(), n.name.c_str(), n.lx, n.ly, ghostX, ghostY);
+                n.lx      = ghostX;
+                n.ly      = ghostY;
+                n.tunedAt = NowStamp();
+                session_.SaveAligns();   // by hand - persisted at once, like a teach
+                alignNomTuneUid_.clear();
+                ghost = false;
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Cancel")) {
+                alignNomTuneUid_.clear();
+                ghost = false;
+            }
+        }
+
+        // ---- The map ---------------------------------------------------------
+        DrawAlignNominalMap(a, &n, ghost, ghostX, ghostY);
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -1538,6 +1618,208 @@ void App::DrawAlignNominalList(AlignProc& a)
             alignNomSel_.clear();    // the fallback above picks the first one
             break;
         }
+    }
+}
+
+// The nominal map, in the procedure device's MACHINE axes (gantry-main's X/Y,
+// mm): the grid and its tick labels are gantry coordinates, E1/E2 sit where
+// they were marked, and the local frame O1 is drawn at E1 turned by theta.
+// Every nominal is converted local -> machine through the frame, so the map
+// shows where each one lands on THIS part.
+//
+// The frame is the LIVE one when there is one, else the saved record, and the
+// map says which: the record is where the LAST taught part sat, so a map drawn
+// from it is a picture of that part, not of the one on the machine. It never
+// moves anything, so reading the record here is display only.
+//
+// +Y points DOWN, as on the camera image (pixel down = machine +Y), so the map
+// and the live view read the same way round. Uniform scale on both axes - a map
+// that stretched one axis would lie about which nominal is nearer.
+void App::DrawAlignNominalMap(const AlignProc& a, const AlignNominal* sel,
+                              bool ghost, double gx, double gy)
+{
+    AlignResult f;
+    const bool live = workflow_.LiveFrame(a.uid, &f);
+    if (!live) f = a.result;
+
+    ImVec2 size = ImGui::GetContentRegionAvail();
+    if (size.y < 180.0f) size.y = 180.0f;
+    if (size.x < 120.0f) size.x = 120.0f;
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##nommap", size);
+    const bool   hovered = ImGui::IsItemHovered();
+    const bool   clicked = ImGui::IsItemClicked();
+    ImDrawList*  dl      = ImGui::GetWindowDrawList();
+    const ImVec2 p1(p0.x + size.x, p0.y + size.y);
+    dl->AddRectFilled(p0, p1, IM_COL32(20, 22, 26, 255));
+    dl->AddRect(p0, p1, IM_COL32(70, 72, 80, 255));
+    const ImU32 dim = IM_COL32(150, 150, 155, 255);
+
+    if (!f.valid) {
+        dl->AddText(ImVec2(p0.x + 8.0f, p0.y + 6.0f), dim,
+                    "No frame yet - run the alignment to draw the map.");
+        return;
+    }
+
+    // Machine positions of everything drawn.
+    const auto toMachine = [&](double lx, double ly, double* mx, double* my) {
+        AlignLocalToMachine(f, lx, ly, mx, my);
+    };
+    struct Pt { double x, y; };
+    const Pt e1{f.e1.wx, f.e1.wy};
+    const Pt e2{f.e2.wx, f.e2.wy};
+    std::vector<Pt> nm(a.nominals.size());
+    for (std::size_t i = 0; i < a.nominals.size(); ++i)
+        toMachine(a.nominals[i].lx, a.nominals[i].ly, &nm[i].x, &nm[i].y);
+    Pt gh{0.0, 0.0};
+    if (ghost) toMachine(gx, gy, &gh.x, &gh.y);
+
+    double minX = e1.x, maxX = e1.x, minY = e1.y, maxY = e1.y;
+    const auto grow = [&](const Pt& p) {
+        minX = (std::min)(minX, p.x); maxX = (std::max)(maxX, p.x);
+        minY = (std::min)(minY, p.y); maxY = (std::max)(maxY, p.y);
+    };
+    grow(e2);
+    for (const Pt& p : nm) grow(p);
+    if (ghost) grow(gh);
+    // Never zoom tighter than 1 mm across, or a lone point fills the box.
+    const double rx = (std::max)(maxX - minX, 1.0);
+    const double ry = (std::max)(maxY - minY, 1.0);
+    const float  margin = 46.0f;   // room for the tick labels
+    const double sc = (std::min)((size.x - 2.0f * margin) / rx,
+                                 (size.y - 2.0f * margin) / ry);
+    const double ox = p0.x + size.x * 0.5 - (minX + maxX) * 0.5 * sc;
+    const double oy = p0.y + size.y * 0.5 - (minY + maxY) * 0.5 * sc;
+    const auto toScr = [&](double x, double y) {
+        return ImVec2(static_cast<float>(ox + x * sc), static_cast<float>(oy + y * sc));
+    };
+    const auto toMm = [&](const ImVec2& s, double* x, double* y) {
+        *x = (s.x - ox) / sc;
+        *y = (s.y - oy) / sc;
+    };
+
+    dl->PushClipRect(p0, p1, true);
+
+    // ---- gantry grid + tick labels: the largest 1/2/5 x 10^k mm step that
+    // keeps the lines at least ~70 px apart ------------------------------------
+    {
+        double base = 1e-3;
+        while (base * 10.0 * sc < 70.0) base *= 10.0;
+        const double step = (base * sc >= 70.0)       ? base
+                            : (base * 2.0 * sc >= 70.0) ? base * 2.0
+                            : (base * 5.0 * sc >= 70.0) ? base * 5.0
+                                                        : base * 10.0;
+        double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+        toMm(p0, &x0, &y0);
+        toMm(p1, &x1, &y1);
+        const ImU32 gridCol = IM_COL32(40, 43, 50, 255);
+        char lbl[32];
+        for (double x = std::ceil(x0 / step) * step; x <= x1; x += step) {
+            const float sx = toScr(x, 0.0).x;
+            dl->AddLine(ImVec2(sx, p0.y), ImVec2(sx, p1.y), gridCol);
+            std::snprintf(lbl, sizeof(lbl), "%.4g", x);
+            dl->AddText(ImVec2(sx + 2.0f, p0.y + 2.0f), dim, lbl);
+        }
+        for (double y = std::ceil(y0 / step) * step; y <= y1; y += step) {
+            const float sy = toScr(0.0, y).y;
+            dl->AddLine(ImVec2(p0.x, sy), ImVec2(p1.x, sy), gridCol);
+            std::snprintf(lbl, sizeof(lbl), "%.4g", y);
+            dl->AddText(ImVec2(p0.x + 2.0f, sy + 1.0f), dim, lbl);
+        }
+    }
+
+    // ---- which frame, and the gantry axis key ---------------------------------
+    {
+        char head[160];
+        std::snprintf(head, sizeof(head), "%s X/Y mm   frame: %s",
+                      a.device.c_str(),
+                      live ? (workflow_.LiveFrameCarried(a.uid) ? "KEPT" : "LIVE")
+                           : "RECORD (last taught part)");
+        const ImVec2 ts = ImGui::CalcTextSize(head);
+        dl->AddText(ImVec2(p1.x - ts.x - 8.0f, p1.y - ts.y - 6.0f),
+                    live ? IM_COL32(120, 200, 140, 255) : IM_COL32(240, 170, 80, 255),
+                    head);
+    }
+
+    // ---- the local frame O1 at E1, turned by theta ------------------------------
+    {
+        const double th  = f.thetaDeg * 3.14159265358979323846 / 180.0;
+        const double len = (std::max)(rx, ry) * 0.75;   // long enough to read
+        const ImU32  ac  = IM_COL32(110, 170, 240, 255);
+        const ImVec2 o   = toScr(e1.x, e1.y);
+        const auto arrow = [&](double dx, double dy, const char* name) {
+            const ImVec2 e = toScr(e1.x + dx * len, e1.y + dy * len);
+            dl->AddLine(o, e, ac, 1.5f);
+            // Head along the drawn direction, whatever theta is.
+            const float vx = e.x - o.x, vy = e.y - o.y;
+            const float vl = std::sqrt(vx * vx + vy * vy);
+            if (vl > 1.0f) {
+                const float ux = vx / vl, uy = vy / vl;
+                dl->AddTriangleFilled(e,
+                                      ImVec2(e.x - ux * 9.0f - uy * 4.5f, e.y - uy * 9.0f + ux * 4.5f),
+                                      ImVec2(e.x - ux * 9.0f + uy * 4.5f, e.y - uy * 9.0f - ux * 4.5f),
+                                      ac);
+                dl->AddText(ImVec2(e.x + 4.0f, e.y + 2.0f), ac, name);
+            }
+        };
+        arrow(std::cos(th), std::sin(th), "X'");    // local +X: E1 -> E2
+        arrow(-std::sin(th), std::cos(th), "Y'");   // local +Y: X turned +90 deg
+    }
+
+    // ---- E1 / E2 ------------------------------------------------------------
+    const ImU32 eCol = IM_COL32(90, 210, 120, 255);
+    {
+        const ImVec2 s1 = toScr(e1.x, e1.y), s2 = toScr(e2.x, e2.y);
+        dl->AddCircle(s1, 6.0f, eCol, 0, 2.0f);
+        dl->AddText(ImVec2(s1.x - 22.0f, s1.y + 6.0f), eCol, "E1");
+        dl->AddCircle(s2, 6.0f, eCol, 0, 2.0f);
+        dl->AddText(ImVec2(s2.x - 8.0f, s2.y + 8.0f), eCol, "E2");
+    }
+
+    // ---- Nominals -------------------------------------------------------------
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    int   nearest   = -1;
+    float nearestD2 = 12.0f * 12.0f;   // pick radius, px
+    for (std::size_t i = 0; i < a.nominals.size(); ++i) {
+        const AlignNominal& n = a.nominals[i];
+        const ImVec2 q  = toScr(nm[i].x, nm[i].y);
+        const bool   me = sel && n.uid == sel->uid;
+        const ImU32  c  = me ? IM_COL32(255, 205, 60, 255) : IM_COL32(200, 200, 205, 255);
+        dl->AddCircleFilled(q, me ? 5.5f : 4.0f, c);
+        if (me) dl->AddCircle(q, 9.0f, c, 0, 1.5f);
+        dl->AddText(ImVec2(q.x + 8.0f, q.y - 16.0f), c, n.name.c_str());
+        const float dx = mouse.x - q.x, dy = mouse.y - q.y;
+        if (hovered && dx * dx + dy * dy < nearestD2) {
+            nearestD2 = dx * dx + dy * dy;
+            nearest   = static_cast<int>(i);
+        }
+    }
+
+    // ---- The Tune preview -----------------------------------------------------
+    if (ghost && sel) {
+        double sx = 0.0, sy = 0.0;
+        toMachine(sel->lx, sel->ly, &sx, &sy);
+        const ImU32  gc   = IM_COL32(255, 140, 40, 255);
+        const ImVec2 from = toScr(sx, sy);
+        const ImVec2 to   = toScr(gh.x, gh.y);
+        dl->AddLine(from, to, gc, 1.0f);
+        dl->AddCircle(to, 6.0f, gc, 0, 2.0f);
+        dl->AddText(ImVec2(to.x + 8.0f, to.y + 2.0f), gc, "new");
+    }
+    dl->PopClipRect();
+
+    if (nearest >= 0) {
+        const AlignNominal& n = a.nominals[static_cast<std::size_t>(nearest)];
+        ImGui::SetTooltip("%s\n%s X %.4f  Y %.4f mm\nlocal X %.4f  Y %.4f mm%s",
+                          n.name.c_str(), a.device.c_str(),
+                          nm[static_cast<std::size_t>(nearest)].x,
+                          nm[static_cast<std::size_t>(nearest)].y, n.lx, n.ly,
+                          n.tunedAt.empty() ? "" : "\n(hand-tuned)");
+        if (clicked) alignNomSel_ = n.uid;   // selection only, never the data
+    } else if (hovered) {
+        double mx = 0.0, my = 0.0;
+        toMm(mouse, &mx, &my);
+        ImGui::SetTooltip("%s X %.4f  Y %.4f mm", a.device.c_str(), mx, my);
     }
 }
 

@@ -1212,6 +1212,12 @@ void App::DrawRunPanel()
 
     // ---- Left: the deck ----
     ImGui::BeginChild("runDeck", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
+    // The DUT first: which part is on the machine is the thing an operator
+    // reads before anything else, so it heads the deck at 4x the body size
+    // (shrunk to fit the column). Outside the running-disable on purpose -
+    // Pass / Fail / Close behave exactly as they did in the right column.
+    DrawDutBlock(4.0f);
+    ImGui::Separator();
     ImGui::BeginDisabled(running);
     // Active slot: the deck shows exactly ONE slot, so this combo IS the view,
     // and it is also what Execute runs. It survives a restart (UiSettings
@@ -1471,7 +1477,7 @@ void App::DrawRunPanel()
         runShotPanelH_ += ImGui::GetIO().MouseDelta.y;
         splitting = true;
     }
-    DrawDutBlock();
+    // (The DUT block moved to the top of the deck, left column.)
     // The engine line is pinned to the BOTTOM and the values scroll above it:
     // "what is the engine doing" is glanced at, and a long value list must not
     // push it off the panel.

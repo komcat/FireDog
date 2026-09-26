@@ -593,6 +593,23 @@ is refused. Recipe steps store the nominal's **uid**, so they follow a rename; a
 script or typed step that names it by its old name does not. *Delete* still sweeps
 any view, focus pose and detection models an older nominal owns.
 
+**The map** (`DrawAlignNominalMap`) is drawn in the procedure device's **machine
+axes** (gantry-main X/Y, mm): a grid with gantry tick labels, E1/E2 where they
+were marked, the local frame's X′/Y′ at E1 turned by theta, and every nominal
+converted local → machine, the selected one highlighted. The frame is the live
+one, else the record — and the map labels which, because a map from the record
+pictures the last taught part, not this one. Display only either way. +Y points
+down, as on the camera image; the scale is uniform. Hovering names a point (both
+coordinate pairs) or reads the gantry X/Y under the cursor; a click selects —
+selection only, never data.
+
+**Tune** edits the selected nominal's `lx`/`ly` by hand: *absolute* (type the new
+values) or *offset* (added to the current ones). Switching mode re-expresses the
+boxes without moving the target. The new spot is a ghost on the map until *OK*,
+which saves at once and stamps `tunedAt`; from then on the marks and `mx`/`my`
+record the teach, not the stored point, and the pane says "hand-tuned". A
+re-teach clears the stamp.
+
 The pane no longer teaches a camera view, a camera focus pose, loads the
 local→machine probe (*Use*) or opens the placement page. What that leaves behind
 is listed under §6c.

@@ -193,6 +193,7 @@ nlohmann::json NominalToJson(const AlignNominal& n)
     j["span_mm"]  = n.spanMm;
     j["taught_at"] = n.taughtAt;
     j["frame_at"]  = n.frameAt;
+    if (!n.tunedAt.empty()) j["tuned_at"] = n.tunedAt;
     j["mode1"]     = n.mode1;
     j["mode2"]     = n.mode2;
     j["det1"]      = n.det1;
@@ -225,6 +226,7 @@ AlignNominal NominalFromJson(const nlohmann::json& j)
     n.spanMm   = j.value("span_mm", 0.0);
     n.taughtAt = j.value("taught_at", "");
     n.frameAt  = j.value("frame_at", "");
+    n.tunedAt  = j.value("tuned_at", "");
     n.det1     = j.value("det1", "");
     n.det2     = j.value("det2", "");
     // Written before the mode existed, a named model WAS the mode — so a row

@@ -342,14 +342,22 @@ void App::DrawRecipeEditPanel()
         // Hidden recipes read as hidden even when the filter lets them through;
         // a selected recipe the filter would drop reads the same way.
         const bool dim = r.hidden || !passes;
-        if (dim) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+        // Unsaved edits read YELLOW, so the Save* on the toolbar can be traced
+        // to the recipes it is about. Yellow wins over dim: an unsaved change
+        // to a hidden recipe is exactly the one nobody would otherwise notice.
+        const bool dirty = session_.RecipeDirty(r);
+        if (dirty)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+        else if (dim)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
         if (ImGui::Selectable(r.name.c_str(), recipeSel_ == i)) {
             recipeSel_ = i;
             ClearStepSel();
         }
-        if (dim) ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered() && (r.hidden || !r.tags.empty())) {
-            std::string tip = r.hidden ? "hidden" : "";
+        if (dirty || dim) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered() && (dirty || r.hidden || !r.tags.empty())) {
+            std::string tip = dirty ? "unsaved changes" : "";
+            if (r.hidden) tip += (tip.empty() ? "" : "  ") + std::string("hidden");
             for (const std::string& t : r.tags) tip += (tip.empty() ? "" : "  ") + ("#" + t);
             ImGui::SetTooltip("%s", tip.c_str());
         }
@@ -898,9 +906,24 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
         const float numW = ImGui::CalcTextSize("00").x +
                            ImGui::GetStyle().ItemInnerSpacing.x;
 
+        // A leaf whose params do not validate is drawn RED, so a broken step is
+        // visible in the list and not only in its form - the same check the
+        // form's error line and Start's validation run (ValidateParams), never
+        // a second opinion. Disabled steps are skipped: Start skips them too.
+        std::string badWhy;
+        if (!structural && s.type != "stop_recipe" && s.enabled) {
+            if (const CommandSpec* spec = orch_.registry.Find(s.type))
+                badWhy = ValidateParams(*spec, s.params, nullptr);
+            else
+                badWhy = "unknown command '" + s.type + "'";
+        }
+        const bool bad = !badWhy.empty() && !executing;
+
         const bool dim = !s.enabled && !executing;
         if (executing)
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+        else if (bad)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.3f, 1.0f));
         else if (dim)
             ImGui::PushStyleColor(ImGuiCol_Text,
                                   ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
@@ -959,10 +982,12 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
             ImGui::SetCursorPosX(x0 + numW);
             DrawStepIconInline(StepIcon(s.type.c_str()));
             ImGui::TextUnformatted(text);
+            if (bad && ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", badWhy.c_str());
         }
         ImGui::PopID();
 
-        if (executing || dim) ImGui::PopStyleColor();
+        if (executing || bad || dim) ImGui::PopStyleColor();
         path.pop_back();
     }
 }

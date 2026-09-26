@@ -162,6 +162,10 @@ struct AlignNominal {
     double      spanMm = 0.0;
     std::string taughtAt;             // "2026-08-01T10:22:31"
     std::string frameAt;              // capturedAt of the frame it was converted through
+    // Set when lx/ly were TUNED by hand (the Alignment page's Tune) after the
+    // teach. From then on the marks and mx/my above are the record of the
+    // teach, not of the stored point - this says so. A re-teach clears it.
+    std::string tunedAt;
 
     // Where the CAMERA stands, focused, to look at this nominal ITSELF — the
     // bare target on the substrate, with nothing gripped over it. A private

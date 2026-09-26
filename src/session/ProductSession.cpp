@@ -270,7 +270,7 @@ void ProductSession::LoadRecipesFromDisk()
                 if (!recipesUid_.empty() && recipesUid_ != e->uid)
                     FD_WARN("product", "recipes uid mismatch: manifest %s vs file '%s'",
                             e->uid.c_str(), recipesUid_.c_str());
-                recipesBaseline_ = RecipesDump();
+                RebaselineRecipes();
                 return;
             }
             // New products carry an empty seed file (no editor yet in Phase A) —
@@ -284,7 +284,7 @@ void ProductSession::LoadRecipesFromDisk()
     }
     recipesUid_.clear();
     recipes_ = LoadRecipes();   // config/recipes.local.json -> recipes.json
-    recipesBaseline_ = RecipesDump();
+    RebaselineRecipes();
 }
 
 // Write the in-memory recipes to the product's recipes file when a product is
@@ -303,7 +303,7 @@ void ProductSession::SaveRecipes()
     if (uid.empty()) uid = GenerateUid();
     recipesUid_ = uid;
     if (SaveRecipesFile(path, recipes_, uid)) {
-        recipesBaseline_ = RecipesDump();
+        RebaselineRecipes();
         FD_INFO("recipe", "saved %zu recipe(s) to %s", recipes_.size(), path.c_str());
     } else {
         FD_WARN("recipe", "could not save recipes to %s", path.c_str());
@@ -314,7 +314,22 @@ void ProductSession::SaveRecipesTo(const std::string& path, const std::string& u
 {
     SaveRecipesFile(path, recipes_, uid);
     recipesUid_      = uid;
+    RebaselineRecipes();
+}
+
+// Both baselines at once, so "the file is dirty" and "this recipe is dirty"
+// can never be measured against two different save moments.
+void ProductSession::RebaselineRecipes()
+{
     recipesBaseline_ = RecipesDump();
+    recipeBaselineByUid_.clear();
+    for (const Recipe& r : recipes_) recipeBaselineByUid_[r.uid] = RecipeToJson(r).dump();
+}
+
+bool ProductSession::RecipeDirty(const Recipe& r) const
+{
+    const auto it = recipeBaselineByUid_.find(r.uid);
+    return it == recipeBaselineByUid_.end() || RecipeToJson(r).dump() != it->second;
 }
 
 // Canonical serialization of the in-memory recipes, compared against the

@@ -195,6 +195,7 @@ void App::DrawAuxWindow()
         // enableClickMove_ is PERSISTED in UiSettings: a technician who left it
         // on would otherwise hand an operator a live click-to-move surface at
         // the next sign-in, with no visible control to turn it off.
+        std::string cursorLbl;   // drawn in the bottom-right stack, further down
         if (haveImg && imgHovered && enableClickMove_ && CanUse(kRoleJog)) {
             const ImVec2 m = ImGui::GetIO().MousePos;
             // Screen -> camera pixels. The image is "cover"-fit with a single
@@ -214,17 +215,13 @@ void App::DrawAuxWindow()
             dl->AddLine(ImVec2(m.x - mh, m.y), ImVec2(m.x + mh, m.y), markCol, 1.5f);
             dl->AddLine(ImVec2(m.x, m.y - mh), ImVec2(m.x, m.y + mh), markCol, 1.5f);
 
-            // World-distance label near the cursor (kept inside the image).
+            // The world distance is NOT drawn at the cursor any more - a label
+            // riding the mouse covers exactly what is being aimed at. It is
+            // parked in the bottom-right readout stack below, once the corner's
+            // other occupants have said how much room they took.
             char lbl[96];
             std::snprintf(lbl, sizeof(lbl), "dX %+.3f mm   dY %+.3f mm", dxMM, dyMM);
-            const ImVec2 lts = ImGui::CalcTextSize(lbl);
-            ImVec2 lp(m.x + 14.0f, m.y + 8.0f);
-            lp.x = fminf(lp.x, origin.x + avail.x - lts.x - 8.0f);
-            lp.y = fminf(lp.y, origin.y + avail.y - lts.y - 6.0f);
-            dl->AddRectFilled(ImVec2(lp.x - 4.0f, lp.y - 2.0f),
-                              ImVec2(lp.x + lts.x + 4.0f, lp.y + lts.y + 2.0f),
-                              IM_COL32(0, 0, 0, 165), 3.0f);
-            dl->AddText(lp, IM_COL32(255, 235, 150, 255), lbl);
+            cursorLbl = lbl;
 
             // Left-click -> move gantry-main (ACS) by this XY offset, via layer 2.
             if (imgClicked) workflow_.MoveGantryRelativeMM(dxMM, dyMM);
@@ -250,10 +247,26 @@ void App::DrawAuxWindow()
         float gripPlateH = 0.0f;
         if (haveImg) gripPlateH = DrawAuxGripResult(dl, origin, avail);
 
+        float tipsH = 0.0f;
         if (haveImg && showGripperMarks_) {
             const float scale = fmaxf(avail.x / static_cast<float>(cameraW_),
                                       avail.y / static_cast<float>(cameraH_));
-            DrawAuxGripperMarks(dl, origin, avail, center, scale, gripPlateH);
+            tipsH = DrawAuxGripperMarks(dl, origin, avail, center, scale, gripPlateH);
+        }
+
+        // ---- The cursor's world distance, parked bottom-right ----
+        // TOP of the corner stack (grip plate, then the tools' dZ lines, then
+        // this), so the lines under it do not jump each time the cursor enters
+        // or leaves the image.
+        if (!cursorLbl.empty()) {
+            const ImVec2 lts = ImGui::CalcTextSize(cursorLbl.c_str());
+            const ImVec2 lp(origin.x + avail.x - lts.x - 12.0f,
+                            origin.y + avail.y - 8.0f - gripPlateH - tipsH -
+                                ImGui::GetTextLineHeightWithSpacing());
+            dl->AddRectFilled(ImVec2(lp.x - 4.0f, lp.y - 2.0f),
+                              ImVec2(lp.x + lts.x + 4.0f, lp.y + lts.y + 2.0f),
+                              IM_COL32(0, 0, 0, 165), 3.0f);
+            dl->AddText(lp, IM_COL32(255, 235, 150, 255), cursorLbl.c_str());
         }
 
         // ---- Where each stage stands, named ----
@@ -586,20 +599,20 @@ void App::DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2&
 // separates 'the gripper is over there' from 'the gripper is where I am
 // looking'. Same helper the pick window uses, so an edge arrow means the same
 // thing on both surfaces.
-void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
-                              const ImVec2& center, float scale, float bottomInset)
+float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
+                               const ImVec2& center, float scale, float bottomInset)
 {
     (void)center;   // the projection goes through the shared CameraView
     (void)scale;    // ...which computes the same cover fit from the box
-    if (pixelToMmX_ <= 0.0f || pixelToMmY_ <= 0.0f) return;
+    if (pixelToMmX_ <= 0.0f || pixelToMmY_ <= 0.0f) return 0.0f;
     double gx = 0.0, gy = 0.0;
-    if (!workflow_.GantryXY(gx, gy)) return;
+    if (!workflow_.GantryXY(gx, gy)) return 0.0f;
 
     // Which device this image's pose belongs to, asked of layer 2 rather than
     // assumed: a UI overlay must not go hunting for a device called
     // "gantry-main".
     const std::string refName = workflow_.GantryName();
-    if (refName.empty()) return;
+    if (refName.empty()) return 0.0f;
     // ...and its Z, so a tip can say how far it stands from the plane in
     // focus. That is the half of "where is the tool" a picture cannot show:
     // two tips 3 mm apart in Z land on the same pixel.
@@ -636,6 +649,10 @@ void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2
     // on screen cannot tell a refusal from a broken overlay, and the log says it
     // once per session.
     std::vector<std::string> gone;
+    // Each drawn tip's dZ line, for the bottom-right readout. On the mark it
+    // overlapped the next tip's plate whenever two tools sat near each other
+    // or both ran off the same edge; in the corner every line has its own row.
+    std::vector<std::string> dzLines;
 
     for (const auto& [name, r] : workflow_.DeviceRegs()) {
         if (!r.valid || r.refDevice != refName) continue;
@@ -658,15 +675,20 @@ void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2
         const bool atFocus = haveGz && std::fabs(tip.z - gz) <= kTipAtFocusMM;
         if (haveGz) dz = tip.z - gz;
 
-        // The plate names the device and says 'reg', because a cross that only
-        // said 'hex-left' would read as an observation of one.
-        char lbl[96];
-        if (!haveGz)
-            std::snprintf(lbl, sizeof(lbl), "%s reg", name.c_str());
-        else if (atFocus)
-            std::snprintf(lbl, sizeof(lbl), "%s reg  in focus", name.c_str());
-        else
-            std::snprintf(lbl, sizeof(lbl), "%s reg  dZ %+.3f", name.c_str(), dz);
+        // The mark carries the device NAME only (with its edge arrow when off
+        // screen); the dZ goes to the corner readout, which says 'reg' so a
+        // number there cannot read as an observation of the tool.
+        const std::string lbl = name;
+        {
+            char line[128];
+            if (!haveGz)
+                std::snprintf(line, sizeof(line), "%s reg", name.c_str());
+            else if (atFocus)
+                std::snprintf(line, sizeof(line), "%s reg  in focus", name.c_str());
+            else
+                std::snprintf(line, sizeof(line), "%s reg  dZ %+.3f mm", name.c_str(), dz);
+            dzLines.push_back(line);
+        }
 
         // How big the tool is, before the cross that says where it is: the
         // outline is context for the mark, so the mark and its plate stay
@@ -701,27 +723,35 @@ void App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2
         cm.wx    = tip.x;
         cm.wy    = tip.y;
         cm.have  = true;
-        cm.label = lbl;
+        cm.label = lbl.c_str();
         cm.col   = kTipCol;
         DrawWorldMark(dl, wv, cm, 16.0f);
     }
 
     // Bottom-right, stacked upward: the opposite corner from the position plate,
     // and out of the way of a mark that is on screen.
+    // The drawn tips' dZ first (nearest the corner - the lines read most
+    // often), then the ones that could not be drawn.
     const float lineH = ImGui::GetTextLineHeightWithSpacing();
-    float       y     = origin.y + avail.y - 8.0f - bottomInset - lineH;
-    for (const std::string& g : gone) {
-        char line[192];
-        std::snprintf(line, sizeof(line), "no tip: %s", g.c_str());
+    const float y0    = origin.y + avail.y - 8.0f - bottomInset - lineH;
+    float       y     = y0;
+    const auto put = [&](const char* line, ImU32 col) {
         const ImVec2 ts = ImGui::CalcTextSize(line);
         const ImVec2 at(origin.x + avail.x - ts.x - 12.0f, y);
-        if (at.x < origin.x + 4.0f) break;   // narrower than the text: say nothing
+        if (at.x < origin.x + 4.0f) return;   // narrower than the text: say nothing
         dl->AddRectFilled(ImVec2(at.x - 4.0f, at.y - 2.0f),
                           ImVec2(at.x + ts.x + 4.0f, at.y + ts.y + 2.0f),
                           IM_COL32(0, 0, 0, 165), 3.0f);
-        dl->AddText(at, kTipGoneCol, line);
+        dl->AddText(at, col, line);
         y -= lineH;
+    };
+    for (const std::string& d : dzLines) put(d.c_str(), kTipCol);
+    for (const std::string& g : gone) {
+        char line[192];
+        std::snprintf(line, sizeof(line), "no tip: %s", g.c_str());
+        put(line, kTipGoneCol);
     }
+    return y0 - y;   // the rows used, so the cursor readout stacks above them
 }
 
 // The last grip measurement, on the picture and in words.

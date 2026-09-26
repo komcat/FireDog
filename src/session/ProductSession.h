@@ -15,6 +15,7 @@
 // session never needs a callback back into the UI.
 #pragma once
 
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -112,6 +113,10 @@ public:
     void SaveRecipesTo(const std::string& path, const std::string& uid);
     std::string RecipesDump() const;    // canonical serialization
     bool RecipesDirty() const { return RecipesDump() != recipesBaseline_; }
+    // ONE recipe's unsaved state, against the same load/save moment: true when
+    // it differs from its saved form or did not exist then (new / duplicated /
+    // pasted). The Recipe Editor's list colours these rows.
+    bool RecipeDirty(const Recipe& r) const;
 
     // Programs (Run page) — same persistence conventions as recipes.
     void LoadProgramsFromDisk();
@@ -239,6 +244,8 @@ private:
     std::vector<Recipe> recipes_;
     std::string         recipesUid_;        // file uid (product integrity check)
     std::string         recipesBaseline_;   // serialized state at load/save
+    std::map<std::string, std::string> recipeBaselineByUid_;   // ...per recipe, by uid
+    void RebaselineRecipes();   // sets BOTH baselines - the only writer of either
 
     std::vector<Program> programs_;
     std::string          programsUid_;

@@ -37,7 +37,7 @@ ImVec4 LevelColor(LogLevel l) {
 // Active-DUT status + open/close controls (Overview left panel). The operator
 // path: type/scan a serial, Open (load-or-create). Recipes/scripts drive the
 // same DutSession through the dut_* commands. Design: docs/dut-design.md.
-void App::DrawDutBlock()
+void App::DrawDutBlock(float serialScale)
 {
     const DutSession::Info di = DutSession::Instance().GetInfo();
     // A dot beside the label says whether a record is open: green with a DUT,
@@ -81,12 +81,13 @@ void App::DrawDutBlock()
         return;
     }
     if (di.open) {
-        // The serial is what an operator checks from across the bench: twice
-        // the body size, shrunk to fit the row when a long one would overflow.
+        // The serial is what an operator checks from across the bench:
+        // `serialScale` x the body size, shrunk to fit the row when a long one
+        // would overflow.
         {
             const float base = ImGui::GetStyle().FontSizeBase;
             const float maxW = ImGui::GetContentRegionAvail().x;
-            float size = base * 2.0f;
+            float size = base * serialScale;
             ImGui::PushFont(nullptr, size);
             const float tw = ImGui::CalcTextSize(di.serial.c_str()).x;
             ImGui::PopFont();
