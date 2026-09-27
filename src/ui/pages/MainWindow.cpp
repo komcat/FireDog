@@ -335,6 +335,9 @@ void App::DrawMainWindow()
                 if (CanAccess(Page::Tray) &&
                     ImGui::MenuItem("Waffle Tray", "F10", currentPage_ == Page::Tray))
                     ToggleEditorPage(Page::Tray);
+                if (CanAccess(Page::Mosaic) &&
+                    ImGui::MenuItem("Mosaic", "F11", currentPage_ == Page::Mosaic))
+                    ToggleEditorPage(Page::Mosaic);
                 if (CanAccess(Page::Scripts) &&
                     ImGui::MenuItem("Scripts", "F4", currentPage_ == Page::Scripts))
                     ToggleEditorPage(Page::Scripts);
@@ -358,7 +361,7 @@ void App::DrawMainWindow()
 
         // Global page shortcuts: F1 Run, F2 Recipe Editor, F3 Motion, F4
         // Scripts, F5 Alignment, F6 Placement, F7 Needle, F8 Registration,
-        // F9 Gripped object. Activate (not toggle)
+        // F9 Gripped object, F10 Waffle Tray, F11 Mosaic. Activate (not toggle)
         // — pressing the key on its own page is a no-op.
         if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && currentPage_ != Page::Run)
             ToggleEditorPage(Page::Run);
@@ -384,6 +387,8 @@ void App::DrawMainWindow()
             ToggleEditorPage(Page::Grip);
         if (ImGui::IsKeyPressed(ImGuiKey_F10, false) && currentPage_ != Page::Tray)
             ToggleEditorPage(Page::Tray);
+        if (ImGui::IsKeyPressed(ImGuiKey_F11, false) && currentPage_ != Page::Mosaic)
+            ToggleEditorPage(Page::Mosaic);
 
         // Quick-access strip (all pages): one-click jump to the operator pages.
         // Same guarded routing as the F-keys (activate, not toggle — clicking
@@ -465,7 +470,8 @@ void App::DrawMainWindow()
             currentPage_ == Page::Align || currentPage_ == Page::VisionTeach ||
             currentPage_ == Page::AlignNominal || currentPage_ == Page::AlignPlace ||
             currentPage_ == Page::Needle || currentPage_ == Page::DeviceReg ||
-            currentPage_ == Page::Grip || currentPage_ == Page::Tray) {
+            currentPage_ == Page::Grip || currentPage_ == Page::Tray ||
+            currentPage_ == Page::Mosaic) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
@@ -479,6 +485,7 @@ void App::DrawMainWindow()
                                 : currentPage_ == Page::DeviceReg     ? "Device registration"
                                 : currentPage_ == Page::Grip          ? "Gripped object"
                                 : currentPage_ == Page::Tray          ? "Waffle tray"
+                                : currentPage_ == Page::Mosaic        ? "Mosaic"
                                                                       : "Run";
             // Vision teach and the two alignment teach pages are only ever
             // reached FROM the Alignment page, and a takeover -> takeover switch
@@ -521,6 +528,7 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::DeviceReg)     DrawDeviceRegPanel();
             else if (currentPage_ == Page::Grip)          DrawGripPanel();
             else if (currentPage_ == Page::Tray)          DrawTrayPanel();
+            else if (currentPage_ == Page::Mosaic)        DrawMosaicPanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();

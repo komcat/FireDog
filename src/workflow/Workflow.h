@@ -335,6 +335,45 @@ public:
     void SetCapturedView(CapturedView v);
     bool TakeCapturedView(CapturedView* out);   // false = nothing new
 
+    // ---- Mosaic hand-back (mosaic_capture) ----------------------------------
+    // Each tile as it is filed, so the Mosaic page fills its picture in while
+    // the gantry walks. A QUEUE this time, not a slot: every tile is a
+    // different part of the picture, and the one worth showing is all of them.
+    // What travels is the quarter-size preview (a 5 MP frame is ~15 MB, its
+    // quarter under 1 MB); the full frame is already on disk.
+    struct MosaicTileEvent {
+        std::string dir;                  // the mosaic's folder
+        int         index = 0;            // capture order, 0-based
+        int         total = 0;            // tiles in the plan
+        int         row = 0, col = 0;     // grid cell
+        double      x = 0.0, y = 0.0;     // frame top-left on the canvas, px
+        int         w = 0, h = 0;         // full frame size, px
+        std::vector<unsigned char> thumb; // the quarter preview, RGB
+        int         tw = 0, th = 0;
+    };
+    // A capture's start (tiles == 0, `started`) and end, for the page to open
+    // the folder and say how it went.
+    struct MosaicDoneEvent {
+        std::string dir;
+        bool        started = false;   // true: the run has just created `dir`
+        bool        ok = false;        // (end) every tile was filed
+        int         tiles = 0;         // (end) tiles filed
+        std::string why;               // (end) why not, when !ok
+    };
+    void QueueMosaicTile(MosaicTileEvent ev);
+    std::vector<MosaicTileEvent> TakeMosaicTiles();
+    void QueueMosaicDone(const MosaicDoneEvent& ev);
+    std::vector<MosaicDoneEvent> TakeMosaicDone();
+    // A measured camera map (mosaic_calibrate). Machine state, like the needle
+    // lever arm: the worker queues it and App::Update hands it to the Mosaic
+    // page as a proposal - an Admin applies it there; nothing writes it blind.
+    struct MosaicCalEvent {
+        double      m[4] = {0.0, 0.0, 0.0, 0.0};   // mm per px, row-major 2x2
+        std::string note;
+    };
+    void QueueMosaicCal(const MosaicCalEvent& ev);
+    std::vector<MosaicCalEvent> TakeMosaicCal();
+
     // ---- LIVE taught frames (align_solve -> align_apply / move_local) -------
     // Runtime state, deliberately NOT the document. A frame describes where ONE
     // physical part sat. The moment that part could have changed, a frame taught
@@ -601,6 +640,12 @@ private:
     std::map<std::string, std::set<TrayCell>> trayConsumed_;
     std::map<std::string, TrayCell>          trayActive_;
     std::vector<TrayUsedEvent>               trayUsedQueue_;
+
+    // mosaic_capture's tiles and start/end events, worker -> UI.
+    std::mutex                               mosaicMu_;
+    std::vector<MosaicTileEvent>             mosaicTiles_;
+    std::vector<MosaicDoneEvent>             mosaicDone_;
+    std::vector<MosaicCalEvent>              mosaicCal_;
 
     // The needle lever arm, plus its worker->UI queue.
     mutable std::mutex     needleMu_;

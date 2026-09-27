@@ -1,0 +1,10 @@
+{
+  "save_dir": "C:\\mosaic",
+  "areas": [],
+  "camera_cal": {
+    "calibrated": false,
+    "mm_per_px": [0.0, 0.0, 0.0, 0.0],
+    "calibrated_at": "",
+    "note": ""
+  }
+}

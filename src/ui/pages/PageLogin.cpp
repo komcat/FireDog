@@ -50,6 +50,11 @@ UserRole MinRoleFor(Page p)
         // exactly the Motion page's saved positions, which a Technician
         // already teaches. Its Go buttons sit behind the jog arm like theirs.
         case Page::Tray:
+        // A mosaic walks the gantry over an area and files pictures in its own
+        // folder - machine setup of the Tray page's kind, not teaching: nothing
+        // it writes changes where the machine thinks anything is. Capture and
+        // every Go sit behind the jog arm.
+        case Page::Mosaic:
             return UserRole::Technician;
 
         // Teaching the machine: WatchEdit, TransformEdit, Scripts, Align,

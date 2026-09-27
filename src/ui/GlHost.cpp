@@ -250,6 +250,13 @@ unsigned int GlHost::EnsureTextureRGB(unsigned int tex, int width, int height, c
     return static_cast<unsigned int>(id);
 }
 
+void GlHost::DeleteTexture(unsigned int tex)
+{
+    if (tex == 0) return;
+    const GLuint id = static_cast<GLuint>(tex);
+    glDeleteTextures(1, &id);
+}
+
 unsigned int GlHost::EnsureTextureRGBA(unsigned int tex, int width, int height,
                                        const void* rgba)
 {

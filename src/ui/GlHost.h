@@ -71,6 +71,11 @@ public:
     // nothing was found (the vision teach page's filter overlay).
     unsigned int EnsureTextureRGBA(unsigned int tex, int width, int height, const void* rgba);
 
+    // Free a texture made by the functions above (0 is ignored). For a view
+    // that pages textures in and out — the Mosaic page holds a few hundred
+    // tiles and cannot keep every full frame on the GPU at once.
+    void DeleteTexture(unsigned int tex);
+
 private:
     void ApplyFont();        // apply pending size/typeface at a frame boundary
     void TrackPlacement();   // remember where the window is, each frame

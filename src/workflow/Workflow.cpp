@@ -461,6 +461,42 @@ bool Workflow::TakeCapturedView(CapturedView* out)
     return true;
 }
 
+void Workflow::QueueMosaicTile(MosaicTileEvent ev)
+{
+    const std::lock_guard<std::mutex> lock(mosaicMu_);
+    mosaicTiles_.push_back(std::move(ev));
+}
+
+std::vector<Workflow::MosaicTileEvent> Workflow::TakeMosaicTiles()
+{
+    const std::lock_guard<std::mutex> lock(mosaicMu_);
+    return std::exchange(mosaicTiles_, {});
+}
+
+void Workflow::QueueMosaicDone(const MosaicDoneEvent& ev)
+{
+    const std::lock_guard<std::mutex> lock(mosaicMu_);
+    mosaicDone_.push_back(ev);
+}
+
+std::vector<Workflow::MosaicDoneEvent> Workflow::TakeMosaicDone()
+{
+    const std::lock_guard<std::mutex> lock(mosaicMu_);
+    return std::exchange(mosaicDone_, {});
+}
+
+void Workflow::QueueMosaicCal(const MosaicCalEvent& ev)
+{
+    const std::lock_guard<std::mutex> lock(mosaicMu_);
+    mosaicCal_.push_back(ev);
+}
+
+std::vector<Workflow::MosaicCalEvent> Workflow::TakeMosaicCal()
+{
+    const std::lock_guard<std::mutex> lock(mosaicMu_);
+    return std::exchange(mosaicCal_, {});
+}
+
 void Workflow::QueueAlignResult(const std::string& uid, const AlignResult& r)
 {
     const std::lock_guard<std::mutex> lock(alignMu_);

@@ -84,6 +84,10 @@ struct UiSettings {
     // Whether the floating Waffle Tray window was open. Restored, because an
     // operator who keeps it beside the Run page wants it back next shift.
     bool  showTrayWin = false;
+    // Mosaic page: widths of its left (areas) and right (annotations) columns
+    // in px (0 = the App defaults).
+    float mosaicLeftW  = 0.0f;
+    float mosaicRightW = 0.0f;
 
     // Run page: height of the Scan band in px (0 = default). Its own field
     // rather than lowerH: the band carries the scan parameter forms, and how

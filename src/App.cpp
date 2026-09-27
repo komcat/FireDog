@@ -40,7 +40,7 @@ bool IsTakeoverPage(Page p)
            p == Page::DutView || p == Page::Run || p == Page::Align ||
            p == Page::VisionTeach || p == Page::AlignNominal ||
            p == Page::AlignPlace || p == Page::Needle || p == Page::DeviceReg ||
-           p == Page::Grip || p == Page::Tray;
+           p == Page::Grip || p == Page::Tray || p == Page::Mosaic;
 }
 } // namespace
 
@@ -79,6 +79,8 @@ int App::Run()
         if (ui.gripCtlW      > 0.0f) gripCtlW_      = ui.gripCtlW;
         if (ui.trayCtlW      > 0.0f) trayCtlW_      = ui.trayCtlW;
         showTray_        = ui.showTrayWin;
+        if (ui.mosaicLeftW   > 0.0f) mosaicLeftW_   = ui.mosaicLeftW;
+        if (ui.mosaicRightW  > 0.0f) mosaicRightW_  = ui.mosaicRightW;
         showChart_       = ui.showChart;
         enableClickMove_ = ui.clickToMove;
         showVisionMarks_ = ui.showVisionMarks;
@@ -121,6 +123,15 @@ int App::Run()
         }
     }
     viewportTex_ = host_.MakeTextureRGBA(IW, IH, px.data());
+
+    // The mosaic areas and save folder: machine state, like the needle
+    // calibration, read once here and written only by the Mosaic page.
+    {
+        std::string used;
+        mosaicCfg_ = LoadMosaicConfig(&used);
+        FD_INFO("mosaic", "%zu mosaic area(s) from %s, saving to %s", mosaicCfg_.areas.size(),
+                used.empty() ? "(defaults)" : used.c_str(), mosaicCfg_.saveDir.c_str());
+    }
 
     const HardwareConfig hw = HardwareConfig::Load("config/hardware.json");
     watchCfg_ = hw.ioWatch;   // working copy for the IO Watch editor
@@ -300,6 +311,12 @@ void App::Update(float dt)
         if (!ev.all) cells.push_back(ev.cell);
         session_.SetTrayCellsUsed(ev.trayUid, cells, ev.used);
     }
+
+    // The Mosaic page's share: a capture's start / tiles / end, the worker's
+    // decoded tiles (GL uploads, so here on the UI thread and a few per frame)
+    // and the texture paging. Runs whichever page is open, so a capture
+    // started there and left keeps its picture current.
+    UpdateMosaic();
 
     // A finished reliability run writes its statistics into the detection model
     // it tested. Here rather than in the teach window's draw for the same reason
@@ -501,6 +518,8 @@ void App::SaveUiSettings()
     s.gripCtlW      = gripCtlW_;
     s.trayCtlW      = trayCtlW_;
     s.showTrayWin   = showTray_;
+    s.mosaicLeftW   = mosaicLeftW_;
+    s.mosaicRightW  = mosaicRightW_;
     s.showChart   = showChart_;
     s.clickToMove = enableClickMove_;
     s.showVisionMarks = showVisionMarks_;

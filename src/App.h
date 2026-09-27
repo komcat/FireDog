@@ -29,6 +29,9 @@
 #include "hardware/HardwareConfig.h"
 #include "session/ProductSession.h"
 #include "workflow/Workflow.h"
+#include "core/MosaicConfig.h"
+#include "mosaic/MosaicDoc.h"
+#include "mosaic/MosaicWorker.h"
 
 namespace firedog {
 
@@ -45,7 +48,7 @@ namespace firedog {
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
                   Align, VisionTeach, AlignNominal, AlignPlace, Needle,
-                  DeviceReg, Grip, Tray };
+                  DeviceReg, Grip, Tray, Mosaic };
 
 // One XCAN launch preset (a button on the Run page's Scan band): the step
 // ladder + the hexapod_align.lua tunables injected at launch. Five slots;
@@ -123,6 +126,19 @@ struct ClimbPreset {
     double velocityMmS    = 1.0;      // scan velocity, set once
 };
 inline constexpr int kClimbPresetCount = 5;
+
+// One mosaic tile's textures on the Mosaic page, at three resolutions:
+// [0] 1/16 (always resident once seen - the whole picture at fit zoom),
+// [1] 1/4 (the preview filed beside each frame), [2] the full frame. The two
+// bigger ones are paged in by the viewer as the zoom asks for them and out
+// again least-recently-used, so a mosaic of a few hundred 5 MP frames never
+// has to fit on the GPU at once. `used` is the frame counter of the last draw.
+struct MosaicTileTex {
+    unsigned int       tex[3] = {0, 0, 0};
+    int                w[3] = {0, 0, 0}, h[3] = {0, 0, 0};
+    unsigned long long used[3] = {0, 0, 0};
+    bool               requested[3] = {false, false, false};
+};
 
 // The access level a page demands. Anything not named in the table is Admin:
 // a page added next year is locked until somebody grants it deliberately, which
@@ -414,6 +430,44 @@ private:
     // so they cannot disagree. `cells` empty = every cell.
     void SetTrayCellsUsed(const WaffleTray& t, const std::vector<TrayCell>& cells,
                           bool used, const char* why);
+
+    // ---- Mosaic page (PageMosaic.cpp; docs/mosaic-design.md) ---------------
+    // Large-area capture: an area taught by 3 or 4 corners, walked frame by
+    // frame by mosaic_capture (a one-step recipe, like the quick autofocus),
+    // and the result viewed, annotated and exported here. The area record is
+    // MACHINE state (config/mosaic.local.json) and this page is its only writer.
+    void DrawMosaicPanel();
+    void DrawMosaicSetup();                // left: folder, areas, corners, plan, capture
+    void DrawMosaicView();                 // centre: the picture (pan/zoom/annotate)
+    void DrawMosaicSide();                 // right: markers, labels, exports
+    // App::Update's share: the capture's start/tile/end events, the worker's
+    // decoded tiles (GL uploads, a few per frame), texture paging, exports.
+    void UpdateMosaic();
+    void OpenMosaic(const std::string& dir, bool live);
+    void CloseMosaic();
+    void ReleaseMosaicTextures();
+    void SaveMosaicCfg();                  // the one writer of config/mosaic.local.json
+    void SaveMosaicAnnotationsNow();       // the one writer of annotations.json
+    void StartMosaicCapture(const MosaicArea& a);
+    // mosaic_calibrate over whatever is under the camera now (Admin: it
+    // teaches the machine how its camera sits).
+    void StartMosaicCalibrate();
+    // A measured camera map becomes a PROPOSAL, never the map in use: the page
+    // shows it beside the current one and an Admin applies or discards it.
+    // Both measurements land here - the stepping calibration and the fit to a
+    // mosaic's seams.
+    void ProposeMosaicCal(const double m[4], const std::string& from, const std::string& note);
+    // The plan the capture would walk right now: the live camera frame size and
+    // pixel map, the calibration if there is one. The page's summary and the
+    // view's preview both call this, so they cannot show two different plans.
+    MosaicPlan MosaicPlanFor(const MosaicArea& a);
+    // Drive the gantry so the camera centre lands on canvas point (cx, cy) of
+    // the open mosaic, at the Z its nearest tile was shot at. Jog-armed, idle.
+    void GoToMosaicPoint(double cx, double cy, const std::string& what);
+    // Drive the gantry back to the pose tile `i` of the open mosaic was SHOT
+    // at (its measured X/Y/Z), so the live camera shows what that frame shows.
+    // Same gates as GoToMosaicPoint: kRoleJog, jog armed, idle.
+    void GoToMosaicTile(int i);
     // The private pose sweep, by the convention the alignment procedures set:
     // the position is named after its owner, so deleting the owner drops it.
     void DropGripPositions(const GripProfile& g);
@@ -1242,6 +1296,57 @@ private:
     int   trayLineRow_ = 1, trayLineCol_ = 1;   // the line toggles' spinners (big trays)
     bool  showTray_ = false;          // the floating Waffle Tray window (View menu)
     std::string trayMsg_;             // what the last button did, or would not do
+
+    // ---- Mosaic page ---------------------------------------------------------
+    MosaicConfig mosaicCfg_;               // loaded at startup; SaveMosaicCfg writes it
+    int          mosaicAreaSel_ = -1;      // index into mosaicCfg_.areas
+    char         mosaicDirBuf_[260] = "";  // the save-folder edit
+    std::string  mosaicMsg_;               // what the last button did, or would not do
+    bool         mosaicOpenArmPopup_ = false;
+    float        mosaicLeftW_  = 400.0f;   // column widths, persisted
+    float        mosaicRightW_ = 340.0f;
+    bool         mosaicSplitL_ = false, mosaicSplitR_ = false;   // drag-END edges
+    std::vector<std::string> mosaicFolders_;   // mosaics in the save folder
+    bool         mosaicFoldersStale_ = true;
+    // The open mosaic: a folder, its capture record and its annotations.
+    // Nothing here is persisted but the annotations file itself.
+    std::string        mosaicDir_;
+    MosaicRecord       mosaicRec_;
+    bool               mosaicHaveRec_ = false;
+    MosaicAnnotations  mosaicAnn_;
+    bool               mosaicLive_ = false;       // the running capture is writing it
+    int                mosaicLiveTotal_ = 0;      // tiles in the running capture's plan
+    unsigned           mosaicGen_ = 0;            // bumps per open: stale loads are dropped
+    std::vector<MosaicTileTex> mosaicTex_;        // index-aligned with mosaicRec_.tiles
+    unsigned long long mosaicFrame_ = 0;          // draw counter for the texture LRU
+    MosaicWorker       mosaicWorker_;             // decodes + exports off the UI thread
+    unsigned           mosaicExportSeen_ = 0;     // last Progress::done reported
+    std::string        mosaicExportMsg_;
+    std::string        mosaicExportPath_;
+    // The view: canvas point at the centre, and screen px per canvas px
+    // (0 = fit on the next frame).
+    double mosaicVcx_ = 0.0, mosaicVcy_ = 0.0, mosaicVs_ = 0.0;
+    int    mosaicTool_ = 0;                 // 0 pan, 1 marker, 2 crop label
+    bool   mosaicShowGrid_ = false;         // tile outlines
+    bool   mosaicShowOutline_ = true;       // the area's outline
+    bool   mosaicDragging_ = false;         // a crop label being dragged out
+    double mosaicDragX0_ = 0.0, mosaicDragY0_ = 0.0;
+    int    mosaicSelMarker_ = -1, mosaicSelLabel_ = -1;
+    int    mosaicSelTile_ = -1;             // index into mosaicRec_.tiles (Tiles mode)
+    // The annotation filter (right panel): a name search and one tag. Runtime
+    // only; it also picks which crop labels Export crops writes.
+    char        mosaicAnnFind_[64] = "";
+    std::string mosaicAnnTag_;              // "" = every tag
+    int    mosaicExportScale_ = 2;          // index into {1, 2, 4, 8}
+    bool   mosaicUseRefined_ = true;        // draw/export at placement.json's positions
+    double mosaicCalStepMm_ = 0.5;          // mosaic_calibrate's step
+    // The camera map waiting for review. Runtime only: nothing reads it until
+    // Apply copies it into mosaicCfg_.cal.
+    bool        mosaicCalPendingHave_ = false;
+    double      mosaicCalPendingM_[4] = {0.0, 0.0, 0.0, 0.0};
+    std::string mosaicCalPendingFrom_;
+    std::string mosaicCalPendingNote_;
+    std::string mosaicFitDir_;              // the mosaic a running map fit measures
 
     // Nominal teach page state — the nominals themselves live in session_.
     // Page::AlignNominal IS the "open" flag; nomProcUid_ says which procedure.
