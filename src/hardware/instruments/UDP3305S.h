@@ -34,6 +34,9 @@ public:
         std::string visaResource;      // e.g. "USB0::0x0483::0x5740::<serial>::INSTR"
         int         channels = 3;      // active channels (1..kMaxChannels)
         int         pollIntervalMs = 500;
+        // Also publish the device-less "psu/ch<n>/v|i" topics (the first PSU
+        // only - see core/Topics.h). Every PSU publishes "psu/<name>/ch<n>/...".
+        bool        legacyTopics = false;
     };
 
     explicit UDP3305S(Config cfg);
@@ -68,8 +71,26 @@ public:
     // One consistent snapshot for the UI (cheap; never blocks on VISA).
     Status GetStatus() const;
 
+    // A FRESH measurement of one channel, read now under the VISA lock (not the
+    // poll thread's cache, which can be up to one poll interval old - too old
+    // to verify a power-up 300 ms after ON). Also refreshes the cache. Blocking:
+    // workers only.
+    bool Measure(int channel, double& volts, double& amps, bool& outputOn);
+
+    // CV / CC. The UDP3305S has NO mode switch: it holds the voltage setpoint
+    // until the load asks for more than the current limit, then holds the
+    // current - the load decides. So "CC" means the output is ON and the
+    // measured current has reached the limit (>= 98 %), and "CV" otherwise.
+    // What an operator SETS is only which number is the target and which is
+    // the limit (see Workflow / psu_startup).
+    static bool IsCurrentLimited(const ChannelStatus& c)
+    {
+        return c.outputOn && c.setI > 0.0 && c.measI >= 0.98 * c.setI;
+    }
+
     // Poll measured V/I (+ output state, so front-panel changes surface) every
-    // intervalMs (<=0 -> 500 ms) and publish to topics::PsuVoltage/PsuCurrent.
+    // intervalMs (<=0 -> 500 ms) and publish to topics::PsuVoltage/PsuCurrent
+    // (name, ch), plus the device-less pair when Config::legacyTopics.
     bool StartPolling(int intervalMs);
     void StopPolling();
     bool IsPolling() const;

@@ -31,6 +31,23 @@ void HardwareManager::AddIo(std::unique_ptr<IIoDevice> dev)
     io_.push_back(std::move(slot));
 }
 
+std::size_t HardwareManager::AddPsuSlot(std::string name)
+{
+    auto slot  = std::make_unique<PsuSlot>();
+    slot->name = std::move(name);
+    psu_.push_back(std::move(slot));
+    return psu_.size() - 1;
+}
+
+int HardwareManager::PsuIndex(const std::string& name) const
+{
+    if (psu_.empty()) return -1;
+    if (name.empty()) return 0;
+    for (std::size_t i = 0; i < psu_.size(); ++i)
+        if (psu_[i]->name == name) return static_cast<int>(i);
+    return -1;
+}
+
 HardwareManager::~HardwareManager()
 {
     for (auto& f : pending_) {
@@ -78,7 +95,9 @@ std::vector<HardwareManager::DeviceStatus> HardwareManager::Snapshot() const
     out.push_back({camName_, camState_.load()});
     out.push_back({keiName_, keiState_.load()});
     out.push_back({cldName_, cldState_.load()});
-    out.push_back({psuName_, psuState_.load()});
+    for (const auto& p : psu_) {
+        out.push_back({p->name, p->state.load()});
+    }
     out.push_back({lightName_, lightState_.load()});
     return out;
 }

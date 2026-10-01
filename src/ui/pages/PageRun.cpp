@@ -738,6 +738,28 @@ std::vector<ReadoutDef> ReadoutCatalogue()
                        ReadoutKind::Percent, true});
     return cat;
 }
+// Every PSU's own streams ("psu/<name>/ch<n>/v|i"), as many as are on the bus.
+// The fixed rows above are the FIRST supply's device-less names; a machine with
+// a second supply needs its readings pinnable too. Read off the bus rather than
+// the config: the catalogue is a free function, and a supply that never
+// published has nothing to show.
+void AddPsuFleetReadouts(std::vector<ReadoutDef>& cat, const std::vector<std::string>& onBus)
+{
+    for (const std::string& t : onBus) {
+        // psu/<name>/ch<n>/v  - four segments; the device-less form has three.
+        if (t.rfind("psu/", 0) != 0) continue;
+        const std::size_t a = t.find('/', 4);
+        if (a == std::string::npos || t.compare(a + 1, 2, "ch") != 0) continue;
+        const std::size_t b = t.find('/', a + 1);
+        if (b == std::string::npos || b + 2 != t.size()) continue;
+        const char q = t.back();
+        if (q != 'v' && q != 'i') continue;
+        const std::string name = t.substr(4, a - 4);
+        const std::string ch   = t.substr(a + 3, b - a - 3);
+        cat.push_back({t, name + " ch" + ch + (q == 'v' ? " V" : " I"),
+                       q == 'v' ? ReadoutKind::Volt : ReadoutKind::Amp});
+    }
+}
 const ReadoutDef* FindReadout(const std::vector<ReadoutDef>& cat, const std::string& topic)
 {
     for (const ReadoutDef& d : cat) if (d.topic == topic) return &d;
@@ -761,7 +783,8 @@ constexpr double      kRunReadoutPeriod = 0.25;   // s between pulls off the bus
 
 void App::DrawRunReadouts()
 {
-    const std::vector<ReadoutDef> cat = ReadoutCatalogue();
+    std::vector<ReadoutDef> cat = ReadoutCatalogue();
+    AddPsuFleetReadouts(cat, DataBus::Instance().Topics());   // pinned ones format too
 
     // Pull on a timer. Only topics the bus already HAS are touched:
     // DataBus::Stream creates on demand, and a phantom empty "psu/ch3/v"

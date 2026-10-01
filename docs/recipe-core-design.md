@@ -213,7 +213,7 @@ any kind — ever runs on the UI thread.** Every command executes on the
 - `cld_tec` on/off, `cld_laser` on/off, `cld_set_temperature`,
   `cld_set_laser_current`.
 - `wait_for_temperature` ⏳ — target °C ± tolerance on `cld/temp`, timeout.
-- `psu_set_vi` (channel, V, I), `psu_output` (channel, on/off).
+- `psu_set_vi` (device, channel, V, I), `psu_output` (device, channel, on/off) — `device` empty = the first PSU.
 - `camera_exposure` (`SetCameraExposure`).
 
 **System / data**

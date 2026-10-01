@@ -35,8 +35,19 @@ inline constexpr const char* kVisionOk    = "vision/ok";
 inline constexpr const char* kCldTemp    = "cld/temp";
 inline constexpr const char* kCldCurrent = "cld/current";
 
-// UDP3305S PSU per-channel measured streams (1-based channel), e.g.
-// "psu/ch1/v" in volts and "psu/ch1/i" in amps.
+// UDP3305S PSU per-channel measured streams (1-based channel), volts and amps.
+// Every PSU publishes under its own name, "psu/<device>/ch1/v" / ".../i".
+// The FIRST configured PSU ALSO publishes the original device-less names
+// "psu/ch1/v" / "psu/ch1/i" - saved Run-page readouts and charts reference
+// them, and renaming a topic silently empties every one of those.
+inline std::string PsuVoltage(const std::string& device, int channel)
+{
+    return "psu/" + device + "/ch" + std::to_string(channel) + "/v";
+}
+inline std::string PsuCurrent(const std::string& device, int channel)
+{
+    return "psu/" + device + "/ch" + std::to_string(channel) + "/i";
+}
 inline std::string PsuVoltage(int channel) { return "psu/ch" + std::to_string(channel) + "/v"; }
 inline std::string PsuCurrent(int channel) { return "psu/ch" + std::to_string(channel) + "/i"; }
 

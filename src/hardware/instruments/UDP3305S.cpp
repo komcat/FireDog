@@ -62,6 +62,8 @@ struct UDP3305S::Impl {
     int               intervalMs = 500;
     DataStream*       sV[kMaxChannels] = {nullptr, nullptr, nullptr};
     DataStream*       sI[kMaxChannels] = {nullptr, nullptr, nullptr};
+    DataStream*       sVL[kMaxChannels] = {nullptr, nullptr, nullptr};   // legacy "psu/ch<n>/v"
+    DataStream*       sIL[kMaxChannels] = {nullptr, nullptr, nullptr};
 
     // UI-facing status cache, off visaMutex so per-frame reads never wait
     // behind an in-flight query (the Keithley cfgMutex pattern).
@@ -237,14 +239,39 @@ struct UDP3305S::Impl {
         return ok;
     }
 
+    bool Measure(int ch, double& v, double& i, bool& on)
+    {
+        if (!ValidChannel(ch)) return false;
+        std::lock_guard<std::mutex> lock(visaMutex);
+        if (!connected.load() || inst == VI_NULL) { lastError = "not connected"; return false; }
+        const std::string chStr = "CH" + std::to_string(ch);
+        std::string resp;
+        if (!QueryDouble("MEASure:VOLTage? " + chStr, v) ||
+            !QueryDouble("MEASure:CURRent? " + chStr, i) ||
+            !QueryInternal("OUTPut? " + chStr, resp)) {
+            lastError = chStr + " measurement failed";
+            return false;
+        }
+        on = ParseOn(resp);
+        std::lock_guard<std::mutex> sl(statusMutex);
+        status.ch[ch - 1].measV    = v;
+        status.ch[ch - 1].measI    = i;
+        status.ch[ch - 1].outputOn = on;
+        return true;
+    }
+
     bool StartPolling(int ms)
     {
         if (!connected.load()) { lastError = "not connected"; return false; }
         if (polling.load()) return true;
         intervalMs = ms > 0 ? ms : 500;
         for (int ch = 1; ch <= cfg.channels; ++ch) {
-            sV[ch - 1] = &DataBus::Instance().Stream(topics::PsuVoltage(ch));
-            sI[ch - 1] = &DataBus::Instance().Stream(topics::PsuCurrent(ch));
+            sV[ch - 1] = &DataBus::Instance().Stream(topics::PsuVoltage(cfg.name, ch));
+            sI[ch - 1] = &DataBus::Instance().Stream(topics::PsuCurrent(cfg.name, ch));
+            if (cfg.legacyTopics) {
+                sVL[ch - 1] = &DataBus::Instance().Stream(topics::PsuVoltage(ch));
+                sIL[ch - 1] = &DataBus::Instance().Stream(topics::PsuCurrent(ch));
+            }
         }
         polling.store(true);
         pollThread = std::thread(&Impl::PollLoop, this);
@@ -287,8 +314,10 @@ struct UDP3305S::Impl {
                 const double t = std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - start).count();
                 for (int ch = 0; ch < cfg.channels; ++ch) {
-                    if (sV[ch]) sV[ch]->Publish(t, s.ch[ch].measV);
-                    if (sI[ch]) sI[ch]->Publish(t, s.ch[ch].measI);
+                    if (sV[ch])  sV[ch]->Publish(t, s.ch[ch].measV);
+                    if (sI[ch])  sI[ch]->Publish(t, s.ch[ch].measI);
+                    if (sVL[ch]) sVL[ch]->Publish(t, s.ch[ch].measV);
+                    if (sIL[ch]) sIL[ch]->Publish(t, s.ch[ch].measI);
                 }
             }
             const auto elapsed = std::chrono::steady_clock::now() - t0;
@@ -312,6 +341,8 @@ struct UDP3305S::Impl {
     int               intervalMs = 500;
     DataStream*       sV[kMaxChannels] = {nullptr, nullptr, nullptr};
     DataStream*       sI[kMaxChannels] = {nullptr, nullptr, nullptr};
+    DataStream*       sVL[kMaxChannels] = {nullptr, nullptr, nullptr};   // legacy "psu/ch<n>/v"
+    DataStream*       sIL[kMaxChannels] = {nullptr, nullptr, nullptr};
     std::string       deviceId = "UNI-T UDP3305S (simulated)";
     std::string       lastError;
 
@@ -361,14 +392,39 @@ struct UDP3305S::Impl {
         return true;
     }
 
+    // The simulated load: a fixed resistor. The supply holds the voltage
+    // setpoint until that would need more than the current limit, then holds
+    // the limit (CC) and the voltage sags to I*R - so CV and CC both show up.
+    static constexpr double kSimLoadOhm = 100.0;
+    static void SimSettle(ChannelStatus& c)
+    {
+        const double v = c.outputOn ? std::min(c.setV, c.setI * kSimLoadOhm) : 0.0;
+        c.measV = v;
+        c.measI = c.outputOn ? v / kSimLoadOhm : 0.0;
+    }
+
+    bool Measure(int ch, double& v, double& i, bool& on)
+    {
+        if (!connected.load() || ch < 1 || ch > cfg.channels) return false;
+        std::lock_guard<std::mutex> l(statusMutex);
+        ChannelStatus& c = status.ch[ch - 1];
+        SimSettle(c);
+        v = c.measV; i = c.measI; on = c.outputOn;
+        return true;
+    }
+
     bool StartPolling(int ms)
     {
         if (!connected.load()) return false;
         if (polling.load()) return true;
         intervalMs = ms > 0 ? ms : 500;
         for (int ch = 1; ch <= cfg.channels; ++ch) {
-            sV[ch - 1] = &DataBus::Instance().Stream(topics::PsuVoltage(ch));
-            sI[ch - 1] = &DataBus::Instance().Stream(topics::PsuCurrent(ch));
+            sV[ch - 1] = &DataBus::Instance().Stream(topics::PsuVoltage(cfg.name, ch));
+            sI[ch - 1] = &DataBus::Instance().Stream(topics::PsuCurrent(cfg.name, ch));
+            if (cfg.legacyTopics) {
+                sVL[ch - 1] = &DataBus::Instance().Stream(topics::PsuVoltage(ch));
+                sIL[ch - 1] = &DataBus::Instance().Stream(topics::PsuCurrent(ch));
+            }
         }
         polling.store(true);
         pollThread = std::thread(&Impl::Loop, this);
@@ -390,20 +446,17 @@ struct UDP3305S::Impl {
             Status s = GetStatus();
             for (int ch = 0; ch < cfg.channels; ++ch) {
                 ChannelStatus& c = s.ch[ch];
-                // Measured V settles toward the setpoint when the output is on;
-                // current follows a synthetic ~100 ohm load, capped at the limit.
-                const double targetV = c.outputOn ? c.setV : 0.0;
-                c.measV += (targetV - c.measV) * 0.30;
-                c.measI  = c.outputOn
-                               ? std::min(c.setI, c.measV / 100.0) + 0.002 * std::sin(t * 4.0 + ch)
-                               : 0.0;
+                SimSettle(c);   // CV until the limit, then CC (see SimSettle)
+                if (c.outputOn) c.measI += 0.0005 * std::sin(t * 4.0 + ch);
                 if (c.measI < 0.0) c.measI = 0.0;
             }
             s.valid = true;
             SetStatus(s);
             for (int ch = 0; ch < cfg.channels; ++ch) {
-                if (sV[ch]) sV[ch]->Publish(t, s.ch[ch].measV);
-                if (sI[ch]) sI[ch]->Publish(t, s.ch[ch].measI);
+                if (sV[ch])  sV[ch]->Publish(t, s.ch[ch].measV);
+                if (sI[ch])  sI[ch]->Publish(t, s.ch[ch].measI);
+                if (sVL[ch]) sVL[ch]->Publish(t, s.ch[ch].measV);
+                if (sIL[ch]) sIL[ch]->Publish(t, s.ch[ch].measI);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
         }
@@ -432,6 +485,10 @@ bool UDP3305S::Apply(int channel, double volts, double amps)
 }
 
 UDP3305S::Status UDP3305S::GetStatus() const { return p_->GetStatus(); }
+bool UDP3305S::Measure(int channel, double& volts, double& amps, bool& outputOn)
+{
+    return p_->Measure(channel, volts, amps, outputOn);
+}
 
 bool UDP3305S::StartPolling(int intervalMs) { return p_->StartPolling(intervalMs); }
 void UDP3305S::StopPolling()                { p_->StopPolling(); }

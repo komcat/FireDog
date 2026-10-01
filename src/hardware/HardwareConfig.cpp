@@ -257,12 +257,13 @@ const Cld101xConfig* HardwareConfig::FirstEnabledCld() const
     return nullptr;
 }
 
-const PsuConfig* HardwareConfig::FirstEnabledPsu() const
+std::vector<PsuConfig> HardwareConfig::EnabledPsus() const
 {
+    std::vector<PsuConfig> out;
     for (const auto& p : psus) {
-        if (p.enabled) return &p;
+        if (p.enabled) out.push_back(p);
     }
-    return nullptr;
+    return out;
 }
 
 const LightConfig* HardwareConfig::FirstEnabledLight() const

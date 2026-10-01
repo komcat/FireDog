@@ -234,28 +234,31 @@ void ProbeCld(RigSession& s)
 void ProbePsu(RigSession& s)
 {
     HardwareManager& hw = s.Hw();
-    if (!s.Config().FirstEnabledPsu()) return;
+    for (std::size_t i = 0; i < hw.PsuCount(); ++i) {
+        const std::string& name = hw.PsuName(i);
+        Head("psu  " + name);
+        Field("state", ConnStateName(hw.PsuState(i)));
+        UDP3305S* p = hw.PsuDevice(i);
+        if (!p) { Field("driver", "(none)"); continue; }
+        if (hw.PsuState(i) != ConnState::Connected) {
+            const std::string err = p->LastError();
+            Field("last_error", err.empty() ? "(none)" : err);
+            continue;
+        }
 
-    Head("psu  " + hw.PsuName());
-    Field("state", ConnStateName(hw.PsuState()));
-    UDP3305S* p = hw.Psu();
-    if (!p) { Field("driver", "(none)"); return; }
-    if (hw.PsuState() != ConnState::Connected) {
-        const std::string err = p->LastError();
-        Field("last_error", err.empty() ? "(none)" : err);
-        return;
-    }
-
-    const UDP3305S::Status st = p->GetStatus();
-    Field("idn", p->DeviceId());
-    Field("poll_data", st.valid ? "valid" : "(no successful poll yet)");
-    for (int ch = 1; ch <= p->Channels() && ch <= UDP3305S::kMaxChannels; ++ch) {
-        const UDP3305S::ChannelStatus& c = st.ch[ch - 1];
-        std::cout << "   CH" << ch << "  output=" << (c.outputOn ? "ON " : "off")
-                  << "  set " << Fixed(c.setV, 3) << " V / " << Fixed(c.setI, 3) << " A"
-                  << "  meas " << Fixed(c.measV, 3) << " V / " << Fixed(c.measI, 3) << " A\n";
-        std::cout << "        stream " << Latest(topics::PsuVoltage(ch), "V", false)
-                  << " / "             << Latest(topics::PsuCurrent(ch), "A", false) << "\n";
+        const UDP3305S::Status st = p->GetStatus();
+        Field("idn", p->DeviceId());
+        Field("poll_data", st.valid ? "valid" : "(no successful poll yet)");
+        for (int ch = 1; ch <= p->Channels() && ch <= UDP3305S::kMaxChannels; ++ch) {
+            const UDP3305S::ChannelStatus& c = st.ch[ch - 1];
+            std::cout << "   CH" << ch << "  output=" << (c.outputOn ? "ON " : "off")
+                      << "  set " << Fixed(c.setV, 3) << " V / " << Fixed(c.setI, 3) << " A"
+                      << "  meas " << Fixed(c.measV, 3) << " V / " << Fixed(c.measI, 3) << " A"
+                      << (c.outputOn ? (UDP3305S::IsCurrentLimited(c) ? "  [CC]" : "  [CV]") : "")
+                      << "\n";
+            std::cout << "        stream " << Latest(topics::PsuVoltage(name, ch), "V", false)
+                      << " / "             << Latest(topics::PsuCurrent(name, ch), "A", false) << "\n";
+        }
     }
 }
 

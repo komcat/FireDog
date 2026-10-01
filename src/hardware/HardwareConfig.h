@@ -196,7 +196,7 @@ struct HardwareConfig {
     std::vector<CameraConfig>   cameras;
     std::vector<KeithleyConfig> keithleys;      // from "instruments" (type keithley_*)
     std::vector<Cld101xConfig>  clds;           // from "instruments" (type cld*)
-    std::vector<PsuConfig>      psus;           // from "instruments" (type *udp3305*)
+    std::vector<PsuConfig>      psus;           // from "instruments" (type *udp3305*); every enabled one is built
     std::vector<LightConfig>    lights;         // from "instruments" (type *pd3*)
     std::vector<MotionConfig>   motionDevices;  // from "motion_devices" (PI / ACS)
     std::vector<IoDeviceConfig> ioDevices;      // from "io_devices" (eziio / wago)
@@ -210,7 +210,7 @@ struct HardwareConfig {
     const CameraConfig*   FirstEnabledCamera() const;
     const KeithleyConfig* FirstEnabledKeithley() const;
     const Cld101xConfig*  FirstEnabledCld() const;
-    const PsuConfig*      FirstEnabledPsu() const;
+    std::vector<PsuConfig> EnabledPsus() const;                  // enabled only, config order
     const LightConfig*    FirstEnabledLight() const;
     std::vector<MotionConfig>   EnabledMotionDevices() const;   // enabled only
     std::vector<IoDeviceConfig> EnabledIoDevices() const;       // enabled only

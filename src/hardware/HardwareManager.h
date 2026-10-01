@@ -46,8 +46,6 @@ public:
     void SetKeithley(std::unique_ptr<ISmu> k) { keithley_ = std::move(k); }
     CLD101x*      Cld()      { return cld_.get(); }        // null until Workflow builds it
     void SetCld(std::unique_ptr<CLD101x> c) { cld_ = std::move(c); }
-    UDP3305S*     Psu()      { return psu_.get(); }        // null until Workflow builds it
-    void SetPsu(std::unique_ptr<UDP3305S> p) { psu_ = std::move(p); }
     CcsPd3*       Light()    { return light_.get(); }      // null until Workflow builds it
     void SetLight(std::unique_ptr<CcsPd3> l) { light_ = std::move(l); }
 
@@ -71,6 +69,20 @@ public:
     void      SetIoState(size_t i, ConnState s) { io_[i]->state.store(s); }
     const std::string& IoName(size_t i) const { return io_[i]->name; }
 
+    // --- PSU fleet (UDP3305S power supplies). Multiple, by name. -------------
+    // Same slot shape as the IO fleet. A slot's DRIVER is replaced on every
+    // reconnect (Workflow rebuilds it from config), so the slot - and with it
+    // the index and the ConnState atomic - outlives any one driver.
+    std::size_t AddPsuSlot(std::string name);
+    std::size_t PsuCount() const { return psu_.size(); }
+    UDP3305S*   PsuDevice(std::size_t i) const { return psu_[i]->dev.get(); }
+    void        SetPsuDevice(std::size_t i, std::unique_ptr<UDP3305S> d) { psu_[i]->dev = std::move(d); }
+    ConnState   PsuState(std::size_t i) const { return psu_[i]->state.load(); }
+    void        SetPsuState(std::size_t i, ConnState s) { psu_[i]->state.store(s); }
+    const std::string& PsuName(std::size_t i) const { return psu_[i]->name; }
+    // Fleet index of the named PSU; "" = the first one. -1 when there is none.
+    int         PsuIndex(const std::string& name) const;
+
     // --- Pneumatic slides (synthetic devices over the IO fleet). -------------
     // No ConnState: a slide's "connection" is its underlying IO devices
     // (PneumaticSlide::IsIoConnected), which are already in Snapshot().
@@ -88,23 +100,19 @@ public:
     ConnState CameraState()   const { return camState_.load(); }
     ConnState KeithleyState() const { return keiState_.load(); }
     ConnState CldState()      const { return cldState_.load(); }
-    ConnState PsuState()      const { return psuState_.load(); }
     ConnState LightState()    const { return lightState_.load(); }
     void SetCameraState(ConnState s)   { camState_.store(s); }
     void SetKeithleyState(ConnState s) { keiState_.store(s); }
     void SetCldState(ConnState s)      { cldState_.store(s); }
-    void SetPsuState(ConnState s)      { psuState_.store(s); }
     void SetLightState(ConnState s)    { lightState_.store(s); }
 
     const std::string& CameraName()   const { return camName_; }
     const std::string& KeithleyName() const { return keiName_; }
     const std::string& CldName()      const { return cldName_; }
-    const std::string& PsuName()      const { return psuName_; }
     const std::string& LightName()    const { return lightName_; }
     void SetCameraName(std::string n)   { camName_ = std::move(n); }
     void SetKeithleyName(std::string n) { keiName_ = std::move(n); }
     void SetCldName(std::string n)      { cldName_ = std::move(n); }
-    void SetPsuName(std::string n)      { psuName_ = std::move(n); }
     void SetLightName(std::string n)    { lightName_ = std::move(n); }
 
 private:
@@ -123,9 +131,17 @@ private:
         std::string                name;
     };
 
+    // A PSU + its async-connect state (same shape again).
+    struct PsuSlot {
+        std::unique_ptr<UDP3305S> dev;
+        std::atomic<ConnState>    state{ConnState::Disconnected};
+        std::string               name;
+    };
+
     std::vector<std::unique_ptr<IDevice>>        devices_;
     std::vector<std::unique_ptr<MotionSlot>>     motion_;
     std::vector<std::unique_ptr<IoSlot>>         io_;
+    std::vector<std::unique_ptr<PsuSlot>>        psu_;
     std::vector<std::unique_ptr<PneumaticSlide>> slides_;   // reference io_ devices
     std::unique_ptr<IoWatch>                     ioWatch_;  // references io_ devices;
                                                             // declared after io_ so its
@@ -137,17 +153,14 @@ private:
     PylonCamera                   camera_;
     std::unique_ptr<ISmu>         keithley_;   // 6482 or 2602B (ISmu.h)
     std::unique_ptr<CLD101x>      cld_;
-    std::unique_ptr<UDP3305S>     psu_;
     std::unique_ptr<CcsPd3>       light_;      // dtor closes gracefully (one-client device)
     std::atomic<ConnState>        camState_{ConnState::Disconnected};
     std::atomic<ConnState>        keiState_{ConnState::Disconnected};
     std::atomic<ConnState>        cldState_{ConnState::Disconnected};
-    std::atomic<ConnState>        psuState_{ConnState::Disconnected};
     std::atomic<ConnState>        lightState_{ConnState::Disconnected};
     std::string                   camName_ = "Camera";
     std::string                   keiName_ = "Keithley";
     std::string                   cldName_ = "CLD101x";
-    std::string                   psuName_ = "PSU";
     std::string                   lightName_ = "Light";
 };
 

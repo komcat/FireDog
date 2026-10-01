@@ -154,9 +154,6 @@ int App::Run()
         cldTempSet_    = static_cast<float>(cc->defaultTemperature);
         cldCurrentSet_ = static_cast<float>(cc->defaultLaserCurrentMA);
     }
-    if (const PsuConfig* pc = hw.FirstEnabledPsu()) {
-        psuId_ = pc->name;
-    }
     if (const LightConfig* lc = hw.FirstEnabledLight()) {
         lightId_ = lc->name;
     }

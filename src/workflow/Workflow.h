@@ -237,15 +237,24 @@ public:
     bool CldLaserOn();
     bool CldLaserOff();
 
-    // ---- UDP3305S PSU commands (PSU page) -----------------------------------
-    // Same pattern: reconnect from the config captured at Start; setpoints go
-    // through the verified APPLy form, output switches are read-back verified.
+    // ---- UDP3305S PSU fleet (PSU page, psu_* commands) -----------------------
+    // Every enabled PSU in hardware.json is built; each call names one by its
+    // config `name`, and "" means the FIRST one (so a step written before there
+    // were several keeps driving the supply it always drove). Same pattern as
+    // before: reconnect from the config captured at Start; setpoints go through
+    // the verified APPLy form, output switches are read-back verified.
     // Channels are 1-based.
-    bool ConnectPsu();
-    bool DisconnectPsu();
-    bool SetPsuVI(int channel, double volts, double amps);
-    bool PsuOutputOn(int channel);
-    bool PsuOutputOff(int channel);
+    bool ConnectPsu(const std::string& device);
+    bool DisconnectPsu(const std::string& device);
+    bool SetPsuVI(const std::string& device, int channel, double volts, double amps);
+    bool PsuOutputOn(const std::string& device, int channel);
+    bool PsuOutputOff(const std::string& device, int channel);
+    // A fresh read of one channel (not the poll cache) - what psu_startup
+    // verifies against. False unless the PSU is Connected and answers.
+    bool MeasurePsu(const std::string& device, int channel,
+                    double& volts, double& amps, bool& outputOn);
+    int    PsuChannels(const std::string& device) const;        // 0 when it is not built
+    double PsuSetCurrent(const std::string& device, int channel) const;   // programmed limit, 0 if none
 
     // ---- CCS PD3 lighting (Light page, light_* commands, alignment) ---------
     // Same reconnect pattern. Channels are FRONT-PANEL numbers (L1 = 1);
@@ -587,9 +596,9 @@ private:
     void StartCld(const HardwareConfig& hw);
     void LaunchCldConnect();      // async connect from cldCfg_ (Start + reconnect)
     CLD101x* ConnectedCld() const;             // null unless state == Connected
-    void StartPsu(const HardwareConfig& hw);
-    void LaunchPsuConnect();      // async connect from psuCfg_ (Start + reconnect)
-    UDP3305S* ConnectedPsu() const;            // null unless state == Connected
+    void StartPsu(const HardwareConfig& hw);          // builds every enabled PSU
+    void LaunchPsuConnect(std::size_t idx);   // async connect from psuCfgs_[idx] (Start + reconnect)
+    UDP3305S* ConnectedPsu(const std::string& device) const;   // null unless that one is Connected
     void StartLight(const HardwareConfig& hw);
     void LaunchLightConnect();    // async connect from lightCfg_ (Start + reconnect)
     CcsPd3* ConnectedLight() const;            // null unless state == Connected
@@ -712,7 +721,7 @@ private:
     std::future<void>              camConnect_;
     std::future<void>              keiConnect_;
     std::future<void>              cldConnect_;
-    std::future<void>              psuConnect_;
+    std::vector<std::future<void>> psuConnect_;      // one per PSU (fleet index)
     std::future<void>              lightConnect_;
     std::vector<std::future<void>> motionConnect_;   // one per motion device
     std::vector<std::future<void>> ioConnect_;       // one per IO device
@@ -752,9 +761,8 @@ private:
     Cld101xConfig cldCfg_;
     bool          cldCfgValid_ = false;
 
-    // UDP3305S PSU config captured at Start (same pattern).
-    PsuConfig psuCfg_;
-    bool      psuCfgValid_ = false;
+    // UDP3305S PSU configs captured at Start, by fleet index (same pattern).
+    std::vector<PsuConfig> psuCfgs_;
 
     // CCS PD3 lighting config captured at Start (same pattern). Read by the
     // call-out resolver from worker threads too — written once at Start,

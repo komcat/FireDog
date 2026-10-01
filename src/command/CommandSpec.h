@@ -39,6 +39,8 @@ enum class ParamType {
                     // rely on PI's verified settle (IsSettled); ACS reports
                     // settled immediately, so it must not be offered
     DeviceIo,       // IO fleet device name
+    DevicePsu,      // PSU fleet device name; "" = the first configured PSU
+                    // (so a step saved before there were several still runs)
     Slide,          // pneumatic slide name
     PositionUid,    // SavedPositions uid (resolved against the step's "device")
     AlignUid,       // Alignment-procedure uid (or name) in the product document

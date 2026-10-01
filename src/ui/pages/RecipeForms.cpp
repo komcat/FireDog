@@ -439,9 +439,16 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
     case ParamType::DeviceMotion:
     case ParamType::DeviceHexapod:
     case ParamType::DeviceIo:
+    case ParamType::DevicePsu:
     case ParamType::Slide: {
         const std::string v = cur.is_string() ? cur.get<std::string>() : "";
-        const std::string preview = v.empty() ? "(pick)" : v;
+        // An empty PSU is a real choice, not an unset one: the first supply.
+        const std::string preview =
+            !v.empty() ? v
+                       : (p.type == ParamType::DevicePsu
+                              ? (hardware_.PsuCount() > 0 ? "(first: " + hardware_.PsuName(0) + ")"
+                                                          : std::string("(first PSU)"))
+                              : std::string("(pick)"));
         ImGui::SetNextItemWidth(fitW(preview));
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         previewTip(preview);
@@ -463,6 +470,9 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             } else if (p.type == ParamType::DeviceIo) {
                 for (std::size_t i = 0; i < hardware_.IoCount(); ++i)
                     item(hardware_.IoName(i));
+            } else if (p.type == ParamType::DevicePsu) {
+                for (std::size_t i = 0; i < hardware_.PsuCount(); ++i)
+                    item(hardware_.PsuName(i));
             } else {
                 for (std::size_t i = 0; i < hardware_.SlideCount(); ++i)
                     if (hardware_.Slide(i)) item(hardware_.Slide(i)->Name());

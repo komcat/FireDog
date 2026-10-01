@@ -379,6 +379,11 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             }
             break;
         }
+        case ParamType::DevicePsu:
+            // Only a NAMED supply reaches here (empty = the first, checked by
+            // Needs::Psu below). Connection is checked there too, per device.
+            if (env.hw.PsuIndex(v) < 0) Issue(env, where, path, "unknown PSU '" + v + "'");
+            break;
         case ParamType::Slide:
             if (!SlideKnown(env.hw, v)) Issue(env, where, path, "unknown slide '" + v + "'");
             break;
@@ -486,7 +491,15 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
         case CommandSpec::Needs::Camera:   what = "camera";   st = env.hw.CameraState();   break;
         case CommandSpec::Needs::Keithley: what = "Keithley"; st = env.hw.KeithleyState(); break;
         case CommandSpec::Needs::Cld:      what = "CLD101x";  st = env.hw.CldState();      break;
-        case CommandSpec::Needs::Psu:      what = "PSU";      st = env.hw.PsuState();      break;
+        case CommandSpec::Needs::Psu: {
+            // The step's own supply ("device", "" = the first). A name that
+            // resolves to nothing is already reported above.
+            const int pi = env.hw.PsuIndex(device);
+            what = "PSU";
+            st   = pi >= 0 ? env.hw.PsuState(static_cast<std::size_t>(pi)) : ConnState::Disconnected;
+            if (pi < 0 && !device.empty()) what = nullptr;
+            break;
+        }
         case CommandSpec::Needs::Light:    what = "lighting"; st = env.hw.LightState();    break;
         case CommandSpec::Needs::None:     break;
         }

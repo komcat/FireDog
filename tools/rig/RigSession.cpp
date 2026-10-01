@@ -101,12 +101,14 @@ bool RigSession::AllExpectedConnected() const
     for (std::size_t i = 0; i < hw_.IoCount(); ++i) {
         if (hw_.IoState(i) != ConnState::Connected) return false;
     }
-    // The direct-SDK instruments are singletons: only the first enabled entry of
+    // The other direct-SDK instruments are singletons: only the first enabled entry of
     // each kind is ever started, so that is what we hold them to.
     if (cfg_.FirstEnabledCamera()   && hw_.CameraState()   != ConnState::Connected) return false;
     if (cfg_.FirstEnabledKeithley() && hw_.KeithleyState() != ConnState::Connected) return false;
     if (cfg_.FirstEnabledCld()      && hw_.CldState()      != ConnState::Connected) return false;
-    if (cfg_.FirstEnabledPsu()      && hw_.PsuState()      != ConnState::Connected) return false;
+    for (std::size_t i = 0; i < hw_.PsuCount(); ++i) {   // every enabled PSU is built now
+        if (hw_.PsuState(i) != ConnState::Connected) return false;
+    }
     if (cfg_.FirstEnabledLight()    && hw_.LightState()    != ConnState::Connected) return false;
     return true;
 }

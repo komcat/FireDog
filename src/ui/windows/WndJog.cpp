@@ -62,10 +62,10 @@ void App::DrawJogWindow()
                             ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(250.0f, 640.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Jog", &showJog_)) {
-        // Four tabs so the window covers "move the stage", "see it", "go
+        // Five tabs so the window covers "move the stage", "see it", "go
         // somewhere taught" and "switch something": Jog = the motion fleet,
         // Camera = the camera fleet (device + exposure), Pos = the quick-move
-        // pad, IO = the quick-output rows.
+        // pad, IO = the quick-output rows, PSU = the supply fleet's channels.
         // BeginTabItem pushes the tab's ID, so the Arm checkbox and STOP button
         // repeated on the Pos tab do not collide with the Jog tab's.
         if (ImGui::BeginTabBar("JogTabs")) {
@@ -85,10 +85,58 @@ void App::DrawJogWindow()
                 DrawJogIoTab();
                 ImGui::EndTabItem();
             }
+            if (ImGui::BeginTabItem("PSU")) {
+                DrawJogPsuTab();
+                ImGui::EndTabItem();
+            }
             ImGui::EndTabBar();
         }
     }
     ImGui::End();
+}
+
+// PSU tab of the Jog window: pick a supply, then its channels - the PSU page's
+// own controls (DrawPsuChannelControls, compact), so the two surfaces share one
+// selection, one set of edits and one apply path. Like the PSU page it carries
+// no arm and does not gate on orch_.Busy(): it is the same supply the page
+// drives, and switching an output while a run waits on a prompt is what quick
+// access is for. Connect/disconnect stays on the PSU page, as the Camera tab
+// leaves its connect to the Camera page.
+void App::DrawJogPsuTab()
+{
+    // A page gate does not cover a window: hold this tab to the PSU page's own
+    // level, so it can never become a way around it (today both are Technician).
+    if (!CanAccess(Page::PSU)) {
+        ImGui::TextDisabled("the power supplies need %s access", RoleName(MinRoleFor(Page::PSU)));
+        return;
+    }
+    if (hardware_.PsuCount() == 0) {
+        ImGui::TextDisabled("no PSU configured in hardware.json");
+        return;
+    }
+    const std::size_t sel = PsuSelected();
+    const ConnState   st  = hardware_.PsuState(sel);
+    ImGui::TextColored(StateColor(st), "%s", StateGlyph(st));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##psudev", hardware_.PsuName(sel).c_str())) {
+        for (std::size_t i = 0; i < hardware_.PsuCount(); ++i) {
+            const ConnState rst = hardware_.PsuState(i);
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::TextColored(StateColor(rst), "%s", StateGlyph(rst));
+            ImGui::SameLine();
+            if (ImGui::Selectable(hardware_.PsuName(i).c_str(), i == sel) && i != sel) {
+                psuSel_    = static_cast<int>(i);
+                psuPulled_ = false;   // re-seed the edits from THIS supply
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    if (st != ConnState::Connected)
+        ImGui::TextDisabled("%s - connect it on the PSU page", StateText(st));
+    ImGui::Separator();
+    DrawPsuChannelControls(true);
 }
 
 // Camera tab of the Jog window: pick the camera, set its exposure, watch the

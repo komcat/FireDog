@@ -1262,83 +1262,126 @@ bool Workflow::CldLaserOff() { CLD101x* c = ConnectedCld(); return c && c->Laser
 
 void Workflow::StartPsu(const HardwareConfig& hw)
 {
-    const PsuConfig* p = hw.FirstEnabledPsu();
-    if (!p) {
+    const std::vector<PsuConfig> psus = hw.EnabledPsus();
+    if (psus.empty()) {
         FD_WARN("workflow", "no enabled PSU in config");
-        hw_.SetPsuState(ConnState::Disconnected);
         return;
     }
-
-    psuCfg_      = *p;   // kept so the PSU page can reconnect later
-    psuCfgValid_ = true;
-    hw_.SetPsuName(p->name);
-    LaunchPsuConnect();
+    // The whole fleet is registered before any connect launches, like
+    // StartIO: a slot index must not move while a connect thread holds it.
+    for (const PsuConfig& p : psus) {
+        if (hw_.PsuIndex(p.name) >= 0 && !p.name.empty()) {
+            FD_WARN("workflow", "PSU name '%s' is used twice - the second entry is skipped "
+                                "(a step names a supply by it)", p.name.c_str());
+            continue;
+        }
+        hw_.AddPsuSlot(p.name);
+        psuCfgs_.push_back(p);   // kept so the PSU page can reconnect later
+    }
+    psuConnect_.resize(psuCfgs_.size());
+    for (std::size_t i = 0; i < psuCfgs_.size(); ++i) LaunchPsuConnect(i);
 }
 
-void Workflow::LaunchPsuConnect()
+void Workflow::LaunchPsuConnect(std::size_t idx)
 {
-    hw_.SetPsuState(ConnState::Connecting);
-    FD_INFO("workflow", "connecting PSU '%s' (%s)",
-            psuCfg_.name.c_str(), psuCfg_.visaResource.c_str());
+    const PsuConfig& pc = psuCfgs_[idx];
+    hw_.SetPsuState(idx, ConnState::Connecting);
+    FD_INFO("workflow", "connecting PSU '%s' (%s)", pc.name.c_str(), pc.visaResource.c_str());
 
     UDP3305S::Config cfg;
-    cfg.name           = psuCfg_.name;
-    cfg.visaResource   = psuCfg_.visaResource;
-    cfg.channels       = psuCfg_.channels;
-    cfg.pollIntervalMs = psuCfg_.pollIntervalMs;
-    hw_.SetPsu(std::make_unique<UDP3305S>(cfg));
+    cfg.name           = pc.name;
+    cfg.visaResource   = pc.visaResource;
+    cfg.channels       = pc.channels;
+    cfg.pollIntervalMs = pc.pollIntervalMs;
+    cfg.legacyTopics   = (idx == 0);   // the first keeps "psu/ch<n>/..." (core/Topics.h)
+    hw_.SetPsuDevice(idx, std::make_unique<UDP3305S>(cfg));
 
     // Connect + poll only. Nothing is written to the outputs at startup —
     // enabling an output is always an explicit UI action.
-    const int interval = psuCfg_.pollIntervalMs;
-    psuConnect_ = std::async(std::launch::async, [this, interval] {
-        UDP3305S* psu = hw_.Psu();
+    const int interval = pc.pollIntervalMs;
+    psuConnect_[idx] = std::async(std::launch::async, [this, idx, interval] {
+        UDP3305S* psu = hw_.PsuDevice(idx);
         bool ok = psu && psu->Connect();
         if (ok) ok = psu->StartPolling(interval);
-        hw_.SetPsuState(ok ? ConnState::Connected : ConnState::Failed);
-        if (!ok) FD_ERROR("workflow", "PSU bring-up failed: %s",
+        hw_.SetPsuState(idx, ok ? ConnState::Connected : ConnState::Failed);
+        if (!ok) FD_ERROR("workflow", "PSU '%s' bring-up failed: %s", hw_.PsuName(idx).c_str(),
                           psu ? psu->LastError().c_str() : "no driver");
     });
 }
 
-bool Workflow::ConnectPsu()
+bool Workflow::ConnectPsu(const std::string& device)
 {
-    if (!psuCfgValid_) {
-        FD_WARN("workflow", "PSU connect: no PSU configured");
+    const int idx = hw_.PsuIndex(device);
+    if (idx < 0) {
+        FD_WARN("workflow", "PSU connect: no PSU '%s' configured", device.c_str());
         return false;
     }
-    if (hw_.PsuState() == ConnState::Connecting) return false;   // in flight
-    UDP3305S* psu = hw_.Psu();
-    if (psu && psu->IsConnected()) return true;                  // already up
-    LaunchPsuConnect();   // rebuilds the driver from psuCfg_
+    const std::size_t i = static_cast<std::size_t>(idx);
+    if (hw_.PsuState(i) == ConnState::Connecting) return false;   // in flight
+    UDP3305S* psu = hw_.PsuDevice(i);
+    if (psu && psu->IsConnected()) return true;                   // already up
+    LaunchPsuConnect(i);   // rebuilds the driver from psuCfgs_[i]
     return true;
 }
 
-bool Workflow::DisconnectPsu()
+bool Workflow::DisconnectPsu(const std::string& device)
 {
-    if (hw_.PsuState() == ConnState::Connecting) return false;   // let it finish
-    UDP3305S* psu = hw_.Psu();
+    const int idx = hw_.PsuIndex(device);
+    if (idx < 0) return false;
+    const std::size_t i = static_cast<std::size_t>(idx);
+    if (hw_.PsuState(i) == ConnState::Connecting) return false;   // let it finish
+    UDP3305S* psu = hw_.PsuDevice(i);
     if (!psu) return false;
     psu->Disconnect();   // stops polling; forces every output OFF (bobcat habit)
-    hw_.SetPsuState(ConnState::Disconnected);
-    FD_INFO("workflow", "PSU '%s' disconnected", hw_.PsuName().c_str());
+    hw_.SetPsuState(i, ConnState::Disconnected);
+    FD_INFO("workflow", "PSU '%s' disconnected", hw_.PsuName(i).c_str());
     return true;
 }
 
-UDP3305S* Workflow::ConnectedPsu() const
+UDP3305S* Workflow::ConnectedPsu(const std::string& device) const
 {
-    if (hw_.PsuState() != ConnState::Connected) return nullptr;
-    return hw_.Psu();
+    const int idx = hw_.PsuIndex(device);
+    if (idx < 0) return nullptr;
+    const std::size_t i = static_cast<std::size_t>(idx);
+    if (hw_.PsuState(i) != ConnState::Connected) return nullptr;
+    return hw_.PsuDevice(i);
 }
 
-bool Workflow::SetPsuVI(int channel, double volts, double amps)
+bool Workflow::SetPsuVI(const std::string& device, int channel, double volts, double amps)
 {
-    UDP3305S* psu = ConnectedPsu();
+    UDP3305S* psu = ConnectedPsu(device);
     return psu && psu->Apply(channel, volts, amps);
 }
 
-bool Workflow::PsuOutputOn(int channel)  { UDP3305S* p = ConnectedPsu(); return p && p->OutputOn(channel); }
-bool Workflow::PsuOutputOff(int channel) { UDP3305S* p = ConnectedPsu(); return p && p->OutputOff(channel); }
+bool Workflow::PsuOutputOn(const std::string& device, int channel)
+{
+    UDP3305S* p = ConnectedPsu(device);
+    return p && p->OutputOn(channel);
+}
+bool Workflow::PsuOutputOff(const std::string& device, int channel)
+{
+    UDP3305S* p = ConnectedPsu(device);
+    return p && p->OutputOff(channel);
+}
+bool Workflow::MeasurePsu(const std::string& device, int channel,
+                          double& volts, double& amps, bool& outputOn)
+{
+    UDP3305S* p = ConnectedPsu(device);
+    return p && p->Measure(channel, volts, amps, outputOn);
+}
+int Workflow::PsuChannels(const std::string& device) const
+{
+    const int idx = hw_.PsuIndex(device);
+    UDP3305S* p = idx >= 0 ? hw_.PsuDevice(static_cast<std::size_t>(idx)) : nullptr;
+    return p ? p->Channels() : 0;
+}
+double Workflow::PsuSetCurrent(const std::string& device, int channel) const
+{
+    const int idx = hw_.PsuIndex(device);
+    UDP3305S* p = idx >= 0 ? hw_.PsuDevice(static_cast<std::size_t>(idx)) : nullptr;
+    if (!p || channel < 1 || channel > p->Channels()) return 0.0;
+    return p->GetStatus().ch[channel - 1].setI;
+}
 
 // ---- CCS PD3 lighting ---------------------------------------------------------
 
@@ -1518,7 +1561,8 @@ bool Workflow::ApplyLighting(const AlignLighting& l, std::string* why)
     if (l.kind == "psu") {
         const int ch = std::atoi(l.channel.c_str());
         if (ch <= 0) return fail("bad PSU channel '" + l.channel + "'");
-        if (!SetPsuVI(ch, l.value, 0.0) || !PsuOutputOn(ch)) return fail("PSU channel rejected");
+        if (!SetPsuVI(l.device, ch, l.value, 0.0) || !PsuOutputOn(l.device, ch))
+            return fail("PSU channel rejected");
         return true;
     }
     return fail("unknown kind '" + l.kind + "'");

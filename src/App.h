@@ -3,6 +3,7 @@
 // DataBus. It owns no device and runs no connect — Workflow (layer 2) does that.
 #pragma once
 
+#include <array>
 #include <map>
 #include <set>
 #include <string>
@@ -254,6 +255,10 @@ private:
     void DrawPsuListPanel();       // left:   status + connect/disconnect
     void DrawPsuDetailPanel();     // middle: per-channel V/I + output switches
     void DrawPsuInfoPanel();       // right:  identity + live values
+    // The selected supply's channel controls, shared by the PSU page and the
+    // Jog window's PSU tab (compact = narrow-window layout).
+    void DrawPsuChannelControls(bool compact);
+    void DrawJogPsuTab();          // Jog window: quick access to the PSU fleet
 
     // Light page — the CCS PD3 LED lighting controller.
     void DrawLightListPanel();     // left:   status + connect/disconnect + warnings
@@ -791,10 +796,18 @@ private:
 
     // PSU page state — edits seed from the device's setpoints at connect
     // (same psuPulled_ pattern as the CLD page).
-    std::string psuId_;                          // config instrument name
+    // The page drives ONE supply of the fleet at a time (psuSel_, a fleet
+    // index, clamped by PsuSelected); the edits re-seed when it changes.
+    int   psuSel_     = 0;
+    std::size_t PsuSelected();
     float psuVSet_[3] = {5.0f, 5.0f, 3.3f};      // per-channel voltage edits (V)
     float psuISet_[3] = {1.0f, 1.0f, 1.0f};      // per-channel current-limit edits (A)
     bool  psuPulled_  = false;
+    // Per-supply, per-channel CV/CC choice (0 = CV, the default; 1 = CC). The
+    // supply has no mode switch - the load decides - so this only says which
+    // number is the TARGET and which the LIMIT, and which reading the page
+    // holds it to. Keyed by PSU name.
+    std::map<std::string, std::array<int, 3>> psuModes_;
 
     // Light page state. The per-channel sliders follow the controller's
     // read-back whenever they are not being dragged; indexed by front-panel
