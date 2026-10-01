@@ -65,6 +65,7 @@ int App::Run()
         if (ui.lowerH > 0.0f) lowerH_ = ui.lowerH;
         if (ui.visionParamW  > 0.0f) visionParamW_  = ui.visionParamW;
         if (ui.visionResultW > 0.0f) visionResultW_ = ui.visionResultW;
+        if (ui.visionFootH   > 0.0f) visionFootH_   = ui.visionFootH;
         if (ui.edInspectW    > 0.0f) edInspectW_    = ui.edInspectW;
         if (ui.edPaletteW    > 0.0f) edPaletteW_    = ui.edPaletteW;
         edShowHidden_ = ui.edShowHidden;
@@ -156,14 +157,17 @@ int App::Run()
     if (const PsuConfig* pc = hw.FirstEnabledPsu()) {
         psuId_ = pc->name;
     }
+    if (const LightConfig* lc = hw.FirstEnabledLight()) {
+        lightId_ = lc->name;
+    }
     transformCfg_ = LoadMotionTransforms("config/motion_transforms.json");
     workflow_.SetTransforms(transformCfg_);   // transformCfg_ stays the editor's working copy
     session_.LoadInitial(lastProduct);   // positions/maps/recipes/programs/scripts + DUT wiring
     ResetDocumentSelections();           // the UI side of that load
     LoadScanPresets();             // XCAN launch presets (machine-global local.json)
     // The roster, read once. It lives under products/ rather than config/
-    // because a rebuild recopies config/ and would replace every registration
-    // made on this machine — see core/Employees.h.
+    // because config/ is what a fresh build tree or a release zip ships, and
+    // would replace every registration made on this machine — see core/Employees.h.
     employees_ = LoadEmployees();
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
@@ -504,6 +508,7 @@ void App::SaveUiSettings()
     s.lowerH    = lowerH_;
     s.visionParamW  = visionParamW_;
     s.visionResultW = visionResultW_;
+    s.visionFootH   = visionFootH_;
     s.edInspectW    = edInspectW_;
     s.edPaletteW    = edPaletteW_;
     s.edShowHidden  = edShowHidden_;

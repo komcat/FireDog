@@ -267,6 +267,25 @@
       "enabled": true,
       "channels": 3,
       "poll_interval_ms": 500
+    },
+    {
+      "name": "LIGHT1",
+      "type": "ccs_pd3",
+      "ip_address": "192.168.0.2",
+      "port": 40001,
+      "enabled": true,
+      "simulated": false,
+      "poll_interval_ms": 1000,
+      "channels": [
+        { "channel": 1, "name": "Collimate", "color": "collimate", "group": "main_camera_light", "camera": "main_camera" },
+        { "channel": 2, "name": "Red",       "color": "red",       "group": "main_camera_light", "camera": "main_camera" },
+        { "channel": 3, "name": "Green",     "color": "green",     "group": "main_camera_light", "camera": "main_camera" },
+        { "channel": 4, "name": "Blue",      "color": "blue",      "group": "main_camera_light", "camera": "main_camera" },
+        { "channel": 5, "name": "L5", "enabled": false },
+        { "channel": 6, "name": "L6", "enabled": false },
+        { "channel": 7, "name": "L7", "enabled": false },
+        { "channel": 8, "name": "L8", "enabled": false }
+      ]
     }
   ]
 }

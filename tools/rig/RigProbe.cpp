@@ -259,6 +259,41 @@ void ProbePsu(RigSession& s)
     }
 }
 
+// Read-back only. The driver's connect and poll send C and M (status queries)
+// and nothing else; no F/L command is ever issued from here, so probing never
+// changes what the lights are doing.
+void ProbeLight(RigSession& s)
+{
+    HardwareManager& hw = s.Hw();
+    if (!s.Config().FirstEnabledLight()) return;
+
+    Head("light  " + hw.LightName());
+    Field("state", ConnStateName(hw.LightState()));
+    CcsPd3* l = hw.Light();
+    if (!l) { Field("driver", "(none)"); return; }
+    Field("device", l->DeviceId());
+    if (hw.LightState() != ConnState::Connected) {
+        const std::string err = l->LastError();
+        Field("last_error", err.empty() ? "(none)" : err);
+        return;
+    }
+
+    const CcsPd3::Status st = l->GetStatus();
+    Field("link", st.linkUp ? "up" : "DOWN (reconnecting)");
+    Field("poll_data", st.valid ? "valid" : "(no successful read yet)");
+    Field("unit", st.unitError ? "ERROR: overcurrent / fan stop" : "normal");
+    if (!st.warning.empty()) Field("warning", st.warning);
+    for (const CcsPd3::ChannelStatus& c : st.ch) {
+        const CcsPd3::Channel* cfg = l->FindChannel(c.channel);
+        std::cout << "   L" << c.channel << "  " << std::left << std::setw(12)
+                  << (cfg ? cfg->name : std::string("?")) << std::right
+                  << (c.on ? "ON " : "off") << "  F" << std::setw(3) << std::setfill('0')
+                  << c.intensity << std::setfill(' ') << "  ("
+                  << Fixed(CcsPd3::NativeToPercent(c.intensity), 1) << " %)"
+                  << "  mode S" << c.mode << "\n";
+    }
+}
+
 } // namespace
 
 void PrintStatus(const RigSession& s)
@@ -323,6 +358,7 @@ void PrintProbe(RigSession& s)
     ProbeKeithley(s);
     ProbeCld(s);
     ProbePsu(s);
+    ProbeLight(s);
     ProbeVision();
     std::cout << "\n";
 }

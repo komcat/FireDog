@@ -399,6 +399,7 @@ nlohmann::json VisionModelToJson(const VisionModel& m)
     j["method"]        = m.method;
     j["roi"]           = RoiToJson(m.roi);
     j["exposure_us"]   = m.exposureUs;
+    j["lighting"]      = AlignLightingToJson(m.lighting);
     // Always all three slots, in order — the position IS the stage number, so a
     // chain written with slot 2 empty must not come back as a two-element list.
     nlohmann::json filters = nlohmann::json::array();
@@ -421,6 +422,7 @@ VisionModel VisionModelFromJson(const nlohmann::json& j)
     m.name         = j.value("name", "detect");
     m.method       = j.value("method", "circle");
     m.exposureUs   = j.value("exposure_us", 0.0);
+    if (j.contains("lighting"))    m.lighting = AlignLightingFromJson(j["lighting"]);
     m.templateFile = j.value("template_file", "");
     if (j.contains("roi"))         m.roi    = RoiFromJson(j["roi"]);
     // Tolerant both ways: a model written before the chain existed has no

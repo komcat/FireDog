@@ -25,6 +25,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/AlignLighting.h"
+
 namespace firedog {
 
 // The search window, in full-frame camera pixels. Disabled = search the whole
@@ -171,6 +173,10 @@ struct VisionModel {
 
     VisionRoi roi;
     double    exposureUs = 0.0;        // 0 = leave the camera exposure alone
+    // The light the model was taught and tuned under. A detector judges
+    // contrast, so this travels with the model exactly like its exposure and
+    // is the only lighting a station run sets; an empty kind leaves it alone.
+    AlignLighting lighting;
 
     // Applied in slot order to the ROI before the method runs; "none" slots are
     // skipped, so 1 and 3 set with 2 empty is the two-stage chain [1,3]. Part of

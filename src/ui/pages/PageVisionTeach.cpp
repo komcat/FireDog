@@ -1185,6 +1185,20 @@ void App::DrawVisionCameraFoot(VisionModel& m)
         ImGui::TextDisabled("no focus reading");
     }
 
+    // The light the model is taught under travels with it, like the exposure:
+    // every run of this model sets it first (align_station, vision_detect,
+    // grip_mark). A colour click also lights it now, so the picture being
+    // tuned against IS the one the run will see.
+    ImGui::SeparatorText("Lighting");
+    bool applyLight = false;
+    LightCalloutPicker("vislight", m.lighting, workflow_.LightNames(),
+                       hardware_.LightState() == ConnState::Connected && !orch_.Busy(), &applyLight);
+    if (applyLight) {
+        ApplyLightingNow(m.lighting);
+        visionStatus_ = "lighting applied";
+    }
+    ImGui::Separator();
+
     // Zoom + the overlay toggle: both are about how the image is LOOKED at.
     ImGui::TextUnformatted("zoom");
     ImGui::SameLine();
@@ -1924,17 +1938,42 @@ void App::DrawVisionTeachPanel()
     ImGui::BeginChild("visimg", ImVec2(imageW, bodyH),
                       ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollWithMouse);
     {
-        // The camera strip is pinned to the foot of this column (two rows), so
-        // the image gets everything above it. Floored rather than allowed to go
-        // negative: ImGui reads a negative height as "available minus this",
-        // which would silently invert the layout on a very short window.
-        const float footH = ImGui::GetFrameHeightWithSpacing() * 2.0f;
-        const float viewH = fmaxf(60.0f, ImGui::GetContentRegionAvail().y - footH);
+        // The camera strip (exposure, lighting, zoom) sits under the image in
+        // its own scrollable child, sized by a draggable bar between the two:
+        // drag it up to shrink the picture and give the controls room. Clamped
+        // every frame so a height saved on a tall monitor cannot push the image
+        // below its floor on a short one. Floored rather than allowed to go
+        // negative: ImGui reads a negative height as "available minus this".
+        constexpr float kSplitH    = 6.0f;
+        constexpr float kMinViewH  = 60.0f;
+        // Rows: camera + exposure, "Lighting" heading, light + %, call-out
+        // buttons (which may wrap once), separator, zoom.
+        const float     fitFootH   = ImGui::GetFrameHeightWithSpacing() * 6.5f +
+                                     ImGui::GetStyle().WindowPadding.y * 2.0f;
+        const float     colH       = ImGui::GetContentRegionAvail().y;
+        if (visionFootH_ <= 0.0f) visionFootH_ = fitFootH;
+        const float maxFootH = fmaxf(fitFootH, colH - kMinViewH - kSplitH);
+        if (visionFootH_ < ImGui::GetFrameHeightWithSpacing()) visionFootH_ = ImGui::GetFrameHeightWithSpacing();
+        if (visionFootH_ > maxFootH) visionFootH_ = maxFootH;
+        const float viewH = fmaxf(kMinViewH, colH - visionFootH_ - kSplitH);
+
         ImGui::BeginChild("visimgview", ImVec2(0.0f, viewH),
                           ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollWithMouse);
         DrawVisionTeachImage(*m);
         ImGui::EndChild();
+
+        if (Splitter("##visfootsplit", false, kSplitH, ImGui::GetContentRegionAvail().x)) {
+            visionFootH_ -= ImGui::GetIO().MouseDelta.y;
+            visionFootSplitting_ = true;
+        } else if (visionFootSplitting_) {
+            visionFootSplitting_ = false;
+            SaveUiSettings();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to trade picture for controls");
+
+        ImGui::BeginChild("visfoot", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
         DrawVisionCameraFoot(*m);
+        ImGui::EndChild();
     }
     ImGui::EndChild();
 

@@ -13,6 +13,7 @@
 #include "hardware/instruments/ISmu.h"
 #include "hardware/instruments/UDP3305S.h"
 #include "hardware/io/IIoDevice.h"
+#include "hardware/lighting/CcsPd3.h"
 #include "hardware/io/IoWatch.h"
 #include "hardware/motion/IMotionController.h"
 #include "hardware/pneumatic/PneumaticSlide.h"
@@ -47,6 +48,8 @@ public:
     void SetCld(std::unique_ptr<CLD101x> c) { cld_ = std::move(c); }
     UDP3305S*     Psu()      { return psu_.get(); }        // null until Workflow builds it
     void SetPsu(std::unique_ptr<UDP3305S> p) { psu_ = std::move(p); }
+    CcsPd3*       Light()    { return light_.get(); }      // null until Workflow builds it
+    void SetLight(std::unique_ptr<CcsPd3> l) { light_ = std::move(l); }
 
     // --- Motion fleet (PI hexapods + ACS gantry). Multiple, heterogeneous. ----
     // Workflow builds each from config, hands it here, then drives async connect.
@@ -86,19 +89,23 @@ public:
     ConnState KeithleyState() const { return keiState_.load(); }
     ConnState CldState()      const { return cldState_.load(); }
     ConnState PsuState()      const { return psuState_.load(); }
+    ConnState LightState()    const { return lightState_.load(); }
     void SetCameraState(ConnState s)   { camState_.store(s); }
     void SetKeithleyState(ConnState s) { keiState_.store(s); }
     void SetCldState(ConnState s)      { cldState_.store(s); }
     void SetPsuState(ConnState s)      { psuState_.store(s); }
+    void SetLightState(ConnState s)    { lightState_.store(s); }
 
     const std::string& CameraName()   const { return camName_; }
     const std::string& KeithleyName() const { return keiName_; }
     const std::string& CldName()      const { return cldName_; }
     const std::string& PsuName()      const { return psuName_; }
+    const std::string& LightName()    const { return lightName_; }
     void SetCameraName(std::string n)   { camName_ = std::move(n); }
     void SetKeithleyName(std::string n) { keiName_ = std::move(n); }
     void SetCldName(std::string n)      { cldName_ = std::move(n); }
     void SetPsuName(std::string n)      { psuName_ = std::move(n); }
+    void SetLightName(std::string n)    { lightName_ = std::move(n); }
 
 private:
     // A motion device + its async-connect state. Held via unique_ptr so the
@@ -131,14 +138,17 @@ private:
     std::unique_ptr<ISmu>         keithley_;   // 6482 or 2602B (ISmu.h)
     std::unique_ptr<CLD101x>      cld_;
     std::unique_ptr<UDP3305S>     psu_;
+    std::unique_ptr<CcsPd3>       light_;      // dtor closes gracefully (one-client device)
     std::atomic<ConnState>        camState_{ConnState::Disconnected};
     std::atomic<ConnState>        keiState_{ConnState::Disconnected};
     std::atomic<ConnState>        cldState_{ConnState::Disconnected};
     std::atomic<ConnState>        psuState_{ConnState::Disconnected};
+    std::atomic<ConnState>        lightState_{ConnState::Disconnected};
     std::string                   camName_ = "Camera";
     std::string                   keiName_ = "Keithley";
     std::string                   cldName_ = "CLD101x";
     std::string                   psuName_ = "PSU";
+    std::string                   lightName_ = "Light";
 };
 
 } // namespace firedog

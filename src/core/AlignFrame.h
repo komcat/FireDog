@@ -29,17 +29,6 @@
 
 namespace firedog {
 
-// Illumination for a station. PLACEHOLDER: no illumination device exists in the
-// hardware config yet, so an empty `kind` (the default) means "leave lighting
-// alone" and the run applies nothing. The shape is here so a procedure taught
-// today keeps its settings when a real light is wired up.
-struct AlignLighting {
-    std::string kind;             // "" (none) | "io" | "psu"
-    std::string device;           // io device name, or "" for the PSU
-    std::string channel;          // io pin name, or PSU channel number as text
-    double      value = 0.0;      // io: non-zero = on;  psu: volts
-};
-
 // One of the two stations the procedure visits.
 // How many detection tiers an auto station can try before the manual pick.
 inline constexpr int kAlignDetectTiers = 3;
@@ -52,7 +41,8 @@ struct AlignStation {
     // carries none, which is what every procedure taught before tiers did.
     // 0 = leave the camera exposure alone.
     double        exposureUs = 0.0;
-    AlignLighting lighting;
+    // No lighting here: it belongs to each detection model (VisionModel::
+    // lighting), and a station has no fallback of its own.
     std::string   mode = "manual";         // "manual" (crosshair) | "auto" (detector)
     // Auto: up to three detection models, tried in order until one finds the
     // point - for parts whose reflection or colour varies enough that one model

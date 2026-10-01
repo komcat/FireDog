@@ -79,6 +79,7 @@ std::vector<HardwareManager::DeviceStatus> HardwareManager::Snapshot() const
     out.push_back({keiName_, keiState_.load()});
     out.push_back({cldName_, cldState_.load()});
     out.push_back({psuName_, psuState_.load()});
+    out.push_back({lightName_, lightState_.load()});
     return out;
 }
 

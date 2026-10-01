@@ -194,6 +194,10 @@ CommandResult ExecGripMark(ExecutionContext& ctx, const ParamValues& p)
     bool manual = (model == nullptr && autoErr.empty());
 
     if (model && autoErr.empty()) {
+        // The light the model was taught under, before the fresh-frame gate so
+        // the frames it waits for are lit by it. No-op for a model without one.
+        if (std::string why; !ctx.Wf().ApplyLighting(model->lighting, &why))
+            return CommandResult::Fail("grip mark " + std::to_string(index) + ": " + why);
         // Prove the frame is post-move before believing it - the same gate
         // align_station and auto_focus use.
         const int fresh = p.GetInt("fresh_frames");

@@ -383,6 +383,14 @@ CommandResult ExecVisionDetect(ExecutionContext& ctx, const ParamValues& p)
     // makes a taught model reproducible.
     const double useExpo = expo > 0.0 ? expo : m->exposureUs;
     if (useExpo > 0.0) ctx.Wf().SetCameraExposure(useExpo);
+    // Same for the light it was taught under. A model that carries one and
+    // cannot get it FAILS: a detection under the wrong light is a different
+    // picture, not a slightly worse one.
+    if (p.GetBool("apply_lighting")) {
+        std::string why;
+        if (!ctx.Wf().ApplyLighting(m->lighting, &why))
+            return CommandResult::Fail("'" + m->name + "': " + why);
+    }
 
     VisionDetection d;
     bool warnedStale = false;
@@ -424,6 +432,11 @@ CommandResult ExecVisionTest(ExecutionContext& ctx, const ParamValues& p)
     if (!m) return CommandResult::Fail("detection model '" + name + "' not found");
 
     if (m->exposureUs > 0.0) ctx.Wf().SetCameraExposure(m->exposureUs);
+    {
+        std::string why;
+        if (!ctx.Wf().ApplyLighting(m->lighting, &why))
+            return CommandResult::Fail("'" + m->name + "': " + why);
+    }
 
     std::vector<VisionDetection> hits;
     hits.reserve(static_cast<std::size_t>(runs));
@@ -602,6 +615,8 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                        "detection model (uid or name)"},
                       {"exposure_us", PT::Double, false, 0.0, 0.0, 1.0e7, {},
                        "override the model's exposure; 0 = use the model's"},
+                      {"apply_lighting", PT::Bool, false, true, 0, 0, {},
+                       "set the light the model was taught under first (no-op if it has none)"},
                       {"fresh_frames", PT::Int, false, 2, 0, 10, {},
                        "new frames required before detecting (0 = use the latest)"},
                       {"frame_timeout_ms", PT::Int, false, 2000, 50, 30000, {},

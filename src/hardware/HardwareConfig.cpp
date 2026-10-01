@@ -182,6 +182,30 @@ HardwareConfig HardwareConfig::Load(const std::string& path)
                     hc.psus.push_back(pc);
                     continue;
                 }
+                if (type.find("pd3") != std::string::npos) {
+                    LightConfig lc;
+                    lc.name           = inst.value("name", std::string("LIGHT1"));
+                    lc.type           = type;
+                    lc.ipAddress      = inst.value("ip_address", std::string());
+                    lc.port           = inst.value("port", 40001);
+                    lc.enabled        = inst.value("enabled", true);
+                    lc.simulated      = inst.value("simulated", false);
+                    lc.pollIntervalMs = inst.value("poll_interval_ms", 1000);
+                    if (inst.contains("channels") && inst["channels"].is_array()) {
+                        for (const auto& c : inst["channels"]) {
+                            LightChannelConfig ch;
+                            ch.channel = c.value("channel", 0);
+                            ch.name    = c.value("name", "L" + std::to_string(ch.channel));
+                            ch.color   = c.value("color", std::string());
+                            ch.group   = c.value("group", std::string());
+                            ch.camera  = c.value("camera", std::string());
+                            ch.enabled = c.value("enabled", true);
+                            lc.channels.push_back(ch);
+                        }
+                    }
+                    hc.lights.push_back(lc);
+                    continue;
+                }
                 if (type.find("keithley") == std::string::npos) continue;
 
                 KeithleyConfig kc;
@@ -237,6 +261,14 @@ const PsuConfig* HardwareConfig::FirstEnabledPsu() const
 {
     for (const auto& p : psus) {
         if (p.enabled) return &p;
+    }
+    return nullptr;
+}
+
+const LightConfig* HardwareConfig::FirstEnabledLight() const
+{
+    for (const auto& l : lights) {
+        if (l.enabled) return &l;
     }
     return nullptr;
 }
@@ -614,6 +646,25 @@ bool HardwareConfig::SaveInstrument(const std::string& path, const PsuConfig& cf
     (*inst)["visa_resource"]    = cfg.visaResource;
     (*inst)["enabled"]          = cfg.enabled;
     (*inst)["channels"]         = cfg.channels;
+    (*inst)["poll_interval_ms"] = cfg.pollIntervalMs;
+    return WriteConfigDoc(path, j);
+}
+
+bool HardwareConfig::SaveInstrument(const std::string& path, const LightConfig& cfg)
+{
+    nlohmann::json j;
+    if (!ReadConfigDoc(path, j)) return false;
+
+    nlohmann::json* inst = FindEntry(j, "instruments", "name", cfg.name);
+    if (!inst) {
+        ReportMissing("instruments", cfg.name, path);
+        return false;
+    }
+
+    (*inst)["ip_address"]       = cfg.ipAddress;
+    (*inst)["port"]             = cfg.port;
+    (*inst)["enabled"]          = cfg.enabled;
+    (*inst)["simulated"]        = cfg.simulated;
     (*inst)["poll_interval_ms"] = cfg.pollIntervalMs;
     return WriteConfigDoc(path, j);
 }

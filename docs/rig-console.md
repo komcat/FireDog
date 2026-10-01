@@ -20,8 +20,10 @@ rig connects, the client will connect.
 ## Read-only by construction
 
 The rig calls getters and cached snapshots only. There is no command to move an
-axis, write an IO output, extend a slide, switch a PSU channel or the laser, or
-change a setpoint. Pointing it at a live machine cannot move anything.
+axis, write an IO output, extend a slide, switch a PSU channel, the laser or a
+light, or change a setpoint. Pointing it at a live machine cannot move anything.
+(The lighting probe sends the PD3's status queries, `C` and `M`, and never an
+`F`/`L`.)
 
 (Actuation was deliberately left out: a bring-up tool that can crash a stage is
 the wrong trade. Commanding hardware stays in the client, behind its armed
@@ -110,7 +112,7 @@ you.
 ### connect vs connect \<device\>
 
 `connect all` passes the loaded config through untouched: motion, IO, pneumatic
-slides, io_watch, safety_watch, camera, Keithley, CLD, PSU — the client's exact
+slides, io_watch, safety_watch, camera, Keithley, CLD, PSU, lighting — the client's exact
 sequence, including `HardwareManager::ConnectAllAsync` for the simulated fleet.
 
 `connect <device>` starts a copy of the config with every *other* device disabled,
@@ -137,6 +139,7 @@ a sample, then prints per kind:
 | keithley | IDN, VISA resource, NPLC, range, bias + output state, live ch1/ch2 |
 | cld101x | IDN, TEC/laser on-off, temperature (+validity), setpoints, live streams |
 | psu | IDN, per channel output state, setpoints, measured V/I, live streams |
+| light | address, link up/down, unit error, per channel on/off, F value, %, strobe mode |
 | vision | HALCON: available / compiled-in / runtime / licensed, version, root, licence dir + files, error |
 
 The `vision` block is machine state rather than a configured device, so it prints
@@ -166,6 +169,7 @@ Editable fields:
 | keithley | `visa_resource` `channel_count` `measurement_nplc` `auto_range` `fixed_range` `poll_interval_ms` `bias_voltage` `enabled` |
 | cld | `visa_resource` `default_temperature` `default_laser_current` `poll_interval_ms` `enabled` |
 | psu | `visa_resource` `channels` `poll_interval_ms` `enabled` |
+| light | `ip_address` `port` `poll_interval_ms` `enabled` `simulated` (the channel map stays in the file) |
 
 `controller_type`, the IO `type` and `connection_type` are validated against
 their allowed values: a typo there does not fail loudly at connect (Workflow logs
@@ -179,9 +183,10 @@ cannot edit here, you can still hand over.
 Edits never apply to a live session: the session keeps the config it was started
 with, so changing an IP needs `disconnect` then `connect`.
 
-**The rebuild caveat** (the same one the IO Watch editor prints): the rig writes
-`config/hardware.json` *next to the exe*, and a rebuild recopies the repo's
-`config/` over it. Mirror durable edits into the repo file — or run the rig with
+**Where edits land:** the rig writes `config/hardware.json` *next to the exe* —
+the machine's own copy, which a build never overwrites (`cmake/StageConfig.cmake`
+stages a config file only when it is missing). Copy an edit into the repo file
+only when it should become the default for every machine, or run the rig with
 `--config` pointed at the repo copy.
 
 ## The handover report

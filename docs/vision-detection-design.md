@@ -323,9 +323,22 @@ the page performs), `Save`, `Save & close`.
 Deliberately **not** ported: Horizon's `Vision profile` combo and its
 `New / Load / Save / History` buttons. A profile there is a free-standing
 document; here a model is private to one station and auto-named, so there is
-nothing to pick, name or duplicate. Lighting is left out for the same class of
-reason — it has no device behind it and it belongs to `AlignStation`, not to the
-model.
+nothing to pick, name or duplicate.
+
+Lighting, once left out because no device stood behind it, now travels WITH the
+model (`VisionModel::lighting`): a detector judges contrast, so it is tuned at
+a light exactly as it is tuned at an exposure. It is set with
+`LightCalloutPicker` (`ui/Widgets`) — the Light page's call-out style: light +
+%, then Red / Green / Blue / White / Collimate / White + collimate, **Off**
+(hold the light dark) and **None** (leave lighting alone) — in the teach page's
+camera strip and under each detection on the Alignment page, one field in two
+places. A click lights it at once (queued through
+`Workflow::RequestLightCallout`, no socket call on the UI thread), so the
+picture being tuned against is the one the run will see. None leaves the
+lighting as it is; there is no station-level fallback. Every run of a model sets it
+first — `align_station` per tier, `vision_detect` (unless `apply_lighting` is
+off), `vision_test`, `grip_mark` — and a model whose light cannot be set FAILS
+rather than detecting under the wrong one.
 
 The camera foot moved out of the parameter column because those controls are
 properties of the *picture*: reading a luma warning two columns away from the
@@ -622,9 +635,10 @@ numbers.
 4. **Calibration is still two scalars.** `pixel_to_mm_x/y` carry no rotation or
    skew, so a camera rotated relative to the stage biases a detected point
    exactly as it biases a manual one (`alignment-procedure-design.md` §8.2).
-5. **Lighting is still a placeholder** — no illumination device exists in
-   `config/hardware.json`, so a model's exposure is the only optical setting
-   that does anything.
+5. **Lighting is one colour call-out per model.** The CCS PD3 is the only real
+   light; a model stores one light + call-out + percent, not a per-channel mix.
+   A mix the six call-outs cannot express needs a new call-out in
+   `core/LightCallout`, not a second shape on the model.
 6. **The reliability run does not move anything.** It measures repeatability at
    one pose, not reproducibility across a load/unload cycle.
 

@@ -26,6 +26,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("lower_h"))    s.lowerH    = j["lower_h"].get<float>();
         if (j.contains("vision_param_w")) s.visionParamW = j["vision_param_w"].get<float>();
         if (j.contains("vision_result_w")) s.visionResultW = j["vision_result_w"].get<float>();
+        if (j.contains("vision_foot_h")) s.visionFootH = j["vision_foot_h"].get<float>();
         if (j.contains("ed_inspect_w")) s.edInspectW = j["ed_inspect_w"].get<float>();
         if (j.contains("ed_palette_w")) s.edPaletteW = j["ed_palette_w"].get<float>();
         if (j.contains("ed_show_hidden")) s.edShowHidden = j["ed_show_hidden"].get<bool>();
@@ -123,6 +124,7 @@ bool UiSettings::Save(const std::string& path) const
     j["lower_h"]    = lowerH;
     j["vision_param_w"]  = visionParamW;
     j["vision_result_w"] = visionResultW;
+    j["vision_foot_h"]   = visionFootH;
     j["ed_inspect_w"]    = edInspectW;
     j["ed_palette_w"]    = edPaletteW;
     j["ed_show_hidden"]  = edShowHidden;

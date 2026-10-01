@@ -43,6 +43,7 @@ UserRole MinRoleFor(Page p)
         case Page::Keithley:
         case Page::CLD:
         case Page::PSU:
+        case Page::Light:
         case Page::IO:
         case Page::Pneumatic:
         case Page::DutView:

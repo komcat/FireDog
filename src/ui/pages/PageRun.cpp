@@ -713,11 +713,12 @@ void App::DrawRunValuesPanel()
 // voltage stream — its bias is a setting, not a measurement — so only its two
 // current channels are offered.
 namespace {
-enum class ReadoutKind { Temp, MilliAmp, Volt, Amp };
+enum class ReadoutKind { Temp, MilliAmp, Volt, Amp, Percent };
 struct ReadoutDef {
     std::string  topic;
     std::string  label;
     ReadoutKind  kind;
+    bool         ifPresent = false;   // offered only once the bus has the topic
 };
 std::vector<ReadoutDef> ReadoutCatalogue()
 {
@@ -730,6 +731,11 @@ std::vector<ReadoutDef> ReadoutCatalogue()
     }
     cat.push_back({topics::kKeithleyCh1, "SMU ch1 I", ReadoutKind::Amp});
     cat.push_back({topics::kKeithleyCh2, "SMU ch2 I", ReadoutKind::Amp});
+    // The lighting controller has up to eight channels and a station wires a
+    // few; only the configured ones are polled, so only those are offered.
+    for (int ch = 1; ch <= 8; ++ch)
+        cat.push_back({topics::LightPct(ch), "Light L" + std::to_string(ch) + " %",
+                       ReadoutKind::Percent, true});
     return cat;
 }
 const ReadoutDef* FindReadout(const std::vector<ReadoutDef>& cat, const std::string& topic)
@@ -745,6 +751,7 @@ std::string FormatReadout(ReadoutKind kind, double v)
     case ReadoutKind::MilliAmp: std::snprintf(buf, sizeof(buf), "%.2f mA", v); return buf;
     case ReadoutKind::Volt:     std::snprintf(buf, sizeof(buf), "%.3f V",  v); return buf;
     case ReadoutKind::Amp:      return FormatCurrent(v);
+    case ReadoutKind::Percent:  std::snprintf(buf, sizeof(buf), "%.1f %%", v); return buf;
     }
     return "?";
 }
@@ -787,7 +794,10 @@ void App::DrawRunReadouts()
     ImGui::SameLine();
     ImGui::SeparatorText("Readouts");
     if (ImGui::BeginPopup("runreadpick")) {
+        const std::vector<std::string> onBus = DataBus::Instance().Topics();
+        const std::set<std::string> busHas(onBus.begin(), onBus.end());
         for (const ReadoutDef& d : cat) {
+            if (d.ifPresent && !busHas.count(d.topic)) continue;
             bool pinned = false;
             for (const RunReadout& r : runReadouts_) if (r.topic == d.topic) { pinned = true; break; }
             if (pinned) continue;

@@ -15,27 +15,6 @@ namespace {
 constexpr const char* kLocalPath = "config/alignments.local.json";
 constexpr const char* kBasePath  = "config/alignments.json";
 
-nlohmann::json LightingToJson(const AlignLighting& l)
-{
-    nlohmann::json j;
-    j["kind"]    = l.kind;
-    j["device"]  = l.device;
-    j["channel"] = l.channel;
-    j["value"]   = l.value;
-    return j;
-}
-
-AlignLighting LightingFromJson(const nlohmann::json& j)
-{
-    AlignLighting l;
-    if (!j.is_object()) return l;
-    l.kind    = j.value("kind", "");
-    l.device  = j.value("device", "");
-    l.channel = j.value("channel", "");
-    l.value   = j.value("value", 0.0);
-    return l;
-}
-
 nlohmann::json StationToJson(const AlignStation& s)
 {
     nlohmann::json j;
@@ -48,7 +27,6 @@ nlohmann::json StationToJson(const AlignStation& s)
     j["use_tier2"]            = s.useTier2;
     j["use_tier3"]            = s.useTier3;
     j["auto_fallback_manual"] = s.autoFallbackManual;
-    j["lighting"]             = LightingToJson(s.lighting);
     return j;
 }
 
@@ -65,7 +43,8 @@ AlignStation StationFromJson(const nlohmann::json& j)
     s.useTier2           = j.value("use_tier2", false);
     s.useTier3           = j.value("use_tier3", false);
     s.autoFallbackManual = j.value("auto_fallback_manual", false);
-    if (j.contains("lighting")) s.lighting = LightingFromJson(j["lighting"]);
+    // A "lighting" key from an older file is ignored on purpose: lighting
+    // belongs to the detection model now, and a station has none.
     return s;
 }
 

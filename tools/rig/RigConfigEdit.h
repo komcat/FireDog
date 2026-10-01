@@ -22,7 +22,7 @@
 
 namespace firedog::rig {
 
-enum class DeviceKind { Motion, Io, Camera, Keithley, Cld, Psu };
+enum class DeviceKind { Motion, Io, Camera, Keithley, Cld, Psu, Light };
 
 const char* KindName(DeviceKind k);
 

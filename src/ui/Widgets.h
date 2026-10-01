@@ -15,6 +15,7 @@
 
 #include "imgui.h"
 
+#include "core/AlignLighting.h"    // LightCalloutPicker
 #include "core/SavedPositions.h"   // SavedPos / SavedPosMap (TaughtPosePicker)
 #include "hardware/IDevice.h"      // ConnState
 
@@ -421,6 +422,17 @@ ImVec4      StateColor(ConnState s);
 const char* StateGlyph(ConnState s);
 const char* StateText(ConnState s);
 void        DeviceStatusLine(ConnState s, const char* name);
+
+// A detection model's lighting (core/AlignLighting.h), in the Light page's
+// call-out style: a light picker and a % slider, then one button per colour
+// call-out (Red ... White + collimate), Off (hold the light dark) and None
+// (leave lighting alone). The setting in force is highlighted. `lights` are the
+// configured light names (Workflow::LightNames). Edits `l` in place and returns
+// true when it changed (a slider only on release). `*applyNow` is set when the
+// change should be LIT now — only when `canApply`; the caller sends it through
+// Workflow::RequestLightCallout so a click never does socket I/O on the UI thread.
+bool LightCalloutPicker(const char* id, AlignLighting& l, const std::vector<std::string>& lights,
+                        bool canApply, bool* applyNow);
 
 // A draggable splitter bar (a thin, invisible-until-hovered button). Returns
 // true while being dragged; the caller applies io.MouseDelta to the adjacent

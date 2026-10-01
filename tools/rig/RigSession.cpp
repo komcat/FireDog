@@ -32,6 +32,7 @@ HardwareConfig FilterToDevice(const HardwareConfig& full, const DeviceRef& only)
     for (auto& k : f.keithleys)     k.enabled = false;
     for (auto& c : f.clds)          c.enabled = false;
     for (auto& p : f.psus)          p.enabled = false;
+    for (auto& l : f.lights)        l.enabled = false;
 
     switch (only.kind) {
         case DeviceKind::Motion:   f.motionDevices[only.index].enabled = true; break;
@@ -40,6 +41,7 @@ HardwareConfig FilterToDevice(const HardwareConfig& full, const DeviceRef& only)
         case DeviceKind::Keithley: f.keithleys[only.index].enabled     = true; break;
         case DeviceKind::Cld:      f.clds[only.index].enabled          = true; break;
         case DeviceKind::Psu:      f.psus[only.index].enabled          = true; break;
+        case DeviceKind::Light:    f.lights[only.index].enabled        = true; break;
     }
 
     // Slides and both watches reference pins by name across the whole IO fleet;
@@ -105,6 +107,7 @@ bool RigSession::AllExpectedConnected() const
     if (cfg_.FirstEnabledKeithley() && hw_.KeithleyState() != ConnState::Connected) return false;
     if (cfg_.FirstEnabledCld()      && hw_.CldState()      != ConnState::Connected) return false;
     if (cfg_.FirstEnabledPsu()      && hw_.PsuState()      != ConnState::Connected) return false;
+    if (cfg_.FirstEnabledLight()    && hw_.LightState()    != ConnState::Connected) return false;
     return true;
 }
 

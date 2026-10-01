@@ -170,6 +170,7 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/pages/PageCamera.cpp` | Camera page + `UpdateCameraTexture` | 171 |
 | `src/ui/pages/PageKeithley.cpp` | Keithley page + the whole chart pipeline (two consumers: page and Aux) | 364 |
 | `src/ui/pages/PageCld.cpp` / `PagePsu.cpp` | CLD101x / UDP3305S pages | 179 / 160 |
+| `src/ui/pages/PageLight.cpp` | CCS PD3 lighting page + `App::ApplyLightingNow` (what a `LightCalloutPicker` click lights) | ~250 |
 | `src/ui/pages/PageMotion.cpp` | device list + live axes, tabbed detail, Positions tab (one selected row by uid, `posSelUid_`; Move / Update / Edit / Rename / Hist / Delete on a toolbar above the table, double-click = Move — every action still lands on its confirmation dialog), Scanning test bench | 489 |
 | `src/ui/pages/PageMotionMap.cpp` | the Mapped Path graph editor (was the single largest function in App.cpp) | 511 |
 | `src/ui/pages/PageIo.cpp` | IO page + Pneumatics page (slides are composed from IO pins) | 330 |

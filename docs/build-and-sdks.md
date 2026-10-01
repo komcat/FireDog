@@ -12,7 +12,7 @@ CMake + Ninja + MSVC (`cl.exe`), **Windows only**. Dependencies are fetched at c
 - **FASTECH EziMOTIONPlusE** (`HAS_EZIIO`) — Ezi-IO boards. Vendored in `external/eziio` (DLL copied next to the exe).
 - **MVTec HALCON** (`HAS_HALCON`) — vision. **No vendored copy** (licensed per machine): located via the `HALCONROOT` / `HALCONARCH` environment the installer sets, expecting `<root>/include/halconcpp/HalconCpp.h` and `<root>/lib/<arch>/halconcpp.lib`. Linked with **`/DELAYLOAD`** (INTERFACE on `firedog_hw`) so an exe built with the SDK still starts where HALCON is absent; `vision/HalconEngine` probes the DLLs with `LoadLibrary` before any call and checks the licence with a real operator. Auto-focus does **not** use it — see `docs/vision-layer.md`.
 
-WAGO needs no SDK — it speaks Modbus TCP over raw winsock.
+WAGO needs no SDK — it speaks Modbus TCP over raw winsock. Neither does the CCS PD3 lighting controller (its ASCII frame protocol over raw winsock); both pick `simulated` from config rather than from a compile def.
 
 ```bash
 cmake --preset x64-debug             # configure (presets: x64/x86 × debug/release)

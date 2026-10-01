@@ -273,6 +273,7 @@ void WriteSummary(std::ostream& os, const HardwareConfig& c)
     Field(os, "Keithley SMUs",      count(c.keithleys.size(),     enabledOf(c.keithleys)));
     Field(os, "laser / TEC",        count(c.clds.size(),          enabledOf(c.clds)));
     Field(os, "power supplies",     count(c.psus.size(),          enabledOf(c.psus)));
+    Field(os, "lighting",           count(c.lights.size(),        enabledOf(c.lights)));
     os << "\n";
     Field(os, "io watch", c.ioWatch.enabled
               ? "ENABLED, " + std::to_string(c.ioWatch.bindings.size()) + " binding(s)"
@@ -506,16 +507,17 @@ void WriteCameras(std::ostream& os, const HardwareConfig& c)
 
 void WriteInstruments(std::ostream& os, const HardwareConfig& c)
 {
-    if (c.keithleys.empty() && c.clds.empty() && c.psus.empty()) {
+    if (c.keithleys.empty() && c.clds.empty() && c.psus.empty() && c.lights.empty()) {
         os << "  (none configured)\n";
         return;
     }
 
-    os << "  Every instrument is reached over VISA, so NI-VISA has to be installed on\n"
-       << "  this PC first - section 10, note 4 has the download link - and each\n"
-       << "  resource string below must match what NI-MAX lists, exactly. A USB\n"
-       << "  resource embeds the unit's serial number, so swapping the instrument for\n"
-       << "  another one changes the string.\n\n";
+    if (!c.keithleys.empty() || !c.clds.empty() || !c.psus.empty())
+        os << "  Every VISA instrument needs NI-VISA installed on this PC first -\n"
+           << "  section 10, note 4 has the download link - and each resource string\n"
+           << "  below must match what NI-MAX lists, exactly. A USB resource embeds the\n"
+           << "  unit's serial number, so swapping the instrument for another one\n"
+           << "  changes the string. (The lighting controller is plain TCP, no VISA.)\n\n";
 
     for (const KeithleyConfig& k : c.keithleys) {
         DeviceHeader(os, k.name, "", k.type, k.enabled);
@@ -557,6 +559,23 @@ void WriteInstruments(std::ostream& os, const HardwareConfig& c)
         os << "      setpoints are read back from the supply at connect - the config\n"
            << "      carries no voltages or currents.\n\n";
     }
+
+    for (const LightConfig& l : c.lights) {
+        DeviceHeader(os, l.name, "", l.type + " LED lighting", l.enabled);
+        Field(os, "address", OrNotSet(l.ipAddress) + ":" + std::to_string(l.port)
+                  + (l.simulated ? "   (SIMULATED - no socket is opened)" : ""));
+        Field(os, "connected by", "LAN, raw TCP (no VISA)");
+        Field(os, "poll interval", std::to_string(l.pollIntervalMs) + " ms");
+        for (const LightChannelConfig& ch : l.channels) {
+            if (!ch.enabled) continue;
+            Field(os, "L" + std::to_string(ch.channel),
+                  ch.name + (ch.color.empty() ? "" : ", " + ch.color)
+                  + (ch.group.empty() ? "" : ", light '" + ch.group + "'"));
+        }
+        os << "      the PD3 accepts ONE TCP client: while another program (Horizon,\n"
+           << "      the CCS utility) holds it, FireDog cannot connect. Nothing is\n"
+           << "      written to the lights at connect.\n\n";
+    }
 }
 
 void WriteNotes(std::ostream& os, const HardwareConfig& c)
@@ -576,11 +595,13 @@ void WriteNotes(std::ostream& os, const HardwareConfig& c)
     for (const KeithleyConfig& k : c.keithleys) { if (k.enabled) addSubnet(TcpipAddressOf(k.visaResource)); }
     for (const Cld101xConfig& l : c.clds)       { if (l.enabled) addSubnet(TcpipAddressOf(l.visaResource)); }
     for (const PsuConfig& p : c.psus)           { if (p.enabled) addSubnet(TcpipAddressOf(p.visaResource)); }
+    for (const LightConfig& l : c.lights)       { if (l.enabled && !l.simulated) addSubnet(l.ipAddress); }
 
     os << "  1. Where the file lives\n"
        << "     The machine reads config/hardware.json in the folder that holds\n"
-       << "     FireDog.exe. A rebuild recopies the repository's config/ over that\n"
-       << "     copy, so a durable change must go into the repository file too.\n\n"
+       << "     FireDog.exe. That copy is this machine's own: a build never\n"
+       << "     overwrites it (it only stages files that are missing), so an edit\n"
+       << "     there is durable. The repository copy is the default for a new PC.\n\n"
        << "  2. How to change a value\n"
        << "     Either edit the JSON directly, or use the rig without the GUI:\n"
        << "         FireDogRig --set hex-left.ip_address=192.168.0.11 --save\n"

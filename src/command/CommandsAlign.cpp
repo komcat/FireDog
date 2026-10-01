@@ -47,26 +47,13 @@ namespace firedog {
 
 namespace {
 
-// Illumination for a station. No illumination device exists in the hardware
-// config yet, so an empty `kind` (the default) is a no-op and the whole thing
-// is a placeholder with a real call path already wired.
+// Illumination for a station or a detection tier (core/AlignLighting.h). An
+// empty kind is a no-op; Workflow::ApplyLighting is the one implementation.
 CommandResult ApplyLighting(ExecutionContext& ctx, const AlignLighting& l)
 {
-    if (l.kind.empty()) return CommandResult::Success();
-    if (l.kind == "io") {
-        if (!ctx.Wf().SetIoOutputByName(l.device, l.channel, l.value != 0.0))
-            return CommandResult::Fail("lighting: IO output '" + l.device + "/" +
-                                       l.channel + "' rejected");
-        return CommandResult::Success();
-    }
-    if (l.kind == "psu") {
-        const int ch = std::atoi(l.channel.c_str());
-        if (ch <= 0) return CommandResult::Fail("lighting: bad PSU channel '" + l.channel + "'");
-        if (!ctx.Wf().SetPsuVI(ch, l.value, 0.0) || !ctx.Wf().PsuOutputOn(ch))
-            return CommandResult::Fail("lighting: PSU channel rejected");
-        return CommandResult::Success();
-    }
-    return CommandResult::Fail("lighting: unknown kind '" + l.kind + "'");
+    std::string why;
+    if (ctx.Wf().ApplyLighting(l, &why)) return CommandResult::Success();
+    return CommandResult::Fail(why);
 }
 
 // ---- detection attempt crops ------------------------------------------------
@@ -330,8 +317,20 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
             return CommandResult::Fail("camera exposure change rejected (camera connected?)");
         expoNow = expo0;
     }
-    const CommandResult light = ApplyLighting(ctx, st.lighting);
-    if (!light.ok) return light;
+    // Lighting belongs to the DETECTION: each tier's model carries the light
+    // it was taught under, and there is no station-level fallback - a model
+    // set to None leaves the lighting exactly as it is, and so does a manual
+    // station. The first tier's is applied BEFORE the move, so it has settled
+    // by the time the axes have.
+    static const AlignLighting kNoLight;
+    const auto tierLighting = [&](const Tier& tr) -> const AlignLighting& {
+        return tr.model ? tr.model->lighting : kNoLight;
+    };
+    AlignLighting lightNow = (!tiers.empty()) ? tierLighting(tiers.front()) : kNoLight;
+    {
+        const CommandResult light = ApplyLighting(ctx, lightNow);
+        if (!light.ok) return light;
+    }
 
     if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
         return CommandResult::Fail("move to station " + std::to_string(station) + " rejected");
@@ -399,6 +398,12 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
             if (!ctx.Wf().SetCameraExposure(ex))
                 return CommandResult::Fail("camera exposure change rejected (camera connected?)");
             expoNow = ex;
+        }
+        const AlignLighting& lt = tierLighting(tr);
+        if (lt.Set() && !(lt == lightNow)) {
+            const CommandResult light = ApplyLighting(ctx, lt);
+            if (!light.ok) return light;
+            lightNow = lt;
         }
         if (!waitFresh()) return CommandResult::Fail("stopped");
 
@@ -482,6 +487,8 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
         // detection tier's exposure may be tuned for a filter, not for eyes.
         if (st.exposureUs > 0.0 && st.exposureUs != expoNow)
             ctx.Wf().SetCameraExposure(st.exposureUs);
+        // The lighting stays as the last tier left it: there is no station
+        // light to go back to.
     }
 
     if (manual) {

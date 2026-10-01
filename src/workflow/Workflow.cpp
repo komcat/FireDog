@@ -10,6 +10,7 @@
 #include "hardware/motion/PIHexapod.h"
 #include "hardware/motion/ACSController.h"
 #include "core/DataBus.h"
+#include "core/LightCallout.h"
 #include "core/Topics.h"
 #include "core/Log.h"
 #include "vision/FocusMetric.h"
@@ -18,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -72,6 +74,7 @@ void Workflow::Start(const HardwareConfig& hw)
     StartKeithley(hw);
     StartCld(hw);
     StartPsu(hw);
+    StartLight(hw);
     StartNeedleCal();
     StartDeviceRegs();   // after StartMotion — logs against the fleet it found
 }
@@ -1336,6 +1339,206 @@ bool Workflow::SetPsuVI(int channel, double volts, double amps)
 
 bool Workflow::PsuOutputOn(int channel)  { UDP3305S* p = ConnectedPsu(); return p && p->OutputOn(channel); }
 bool Workflow::PsuOutputOff(int channel) { UDP3305S* p = ConnectedPsu(); return p && p->OutputOff(channel); }
+
+// ---- CCS PD3 lighting ---------------------------------------------------------
+
+void Workflow::StartLight(const HardwareConfig& hw)
+{
+    const LightConfig* l = hw.FirstEnabledLight();
+    if (!l) {
+        FD_INFO("workflow", "no enabled lighting controller in config");
+        hw_.SetLightState(ConnState::Disconnected);
+        return;
+    }
+
+    lightCfg_      = *l;   // kept so the Light page can reconnect later
+    lightCfgValid_ = true;
+    hw_.SetLightName(l->name);
+    LaunchLightConnect();
+}
+
+void Workflow::LaunchLightConnect()
+{
+    hw_.SetLightState(ConnState::Connecting);
+    FD_INFO("workflow", "connecting lighting '%s' (%s:%d%s)", lightCfg_.name.c_str(),
+            lightCfg_.ipAddress.c_str(), lightCfg_.port, lightCfg_.simulated ? ", simulated" : "");
+
+    CcsPd3::Config cfg;
+    cfg.name           = lightCfg_.name;
+    cfg.ipAddress      = lightCfg_.ipAddress;
+    cfg.port           = lightCfg_.port;
+    cfg.pollIntervalMs = lightCfg_.pollIntervalMs;
+    cfg.simulated      = lightCfg_.simulated;
+    for (const LightChannelConfig& c : lightCfg_.channels)
+        cfg.channels.push_back({c.channel, c.name, c.color, c.group, c.camera, c.enabled});
+    // Replacing the driver destroys the old one, which closes its socket
+    // GRACEFULLY first — the PD3 has one client slot and the new driver is
+    // about to ask for it.
+    hw_.SetLight(std::make_unique<CcsPd3>(cfg));
+
+    // Connect + poll only. Nothing is written to the outputs at startup.
+    const int interval = lightCfg_.pollIntervalMs;
+    lightConnect_ = std::async(std::launch::async, [this, interval] {
+        CcsPd3* l = hw_.Light();
+        bool ok = l && l->Connect();
+        if (ok) ok = l->StartPolling(interval);
+        hw_.SetLightState(ok ? ConnState::Connected : ConnState::Failed);
+        if (!ok) FD_ERROR("workflow", "lighting bring-up failed: %s",
+                          l ? l->LastError().c_str() : "no driver");
+    });
+}
+
+bool Workflow::ConnectLight()
+{
+    if (!lightCfgValid_) {
+        FD_WARN("workflow", "lighting connect: no lighting controller configured");
+        return false;
+    }
+    if (hw_.LightState() == ConnState::Connecting) return false;   // in flight
+    CcsPd3* l = hw_.Light();
+    if (l && l->IsConnected()) return true;                        // already up
+    LaunchLightConnect();   // rebuilds the driver from lightCfg_
+    return true;
+}
+
+bool Workflow::DisconnectLight()
+{
+    if (hw_.LightState() == ConnState::Connecting) return false;   // let it finish
+    CcsPd3* l = hw_.Light();
+    if (!l) return false;
+    l->Disconnect();   // stops polling; graceful close; outputs left as they are
+    hw_.SetLightState(ConnState::Disconnected);
+    FD_INFO("workflow", "lighting '%s' disconnected", hw_.LightName().c_str());
+    return true;
+}
+
+CcsPd3* Workflow::ConnectedLight() const
+{
+    if (hw_.LightState() != ConnState::Connected) return nullptr;
+    return hw_.Light();
+}
+
+std::vector<std::string> Workflow::LightNames() const
+{
+    std::vector<std::string> out;
+    if (!lightCfgValid_) return out;
+    for (const LightChannelConfig& c : lightCfg_.channels) {
+        if (!c.enabled) continue;
+        const std::string& n = c.group.empty() ? c.name : c.group;
+        if (n.empty()) continue;
+        if (std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+    }
+    return out;
+}
+
+bool Workflow::LightTargets(const std::string& light, const std::string* color, double percent,
+                            std::vector<std::pair<int, int>>& out, std::string* why) const
+{
+    out.clear();
+    const auto fail = [why](std::string s) {
+        if (why) *why = std::move(s);
+        return false;
+    };
+    if (!lightCfgValid_) return fail("no lighting controller configured");
+
+    LightColor callout = LightColor::White;
+    if (color && !ParseLightColor(*color, callout))
+        return fail("unknown colour '" + *color + "'");
+
+    const int native = CcsPd3::PercentToNative(percent);
+    bool anyLit = false;
+    for (const LightChannelConfig& c : lightCfg_.channels) {
+        if (!c.enabled) continue;
+        if (!light.empty() && !ChannelInLight(c.group, c.name, light)) continue;
+        const bool lit = color && LightColorMatches(callout, c.color);
+        anyLit = anyLit || lit;
+        out.emplace_back(c.channel, lit ? native : 0);
+    }
+    if (out.empty()) return fail("light '" + light + "' matches no configured channel");
+    if (color && !anyLit)
+        return fail("light '" + light + "' has no channel for call-out '" + *color + "'");
+    return true;
+}
+
+bool Workflow::SetLightChannel(int channel, double percent)
+{
+    CcsPd3* l = ConnectedLight();
+    return l && l->SetIntensity(channel, CcsPd3::PercentToNative(percent));
+}
+
+bool Workflow::SetLightOutput(int channel, bool on)
+{
+    CcsPd3* l = ConnectedLight();
+    return l && l->SetOutput(channel, on);
+}
+
+bool Workflow::SetLightCallout(const std::string& light, const std::string& color, double percent,
+                               std::string* why)
+{
+    std::vector<std::pair<int, int>> v;
+    if (!LightTargets(light, &color, percent, v, why)) return false;
+    CcsPd3* l = ConnectedLight();
+    if (!l) { if (why) *why = "lighting not connected"; return false; }
+    if (!l->SetIntensities(v)) { if (why) *why = l->LastError(); return false; }
+    FD_INFO("light", "%s = %s %.1f %%", light.c_str(), color.c_str(), percent);
+    return true;
+}
+
+bool Workflow::LightOff(const std::string& light, std::string* why)
+{
+    std::vector<std::pair<int, int>> v;
+    if (!LightTargets(light, nullptr, 0.0, v, why)) return false;
+    CcsPd3* l = ConnectedLight();
+    if (!l) { if (why) *why = "lighting not connected"; return false; }
+    if (!l->SetIntensities(v)) { if (why) *why = l->LastError(); return false; }
+    FD_INFO("light", "%s off", light.empty() ? "all lights" : light.c_str());
+    return true;
+}
+
+bool Workflow::ApplyLighting(const AlignLighting& l, std::string* why)
+{
+    const auto fail = [why](std::string s) {
+        if (why) *why = "lighting: " + std::move(s);
+        return false;
+    };
+    if (!l.Set()) return true;
+    if (l.kind == "light") {
+        if (!l.device.empty() && l.device != hw_.LightName())
+            return fail("controller '" + l.device + "' is not the configured one ('" +
+                        hw_.LightName() + "')");
+        std::string err;
+        if (!SetLightCallout(l.channel, l.color, l.value, &err)) return fail(err);
+        return true;
+    }
+    if (l.kind == "io") {
+        if (!SetIoOutputByName(l.device, l.channel, l.value != 0.0))
+            return fail("IO output '" + l.device + "/" + l.channel + "' rejected");
+        return true;
+    }
+    if (l.kind == "psu") {
+        const int ch = std::atoi(l.channel.c_str());
+        if (ch <= 0) return fail("bad PSU channel '" + l.channel + "'");
+        if (!SetPsuVI(ch, l.value, 0.0) || !PsuOutputOn(ch)) return fail("PSU channel rejected");
+        return true;
+    }
+    return fail("unknown kind '" + l.kind + "'");
+}
+
+void Workflow::RequestLightChannel(int channel, double percent)
+{
+    if (CcsPd3* l = ConnectedLight()) l->Request(channel, CcsPd3::PercentToNative(percent));
+}
+
+bool Workflow::RequestLightCallout(const std::string& light, const std::string& color,
+                                   double percent, std::string* why)
+{
+    std::vector<std::pair<int, int>> v;
+    if (!LightTargets(light, &color, percent, v, why)) return false;
+    CcsPd3* l = ConnectedLight();
+    if (!l) { if (why) *why = "lighting not connected"; return false; }
+    for (const auto& [ch, val] : v) l->Request(ch, val);
+    return true;
+}
 
 void Workflow::Update(float dt)
 {

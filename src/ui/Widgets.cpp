@@ -10,6 +10,7 @@
 #include "ui/Widgets.h"
 
 #include "vision/VisionModel.h"   // the patch helpers: LoadGrayPgm + MakeCornerTemplate
+#include "core/LightCallout.h"    // LightCalloutPicker's colour list
 
 // The PNG decoder, implemented here because this TU already owns the "talks to
 // the outside world" jobs (ShellExecute, the filesystem). stb_image_write's
@@ -1057,6 +1058,106 @@ void DrawBigLabel(const char* text, const ImVec2& box, const ImVec4& color)
     ImGui::SetCursorScreenPos(ImVec2(pos.x + (box.x - ts.x) * 0.5f, pos.y + (box.y - ts.y) * 0.5f));
     ImGui::TextColored(color, "%s", text);
     ImGui::PopFont();
+}
+
+bool LightCalloutPicker(const char* id, AlignLighting& l, const std::vector<std::string>& lights,
+                        bool canApply, bool* applyNow)
+{
+    if (applyNow) *applyNow = false;
+    bool changed = false;
+    ImGui::PushID(id);
+
+    // Stay on the line only if the next widget (w px) still fits; otherwise
+    // wrap. The picker lives in narrow columns (a detection tier) as well as
+    // wide ones, and a clipped button is a setting nobody can reach. After an
+    // item the cursor sits at the start of the next line, so that x plus the
+    // available width is the right edge - in a table cell too.
+    const auto sameLineIfFits = [](float w) {
+        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + w <= right)
+            ImGui::SameLine();
+    };
+    const auto buttonW = [](const char* label) {
+        return ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    };
+    // A click both SETS the record and, when the controller is up, LIGHTS it,
+    // so what the camera shows is what the run will get.
+    const auto set = [&](const std::string& kind, const std::string& color, double value) {
+        l.kind  = kind;
+        l.color = color;
+        l.value = value;
+        if (kind == "light" && l.channel.empty() && !lights.empty()) l.channel = lights.front();
+        changed = true;
+        if (applyNow && canApply && kind == "light") *applyNow = true;
+    };
+
+    // Older records may hold an io/psu light; this picker only drives the
+    // lighting controller, so show what is there and offer to replace it.
+    if (l.kind == "io" || l.kind == "psu") {
+        ImGui::TextDisabled("lighting: %s (set a colour below to replace it)",
+                            AlignLightingSummary(l).c_str());
+    }
+
+    // Row 1: which light, and how bright.
+    const std::string& shown = !l.channel.empty() ? l.channel
+                             : (!lights.empty() ? lights.front() : std::string("(no light)"));
+    ImGui::SetNextItemWidth(150.0f);
+    if (ImGui::BeginCombo("##light", shown.c_str())) {
+        for (const std::string& n : lights) {
+            if (ImGui::Selectable(n.c_str(), n == shown)) {
+                l.channel = n;
+                changed = true;
+                if (applyNow && canApply && l.kind == "light") *applyNow = true;
+            }
+        }
+        if (lights.empty()) ImGui::TextDisabled("no lights configured in hardware.json");
+        ImGui::EndCombo();
+    }
+    sameLineIfFits(150.0f);
+    float pct = static_cast<float>(l.value > 0.0 ? l.value : 0.0);
+    ImGui::SetNextItemWidth(150.0f);
+    if (ImGui::SliderFloat("##pct", &pct, 0.0f, 100.0f, "%.0f %%"))
+        l.value = static_cast<double>(pct);          // live while dragging...
+    if (ImGui::IsItemDeactivatedAfterEdit()) {       // ...committed on release
+        changed = true;
+        if (applyNow && canApply && l.kind == "light") *applyNow = true;
+    }
+
+    // Row 2: the call-outs. The one in force is highlighted.
+    const ImVec4 active = ImGui::GetStyle().Colors[ImGuiCol_ButtonActive];
+    bool first = true;
+    for (const std::string& name : LightColorNames()) {
+        LightColor c = LightColor::White;
+        ParseLightColor(name, c);
+        const std::string label = LightColorLabel(c);
+        if (!first) sameLineIfFits(buttonW(label.c_str()));
+        first = false;
+        const bool on = (l.kind == "light" && l.color == name && l.value > 0.0);
+        if (on) ImGui::PushStyleColor(ImGuiCol_Button, active);
+        if (ImGui::Button(label.c_str()))
+            set("light", name, l.value > 0.0 ? l.value : 50.0);
+        if (on) ImGui::PopStyleColor();
+    }
+    // Off: the light is held DARK for this picture (every channel of it to 0),
+    // which is a setting. None: lighting is left alone, which is the absence of one.
+    sameLineIfFits(buttonW("Off"));
+    const bool isOff = (l.kind == "light" && l.value <= 0.0);
+    if (isOff) ImGui::PushStyleColor(ImGuiCol_Button, active);
+    if (ImGui::Button("Off")) set("light", "white", 0.0);
+    if (isOff) ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hold this light dark for the picture.");
+    sameLineIfFits(buttonW("None"));
+    const bool isNone = !l.Set();
+    if (isNone) ImGui::PushStyleColor(ImGuiCol_Button, active);
+    if (ImGui::Button("None")) set("", "", l.value);
+    if (isNone) ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Leave the lighting as it is - this setting changes nothing.");
+
+    if (!canApply)
+        ImGui::TextDisabled("lighting not connected - the setting is stored, not lit");
+    ImGui::PopID();
+    return changed;
 }
 
 bool Splitter(const char* id, bool vertical, float thickness, float length) {

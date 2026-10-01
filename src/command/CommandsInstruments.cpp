@@ -8,6 +8,7 @@
 #include "command/CommandRegistry.h"
 #include "command/ExecutionContext.h"
 #include "core/DataBus.h"
+#include "core/LightCallout.h"
 #include "core/Topics.h"
 #include "workflow/Workflow.h"
 
@@ -215,6 +216,69 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
                                                     ? topics::PsuCurrent(ch)
                                                     : topics::PsuVoltage(ch);
                       return ReadTopicToCtx(c, topic, p.GetString("ctx"));
+                  }});
+
+    // ---- CCS PD3 lighting ---------------------------------------------------
+    // Percent of full scale everywhere; 0 % is OUTPUT OFF (F000 still glows).
+    // A light is a channel group from hardware.json ("main_camera_light"), or an
+    // ungrouped channel's name. light_color and light_off FAIL when the light
+    // or the call-out matches no channel: a step that lit nothing must not
+    // read as one that worked.
+    std::vector<std::string> colorOptions = LightColorNames();
+    reg.Register({"light_set", "Instruments", "Set one lighting channel's intensity (0 % = off)",
+                  {
+                      {"channel", PT::Int, true, {}, 1, 8, {}, "front-panel channel L1..L8"},
+                      {"percent", PT::Double, true, {}, 0.0, 100.0, {}, "intensity (%); 0 = off"},
+                  },
+                  Needs::Light,
+                  [w](ExecutionContext&, const ParamValues& p) {
+                      return BoolResult(w->SetLightChannel(p.GetInt("channel"),
+                                                           p.GetDouble("percent")),
+                                        "light set");
+                  }});
+    reg.Register({"light_color", "Instruments",
+                  "Light a colour call-out on one light; its other channels go dark",
+                  {
+                      {"light", PT::String, false, "main_camera_light", 0, 0, {},
+                       "light: a channel group, or an ungrouped channel's name"},
+                      {"color", PT::Enum, true, {}, 0, 0, colorOptions,
+                       "white = red+green+blue; white_collimate adds the collimated light"},
+                      {"percent", PT::Double, true, {}, 0.0, 100.0, {}, "intensity (%)"},
+                  },
+                  Needs::Light,
+                  [w](ExecutionContext&, const ParamValues& p) {
+                      std::string why;
+                      if (w->SetLightCallout(p.GetString("light"), p.GetString("color"),
+                                             p.GetDouble("percent"), &why))
+                          return CommandResult::Success();
+                      return CommandResult::Fail("light_color: " + why);
+                  }});
+    reg.Register({"light_off", "Instruments", "Switch a light (or every channel) off",
+                  {
+                      {"light", PT::String, false, "", 0, 0, {},
+                       "light to switch off; empty = every configured channel"},
+                  },
+                  Needs::Light,
+                  [w](ExecutionContext&, const ParamValues& p) {
+                      std::string why;
+                      if (w->LightOff(p.GetString("light"), &why)) return CommandResult::Success();
+                      return CommandResult::Fail("light_off: " + why);
+                  }});
+    reg.Register({"light_read", "Instruments",
+                  "Read a lighting channel's intensity (%, 0 when off) into the run context",
+                  {
+                      {"channel", PT::Int, true, {}, 1, 8, {}, "front-panel channel L1..L8"},
+                      {"ctx", PT::String, true, {}, 0, 0, {}, "destination ctx key"},
+                  },
+                  Needs::Light,
+                  [](ExecutionContext& c, const ParamValues& p) {
+                      const int ch = p.GetInt("channel");
+                      DataStream& on = DataBus::Instance().Stream(topics::LightOn(ch));
+                      if (on.Count() > 0 && on.LatestValue() < 0.5) {
+                          c.CtxSet(p.GetString("ctx"), 0.0);   // an OFF channel reads 0 %
+                          return CommandResult::Success();
+                      }
+                      return ReadTopicToCtx(c, topics::LightPct(ch), p.GetString("ctx"));
                   }});
 
     // ---- Camera -------------------------------------------------------------

@@ -1106,9 +1106,18 @@ rendered as a picker in the recipe editor. It is **not** device-scoped like
    the same lens.
 3. **Z is untouched.** `move_local` passes `z_mm` straight through as a machine
    coordinate; the frame is 2-D.
-4. **Lighting is a placeholder.** No illumination device exists in
-   `config/hardware.json`; `kind = ""` is the only setting that does anything
-   today, and the io/psu paths are wired but unexercised.
+4. **Lighting belongs to the DETECTION.** Each detection model carries its
+   `AlignLighting` (`core/AlignLighting.h`; kind `light` = a CCS PD3 colour
+   call-out), set with the call-out buttons under that detection's exposure on
+   this page or on the teach page's camera strip — the same field. A station
+   has NO lighting and there is no fallback: a model set to None, a manual
+   station and a manual fallback all leave the lighting as it is. A `lighting`
+   key on a station in an older file is ignored on load. `align_station`
+   applies the first tier's before the move and switches per tier (then waits
+   for fresh frames); a manual fallback keeps whatever the last tier set. One
+   implementation:
+   `Workflow::ApplyLighting`. `kind = ""` still means "leave it alone", so a
+   procedure taught before lighting existed runs unchanged.
 5. **Local-frame saved positions are not implemented.** Tagging a `SavedPos`
    with an alignment so `move_to_position` auto-retargets is the obvious next
    phase; it touches the positions schema, the validator and every move path,

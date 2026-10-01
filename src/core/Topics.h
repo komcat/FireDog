@@ -40,6 +40,13 @@ inline constexpr const char* kCldCurrent = "cld/current";
 inline std::string PsuVoltage(int channel) { return "psu/ch" + std::to_string(channel) + "/v"; }
 inline std::string PsuCurrent(int channel) { return "psu/ch" + std::to_string(channel) + "/i"; }
 
+// CCS PD3 lighting per-channel read-back (front-panel channel, 1..8), e.g.
+// "light/ch2/pct" — the intensity setpoint in percent of full scale — and
+// "light/ch2/on" (1/0). Both are what the controller SAYS, published by the
+// driver's poll thread, never what was last requested.
+inline std::string LightPct(int channel) { return "light/ch" + std::to_string(channel) + "/pct"; }
+inline std::string LightOn(int channel)  { return "light/ch" + std::to_string(channel) + "/on"; }
+
 // Per-axis motion position stream, e.g. "motion/hex-left/X". Publishers are the
 // PI/ACS drivers' poll threads; any consumer (charts, alignment procedures,
 // loggers, a future 3D view) subscribes or pulls a Snapshot on the same string.

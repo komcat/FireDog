@@ -45,7 +45,7 @@ namespace firedog {
 // three clicks deep inside another page made it findable only by someone who
 // already knew it was there. All three Close back to Align rather than to
 // prevPage_ (a takeover->takeover switch does not update prevPage_).
-enum class Page { Overview, Camera, Keithley, CLD, PSU, Motion, IO, Pneumatic,
+enum class Page { Overview, Camera, Keithley, CLD, PSU, Light, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
                   Align, VisionTeach, AlignNominal, AlignPlace, Needle,
                   DeviceReg, Grip, Tray, Mosaic };
@@ -254,6 +254,14 @@ private:
     void DrawPsuListPanel();       // left:   status + connect/disconnect
     void DrawPsuDetailPanel();     // middle: per-channel V/I + output switches
     void DrawPsuInfoPanel();       // right:  identity + live values
+
+    // Light page — the CCS PD3 LED lighting controller.
+    void DrawLightListPanel();     // left:   status + connect/disconnect + warnings
+    void DrawLightDetailPanel();   // middle: colour call-outs + per-channel sliders
+    void DrawLightInfoPanel();     // right:  identity + read-back per channel
+    // A detection model's "light" call-out, set NOW for judging it on the
+    // live image (a LightCalloutPicker click). Queued — no socket I/O here.
+    void ApplyLightingNow(const AlignLighting& l);
     // Motion page — all motion devices (PI + ACS) on one page. The middle
     // panel is tabbed: "Positions" (saved-position table) and "Mapped Path"
     // (node-edge graph editor + path execution).
@@ -787,6 +795,15 @@ private:
     float psuVSet_[3] = {5.0f, 5.0f, 3.3f};      // per-channel voltage edits (V)
     float psuISet_[3] = {1.0f, 1.0f, 1.0f};      // per-channel current-limit edits (A)
     bool  psuPulled_  = false;
+
+    // Light page state. The per-channel sliders follow the controller's
+    // read-back whenever they are not being dragged; indexed by front-panel
+    // channel.
+    std::string lightId_;                        // config instrument name
+    float       lightPct_[9]   = {};             // per-channel edits (%), [1..8]
+    std::string lightSel_;                       // light the call-out buttons drive
+    float       lightCallPct_  = 50.0f;          // call-out intensity (%)
+    std::string lightErr_;                       // last call-out refusal, shown under the buttons
 
     // Keithley chart buffers — refreshed once per frame by
     // UpdateKeithleyChartData (from Update); rendered by DrawKeithleyChart in
@@ -1422,6 +1439,14 @@ private:
     float       visionResultW_ = 300.0f;
     bool        visionParamSplitting_ = false;   // edge-detect the drag END
     bool        visionResultSplitting_ = false;
+    // Height of the camera strip under the image (exposure, lighting, zoom),
+    // dragged by a horizontal splitter and persisted: the image takes the rest,
+    // so the operator trades picture for controls rather than losing either.
+    float       visionFootH_ = 0.0f;              // 0 = fit the strip's rows
+    bool        visionFootSplitting_ = false;
+    // A detection tier's lighting was edited on the Alignment page and is not
+    // saved yet; flushed by the page once no widget is active.
+    bool        alignLightDirty_ = false;
     float       visionZoom_  = 1.0f;    // magnification over the cover fit
     float       visionFocusX_ = 0.0f;   // camera px the view is centred on
     float       visionFocusY_ = 0.0f;

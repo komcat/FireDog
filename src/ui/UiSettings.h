@@ -48,6 +48,7 @@ struct UiSettings {
     // layout, so the two sets of sizes have nothing useful to say to each other.
     float visionParamW  = 0.0f;
     float visionResultW = 0.0f;
+    float visionFootH   = 0.0f;   // camera strip under the image; 0 = fit its rows
 
     // Recipe editor: width of its inspector column in px (0 = default). Same
     // reasoning — a takeover page with its own layout.

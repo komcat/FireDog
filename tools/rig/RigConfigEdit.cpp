@@ -104,6 +104,7 @@ const char* KindName(DeviceKind k)
         case DeviceKind::Keithley: return "keithley";
         case DeviceKind::Cld:      return "cld";
         case DeviceKind::Psu:      return "psu";
+        case DeviceKind::Light:    return "light";
     }
     return "?";
 }
@@ -139,6 +140,9 @@ void ConfigStore::RebuildIndex()
     }
     for (std::size_t i = 0; i < cfg_.psus.size(); ++i) {
         devices_.push_back({DeviceKind::Psu, i, cfg_.psus[i].name});
+    }
+    for (std::size_t i = 0; i < cfg_.lights.size(); ++i) {
+        devices_.push_back({DeviceKind::Light, i, cfg_.lights[i].name});
     }
 }
 
@@ -224,6 +228,13 @@ std::string ConfigStore::Summary(const DeviceRef& d) const
             kind = p.type; addr = p.visaResource; enabled = p.enabled;
             break;
         }
+        case DeviceKind::Light: {
+            const LightConfig& l = cfg_.lights[d.index];
+            kind    = l.type;
+            addr    = l.ipAddress + ":" + std::to_string(l.port) + (l.simulated ? " (sim)" : "");
+            enabled = l.enabled;
+            break;
+        }
     }
 
     os << "  " << (Dirty(d) ? "*" : " ") << " "
@@ -303,6 +314,15 @@ std::vector<std::pair<std::string, std::string>> ConfigStore::Fields(const Devic
             f.push_back({"channels",         std::to_string(p.channels)});
             f.push_back({"poll_interval_ms", std::to_string(p.pollIntervalMs)});
             f.push_back({"enabled",          Yes(p.enabled)});
+            break;
+        }
+        case DeviceKind::Light: {
+            const LightConfig& l = cfg_.lights[d.index];
+            f.push_back({"ip_address",       l.ipAddress});
+            f.push_back({"port",             std::to_string(l.port)});
+            f.push_back({"poll_interval_ms", std::to_string(l.pollIntervalMs)});
+            f.push_back({"enabled",          Yes(l.enabled)});
+            f.push_back({"simulated",        Yes(l.simulated)});
             break;
         }
     }
@@ -446,6 +466,16 @@ bool ConfigStore::Set(const DeviceRef& d, const std::string& field,
             else return unknown();
             break;
         }
+        case DeviceKind::Light: {
+            LightConfig& l = cfg_.lights[d.index];
+            if      (field == "ip_address")       { l.ipAddress = value; ok = true; }
+            else if (field == "port")             { if (!asInt())  return false; l.port = i; ok = true; }
+            else if (field == "poll_interval_ms") { if (!asInt())  return false; l.pollIntervalMs = i; ok = true; }
+            else if (field == "enabled")          { if (!asBool()) return false; l.enabled = b; ok = true; }
+            else if (field == "simulated")        { if (!asBool()) return false; l.simulated = b; ok = true; }
+            else return unknown();
+            break;
+        }
     }
 
     if (ok) dirty_.insert(KeyOf(d));
@@ -473,6 +503,9 @@ bool ConfigStore::Save(const DeviceRef& d, std::string& err)
             break;
         case DeviceKind::Psu:
             ok = HardwareConfig::SaveInstrument(path_, cfg_.psus[d.index]);
+            break;
+        case DeviceKind::Light:
+            ok = HardwareConfig::SaveInstrument(path_, cfg_.lights[d.index]);
             break;
     }
 

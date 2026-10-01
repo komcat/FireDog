@@ -4,6 +4,7 @@
 #pragma once
 
 #include "core/AlignFrame.h"           // AlignResult (taught-frame hand-back queue)
+#include "core/AlignLighting.h"        // ApplyLighting (a detection model's light)
 #include "core/DeviceReg.h"            // DeviceReg (a gripper tip in gantry space)
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
@@ -34,6 +35,7 @@ class HardwareManager;
 class ISmu;
 class CLD101x;
 class UDP3305S;
+class CcsPd3;
 
 class Workflow {
 public:
@@ -244,6 +246,35 @@ public:
     bool SetPsuVI(int channel, double volts, double amps);
     bool PsuOutputOn(int channel);
     bool PsuOutputOff(int channel);
+
+    // ---- CCS PD3 lighting (Light page, light_* commands, alignment) ---------
+    // Same reconnect pattern. Channels are FRONT-PANEL numbers (L1 = 1);
+    // intensities are percent of full scale, and 0 % is OUTPUT OFF (F000 still
+    // glows). The blocking forms are for worker threads; the Request* forms
+    // queue for the driver's poll thread and are what the UI thread calls —
+    // the UI never does socket I/O.
+    bool ConnectLight();
+    bool DisconnectLight();
+    bool SetLightChannel(int channel, double percent);
+    bool SetLightOutput(int channel, bool on);
+    // A colour call-out on one light (group name, or an ungrouped channel's
+    // name): the call-out's channels to `percent`, the light's others to 0.
+    // `color` is a LightColorNames() entry. Fails with `why` when the light or
+    // the call-out matches no channel — a call-out that lit nothing must not
+    // look like one that worked.
+    bool SetLightCallout(const std::string& light, const std::string& color, double percent,
+                         std::string* why = nullptr);
+    // Every channel of `light` off; "" = every configured channel.
+    bool LightOff(const std::string& light, std::string* why = nullptr);
+    void RequestLightChannel(int channel, double percent);
+    bool RequestLightCallout(const std::string& light, const std::string& color, double percent,
+                             std::string* why = nullptr);
+    // The configured lights (groups + ungrouped channel names), config order.
+    std::vector<std::string> LightNames() const;
+    // A detection model's illumination (core/AlignLighting.h) —
+    // the one implementation. An empty kind is a no-op success. Blocking: call
+    // from a worker, never the UI thread.
+    bool ApplyLighting(const AlignLighting& l, std::string* why = nullptr);
 
     // ---- Digital IO commands (IO page + future procedures) ------------------
     // devIdx indexes the HardwareManager IO fleet. Writes require Connected.
@@ -559,6 +590,13 @@ private:
     void StartPsu(const HardwareConfig& hw);
     void LaunchPsuConnect();      // async connect from psuCfg_ (Start + reconnect)
     UDP3305S* ConnectedPsu() const;            // null unless state == Connected
+    void StartLight(const HardwareConfig& hw);
+    void LaunchLightConnect();    // async connect from lightCfg_ (Start + reconnect)
+    CcsPd3* ConnectedLight() const;            // null unless state == Connected
+    // The (channel, native value) list for a call-out or an off, from the
+    // config captured at Start. The one place a call-out is resolved.
+    bool LightTargets(const std::string& light, const std::string* color, double percent,
+                      std::vector<std::pair<int, int>>& out, std::string* why) const;
     void StartKeithley(const HardwareConfig& hw);
     void StartMotion(const HardwareConfig& hw);
     void StartIO(const HardwareConfig& hw);
@@ -675,6 +713,7 @@ private:
     std::future<void>              keiConnect_;
     std::future<void>              cldConnect_;
     std::future<void>              psuConnect_;
+    std::future<void>              lightConnect_;
     std::vector<std::future<void>> motionConnect_;   // one per motion device
     std::vector<std::future<void>> ioConnect_;       // one per IO device
 
@@ -716,6 +755,12 @@ private:
     // UDP3305S PSU config captured at Start (same pattern).
     PsuConfig psuCfg_;
     bool      psuCfgValid_ = false;
+
+    // CCS PD3 lighting config captured at Start (same pattern). Read by the
+    // call-out resolver from worker threads too — written once at Start,
+    // before any worker exists, and never again.
+    LightConfig lightCfg_;
+    bool        lightCfgValid_ = false;
 
     // Per-(device,axis) jog target: rapid presses accumulate onto one evolving
     // target so the latest press overrides the previous instead of queuing; the

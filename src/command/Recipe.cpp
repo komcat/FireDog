@@ -487,6 +487,7 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
         case CommandSpec::Needs::Keithley: what = "Keithley"; st = env.hw.KeithleyState(); break;
         case CommandSpec::Needs::Cld:      what = "CLD101x";  st = env.hw.CldState();      break;
         case CommandSpec::Needs::Psu:      what = "PSU";      st = env.hw.PsuState();      break;
+        case CommandSpec::Needs::Light:    what = "lighting"; st = env.hw.LightState();    break;
         case CommandSpec::Needs::None:     break;
         }
         if (what && st != ConnState::Connected)

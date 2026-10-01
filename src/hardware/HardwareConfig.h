@@ -87,6 +87,31 @@ struct PsuConfig {
     int         pollIntervalMs = 500;
 };
 
+// CCS PD3 LED lighting controller (from "instruments", type containing "pd3"),
+// raw TCP on the LAN. Channels are numbered as on the FRONT PANEL (L1..L8 =
+// 1..8). `color` drives the colour call-outs (red/green/blue mix to white,
+// "collimate" is its own); `group` names the logical light several channels
+// make together — an ungrouped channel is a light by its own name.
+struct LightChannelConfig {
+    int         channel = 1;
+    std::string name;
+    std::string color;
+    std::string group;
+    std::string camera;
+    bool        enabled = true;
+};
+
+struct LightConfig {
+    std::string name = "LIGHT1";
+    std::string type = "ccs_pd3";
+    std::string ipAddress;
+    int         port = 40001;
+    bool        enabled = true;
+    bool        simulated = false;   // in-memory controller, no socket
+    int         pollIntervalMs = 1000;
+    std::vector<LightChannelConfig> channels;
+};
+
 // One motion controller entry (from "motion_devices"): a PI hexapod or an ACS
 // gantry, connected over TCP/IP. Shared shape for both controller kinds.
 struct MotionConfig {
@@ -172,6 +197,7 @@ struct HardwareConfig {
     std::vector<KeithleyConfig> keithleys;      // from "instruments" (type keithley_*)
     std::vector<Cld101xConfig>  clds;           // from "instruments" (type cld*)
     std::vector<PsuConfig>      psus;           // from "instruments" (type *udp3305*)
+    std::vector<LightConfig>    lights;         // from "instruments" (type *pd3*)
     std::vector<MotionConfig>   motionDevices;  // from "motion_devices" (PI / ACS)
     std::vector<IoDeviceConfig> ioDevices;      // from "io_devices" (eziio / wago)
     std::vector<PneumaticSlideConfig> pneumaticSlides;  // from "pneumatic_slides"
@@ -185,14 +211,15 @@ struct HardwareConfig {
     const KeithleyConfig* FirstEnabledKeithley() const;
     const Cld101xConfig*  FirstEnabledCld() const;
     const PsuConfig*      FirstEnabledPsu() const;
+    const LightConfig*    FirstEnabledLight() const;
     std::vector<MotionConfig>   EnabledMotionDevices() const;   // enabled only
     std::vector<IoDeviceConfig> EnabledIoDevices() const;       // enabled only
     std::vector<PneumaticSlideConfig> EnabledPneumaticSlides() const;
 
     // Write ONLY the "io_watch" section back into the config file (read-
     // modify-write; all other sections are preserved). Used by the IO Watch
-    // editor window. Note: a rebuild recopies the repo's config/ over the
-    // exe-side copy, so mirror durable edits into the repo file too.
+    // editor window. The exe-side file is the machine's own copy — a build
+    // never overwrites it (cmake/StageConfig.cmake stages missing files only).
     static bool SaveIoWatch(const std::string& path, const IoWatchConfig& cfg);
 
     // Write ONLY one camera's calibration + exposure back into the config file
@@ -224,6 +251,9 @@ struct HardwareConfig {
     static bool SaveInstrument(const std::string& path, const KeithleyConfig& cfg);
     static bool SaveInstrument(const std::string& path, const Cld101xConfig& cfg);
     static bool SaveInstrument(const std::string& path, const PsuConfig& cfg);
+    // Identity + polling only; the "channels" array is preserved (no rig
+    // command edits the channel map, exactly like io_devices[].pins).
+    static bool SaveInstrument(const std::string& path, const LightConfig& cfg);
 };
 
 } // namespace firedog

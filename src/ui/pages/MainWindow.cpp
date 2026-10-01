@@ -251,6 +251,8 @@ void App::DrawMainWindow()
                     SwitchPage(Page::CLD);
                 if (ImGui::MenuItem("PSU",      nullptr, currentPage_ == Page::PSU))
                     SwitchPage(Page::PSU);
+                if (ImGui::MenuItem("Lighting", nullptr, currentPage_ == Page::Light))
+                    SwitchPage(Page::Light);
                 if (ImGui::MenuItem("Motion",   "F3", currentPage_ == Page::Motion))
                     SwitchPage(Page::Motion);
                 if (ImGui::MenuItem("IO",       nullptr, currentPage_ == Page::IO))
@@ -570,6 +572,7 @@ void App::DrawMainWindow()
             case Page::Keithley:  DrawKeithleyListPanel();  break;
             case Page::CLD:       DrawCldListPanel();       break;
             case Page::PSU:       DrawPsuListPanel();       break;
+            case Page::Light:     DrawLightListPanel();     break;
             case Page::Motion:    DrawMotionListPanel();    break;
             case Page::IO:        DrawIoListPanel();        break;
             case Page::Pneumatic: DrawPneumaticListPanel(); break;
@@ -590,6 +593,7 @@ void App::DrawMainWindow()
             case Page::Keithley:  DrawKeithleyDetailPanel();  break;
             case Page::CLD:       DrawCldDetailPanel();       break;
             case Page::PSU:       DrawPsuDetailPanel();       break;
+            case Page::Light:     DrawLightDetailPanel();     break;
             case Page::Motion:    DrawMotionDetailPanel();    break;
             case Page::IO:        DrawIoDetailPanel();        break;
             case Page::Pneumatic: DrawPneumaticDetailPanel(); break;
@@ -613,6 +617,7 @@ void App::DrawMainWindow()
             case Page::Keithley:  DrawKeithleyInfoPanel();  break;
             case Page::CLD:       DrawCldInfoPanel();       break;
             case Page::PSU:       DrawPsuInfoPanel();       break;
+            case Page::Light:     DrawLightInfoPanel();     break;
             case Page::Motion:    break;   // left panel carries the live axes
             case Page::IO:        DrawIoInputPanel();       break;
             case Page::Pneumatic: DrawPneumaticInfoPanel(); break;

@@ -678,31 +678,15 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
         // (Exposure moved to the right column: it belongs to HOW the point is
         // found - each detection tier has its own, and so does the manual pick.)
 
-        // Lighting is a PLACEHOLDER: no illumination device exists in the hardware
-        // config yet, so "none" is the only setting that does anything today. The
-        // fields are here so a procedure taught now keeps its intent.
-        const char* kinds[] = {"none", "io", "psu"};
-        int kindIdx = st.lighting.kind == "io" ? 1 : (st.lighting.kind == "psu" ? 2 : 0);
-        ImGui::SetNextItemWidth(90.0f);
-        if (ImGui::Combo("lighting", &kindIdx, kinds, 3))
-            st.lighting.kind = (kindIdx == 0) ? "" : kinds[kindIdx];
-        if (kindIdx != 0) {
-            char devBuf[64], chBuf[48];
-            std::snprintf(devBuf, sizeof(devBuf), "%s", st.lighting.device.c_str());
-            std::snprintf(chBuf, sizeof(chBuf), "%s", st.lighting.channel.c_str());
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(110.0f);
-            if (ImGui::InputText("device", devBuf, sizeof(devBuf))) st.lighting.device = devBuf;
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(110.0f);
-            if (ImGui::InputText(kindIdx == 1 ? "pin" : "channel", chBuf, sizeof(chBuf)))
-                st.lighting.channel = chBuf;
-            ImGui::SameLine();
-            float lv = static_cast<float>(st.lighting.value);
-            ImGui::SetNextItemWidth(80.0f);
-            if (ImGui::InputFloat(kindIdx == 1 ? "on" : "volts", &lv, 0.0f, 0.0f, "%.2f"))
-                st.lighting.value = static_cast<double>(lv);
+        // A detection tier's lighting edit (right column) is written with the
+        // vision models once nothing is being dragged - see "tierlight" below.
+        if (alignLightDirty_ && !ImGui::IsAnyItemActive()) {
+            session_.SaveVision();
+            alignLightDirty_ = false;
         }
+
+        // No station-level lighting: the light belongs to each DETECTION
+        // (right column, and the teach page), with no station fallback.
 
         // One BeginDisabled per column rather than one spanning both: the pair
         // has to open and close inside the same cell.
@@ -836,6 +820,17 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
                             ImGui::SetTooltip("This detection's camera exposure - the one its\n"
                                               "model was tuned at (same field as the teach page).\n"
                                               "0 = use the manual exposure.");
+
+                        // ...and its light: the MODEL's, the same field as the
+                        // teach page's camera strip. None = leave it alone.
+                        // Saved once the edit is let go (a slider drag would
+                        // otherwise write the file every frame).
+                        bool applyTierLight = false;
+                        if (LightCalloutPicker("tierlight", mm->lighting, workflow_.LightNames(),
+                                               hardware_.LightState() == ConnState::Connected,
+                                               &applyTierLight))
+                            alignLightDirty_ = true;
+                        if (applyTierLight) ApplyLightingNow(mm->lighting);
                     }
                     const std::string chain = VisionFilterSummary(*model);
                     if (!chain.empty()) ImGui::TextDisabled("pre-process: %s", chain.c_str());

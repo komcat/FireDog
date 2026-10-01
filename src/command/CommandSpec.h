@@ -114,7 +114,7 @@ private:
 struct CommandSpec {
     // Which direct-SDK instrument the command needs (checked Connected at run
     // start). Fleet devices are covered by DeviceMotion/DeviceIo/Slide params.
-    enum class Needs { None, Camera, Keithley, Cld, Psu };
+    enum class Needs { None, Camera, Keithley, Cld, Psu, Light };
 
     std::string name;        // stable id, snake_case: "move_to_position"
     std::string category;    // "Motion" | "IO" | "Instruments" | "System" ...
