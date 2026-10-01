@@ -9,10 +9,10 @@
 //
 // Three deliberate choices:
 //
-//   * IT LIVES IN products/, NOT config/. A rebuild recopies the repo's config/
-//     over the exe-side copy — the roster would be replaced by whatever was
-//     committed, every single build. products/ is never copied, so this is the
-//     only place a registration survives. It also means no xxx.local.json pair
+//   * IT LIVES IN products/, NOT config/. config/ is what the repo ships — a
+//     fresh build tree or a release zip starts from the committed copy — so a
+//     roster there would be one release away from being replaced. products/ is
+//     never shipped, so this is the only place a registration survives. It also means no xxx.local.json pair
 //     is needed here: there is no shipped default to fall back to, and a second
 //     file would only add a stale shadow to get confused by.
 //

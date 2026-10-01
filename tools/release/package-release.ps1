@@ -10,7 +10,7 @@
 # What goes in, and why exactly that: the two exes and every runtime DLL / .cti
 # beside them (the deploy preset stages the pylon, PI and Ezi-IO runtimes there
 # so a target with none of them installed still STARTS - see the v0.1 release
-# notes for what it does not get you), config/ minus the runtime-writable
+# notes for what it does not get you), the repo's config/ minus the runtime-writable
 # *.local.json files (those describe THIS machine: its taught positions, its
 # UI layout), and assets/. No libs, no CMake state, no logs, no imgui.ini.
 # The 100 MB zip of the whole build directory that used to sit in out/build
@@ -34,7 +34,10 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 Get-ChildItem $BuildDir -File | Where-Object { $_.Extension -in ".exe", ".dll", ".cti" } |
     ForEach-Object { Copy-Item $_.FullName $stage }
 
-$cfgSrc = (Resolve-Path (Join-Path $BuildDir "config")).Path
+# config/ comes from the REPOSITORY, not the build dir: a build no longer
+# overwrites an existing exe-side config (cmake/StageConfig.cmake), so the
+# build dir's copy may be one machine's wiring rather than the shipped defaults.
+$cfgSrc = (Resolve-Path (Join-Path $PSScriptRoot "..\..\config")).Path
 $cfg    = Join-Path $stage "config"
 New-Item -ItemType Directory -Force $cfg | Out-Null
 Get-ChildItem $cfgSrc -Recurse -File |

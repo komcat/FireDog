@@ -202,8 +202,8 @@ void App::DrawKeithleyDetailPanel()
         else
             FD_ERROR("app", "failed to save Keithley settings");
     }
-    ImGui::TextDisabled("Save stores NPLC/range/poll/bias; a rebuild recopies the repo "
-                        "config over the exe-side file.");
+    ImGui::TextDisabled("Save stores NPLC/range/poll/bias in this machine's config "
+                        "(a build never overwrites it).");
 
     ImGui::Spacing();
     // ---- Live chart (shared with the Aux overlay) ----

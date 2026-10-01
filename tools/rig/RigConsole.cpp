@@ -195,8 +195,8 @@ bool RigConsole::CmdSave(const std::vector<std::string>& tok)
         }
     }
     std::cout << "   -> " << store_.Path()
-              << "\n      a rebuild recopies the repo's config/ over this file - mirror"
-                 " durable edits into the repo copy.\n";
+              << "\n      this machine's copy - a build never overwrites it. Put an edit in"
+                 " the repo copy only if every machine should get it.\n";
     return allOk;
 }
 

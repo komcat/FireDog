@@ -463,10 +463,14 @@ endif()
 # second call is a copy_if_different no-op — but building only one target must
 # still stage everything that target needs to run.
 function(firedog_stage_runtime tgt)
+    # Machine config is NEVER overwritten: a file is staged only when missing
+    # (scripts/ excepted, always refreshed). See cmake/StageConfig.cmake.
     add_custom_command(TARGET ${tgt} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_CURRENT_SOURCE_DIR}/config" "$<TARGET_FILE_DIR:${tgt}>/config"
-        COMMENT "Copying config to output directory")
+        COMMAND ${CMAKE_COMMAND}
+                "-DSRC=${CMAKE_CURRENT_SOURCE_DIR}/config"
+                "-DDST=$<TARGET_FILE_DIR:${tgt}>/config"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageConfig.cmake"
+        COMMENT "Staging config (missing files only; scripts refreshed)")
 
     # UI artwork (the pt1/pt2 mark icons, the recipe row icons). Separate from
     # config/ because it is NOT runtime-writable: nothing edits these, so they

@@ -140,7 +140,7 @@ void App::DrawCldDetailPanel()
             FD_ERROR("app", "failed to save CLD101x defaults");
     }
     ImGui::TextDisabled("Save stores the setpoints as the config defaults (UI seeds — "
-                        "never applied automatically); a rebuild recopies the repo config.");
+                        "never applied automatically) in this machine's config.");
 }
 
 void App::DrawCldInfoPanel()

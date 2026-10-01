@@ -68,8 +68,10 @@ tools\release\package-release.ps1 -Version vX.Y -OutDir <scratchpad>
 
 It refuses to run without a deploy exe, and it produces exactly the shape the
 v0.1 and v0.2 assets had: the two exes, every runtime `.dll`/`.cti` the preset
-staged beside them (pylon, PI, Ezi-IO), `config/` minus `*.local.json` (those
-are THIS machine's taught positions and UI layout), and `assets/`. No libs,
+staged beside them (pylon, PI, Ezi-IO), the REPO's `config/` minus
+`*.local.json` (those are THIS machine's taught positions and UI layout — and
+the build dir's `config/` is never read, since a build no longer overwrites a
+machine's own copy), and `assets/`. No libs,
 no CMake state, no logs. Expect about 15 MB. The 100 MB `FireDog.zip` /
 `x64-release-deploy.zip` lying in `out/build` are raw directory dumps and
 never what shipped. List the zip's top level in the report.

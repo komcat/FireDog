@@ -133,8 +133,8 @@ void App::DrawCameraDetailPanel()
             FD_ERROR("app", "failed to save camera settings");
     }
     ImGui::TextDisabled("Edits apply immediately (Aux overlay + click-to-move). Save also "
-                        "stores the exposure; a rebuild recopies the repo config over the "
-                        "exe-side file.");
+                        "stores the exposure in this machine's config (a build never "
+                        "overwrites it).");
 
     ImGui::Spacing();
     // ---- Live preview (fit to the panel, aspect preserved) ----
