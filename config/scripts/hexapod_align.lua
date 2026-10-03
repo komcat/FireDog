@@ -56,6 +56,8 @@ local P = {
   zone_low       = fd.param("align_zone_low", 1e-6),    -- feedback units
   zone_high      = fd.param("align_zone_high", 400e-6), -- feedback units
   trace          = fd.param("align_trace", 0),          -- 1 = per-sample CSV trace
+  scanlog        = fd.param("align_scanlog", 0),        -- 1 = ML record to data/xcan/
+                                                        -- (paused 2026-10: off by default)
   -- Cycle-time trims (1 = on, 0 = original bobcat behaviour)
   skip_opposite  = fd.param("align_skip_opposite", 1),  -- skip -dir after +dir improved
   dir_memory     = fd.param("align_dir_memory", 1),     -- last winning direction first
@@ -190,9 +192,10 @@ local function goto_snapshot(s)
   for _, a in ipairs(AXES) do move_abs(a, s[a]) end
 end
 
--- ---- Per-sample record: scan log (always) + CSV trace (align_trace=1) -------
--- Every measured sample goes to fd.scanlog - the silent dataset under
--- data/xcan/ (docs/xcan-dataset.md); C++ adds the full pose and the raw
+-- ---- Per-sample record: scan log (align_scanlog=1) + CSV trace (align_trace=1)
+-- With align_scanlog=1 every measured sample goes to fd.scanlog - the dataset
+-- under data/xcan/ (docs/xcan-dataset.md); without it begin is never called,
+-- so sample/finish are no-ops. C++ adds the full pose and the raw
 -- readings after M.n0. With align_trace=1 it is ALSO one CSV line:
 --   xcan,seq,t_s,phase,axis,dir,step_um,<axis>=pos...,v=value,dv=delta,dmove,note
 -- dv / dmove are the change vs the PREVIOUS sample (value and per-axis um),
@@ -347,8 +350,10 @@ end
 
 -- Open the scan record: P is the whole resolved policy (off-policy learning
 -- needs the parameters that produced the trajectory).
-fd.scanlog.begin{ kind = "xcan", device = P.device, topic = P.topic,
-                  axes = P.axes, params = P }
+if flag(P.scanlog) then
+  fd.scanlog.begin{ kind = "xcan", device = P.device, topic = P.topic,
+                    axes = P.axes, params = P }
+end
 local passes_run, passes_skipped = 0, 0
 
 -- Averaged baseline (bobcat averages ONLY the baseline).

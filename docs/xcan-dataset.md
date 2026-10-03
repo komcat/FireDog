@@ -1,9 +1,15 @@
 # XCAN dataset: the silent per-scan record
 
-Every XCAN scan writes one self-contained, machine-readable record. There is nothing
-to switch on: the `xcan` step, every pass of `xcan_to_target` / `xcan_two_lens`, the
-Run page presets and the Motion page all run `hexapod_align.lua`, and that script
-logs through `fd.scanlog`. The goal is a training set for two models:
+An XCAN scan can write one self-contained, machine-readable record. The `xcan` step,
+every pass of `xcan_to_target` / `xcan_two_lens`, the Run page presets and the Motion
+page all run `hexapod_align.lua`, and that script logs through `fd.scanlog`.
+
+**Recording is PAUSED (2026-10): `align_scanlog` defaults to 0.** Set the ctx param
+`align_scanlog` to 1 (a `ctx_set` step before the scan) to record again; change the
+default in `hexapod_align.lua` to turn it back on everywhere. With it off, `begin` is
+never called, so `sample` / `finish` do nothing and no file is written.
+
+The goal is a training set for two models:
 
 1. **Faster peak finding.** Predict the peak, or the next move, from the samples seen
    so far (a surrogate model, Bayesian optimisation, or a learned step policy).
