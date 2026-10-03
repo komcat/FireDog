@@ -46,7 +46,8 @@ constexpr const char* kIniTemplate =
     ";\n"
     ";   root  machine state: hardware.json, calibrations, *.local.json,\n"
     ";         products\\ (documents + the employee roster), logs\\, imgui.ini.\n"
-    ";         Default D:\\ProgramData\\FireDog\n"
+    ";         Default D:\\ProgramData\\FireDog, or %ProgramData%\\FireDog\n"
+    ";         (C:) when this PC has no fixed D: disk\n"
     ";   data  production output: DUT records, xcan\\, align_attempts\\, mosaic\\.\n"
     ";         Default <root>\\data\n"
     ";\n"
@@ -172,6 +173,17 @@ std::string ProgramDataFallback()
         std::free(env);
     }
     return Generic(fs::path(base) / "FireDog");
+}
+
+// The root when the ini names none: D: on a machine that has a fixed D: disk,
+// else %ProgramData% (C:). Removable media is not a D: drive here - a USB
+// stick that is there on some boots would flip the root between starts, and
+// each flip would look like a first start against an empty folder.
+fs::path DefaultRoot()
+{
+    if (GetDriveTypeA("D:\\") == DRIVE_FIXED) return fs::path(kDefaultRoot);
+    Note(false, "no fixed D: drive - default machine root is " + ProgramDataFallback());
+    return fs::path(ProgramDataFallback());
 }
 
 bool SameDir(const fs::path& a, const fs::path& b)
@@ -355,7 +367,7 @@ void DoInit()
     }
 
     // ---- The machine root ----
-    fs::path root = ini.count("root") ? FromIni(ini["root"], exe) : fs::path(kDefaultRoot);
+    fs::path root = ini.count("root") ? FromIni(ini["root"], exe) : DefaultRoot();
     std::error_code ec;
     bool firstStart = !fs::exists(root / "config", ec);
     std::string why;

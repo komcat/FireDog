@@ -13,7 +13,8 @@
 //                     motion_transforms.json (edited in place), every
 //                     *.local.json and its journal, config/vision/, products/
 //                     (documents + the employee roster), logs/, imgui.ini.
-//                     Default D:/ProgramData/FireDog. MachinePath(rel).
+//                     Default D:/ProgramData/FireDog, or %ProgramData%/FireDog
+//                     on a PC with no fixed D: disk. MachinePath(rel).
 //
 //   the DATA root     production output, the bulky part: DUT records under
 //                     products/<name>/, xcan/, align_attempts/, mosaic/.

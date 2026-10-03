@@ -7,7 +7,7 @@ rules. `ProductSession` is the single owner of the product document — see also
 ## Config
 
 **Where the files are:** every runtime-written file below lives under the
-**machine root** (default `D:\ProgramData\FireDog`, set by `FireDog.ini` beside
+**machine root** (default `D:\ProgramData\FireDog`, or `%ProgramData%\FireDog` on a PC with no fixed D: disk; set by `FireDog.ini` beside
 the exe) or its **data root**, never beside the exe — `docs/machine-root-design.md`.
 A path written `config/x.local.json` here means `<root>/config/x.local.json`;
 the `x.json` default it falls back to is the exe's shipped copy.

@@ -60,7 +60,15 @@ data = E:\FireDogData        ; optional; default <root>\data
   defaults) for the next reader, best effort.
 - A dev who wants a sandbox drops one into a build tree: `root = state`.
 
-**If the root cannot be created** (no D: drive), the app falls back to
+**With no `root` in the ini, the default depends on the PC**: `D:\ProgramData\FireDog`
+when `D:` is a FIXED disk, else `%ProgramData%\FireDog` (normally `C:`) — an
+info note, not an error, since a C:-only PC is a normal machine. Removable
+media does not count as a D: drive: a USB stick present on some boots would
+flip the root between starts, and each flip would look like a first start
+against an empty folder (and migrate the exe-side state again into it).
+
+**If the root cannot be created** (an ini `root` on a missing drive, a
+read-only folder), the app falls back to
 `%ProgramData%\FireDog` and logs an ERROR naming the ini to fix; if even that
 fails, it keeps state beside the exe (the old behaviour). It never refuses to
 start — the login gate and the hardware still come up, and the log says why
