@@ -37,24 +37,24 @@ void App::DrawTransformEditPanel()
     bool changed = false;
 
     if (ImGui::Button("Save")) {
-        if (SaveMotionTransforms("config/motion_transforms.json", transformCfg_))
-            FD_INFO("app", "transforms saved to config/motion_transforms.json");
+        if (SaveMotionTransforms(MotionTransformsPath(), transformCfg_))
+            FD_INFO("app", "transforms saved to %s", MotionTransformsPath().c_str());
         else
             FD_ERROR("app", "failed to save motion transforms");
     }
     ImGui::SameLine();
     if (ImGui::Button("Reload file")) {
-        transformCfg_ = LoadMotionTransforms("config/motion_transforms.json");
+        transformCfg_ = LoadMotionTransforms(MotionTransformsPath());
         changed = true;
-        // Log the ABSOLUTE path: the app reads the exe-side copy, and "I edited
+        // Log the full path: the app reads the machine's copy, and "I edited
         // the repo file but Reload did nothing" is otherwise invisible.
         FD_INFO("app", "transforms reloaded from %s (%zu device(s))",
-                std::filesystem::absolute("config/motion_transforms.json").string().c_str(),
-                transformCfg_.size());
+                MotionTransformsPath().c_str(), transformCfg_.size());
     }
     ImGui::TextDisabled("Edits apply to jog immediately (arm the Jog window to test). Save writes "
-                        "config/motion_transforms.json next to the exe; a rebuild overwrites it "
-                        "(mirror durable changes into the repo config).");
+                        "this machine's %s; a build or a release never touches it (a change "
+                        "every machine needs also goes into the repo's config/).",
+                        MotionTransformsPath().c_str());
 
     // One combo per (global axis, device): the signed local axis this global
     // axis maps to. Writes one column of the selected block (m or r).

@@ -21,6 +21,7 @@
 #include "core/DataBus.h"
 #include "core/DutSession.h"
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Topics.h"
 
 #include <algorithm>
@@ -1632,8 +1633,8 @@ void App::LoadScanPresets()
     }
     for (int i = 0; i < kClimbPresetCount; ++i)
         climbPresets_[i] = DefaultClimbPreset(i);
-    std::ifstream f("config/scan_presets.local.json");
-    if (!f.is_open()) f.open("config/scan_presets.json");
+    std::ifstream f(MachinePath("config/scan_presets.local.json"));
+    if (!f.is_open()) f.open("config/scan_presets.json");   // shipped default, beside the exe
     if (!f.is_open()) return;   // first run — defaults stand
     const nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
     if (!j.is_object()) return;
@@ -1686,12 +1687,13 @@ void App::SaveScanPresets() const
     j["xcan_presets"]  = std::move(arr);
     j["xcan_targets"]  = std::move(tarr);
     j["climb_presets"] = std::move(carr);
-    std::ofstream f("config/scan_presets.local.json");
+    const std::string path = MachinePath("config/scan_presets.local.json");
+    std::ofstream f(path);
     if (f.is_open()) {
         f << j.dump(2) << "\n";
-        FD_INFO("ui", "scan presets saved to config/scan_presets.local.json");
+        FD_INFO("ui", "scan presets saved to %s", path.c_str());
     } else {
-        FD_WARN("ui", "could not save config/scan_presets.local.json");
+        FD_WARN("ui", "could not save %s", path.c_str());
     }
 }
 

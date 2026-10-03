@@ -70,7 +70,7 @@ struct MosaicCameraCal {
 };
 
 struct MosaicConfig {
-    std::string             saveDir = "C:\\mosaic";
+    std::string             saveDir;   // "" = <data root>/mosaic (filled in by the loader)
     std::vector<MosaicArea> areas;
     MosaicCameraCal         cal;
 };
@@ -97,7 +97,7 @@ MosaicArea      MosaicAreaFromJson(const nlohmann::json& j);
 nlohmann::json  MosaicConfigToJson(const MosaicConfig& c);
 MosaicConfig    MosaicConfigFromJson(const nlohmann::json& j);
 
-const char*  MosaicConfigLocalPath();   // config/mosaic.local.json
+std::string  MosaicConfigLocalPath();   // <machine root>/config/mosaic.local.json
 // config/mosaic.local.json, falling back to config/mosaic.json, falling back to
 // the defaults. `pathUsed` receives the file actually read ("" = none).
 MosaicConfig LoadMosaicConfig(std::string* pathUsed = nullptr);

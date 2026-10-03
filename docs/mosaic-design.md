@@ -24,9 +24,10 @@ one giant texture, and the full-resolution export is written band by band.
 ## Machine state, not product state
 
 A mosaic surveys whatever sits on the machine, taken by the camera on the gantry. It belongs
-to no product and no DUT. So the areas live in `config/mosaic.local.json` (falling back to the
+to no product and no DUT. So the areas live in `<root>/config/mosaic.local.json` (falling back to the
 shipped `config/mosaic.json`), like the needle calibration. The pictures go to a folder the
-operator sets once on the page (default `C:\mosaic`, created on demand).
+operator sets once on the page (default `<data root>/mosaic`, created on demand, stored as
+`""` so it follows the data root - `docs/machine-root-design.md`).
 
 The page is the only writer of the config and saves on every change. The capture reads the
 **file** at Start, and every editing surface is disabled while `orch_.Busy()`, so the page

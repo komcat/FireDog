@@ -872,7 +872,7 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
                                   "every point.");
             if (st.autoFallbackManual) manualExposure();
             ImGui::TextDisabled("every attempt files a crop (DUT record, else");
-            ImGui::TextDisabled("logs/align_attempts)");
+            ImGui::TextDisabled("<data root>/align_attempts)");
             ImGui::Unindent();
         }
         ImGui::EndDisabled();

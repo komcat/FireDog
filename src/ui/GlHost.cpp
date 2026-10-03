@@ -1,6 +1,8 @@
 // GlHost.cpp
 #include "ui/GlHost.h"
 
+#include "core/Paths.h"
+
 #include "imgui.h"
 #include "implot.h"
 #include "backends/imgui_impl_glfw.h"
@@ -77,6 +79,10 @@ bool GlHost::Init(const char* title, int width, int height,
     ImPlot::CreateContext();
 
     ImGuiIO& io = ImGui::GetIO();
+    // The window layout is this machine's, not the build's: beside the other
+    // machine state rather than in the working directory (the exe folder).
+    iniPath_       = MachinePath("imgui.ini");
+    io.IniFilename = iniPath_.c_str();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;   // real extra OS windows
 

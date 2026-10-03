@@ -713,7 +713,7 @@ bool WriteConfigReport(const ConfigStore& store, const std::string& outPath, std
 
     // The transforms live beside the hardware file, so an explicit --config
     // pointed at the repository copy reports that copy's transforms.
-    std::string transformsPath = "config/motion_transforms.json";
+    std::string transformsPath = MotionTransformsPath();
     try {
         const std::filesystem::path dir = std::filesystem::path(store.Path()).parent_path();
         transformsPath = (dir / "motion_transforms.json").string();

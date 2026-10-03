@@ -2,6 +2,7 @@
 #include "core/Product.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 
 #include <nlohmann/json.hpp>
 
@@ -20,7 +21,9 @@ namespace firedog {
 
 namespace {
 
-constexpr const char* kProductsRoot = "products";
+// Documents under the machine root; DUT records (the manifest's data/images
+// folders) under the DATA root, mirrored by product name - see core/Paths.h.
+std::string ProductsRoot() { return MachinePath("products"); }
 
 } // namespace
 
@@ -38,7 +41,7 @@ std::string NowStamp()
 
 std::string ProductManifest::Dir() const
 {
-    return std::string(kProductsRoot) + "/" + name;
+    return ProductsRoot() + "/" + name;
 }
 
 const ManifestFile* ProductManifest::Entry(const std::string& role) const
@@ -53,8 +56,8 @@ std::string ProductManifest::FilePath(const std::string& role) const
     return e ? Dir() + "/" + e->file : std::string{};
 }
 
-std::string ProductManifest::DataDir()   const { return Dir() + "/" + dataDir; }
-std::string ProductManifest::ImagesDir() const { return Dir() + "/" + imagesDir; }
+std::string ProductManifest::DataDir()   const { return DataPath("products/" + name + "/" + dataDir); }
+std::string ProductManifest::ImagesDir() const { return DataPath("products/" + name + "/" + imagesDir); }
 
 std::string GenerateUid()
 {
@@ -70,7 +73,7 @@ std::vector<std::string> ListProducts()
 {
     std::vector<std::string> out;
     std::error_code ec;   // error_code overloads: never throw on a missing root
-    for (const auto& entry : fs::directory_iterator(kProductsRoot, ec)) {
+    for (const auto& entry : fs::directory_iterator(ProductsRoot(), ec)) {
         if (!entry.is_directory(ec)) continue;
         if (fs::exists(entry.path() / "manifest.json", ec))
             out.push_back(entry.path().filename().string());
@@ -82,7 +85,7 @@ std::vector<std::string> ListProducts()
 ProductManifest LoadProductManifest(const std::string& name)
 {
     ProductManifest m;
-    const std::string path = std::string(kProductsRoot) + "/" + name + "/manifest.json";
+    const std::string path = ProductsRoot() + "/" + name + "/manifest.json";
     std::ifstream f(path);
     if (!f.is_open()) {
         FD_WARN("product", "no manifest at %s", path.c_str());
@@ -163,6 +166,7 @@ ProductManifest CreateProduct(const std::string& name)
     }
 
     std::error_code ec;
+    fs::create_directories(m.Dir(), ec);
     fs::create_directories(m.DataDir(), ec);
     fs::create_directories(m.ImagesDir(), ec);
     if (!fs::is_directory(m.Dir(), ec)) {

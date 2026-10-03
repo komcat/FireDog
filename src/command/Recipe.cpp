@@ -5,6 +5,7 @@
 #include "command/ExecutionContext.h"   // CheckConditionShape
 #include "command/MotionWaits.h"        // kTeachParamName (parallel refuses it)
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Product.h"               // GenerateUid — backfill for recipes without one
 #include "hardware/HardwareManager.h"
 
@@ -17,8 +18,8 @@
 namespace firedog {
 
 namespace {
-constexpr const char* kLocalPath = "config/recipes.local.json";
-constexpr const char* kBasePath  = "config/recipes.json";
+std::string LocalPath() { return MachinePath("config/recipes.local.json"); }
+constexpr const char* kBasePath = "config/recipes.json";   // shipped default, beside the exe
 } // namespace
 
 bool IsStructuralStep(const std::string& type)
@@ -179,10 +180,10 @@ std::vector<Recipe> LoadRecipesFile(const std::string& path, std::string* uidOut
 
 std::vector<Recipe> LoadRecipes()
 {
-    std::ifstream probe(kLocalPath);
+    std::ifstream probe(LocalPath());
     if (probe.is_open()) {
         probe.close();
-        return LoadRecipesFile(kLocalPath);
+        return LoadRecipesFile(LocalPath());
     }
     return LoadRecipesFile(kBasePath);
 }

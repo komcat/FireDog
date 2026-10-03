@@ -111,7 +111,8 @@ NeedleCal LoadNeedleCalFile(const std::string& path);
 bool      SaveNeedleCalFile(const std::string& path, const NeedleCal& c);
 
 // The one place the writable path is spelled, so a command, the UI and the
-// loader cannot disagree about which file a calibration lands in.
-const char* NeedleCalLocalPath();
+// loader cannot disagree about which file a calibration lands in. Under the
+// machine root (core/Paths.h).
+std::string NeedleCalLocalPath();
 
 } // namespace firedog

@@ -36,7 +36,9 @@ Three, from the one root `CMakeLists.txt`:
   `docs/rig-console.md`). Links `firedog_hw` and nothing else.
 
 `firedog_stage_runtime(<target>)` performs the POST_BUILD staging both exes need
-— `config/` next to the exe plus the Pylon/PI/EziIO runtime DLLs. Call it for any
+— the shipped `config/` defaults next to the exe (the machine's own state is
+under the machine root, `docs/machine-root-design.md`) plus the Pylon/PI/EziIO
+runtime DLLs. Call it for any
 new executable; the copies are `copy_if_different`, so the second call is a no-op
 when both targets land in the same output directory.
 

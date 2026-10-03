@@ -438,17 +438,24 @@ def cmd_plot(a):
         plt.show()
 
 
+# FireDog's default data root (src/core/Paths.h). A machine whose FireDog.ini
+# moves it is reached with --data.
+DEFAULT_XCAN = os.path.join("D:" + os.sep, "ProgramData", "FireDog", "data", "xcan")
+
+
 def find_data_dir():
-    """data/xcan in the working directory, else the newest one under the repo's
-    out/build/<preset>/ (FireDog writes beside the exe it ran as)."""
-    here = os.path.join("data", "xcan")
-    if os.path.isdir(here):
-        return here
+    """data/xcan in the working directory, else FireDog's default data root,
+    else the newest one under the repo's out/build/<preset>/ (where builds
+    from before the machine root wrote, beside the exe)."""
+    for here in (os.path.join("data", "xcan"), DEFAULT_XCAN):
+        if os.path.isdir(here):
+            return here
     repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     found = [d for d in glob.glob(os.path.join(repo, "out", "build", "*", "data", "xcan"))
              if os.path.isdir(d)]
     if not found:
-        sys.exit(f"no data/xcan in {os.getcwd()} or under {repo}\\out\\build\\*; pass --data")
+        sys.exit(f"no data/xcan in {os.getcwd()}, no {DEFAULT_XCAN}, none under "
+                 f"{repo}\\out\\build\\*; pass --data")
 
     def newest(d):
         return max((os.path.getmtime(f) for f in glob.glob(os.path.join(d, "*", "*.jsonl"))),

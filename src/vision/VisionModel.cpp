@@ -2,6 +2,7 @@
 #include "vision/VisionModel.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Product.h"   // GenerateUid
 
 #include <cctype>
@@ -12,8 +13,8 @@
 namespace firedog {
 
 namespace {
-constexpr const char* kLocalPath = "config/vision.local.json";
-constexpr const char* kBasePath  = "config/vision.json";
+std::string LocalPath() { return MachinePath("config/vision.local.json"); }
+constexpr const char* kBasePath = "config/vision.json";   // shipped default, beside the exe
 
 nlohmann::json RoiToJson(const VisionRoi& r)
 {
@@ -443,7 +444,7 @@ VisionModel VisionModelFromJson(const nlohmann::json& j)
 
 std::vector<VisionModel> LoadVisionModels()
 {
-    std::string path = kLocalPath;
+    std::string path = LocalPath();
     std::ifstream f(path);
     if (!f.is_open()) {
         path = kBasePath;

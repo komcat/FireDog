@@ -91,6 +91,14 @@ bool IsSystemScript(const std::string& pathOrFile);
 // cannot disagree about which file "the procedure" means.
 std::string SystemScriptPath(const std::string& pathOrFile);
 
+// The script folders other than a product's. The SHIPPED one is the exe's
+// config/scripts: the build refreshes it and a release replaces it, so nothing
+// written there survives. The MACHINE one (<machine root>/config/scripts,
+// core/Paths.h) holds what was created or saved on this PC; a file there beats
+// the shipped file of the same name, exactly as a product's copy beats both.
+std::string MachineScriptsDir();
+bool        IsShippedScript(const std::string& path);   // sits in the exe's config/scripts
+
 class ExecutionContext {
 public:
     // Manual position adjustment (bobcat's ManualAdjust): the run pauses while
@@ -257,13 +265,14 @@ public:
     // Where the models' taught template patches live, for this run's document.
     const std::string& VisionDir() const { return visionDir_; }
     // The scripts directory this run resolves against — the product's when it
-    // has one with content, else config/scripts (whatever the session actually
+    // has one with content, else the machine's (whatever the session actually
     // scanned).
     const std::string& ScriptsDir() const { return scriptsDir_; }
 
-    // A product's own copy of a script wins over the shipped one. Given a
-    // default like "config/scripts/raster_scan.lua", return
-    // "<ScriptsDir()>/raster_scan.lua" when that file exists, else the path
+    // A product's own copy of a script wins over the shipped one, and so does
+    // the machine's. Given a default like "config/scripts/raster_scan.lua",
+    // return "<ScriptsDir()>/raster_scan.lua" when that file exists, else
+    // "<MachineScriptsDir()>/raster_scan.lua" when THAT exists, else the path
     // unchanged. SYSTEM scripts are the exception — see IsSystemScript.
     //
     // This exists because a command that hard-codes the shipped path silently

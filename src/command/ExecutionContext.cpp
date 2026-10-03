@@ -3,6 +3,7 @@
 
 #include "core/DataBus.h"
 #include "core/Log.h"
+#include "core/Paths.h"     // MachinePath — the machine's script folder
 #include "core/Product.h"   // GenerateUid — a newly taught position's identity
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
@@ -67,6 +68,15 @@ std::string SystemScriptPath(const std::string& pathOrFile)
     return "config/scripts/" + std::filesystem::path(pathOrFile).filename().string();
 }
 
+std::string MachineScriptsDir() { return MachinePath("config/scripts"); }
+
+bool IsShippedScript(const std::string& path)
+{
+    std::error_code ec;
+    return std::filesystem::equivalent(std::filesystem::path(path).parent_path(),
+                                       "config/scripts", ec);
+}
+
 std::string ExecutionContext::ResolveScript(const std::string& path) const
 {
     if (path.empty()) return path;
@@ -92,17 +102,22 @@ std::string ExecutionContext::ResolveScript(const std::string& path) const
         return sys;
     }
 
-    if (scriptsDir_.empty()) return path;
-    const std::string candidate = scriptsDir_ + "/" + file;
+    // The product's copy, then the machine's, then what the caller named.
+    const std::string machineDir = MachineScriptsDir();
+    for (const std::string& dir : {scriptsDir_, machineDir}) {
+        if (dir.empty()) continue;
+        const std::string candidate = dir + "/" + file;
 
-    std::error_code sameEc;
-    if (std::filesystem::equivalent(candidate, path, sameEc)) return path;   // same file
+        std::error_code sameEc;
+        if (std::filesystem::equivalent(candidate, path, sameEc)) return path;   // same file
 
-    std::error_code ec;
-    if (!std::filesystem::exists(candidate, ec) || ec) return path;
-    FD_INFO("script", "using the product's copy of %s (%s)", file.c_str(),
-            candidate.c_str());
-    return candidate;
+        std::error_code ec;
+        if (!std::filesystem::exists(candidate, ec) || ec) continue;
+        FD_INFO("script", "using the %s copy of %s (%s)",
+                dir == machineDir ? "machine's" : "product's", file.c_str(), candidate.c_str());
+        return candidate;
+    }
+    return path;
 }
 
 void ExecutionContext::RecordPosition(const std::string& device,

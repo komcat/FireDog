@@ -9,12 +9,14 @@
 //
 // Three deliberate choices:
 //
-//   * IT LIVES IN products/, NOT config/. config/ is what the repo ships — a
-//     fresh build tree or a release zip starts from the committed copy — so a
-//     roster there would be one release away from being replaced. products/ is
-//     never shipped, so this is the only place a registration survives. It also means no xxx.local.json pair
-//     is needed here: there is no shipped default to fall back to, and a second
-//     file would only add a stale shadow to get confused by.
+//   * IT LIVES IN <machine root>/products/, never beside the exe. The exe's
+//     config/ is what the repo ships — a fresh build tree or a release zip
+//     starts from the committed copy — so a roster there would be one release
+//     away from being replaced. The machine root (core/Paths.h) is never
+//     shipped, so this is the only place a registration survives. It also
+//     means no xxx.local.json pair is needed here: there is no shipped default
+//     to fall back to, and a second file would only add a stale shadow to get
+//     confused by.
 //
 //   * PASSWORDS ARE PLAINTEXT, on purpose. This is weak by any security
 //     standard and is not pretending otherwise: anyone who can read the file
@@ -71,7 +73,7 @@ struct ActiveUser {
 extern const char* const kBuiltinAdminId;         // "admin"
 extern const char* const kBuiltinAdminPassword;   // "iamyourfather"
 
-const char* EmployeesPath();   // "products/employees.json"
+std::string EmployeesPath();   // "<machine root>/products/employees.json"
 
 // Tolerant load: a missing or malformed file yields an empty roster and a
 // warning, never a throw. The built-in admin can still log in either way.

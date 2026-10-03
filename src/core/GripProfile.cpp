@@ -2,6 +2,7 @@
 #include "core/GripProfile.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Product.h"   // GenerateUid
 
 #include <cmath>
@@ -12,8 +13,8 @@
 namespace firedog {
 
 namespace {
-constexpr const char* kLocalPath = "config/grips.local.json";
-constexpr const char* kBasePath  = "config/grips.json";
+std::string LocalPath() { return MachinePath("config/grips.local.json"); }
+constexpr const char* kBasePath = "config/grips.json";   // shipped default, beside the exe
 
 std::vector<GripProfile> ParseGripProfiles(std::ifstream& f, const std::string& path,
                                            std::string* uidOut)
@@ -175,7 +176,7 @@ bool GripHasOutline(const GripProfile& g)
 
 std::vector<GripProfile> LoadGripProfiles()
 {
-    std::string path = kLocalPath;
+    std::string path = LocalPath();
     std::ifstream f(path);
     if (!f.is_open()) {
         path = kBasePath;

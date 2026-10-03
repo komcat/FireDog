@@ -116,8 +116,10 @@ is loaded. The window is for reviewing those labels and overruling the wrong one
   **Relabel** reruns the rules with those values.
 - **Export** writes the output described below.
 
-It reads `data/xcan` in the working directory if there is one. Otherwise it reads the
-newest `out/build/<preset>/data/xcan` in the repo. `--data` overrides both.
+It reads `data/xcan` in the working directory if there is one, else FireDog's default
+`D:\ProgramData\FireDog\data\xcan` (the data root, `docs/machine-root-design.md`). Otherwise it reads the
+newest `out/build/<preset>/data/xcan` in the repo (where builds before the machine root
+wrote). `--data` overrides all three.
 
 It writes to `xcan_labeled/`, next to the data folder. Everything there is derived, so you can delete the
 folder and rerun at any time.

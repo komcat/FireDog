@@ -5,6 +5,7 @@
 #include "RigReport.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 
 #include <algorithm>
 #include <cctype>
@@ -215,7 +216,8 @@ bool RigConsole::CmdReload()
 bool RigConsole::CmdReport(const std::vector<std::string>& tok)
 {
     // Rest() rather than tok[1]: a handover path is very often "D:\My Docs\...".
-    const std::string path = tok.size() >= 2 ? Rest(tok, 1) : std::string(kDefaultReportFile);
+    // The default lands beside the machine's config (core/Paths.h), not the exe.
+    const std::string path = tok.size() >= 2 ? Rest(tok, 1) : MachinePath(kDefaultReportFile);
 
     std::string err;
     if (!WriteConfigReport(store_, path, err)) { Fail(err); return false; }

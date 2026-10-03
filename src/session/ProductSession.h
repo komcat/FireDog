@@ -199,6 +199,7 @@ public:
     void CopyVisionTemplates(const std::string& fromDir, const std::string& toDir) const;
 
     // Scripts: the product's scripts/ dir when it has one with content, else
+    // the machine's (MachineScriptsDir), listed together with the shipped
     // config/scripts. ScriptsDirUsed() reports the dir ACTUALLY scanned.
     std::string ScriptsDir() const;
     void LoadScriptsList();

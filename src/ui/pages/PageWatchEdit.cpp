@@ -33,8 +33,8 @@ void App::DrawWatchEditPanel()
     ImGui::SameLine();
     if (ImGui::Button("Save")) {
         workflow_.ApplyIoWatch(watchCfg_);
-        if (HardwareConfig::SaveIoWatch("config/hardware.json", watchCfg_))
-            FD_INFO("app", "io_watch saved to config/hardware.json");
+        if (HardwareConfig::SaveIoWatch(HardwareConfigPath(), watchCfg_))
+            FD_INFO("app", "io_watch saved to %s", HardwareConfigPath().c_str());
         else
             FD_ERROR("app", "failed to save io_watch config");
     }

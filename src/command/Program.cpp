@@ -2,6 +2,7 @@
 #include "command/Program.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Product.h"   // GenerateUid — node/program identities
 
 #include <exception>
@@ -12,8 +13,8 @@
 namespace firedog {
 
 namespace {
-constexpr const char* kLocalPath = "config/programs.local.json";
-constexpr const char* kBasePath  = "config/programs.json";
+std::string LocalPath() { return MachinePath("config/programs.local.json"); }
+constexpr const char* kBasePath = "config/programs.json";   // shipped default, beside the exe
 // A folder's loop count. The ceiling is not a policy about production runs —
 // it is what stops a mistyped "1000000" from expanding into a queue that eats
 // the process before the first recipe starts.
@@ -360,10 +361,10 @@ std::vector<Program> LoadProgramsFile(const std::string& path, std::string* uidO
 
 std::vector<Program> LoadPrograms()
 {
-    std::ifstream probe(kLocalPath);
+    std::ifstream probe(LocalPath());
     if (probe.is_open()) {
         probe.close();
-        return LoadProgramsFile(kLocalPath);
+        return LoadProgramsFile(LocalPath());
     }
     return LoadProgramsFile(kBasePath);
 }

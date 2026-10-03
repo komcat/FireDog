@@ -1,8 +1,11 @@
 #include "session/ProductSession.h"
 
+#include "command/ExecutionContext.h"   // MachineScriptsDir
 #include "core/DutSession.h"
 #include "core/Log.h"
+#include "core/Paths.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <system_error>
@@ -27,7 +30,7 @@ bool ProductSession::LoadInitial(const std::string& lastProduct)
     if (!product_.Loaded()) LoadVisionFromDisk();
     if (!product_.Loaded()) LoadGripsFromDisk();
     if (!product_.Loaded()) LoadTraysFromDisk();
-    LoadScriptsList();   // .lua programs (product dir, else config/scripts)
+    LoadScriptsList();   // .lua programs (product dir, else the machine's + shipped)
     if (product_.Loaded())   // DUT records live under the product's data/
         DutSession::Instance().SetProduct(product_.name, product_.uid,
                                           product_.DataDir());
@@ -166,7 +169,7 @@ void ProductSession::SaveProduct()
 
 std::string ProductSession::ScriptsDir() const
 {
-    return product_.Loaded() ? product_.Dir() + "/scripts" : "config/scripts";
+    return product_.Loaded() ? product_.Dir() + "/scripts" : MachineScriptsDir();
 }
 
 void ProductSession::LoadScriptsList()
@@ -176,9 +179,21 @@ void ProductSession::LoadScriptsList()
     if (scripts_.empty() && product_.Loaded()) {
         // Product without a scripts folder — fall back like recipes do, and
         // show the directory ACTUALLY used, not the one we wished for.
-        scriptsDirUsed_ = "config/scripts";
+        scriptsDirUsed_ = MachineScriptsDir();
         scripts_ = ListScripts(scriptsDirUsed_);
     }
+    if (scriptsDirUsed_ != MachineScriptsDir()) return;
+
+    // The machine folder holds only what was created or saved on this PC, so
+    // the shipped scripts are listed beside it - a machine copy winning by
+    // name, exactly as ResolveScript picks it.
+    for (ScriptInfo& si : ListScripts("config/scripts")) {
+        bool have = false;
+        for (const ScriptInfo& m : scripts_) have = have || m.name == si.name;
+        if (!have) scripts_.push_back(std::move(si));
+    }
+    std::sort(scripts_.begin(), scripts_.end(),
+              [](const ScriptInfo& a, const ScriptInfo& b) { return a.name < b.name; });
 }
 
 void ProductSession::LoadPositions()
@@ -214,7 +229,7 @@ std::string ProductSession::PositionHistoryPath() const
 {
     if (product_.Entry("positions"))
         return PositionHistoryPathFor(product_.FilePath("positions"));
-    return PositionHistoryPathFor("config/positions.local.json");
+    return PositionHistoryPathFor(MachinePath("config/positions.local.json"));
 }
 
 bool ProductSession::RestorePosition(const PosChange& entry)
@@ -252,10 +267,10 @@ bool ProductSession::RestorePosition(const PosChange& entry)
 
 void ProductSession::SaveMaps()
 {
-    // Machine-global for now (config/maps.local.json) — maps reference
+    // Machine-global for now (<machine root>/config/maps.local.json) — maps reference
     // position uids, which stay stable across products.
     if (SaveMotionMaps(maps_))
-        FD_INFO("map", "maps saved to config/maps.local.json");
+        FD_INFO("map", "maps saved to %s", MachinePath("config/maps.local.json").c_str());
     else
         FD_WARN("map", "could not save motion maps");
 }
@@ -292,7 +307,7 @@ void ProductSession::LoadRecipesFromDisk()
 // precedence LoadRecipesFromDisk reads with.
 void ProductSession::SaveRecipes()
 {
-    std::string path = "config/recipes.local.json";
+    std::string path = MachinePath("config/recipes.local.json");
     std::string uid  = recipesUid_;
     if (product_.Loaded()) {
         if (const ManifestFile* e = product_.Entry("recipes")) {
@@ -367,7 +382,7 @@ void ProductSession::LoadProgramsFromDisk()
 
 void ProductSession::SavePrograms()
 {
-    std::string path = "config/programs.local.json";
+    std::string path = MachinePath("config/programs.local.json");
     std::string uid  = programsUid_;
     if (product_.Loaded()) {
         if (const ManifestFile* e = product_.Entry("programs")) {
@@ -431,7 +446,7 @@ void ProductSession::LoadAlignsFromDisk()
 
 void ProductSession::SaveAligns()
 {
-    std::string path = "config/alignments.local.json";
+    std::string path = MachinePath("config/alignments.local.json");
     std::string uid  = alignsUid_;
     if (product_.Loaded()) {
         if (const ManifestFile* e = product_.Entry("alignments")) {
@@ -523,7 +538,7 @@ void ProductSession::LoadGripsFromDisk()
 
 void ProductSession::SaveGrips()
 {
-    std::string path = "config/grips.local.json";
+    std::string path = MachinePath("config/grips.local.json");
     std::string uid  = gripsUid_;
     if (product_.Loaded()) {
         if (const ManifestFile* e = product_.Entry("grips")) {
@@ -605,7 +620,7 @@ void ProductSession::LoadTraysFromDisk()
 
 void ProductSession::SaveTrays()
 {
-    std::string path = "config/trays.local.json";
+    std::string path = MachinePath("config/trays.local.json");
     std::string uid  = traysUid_;
     if (product_.Loaded()) {
         if (const ManifestFile* e = product_.Entry("trays")) {
@@ -665,7 +680,7 @@ bool ProductSession::SetTrayCellsUsed(const std::string& uid,
 
 std::string ProductSession::VisionDir() const
 {
-    return product_.Loaded() ? product_.Dir() + "/vision" : "config/vision";
+    return product_.Loaded() ? product_.Dir() + "/vision" : MachinePath("config/vision");
 }
 
 void ProductSession::LoadVisionFromDisk()
@@ -698,7 +713,7 @@ void ProductSession::LoadVisionFromDisk()
 
 void ProductSession::SaveVision()
 {
-    std::string path = "config/vision.local.json";
+    std::string path = MachinePath("config/vision.local.json");
     std::string uid  = visionUid_;
     if (product_.Loaded()) {
         if (const ManifestFile* e = product_.Entry("vision")) {
@@ -776,7 +791,7 @@ RecipeEngine::Env ProductSession::MakeRecipeEnv() const
     env.trays        = trays_;
     env.visionDir    = VisionDir();
     // The dir actually SCANNED, not the ideal one: a product with no scripts
-    // folder falls back to config/scripts, and a run must resolve against the
+    // folder falls back to the machine's, and a run must resolve against the
     // same place the Scripts page lists.
     env.scriptsDir   = scriptsDirUsed_;
     return env;
@@ -794,7 +809,7 @@ LuaEngine::Env ProductSession::MakeLuaEnv() const
     env.trays        = trays_;
     env.visionDir    = VisionDir();
     // The dir actually SCANNED, not the ideal one: a product with no scripts
-    // folder falls back to config/scripts, and a run must resolve against the
+    // folder falls back to the machine's, and a run must resolve against the
     // same place the Scripts page lists.
     env.scriptsDir   = scriptsDirUsed_;
     return env;

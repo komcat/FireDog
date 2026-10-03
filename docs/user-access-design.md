@@ -49,11 +49,11 @@ enum class UserRole { None = 0, Operator = 1, Technician = 2, Admin = 3 };
 
 ### Why `products/`, not `config/`
 
-**`config/` is what the repo ships.** A build no longer overwrites an existing
-exe-side file (`cmake/StageConfig.cmake`), but a fresh build tree and every
-release zip start from the committed copy — a roster there would be replaced by
-whatever was committed, silently. `products/` is never shipped or staged, so it
-is the only place a registration survives.
+**`config/` is what the repo ships.** A fresh build tree and every release zip
+start from the committed copy — a roster there would be replaced by whatever
+was committed, silently. The file is `<root>/products/employees.json` under the
+machine root (`docs/machine-root-design.md`), which is never shipped, staged or
+rebuilt, so it is the only place a registration survives.
 
 That also means **no `xxx.local.json` pair**. That convention exists to protect a
 runtime-written file from the shipped default that is about to overwrite it;

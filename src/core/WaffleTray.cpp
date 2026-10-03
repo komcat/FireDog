@@ -2,6 +2,7 @@
 #include "core/WaffleTray.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Product.h"   // GenerateUid
 
 #include <algorithm>
@@ -13,8 +14,8 @@
 namespace firedog {
 
 namespace {
-constexpr const char* kLocalPath = "config/trays.local.json";
-constexpr const char* kBasePath  = "config/trays.json";
+std::string LocalPath() { return MachinePath("config/trays.local.json"); }
+constexpr const char* kBasePath = "config/trays.json";   // shipped default, beside the exe
 
 std::vector<WaffleTray> ParseWaffleTrays(std::ifstream& f, const std::string& path,
                                          std::string* uidOut)
@@ -400,7 +401,7 @@ WaffleTray WaffleTrayFromJson(const nlohmann::json& j)
 
 std::vector<WaffleTray> LoadWaffleTrays()
 {
-    std::string path = kLocalPath;
+    std::string path = LocalPath();
     std::ifstream f(path);
     if (!f.is_open()) {
         path = kBasePath;

@@ -2,6 +2,7 @@
 #include "core/Employees.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 
 #include <exception>
 #include <filesystem>
@@ -11,14 +12,10 @@
 
 namespace firedog {
 
-namespace {
-constexpr const char* kPath = "products/employees.json";
-}   // namespace
-
 const char* const kBuiltinAdminId       = "admin";
 const char* const kBuiltinAdminPassword = "iamyourfather";
 
-const char* EmployeesPath() { return kPath; }
+std::string EmployeesPath() { return MachinePath("products/employees.json"); }
 
 const char* RoleName(UserRole r)
 {
@@ -69,7 +66,9 @@ std::vector<Employee> LoadEmployees()
 {
     std::vector<Employee> out;
 
-    std::ifstream f(kPath);
+    const std::string pathStr = EmployeesPath();
+    const char* const kPath   = pathStr.c_str();
+    std::ifstream f(pathStr);
     if (!f.is_open()) {
         // Not an error: a machine that has never registered anybody is exactly
         // the state the built-in admin exists for.
@@ -134,9 +133,11 @@ bool SaveEmployees(const std::vector<Employee>& list)
     j["users"]   = std::move(arr);
 
     // products/ is created by the first product; a machine may not have one yet.
+    const std::string pathStr = EmployeesPath();
+    const char* const kPath   = pathStr.c_str();
     std::error_code ec;
     std::filesystem::create_directories(
-        std::filesystem::path(kPath).parent_path(), ec);
+        std::filesystem::path(pathStr).parent_path(), ec);
 
     // Same write-temp-then-rename as the DUT record: a crash mid-write must not
     // leave a truncated roster, which would lock out everyone but the built-in

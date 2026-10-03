@@ -2,6 +2,7 @@
 #include "core/NeedleCal.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 
 #include <exception>
 #include <fstream>
@@ -9,11 +10,11 @@
 namespace firedog {
 
 namespace {
-constexpr const char* kLocalPath = "config/needle_cal.local.json";
-constexpr const char* kBasePath  = "config/needle_cal.json";
+constexpr const char* kBasePath = "config/needle_cal.json";   // shipped default, beside the exe
 }   // namespace
 
-const char* NeedleCalLocalPath() { return kLocalPath; }
+// Machine state: under the machine root, never beside the exe (core/Paths.h).
+std::string NeedleCalLocalPath() { return MachinePath("config/needle_cal.local.json"); }
 
 nlohmann::json NeedleCalToJson(const NeedleCal& c)
 {
@@ -101,11 +102,12 @@ NeedleCal LoadNeedleCal(std::string* pathUsed)
 {
     if (pathUsed) pathUsed->clear();
 
-    std::ifstream probe(kLocalPath);
+    const std::string local = NeedleCalLocalPath();
+    std::ifstream probe(local);
     const bool haveLocal = probe.is_open();
     probe.close();
 
-    const char* path = haveLocal ? kLocalPath : kBasePath;
+    const std::string path = haveLocal ? local : std::string(kBasePath);
     NeedleCal c = LoadNeedleCalFile(path);
     if (pathUsed) *pathUsed = path;
     return c;

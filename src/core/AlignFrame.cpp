@@ -2,6 +2,7 @@
 #include "core/AlignFrame.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Product.h"   // GenerateUid / NowStamp
 
 #include <cmath>
@@ -12,8 +13,8 @@
 namespace firedog {
 
 namespace {
-constexpr const char* kLocalPath = "config/alignments.local.json";
-constexpr const char* kBasePath  = "config/alignments.json";
+std::string LocalPath() { return MachinePath("config/alignments.local.json"); }
+constexpr const char* kBasePath = "config/alignments.json";   // shipped default, beside the exe
 
 nlohmann::json StationToJson(const AlignStation& s)
 {
@@ -537,7 +538,7 @@ AlignProc AlignProcFromJson(const nlohmann::json& j)
 
 std::vector<AlignProc> LoadAlignProcs()
 {
-    std::string path = kLocalPath;
+    std::string path = LocalPath();
     std::ifstream f(path);
     if (!f.is_open()) {
         path = kBasePath;

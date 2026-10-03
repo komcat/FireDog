@@ -125,10 +125,10 @@ void App::DrawCameraDetailPanel()
         workflow_.SetCameraPixelToMm(static_cast<double>(pixelToMmX_),
                                      static_cast<double>(pixelToMmY_));
     if (ImGui::Button("Save to config")) {
-        if (HardwareConfig::SaveCameraSettings("config/hardware.json", cameraId_,
+        if (HardwareConfig::SaveCameraSettings(HardwareConfigPath(), cameraId_,
                                                pixelToMmX_, pixelToMmY_,
                                                camExpoPulled_ ? camExposureUs_ : 0.0))
-            FD_INFO("app", "camera settings saved to config/hardware.json");
+            FD_INFO("app", "camera settings saved to %s", HardwareConfigPath().c_str());
         else
             FD_ERROR("app", "failed to save camera settings");
     }

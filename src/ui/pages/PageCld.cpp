@@ -133,9 +133,9 @@ void App::DrawCldDetailPanel()
 
     ImGui::Spacing();
     if (ImGui::Button("Save to config")) {
-        if (HardwareConfig::SaveCldSettings("config/hardware.json", cldId_,
+        if (HardwareConfig::SaveCldSettings(HardwareConfigPath(), cldId_,
                                             cldTempSet_, cldCurrentSet_))
-            FD_INFO("app", "CLD101x defaults saved to config/hardware.json");
+            FD_INFO("app", "CLD101x defaults saved to %s", HardwareConfigPath().c_str());
         else
             FD_ERROR("app", "failed to save CLD101x defaults");
     }

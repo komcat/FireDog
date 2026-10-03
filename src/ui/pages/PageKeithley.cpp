@@ -195,10 +195,10 @@ void App::DrawKeithleyDetailPanel()
     ImGui::Spacing();
     if (ImGui::Button("Save to config")) {
         const double fixed = keiAutoRange_ ? 0.0 : kKeiRanges[keiRangeIdx_].amps;
-        if (HardwareConfig::SaveKeithleySettings("config/hardware.json", keithleyId_,
+        if (HardwareConfig::SaveKeithleySettings(HardwareConfigPath(), keithleyId_,
                                                  keiNplc_, keiAutoRange_, fixed,
                                                  keiPollMs_, keiBias_))
-            FD_INFO("app", "Keithley settings saved to config/hardware.json");
+            FD_INFO("app", "Keithley settings saved to %s", HardwareConfigPath().c_str());
         else
             FD_ERROR("app", "failed to save Keithley settings");
     }

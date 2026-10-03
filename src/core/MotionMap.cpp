@@ -2,6 +2,7 @@
 #include "core/MotionMap.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Product.h"   // GenerateUid — backfill for maps without one
 
 #include <nlohmann/json.hpp>
@@ -17,8 +18,8 @@
 namespace firedog {
 
 namespace {
-constexpr const char* kLocalPath = "config/maps.local.json";
-constexpr const char* kBasePath  = "config/maps.json";
+std::string LocalPath() { return MachinePath("config/maps.local.json"); }
+constexpr const char* kBasePath = "config/maps.json";   // shipped default, beside the exe
 } // namespace
 
 const MotionMapNode* MotionMap::FindNode(const std::string& id) const
@@ -58,7 +59,7 @@ void MotionMap::RemoveEdge(const std::string& a, const std::string& b)
 
 MotionMapSet LoadMotionMaps()
 {
-    std::string path = kLocalPath;
+    std::string path = LocalPath();
     std::ifstream f(path);
     if (!f.is_open()) {
         path = kBasePath;
@@ -141,9 +142,10 @@ bool SaveMotionMaps(const MotionMapSet& maps)
     nlohmann::json j;
     j["maps"] = std::move(devs);
 
-    std::ofstream f(kLocalPath);
+    const std::string path = LocalPath();
+    std::ofstream f(path);
     if (!f.is_open()) {
-        FD_WARN("map", "maps save failed: cannot open %s", kLocalPath);
+        FD_WARN("map", "maps save failed: cannot open %s", path.c_str());
         return false;
     }
     f << j.dump(2) << '\n';

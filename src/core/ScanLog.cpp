@@ -3,6 +3,7 @@
 
 #include "core/DataBus.h"
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Topics.h"
 
 #include <cstdio>
@@ -19,7 +20,8 @@ namespace firedog {
 
 namespace {
 
-constexpr const char* kScanDir = "data/xcan";
+// <data root>/xcan: production output (core/Paths.h).
+std::string ScanDir() { return DataPath("xcan"); }
 
 // Process-wide: the last scan id per device (prev_scan_id chains a stall to
 // the retry that followed it) and the index append.
@@ -183,7 +185,7 @@ void ScanLog::Finish(nlohmann::json result, const std::string& status,
         namespace fs = std::filesystem;
         std::string day;
         LocalStamps(nullptr, &day);
-        const fs::path dir = fs::path(kScanDir) / day;
+        const fs::path dir = fs::path(ScanDir()) / day;
         std::error_code ec;
         fs::create_directories(dir, ec);
         if (ec) throw std::runtime_error("cannot create " + dir.string() + ": " + ec.message());

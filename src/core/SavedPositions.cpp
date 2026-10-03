@@ -2,6 +2,7 @@
 #include "core/SavedPositions.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Product.h"   // GenerateUid — backfill for rows without one
 
 #include <nlohmann/json.hpp>
@@ -14,8 +15,8 @@
 namespace firedog {
 
 namespace {
-constexpr const char* kLocalPath = "config/positions.local.json";
-constexpr const char* kBasePath  = "config/positions.json";
+std::string LocalPath() { return MachinePath("config/positions.local.json"); }
+constexpr const char* kBasePath = "config/positions.json";   // shipped default, beside the exe
 
 SavedPosMap ParsePositions(std::ifstream& f, const std::string& path, std::string* uidOut)
 {
@@ -59,7 +60,7 @@ SavedPosMap ParsePositions(std::ifstream& f, const std::string& path, std::strin
 
 SavedPosMap LoadSavedPositions()
 {
-    std::string path = kLocalPath;
+    std::string path = LocalPath();
     std::ifstream f(path);
     if (!f.is_open()) {
         path = kBasePath;
@@ -108,7 +109,7 @@ bool SaveSavedPositionsFile(const std::string& path, const SavedPosMap& position
 
 bool SaveSavedPositions(const SavedPosMap& positions)
 {
-    return SaveSavedPositionsFile(kLocalPath, positions, {});
+    return SaveSavedPositionsFile(LocalPath(), positions, {});
 }
 
 const SavedPos* NearestSavedPos(const std::vector<SavedPos>& positions,

@@ -149,8 +149,9 @@ on an `ExecutionContext` + progress callbacks). Then:
 
 ## 6. Program files and persistence
 
-- **Location**: `scripts/*.lua` folder next to the exe (repo `config/scripts/`
-  copied at build like the rest of config), or the product's
+- **Location**: the shipped `config/scripts/*.lua` beside the exe (refreshed every build),
+  the machine's `<root>/config/scripts/` (what was saved or created on this PC; wins by
+  name - `docs/machine-root-design.md`), or the product's
   `products/<name>/scripts/` when a product is loaded — same precedence as
   recipes. First line comment `-- <description>` shows in the list.
 - The manifest's `programs` role stays reserved: it will hold program

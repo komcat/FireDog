@@ -458,8 +458,9 @@ if(HALCON_FOUND)
 endif()
 
 # ---- Runtime staging, shared by every executable ----
-# config/ next to the exe (every config path in the code is cwd-relative) plus
-# the vendor runtime DLLs. Both exes land in the same output directory, so the
+# The SHIPPED config/ next to the exe (scripts + defaults; the machine's own
+# state lives under the machine root - docs/machine-root-design.md) plus the
+# vendor runtime DLLs. Both exes land in the same output directory, so the
 # second call is a copy_if_different no-op — but building only one target must
 # still stage everything that target needs to run.
 function(firedog_stage_runtime tgt)

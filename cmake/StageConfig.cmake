@@ -1,12 +1,14 @@
 # StageConfig.cmake — run as a POST_BUILD script:
 #   cmake -DSRC=<repo>/config -DDST=<exe dir>/config -P StageConfig.cmake
 #
-# The exe-side config/ is the MACHINE's configuration: hardware.json,
-# motion_transforms.json and the rest describe the hardware this PC is wired
-# to, and they are edited there (pages, the rig, by hand). So a build must not
-# overwrite them with the repository's copy, which describes some other
-# machine — it used to (copy_directory), and every build silently reverted the
-# machine's wiring.
+# The machine's configuration now lives under the machine root, not here
+# (src/core/Paths.h, docs/machine-root-design.md): the app only READS the
+# exe-side config/ as shipped defaults. But on a machine that predates that,
+# the exe-side hardware.json / motion_transforms.json / *.local.json ARE the
+# machine's state until its first start copies them into the root - and a
+# machine builds before it runs. So a build still must not overwrite them with
+# the repository's copy, which describes some other machine (it used to, with
+# copy_directory, and every build silently reverted the machine's wiring).
 #
 #   config/*.json etc.  copied only when MISSING (a fresh build tree gets the
 #                       repo's defaults, an existing machine keeps its own).

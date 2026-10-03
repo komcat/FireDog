@@ -83,6 +83,7 @@ private:
     GLFWwindow*     window_ = nullptr;
     WindowPlacement placement_;
 
+    std::string iniPath_;              // imgui.ini under the machine root (ImGui keeps the pointer)
     std::string fontPath_;             // requested typeface; empty = built-in font
     std::string loadedPath_;           // typeface currently in the atlas
     float       fontSize_  = 14.0f;

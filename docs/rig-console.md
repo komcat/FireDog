@@ -183,18 +183,19 @@ cannot edit here, you can still hand over.
 Edits never apply to a live session: the session keeps the config it was started
 with, so changing an IP needs `disconnect` then `connect`.
 
-**Where edits land:** the rig writes `config/hardware.json` *next to the exe* —
-the machine's own copy, which a build never overwrites (`cmake/StageConfig.cmake`
-stages a config file only when it is missing). Copy an edit into the repo file
-only when it should become the default for every machine, or run the rig with
-`--config` pointed at the repo copy.
+**Where edits land:** the rig writes the machine's `config/hardware.json` under
+the machine root (`HardwareConfigPath()`, default `D:\ProgramData\FireDog` —
+`docs/machine-root-design.md`), the same file the GUI reads; a build or a
+release never touches it. Copy an edit into the repo file only when it should
+become the default for every machine, or run the rig with `--config` pointed at
+the repo copy.
 
 ## The handover report
 
 `report [<file>]` (menu item 11, `--report`) writes **one plain-text file
 describing the entire configuration** — for a team that has to set the machine
 up and has neither the GUI nor a JSON editor in front of them. Default name
-`firedog-config-report.txt`, next to the exe.
+`firedog-config-report.txt`, under the machine root.
 
 It needs no hardware: it describes the loaded config, never a live device.
 
@@ -222,7 +223,7 @@ Two things the report is careful about:
   is the easiest one to miss because it hides inside a VISA string.
 - It reads `motion_transforms.json` **beside the hardware file**, so
   `--config ../../config/hardware.json --report` describes the repo copy, not
-  the exe-side one. Entries there for devices absent from this config are
+  the machine's. Entries there for devices absent from this config are
   listed as ignored.
 
 `--report` is read-only, like every other rig command: it writes the report file
@@ -235,7 +236,7 @@ in a script or a bring-up checklist.
 
 ```bash
 FireDogRig --list
-FireDogRig --report                      # firedog-config-report.txt next to the exe
+FireDogRig --report                      # firedog-config-report.txt under the machine root
 FireDogRig --report D:\handover\machine-A.txt
 FireDogRig --probe all
 FireDogRig --probe hex-left

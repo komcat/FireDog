@@ -1,6 +1,8 @@
 // HardwareConfig.cpp
 #include "hardware/HardwareConfig.h"
 
+#include "core/Paths.h"
+
 #include <nlohmann/json.hpp>
 
 #include <fstream>
@@ -669,6 +671,9 @@ bool HardwareConfig::SaveInstrument(const std::string& path, const LightConfig& 
     (*inst)["poll_interval_ms"] = cfg.pollIntervalMs;
     return WriteConfigDoc(path, j);
 }
+
+std::string HardwareConfigPath()   { return MachinePath("config/hardware.json"); }
+std::string MotionTransformsPath() { return MachinePath("config/motion_transforms.json"); }
 
 std::map<std::string, AxisTransform> LoadMotionTransforms(const std::string& path)
 {

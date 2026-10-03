@@ -25,7 +25,7 @@ struct VisionModel;   // vision/VisionModel.h — only the patch helpers below n
 
 // User-adjustable UI prefs persist here (gitignored .local.json per convention),
 // written next to the exe alongside the copied config/ folder.
-inline constexpr const char* kUiSettingsPath = "config/ui.local.json";
+inline constexpr const char* kUiSettingsPath = "config/ui.local.json";   // under MachinePath()
 
 // Selectable UI fonts. Paths are Windows system fonts (this is a Windows-only
 // project); "" = ImGui's built-in font. Keep index 0 as the startup default.

@@ -1,14 +1,15 @@
 // main.cpp : FireDogRig — console hardware bring-up rig for FireDog.
 //
 // Same drivers, same HardwareManager, same Workflow::Start() sequence as the
-// GUI client; no window. Connects what config/hardware.json describes, reports
-// what each device answers, and edits the connection/tuning fields of that file.
-// It never commands hardware — see RigProbe.h. Full reference: docs/rig-console.md.
-//
-// This is a console TU, not a UI one, so including <windows.h> here does not
-// touch the "Widgets.cpp is the only UI TU that includes windows.h" rule.
+// GUI client; no window. Connects what the machine's config/hardware.json
+// describes (under the machine root, core/Paths.h), reports what each device
+// answers, and edits the connection/tuning fields of that file. It never
+// commands hardware — see RigProbe.h. Full reference: docs/rig-console.md.
 #include "RigConsole.h"
 #include "RigMenu.h"
+
+#include "core/Paths.h"
+#include "hardware/HardwareConfig.h"   // HardwareConfigPath
 
 #include <cstdio>
 #include <exception>
@@ -18,30 +19,7 @@
 #include <string>
 #include <vector>
 
-// Last, and narrowed: windows.h's min/max macros would otherwise break the
-// standard headers above.
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-
 namespace {
-
-// Every config path in the codebase is cwd-relative ("config/hardware.json",
-// "logs/"), and CMake stages config/ next to the exe — so behave as if launched
-// from the exe's own directory however the operator invoked us.
-void SetCwdToExeDir()
-{
-    wchar_t buf[MAX_PATH] = {};
-    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (n == 0 || n >= static_cast<DWORD>(MAX_PATH)) return;   // leave the cwd alone rather than guess
-
-    try {
-        const std::filesystem::path exeDir = std::filesystem::path(buf).parent_path();
-        std::filesystem::current_path(exeDir);
-    } catch (const std::exception& e) {
-        std::cerr << "[rig] could not switch to the exe directory: " << e.what() << "\n";
-    }
-}
 
 void PrintUsage()
 {
@@ -52,8 +30,9 @@ void PrintUsage()
         "  FireDogRig [options]                 numbered menu (default)\n"
         "\n"
         "  Options\n"
-        "    --config <path>    hardware config to use (default: config/hardware.json\n"
-        "                       next to the exe; the same file the GUI reads)\n"
+        "    --config <path>    hardware config to use (default: the machine's\n"
+        "                       config/hardware.json under the root FireDog.ini\n"
+        "                       names; the same file the GUI reads)\n"
         "    --timeout <sec>    how long to wait for connects (default 20)\n"
         "    --log <level>      trace | debug | info | warn | error (default info)\n"
         "    --repl             typed command prompt instead of the menu (also the\n"
@@ -63,7 +42,8 @@ void PrintUsage()
         "    --list                        print the configured devices\n"
         "    --report [<file>]             write the whole configuration as readable\n"
         "                                  text for handover (no hardware needed;\n"
-        "                                  default firedog-config-report.txt)\n"
+        "                                  default firedog-config-report.txt under\n"
+        "                                  the machine root)\n"
         "    --probe [<device>|all]        connect, print live read-back, exit\n"
         "    --set <device>.<field>=<val>  edit one field (repeatable)\n"
         "    --save                        write the --set edits back to the config\n"
@@ -97,7 +77,7 @@ std::string SetArgToCommand(const std::string& arg)
 
 int main(int argc, char** argv)
 {
-    std::string              configPath = "config/hardware.json";
+    std::string              configPath;   // "" = the machine's (resolved after InitPaths)
     bool                     configExplicit = false;
     double                   timeoutSec = 20.0;
     std::string              logLevel;
@@ -144,7 +124,7 @@ int main(int argc, char** argv)
             std::string file;
             if (i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0) file = argv[++i];
             if (file.empty()) {
-                actions.push_back("report");   // the default name, next to the exe
+                actions.push_back("report");   // the default name, under the machine root
             } else {
                 // Resolve against the caller's cwd, like --config: we move to the
                 // exe directory below, and a report is written where asked for.
@@ -180,8 +160,9 @@ int main(int argc, char** argv)
         }
     }
 
-    // Resolve an explicit --config against the caller's cwd BEFORE we move to the
-    // exe directory; the default stays relative on purpose (it lives next to us).
+    // Resolve an explicit --config against the caller's cwd BEFORE InitPaths
+    // moves us to the exe directory. The default is the machine's own copy -
+    // the same file the GUI reads and its pages save into.
     if (configExplicit) {
         try { configPath = std::filesystem::absolute(configPath).string(); }
         catch (const std::exception& e) {
@@ -189,7 +170,10 @@ int main(int argc, char** argv)
             return 2;
         }
     }
-    SetCwdToExeDir();
+    firedog::InitPaths();
+    for (const firedog::PathNote& n : firedog::PathNotes())
+        (n.error ? std::cerr : std::cout) << "[paths] " << n.text << "\n";
+    if (!configExplicit) configPath = firedog::HardwareConfigPath();
 
     firedog::rig::RigConsole console;
     if (!logLevel.empty()) {

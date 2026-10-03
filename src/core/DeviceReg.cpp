@@ -5,6 +5,7 @@
 #include "core/DeviceReg.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Product.h"   // NowStamp
 
 #include <cmath>
@@ -16,8 +17,7 @@ namespace firedog {
 
 namespace {
 
-constexpr const char* kLocalPath = "config/device_reg.local.json";
-constexpr const char* kBasePath  = "config/device_reg.json";
+constexpr const char* kBasePath = "config/device_reg.json";   // shipped default, beside the exe
 
 RegVec3 Sub(const RegVec3& a, const RegVec3& b)
 {
@@ -78,7 +78,8 @@ RegVec3 Vec3FromJson(const nlohmann::json& j)
 
 } // namespace
 
-const char* DeviceRegLocalPath() { return kLocalPath; }
+// Machine state: under the machine root, never beside the exe (core/Paths.h).
+std::string DeviceRegLocalPath() { return MachinePath("config/device_reg.local.json"); }
 
 // ---- The maths -------------------------------------------------------------
 
@@ -336,11 +337,12 @@ std::map<std::string, DeviceReg> LoadDeviceRegs(std::string* pathUsed)
 {
     if (pathUsed) pathUsed->clear();
 
-    std::ifstream probe(kLocalPath);
+    const std::string local = DeviceRegLocalPath();
+    std::ifstream probe(local);
     const bool haveLocal = probe.is_open();
     probe.close();
 
-    const char* path = haveLocal ? kLocalPath : kBasePath;
+    const std::string path = haveLocal ? local : std::string(kBasePath);
     std::map<std::string, DeviceReg> regs = LoadDeviceRegsFile(path);
     if (pathUsed) *pathUsed = path;
     return regs;

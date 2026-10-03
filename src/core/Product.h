@@ -30,11 +30,13 @@ struct ProductManifest {
     std::string imagesDir = "images";   // relative subfolder for images
 
     bool        Loaded() const { return !name.empty(); }
-    std::string Dir() const;                              // products/<name>
+    std::string Dir() const;                              // <machine root>/products/<name>
     std::string FilePath(const std::string& role) const;  // "" if role missing
     const ManifestFile* Entry(const std::string& role) const;
-    std::string DataDir() const;                          // products/<name>/data
-    std::string ImagesDir() const;                        // products/<name>/images
+    // DUT records are production output, so they live under the DATA root,
+    // mirrored by product name (core/Paths.h):
+    std::string DataDir() const;                          // <data root>/products/<name>/data
+    std::string ImagesDir() const;                        // <data root>/products/<name>/images
 };
 
 std::string GenerateUid();   // 8 random hex chars

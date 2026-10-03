@@ -17,6 +17,7 @@
 #include "core/DutSession.h"   // the DUT-open edge that drops taught frames
 #include "core/Employees.h"    // the roster behind the login gate
 #include "core/Log.h"
+#include "core/Paths.h"        // the machine root: where every file this App writes lives
 #include "core/DeviceReg.h"    // SaveDeviceRegsFile (the registration hand-back)
 #include "core/NeedleCal.h"    // SaveNeedleCalFile (the calibration hand-back)
 #include "vision/HalconEngine.h"
@@ -47,6 +48,12 @@ bool IsTakeoverPage(Page p)
 int App::Run()
 {
     FD_INFO("app", "FireDog starting");
+    // Where this machine's state lives, and what the first start migrated -
+    // decided by InitPaths before the logger existed, so said here.
+    for (const PathNote& n : PathNotes()) {
+        if (n.error) FD_ERROR("paths", "%s", n.text.c_str());
+        else         FD_INFO("paths", "%s", n.text.c_str());
+    }
     Logger::Instance().SetMinLevel(static_cast<LogLevel>(logMinLevel_));
     // Read the settings BEFORE the window exists: where it goes and how big it
     // is are arguments to its creation, not something to fix up afterwards —
@@ -54,7 +61,7 @@ int App::Run()
     // Defaults to FireDog Dark / Segoe UI 26 px on first run, and every index
     // is validated against the current tables.
     std::string lastProduct;
-    const UiSettings ui = UiSettings::Load(kUiSettingsPath);
+    const UiSettings ui = UiSettings::Load(MachinePath(kUiSettingsPath));
     {
         fontIndex_  = (ui.fontIndex >= 0 && ui.fontIndex < kFontCount) ? ui.fontIndex : 0;
         uiFontSize_ = (ui.fontSize >= 8.0f && ui.fontSize <= 48.0f) ? ui.fontSize : 26.0f;
@@ -134,7 +141,7 @@ int App::Run()
                 used.empty() ? "(defaults)" : used.c_str(), mosaicCfg_.saveDir.c_str());
     }
 
-    const HardwareConfig hw = HardwareConfig::Load("config/hardware.json");
+    const HardwareConfig hw = HardwareConfig::Load(HardwareConfigPath());
     watchCfg_ = hw.ioWatch;   // working copy for the IO Watch editor
     if (const CameraConfig* cam = hw.FirstEnabledCamera()) {
         cameraId_   = cam->id;   // for saving settings back into hardware.json
@@ -157,7 +164,7 @@ int App::Run()
     if (const LightConfig* lc = hw.FirstEnabledLight()) {
         lightId_ = lc->name;
     }
-    transformCfg_ = LoadMotionTransforms("config/motion_transforms.json");
+    transformCfg_ = LoadMotionTransforms(MotionTransformsPath());
     workflow_.SetTransforms(transformCfg_);   // transformCfg_ stays the editor's working copy
     session_.LoadInitial(lastProduct);   // positions/maps/recipes/programs/scripts + DUT wiring
     ResetDocumentSelections();           // the UI side of that load
@@ -266,7 +273,7 @@ void App::Update(float dt)
     for (const NeedleCal& c : workflow_.TakeNeedleCals()) {
         workflow_.SetNeedleCal(c);
         if (SaveNeedleCalFile(NeedleCalLocalPath(), c))
-            FD_INFO("needle", "needle calibration saved to %s", NeedleCalLocalPath());
+            FD_INFO("needle", "needle calibration saved to %s", NeedleCalLocalPath().c_str());
     }
 
     // And a freshly measured device registration, by the same route for the same
@@ -300,7 +307,7 @@ void App::Update(float dt)
     if (const std::vector<DeviceReg> regs = workflow_.TakeDeviceRegs(); !regs.empty()) {
         for (const DeviceReg& r : regs) workflow_.SetDeviceReg(r);
         if (SaveDeviceRegsFile(DeviceRegLocalPath(), workflow_.DeviceRegs()))
-            FD_INFO("devreg", "device registrations saved to %s", DeviceRegLocalPath());
+            FD_INFO("devreg", "device registrations saved to %s", DeviceRegLocalPath().c_str());
     }
 
     // A run's tray_next / tray_reset already moved the Workflow cursor; this
@@ -543,7 +550,7 @@ void App::SaveUiSettings()
     s.winX = place.x;  s.winY = place.y;
     s.winW = place.w;  s.winH = place.h;
     s.winMaximized = place.maximized;
-    s.Save(kUiSettingsPath);
+    s.Save(MachinePath(kUiSettingsPath));
 }
 
 // Re-point every UI selection at a freshly (re)loaded session document. The

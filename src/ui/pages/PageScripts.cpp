@@ -656,6 +656,20 @@ bool App::SaveScriptEditor()
 {
     ScriptEditorState& ed = scriptEd_;
     if (ed.path.empty()) return false;
+    // A shipped script is the build's copy: a rebuild refreshes it and a release
+    // replaces it. Saving one writes the MACHINE's copy instead, which the list
+    // and ResolveScript then prefer by name. A standard procedure is never forked
+    // (IsSystemScript), so an edit to one stays in the shipped file, to be
+    // mirrored into the repo.
+    if (IsShippedScript(ed.path) && !IsSystemScript(ed.path)) {
+        const std::string dir = MachineScriptsDir();
+        std::error_code   ec;
+        std::filesystem::create_directories(dir, ec);
+        const std::string to = dir + "/" + std::filesystem::path(ed.path).filename().string();
+        FD_INFO("script", "%s is the shipped copy - saving this machine's copy %s instead",
+                ed.path.c_str(), to.c_str());
+        ed.path = to;
+    }
     std::string out;
     if (ed.crlf) {
         out.reserve(ed.text.size() + ed.text.size() / 20);
@@ -877,9 +891,14 @@ void App::DrawScriptsPanel()
                 ImGui::TextDisabled("standard procedure - kept in step with the "
                                     "align_ commands; a product cannot fork it");
         }
-        if (session_.ScriptsDirUsed() == "config/scripts")
-            ImGui::TextDisabled("shipped scripts folder: a rebuild recopies the repo's "
-                                "config/ over it - mirror a durable edit back into the repo");
+        if (IsShippedScript(ed.path)) {
+            if (IsSystemScript(ed.path))
+                ImGui::TextDisabled("shipped copy: a rebuild recopies the repo's config/scripts "
+                                    "over it - mirror a durable edit back into the repo");
+            else
+                ImGui::TextDisabled("shipped copy: Save writes this machine's copy to %s, "
+                                    "which then runs instead", MachineScriptsDir().c_str());
+        }
 
         // Toolbar: Save / Revert / Verify | state | Find
         ImGui::BeginDisabled(ro || !dirty);

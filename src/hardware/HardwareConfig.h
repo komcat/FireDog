@@ -27,6 +27,14 @@ std::map<std::string, AxisTransform> LoadMotionTransforms(const std::string& pat
 bool SaveMotionTransforms(const std::string& path,
                           const std::map<std::string, AxisTransform>& transforms);
 
+// THE machine's two hardware files. Both are edited in place (they have no
+// xxx.local.json pair), so they live under the machine root, seeded from the
+// shipped default beside the exe when missing - core/Paths.h. Every reader and
+// writer goes through these, so the pages, the rig and the loader cannot
+// disagree about which copy is the machine's.
+std::string HardwareConfigPath();     // <machine root>/config/hardware.json
+std::string MotionTransformsPath();   // <machine root>/config/motion_transforms.json
+
 struct CameraConfig {
     std::string id;
     std::string cameraType    = "PYLON";   // PYLON | IDS

@@ -209,7 +209,8 @@ bool SaveDeviceRegsFile(const std::string& path,
                         const std::map<std::string, DeviceReg>& regs);
 
 // The one place the writable path is spelled, so a command, the UI and the
-// loader cannot disagree about which file a registration lands in.
-const char* DeviceRegLocalPath();
+// loader cannot disagree about which file a registration lands in. Under the
+// machine root (core/Paths.h).
+std::string DeviceRegLocalPath();
 
 } // namespace firedog

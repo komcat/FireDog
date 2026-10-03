@@ -3,6 +3,7 @@
 // Sinks (configured once, here): colored stdout, a daily file under logs/,
 // and an in-memory ringbuffer the ImGui Log window reads via Snapshot().
 #include "core/Log.h"
+#include "core/Paths.h"   // never logs, so asking it from here cannot recurse
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -73,11 +74,12 @@ Logger::Logger() : p_(std::make_unique<Impl>())
     p_->startNs = NowNs();
     try {
         auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-        // One file per calendar day (logs/firedog_YYYY-MM-DD.log), switched at
-        // midnight even mid-run; spdlog prunes files beyond the newest 30 so a
-        // day of heavy xcan tracing can't rotate an older day's data away.
+        // One file per calendar day (<machine root>/logs/firedog_YYYY-MM-DD.log),
+        // switched at midnight even mid-run; spdlog prunes files beyond the
+        // newest 30 so a day of heavy xcan tracing can't rotate an older day's
+        // data away.
         auto file    = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
-                           "logs/firedog.log", 0, 0, false, 30);
+                           MachinePath("logs/firedog.log"), 0, 0, false, 30);
         p_->ring     = std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(5000);
 
         std::vector<spdlog::sink_ptr> sinks{console, file, p_->ring};

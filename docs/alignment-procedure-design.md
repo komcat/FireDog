@@ -523,7 +523,7 @@ a drifting part or a dimming light shows before tier 1 stops working entirely.
 **Every attempt files a crop**: half the frame (50 % of each side) centred on the
 hit, else the model's ROI, else the image centre, with a green cross on a hit.
 With a DUT open it goes into that part's record (`images/`, entry
-`align_E<N>_det<tier>`); without one, to `logs/align_attempts/`, pruned to the
+`align_E<N>_det<tier>`); without one, to `<data root>/align_attempts/`, pruned to the
 newest 300. Filing never fails the station — the picture is evidence about the
 detection, not part of it.
 

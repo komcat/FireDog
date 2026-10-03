@@ -23,6 +23,7 @@
 #include "core/AlignFrame.h"
 #include "core/DutSession.h"         // ImagesDir / InsertImage — the attempt crops
 #include "core/Log.h"
+#include "core/Paths.h"                // DataPath — the attempt crops without a DUT
 #include "hardware/HardwareManager.h"
 #include "hardware/motion/IMotionController.h"
 #include "vision/HalconDetector.h"   // Available() — the licence gate for auto mode
@@ -65,7 +66,7 @@ CommandResult ApplyLighting(ExecutionContext& ctx, const AlignLighting& l)
 //
 // With a DUT open the crop goes into that part's record (images/ + an image
 // entry, exactly like dut_capture_image). Without one - the Alignment page, a
-// Frame check sweep - it goes to logs/align_attempts/, which is pruned to the
+// Frame check sweep - it goes to <data root>/align_attempts/, which is pruned to the
 // newest kAttemptKeep files so a repeatability sweep cannot fill the disk.
 // A failure to file is logged and never fails the station: the picture is
 // evidence about the detection, not part of it.
@@ -141,7 +142,7 @@ void SaveDetectAttemptCrop(ExecutionContext& ctx, const AlignProc& proc, int sta
     const std::string file = "align_" + safe + tail + AttemptStamp() + ".png";
 
     const std::string dutDir = DutSession::Instance().ImagesDir();
-    const std::string dir    = dutDir.empty() ? std::string("logs/align_attempts") : dutDir;
+    const std::string dir    = dutDir.empty() ? DataPath("align_attempts") : dutDir;
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     const std::string path = dir + "/" + file;

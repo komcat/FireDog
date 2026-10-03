@@ -279,7 +279,7 @@ void App::DrawEmployeeManager()
 
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextDisabled("Stored in %s", EmployeesPath());
+    ImGui::TextDisabled("Stored in %s", EmployeesPath().c_str());
     ImGui::TextDisabled("Passwords are stored as plain text.");
 
     ImGui::EndChild();

@@ -2,6 +2,7 @@
 #include "core/MosaicConfig.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Product.h"   // GenerateUid
 
 #include <algorithm>
@@ -11,8 +12,10 @@
 namespace firedog {
 
 namespace {
-constexpr const char* kLocalPath = "config/mosaic.local.json";
-constexpr const char* kBasePath  = "config/mosaic.json";
+constexpr const char* kBasePath = "config/mosaic.json";   // shipped default, beside the exe
+
+// Pictures are production output, so an unset folder means the data root's.
+std::string DefaultSaveDir() { return DataPath("mosaic"); }
 
 nlohmann::json CornerToJson(const MosaicCorner& c)
 {
@@ -131,7 +134,9 @@ MosaicArea MosaicAreaFromJson(const nlohmann::json& j)
 nlohmann::json MosaicConfigToJson(const MosaicConfig& c)
 {
     nlohmann::json j;
-    j["save_dir"] = c.saveDir;
+    // The default is stored as "" so it keeps following the data root if
+    // FireDog.ini moves it; only a folder somebody chose is written out.
+    j["save_dir"] = c.saveDir == DefaultSaveDir() ? std::string() : c.saveDir;
     nlohmann::json as = nlohmann::json::array();
     for (const MosaicArea& a : c.areas) as.push_back(MosaicAreaToJson(a));
     j["areas"] = as;
@@ -149,7 +154,7 @@ MosaicConfig MosaicConfigFromJson(const nlohmann::json& j)
     MosaicConfig c;
     if (!j.is_object()) return c;
     c.saveDir = j.value("save_dir", c.saveDir);
-    if (c.saveDir.empty()) c.saveDir = MosaicConfig{}.saveDir;
+    if (c.saveDir.empty()) c.saveDir = DefaultSaveDir();
     if (j.contains("areas") && j["areas"].is_array())
         for (const nlohmann::json& a : j["areas"]) c.areas.push_back(MosaicAreaFromJson(a));
     if (j.contains("camera_cal") && j["camera_cal"].is_object()) {
@@ -169,12 +174,13 @@ MosaicConfig MosaicConfigFromJson(const nlohmann::json& j)
     return c;
 }
 
-const char* MosaicConfigLocalPath() { return kLocalPath; }
+// Machine state: under the machine root, never beside the exe (core/Paths.h).
+std::string MosaicConfigLocalPath() { return MachinePath("config/mosaic.local.json"); }
 
 MosaicConfig LoadMosaicConfig(std::string* pathUsed)
 {
     if (pathUsed) pathUsed->clear();
-    for (const char* path : {kLocalPath, kBasePath}) {
+    for (const std::string& path : {MosaicConfigLocalPath(), std::string(kBasePath)}) {
         std::ifstream f(path);
         if (!f.is_open()) continue;
         try {
@@ -183,17 +189,21 @@ MosaicConfig LoadMosaicConfig(std::string* pathUsed)
             if (pathUsed) *pathUsed = path;
             return MosaicConfigFromJson(j);
         } catch (const std::exception& e) {
-            FD_WARN("mosaic", "mosaic config %s is malformed (%s) - ignoring it", path, e.what());
+            FD_WARN("mosaic", "mosaic config %s is malformed (%s) - ignoring it", path.c_str(),
+                    e.what());
         }
     }
-    return MosaicConfig{};
+    MosaicConfig c;
+    c.saveDir = DefaultSaveDir();
+    return c;
 }
 
 bool SaveMosaicConfig(const MosaicConfig& c)
 {
-    std::ofstream f(kLocalPath);
+    const std::string path = MosaicConfigLocalPath();
+    std::ofstream f(path);
     if (!f.is_open()) {
-        FD_WARN("mosaic", "mosaic config save failed: cannot open %s", kLocalPath);
+        FD_WARN("mosaic", "mosaic config save failed: cannot open %s", path.c_str());
         return false;
     }
     f << MosaicConfigToJson(c).dump(2) << '\n';
