@@ -1,5 +1,5 @@
 // PageOverview.cpp : the Overview page — the hardware-status left panel with
-// its DUT block and Display controls, the vision middle panel, the right
+// its DUT block and Display controls, the build/HALCON middle panel, the right
 // panel, and the shared log viewer. Definitions of App members — see App.h.
 //
 // DrawLogPanel is shared: the Overview lower strip and the Run page's log band
@@ -11,6 +11,7 @@
 #include "ui/Theme.h"
 #include "ui/UiSettings.h"
 #include "ui/Widgets.h"
+#include "core/BuildInfo.h"
 #include "core/DataBus.h"
 #include "core/DutSession.h"
 #include "core/Log.h"
@@ -167,9 +168,48 @@ void App::DrawLeftPanel()
     }
 }
 
+// What is on this machine: the build that is running, and whether HALCON is.
+// Both are the first questions about a station, so they sit on the start page.
 void App::DrawMiddlePanel()
 {
-    DrawImageOverlay();
+    const BuildInfo& b = GetBuildInfo();
+    ImGui::TextUnformatted("FireDog build");
+    ImGui::Separator();
+    if (ImGui::BeginTable("##build", 2, ImGuiTableFlags_SizingFixedFit)) {
+        auto row = [](const char* k, const std::string& v) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::TextDisabled("%s", k);
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(v.empty() ? "-" : v.c_str());
+        };
+        row("version", b.describe);
+        // A dirty build is not reproducible from any commit: say so in colour.
+        if (b.dirty) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TableNextColumn();
+            ImGui::TextColored(ImVec4(0.95f, 0.80f, 0.30f, 1.0f),
+                               "built with uncommitted changes");
+        }
+        row("commit", b.commit + (b.commitDate.empty() ? "" : "  (" + b.commitDate + ")"));
+        row("branch", b.branch);
+        row("built", b.builtAt);
+        row("config", b.config + " " + b.arch);
+        row("compiler", b.compiler);
+        std::string in, out;
+        for (const BuildSdk& s : b.sdks) {
+            std::string& dst = s.in ? in : out;
+            if (!dst.empty()) dst += ", ";
+            dst += s.name;
+        }
+        row("SDKs", in);
+        if (!out.empty()) row("simulated", out);
+        row("exe", b.exePath);
+        ImGui::EndTable();
+    }
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+    DrawHalconPanel(true);
 }
 
 void App::DrawLowerPanel()

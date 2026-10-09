@@ -390,6 +390,25 @@ target_include_directories(firedog_hw PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# Build identity (core/BuildInfo): the source tree's git state, re-read on EVERY
+# build by a script target — a configure-time answer names the wrong commit as
+# soon as somebody commits and rebuilds. The header is only rewritten when it
+# changes, so a clean rebuild recompiles nothing. Run once here too, so the
+# header exists before the first build.
+find_package(Git QUIET)
+set(FIREDOG_GITINFO_H "${CMAKE_CURRENT_BINARY_DIR}/generated/firedog_gitinfo.h")
+set(_gitinfo_args -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${FIREDOG_GITINFO_H}
+                  -DGIT_EXECUTABLE=${GIT_EXECUTABLE})
+execute_process(COMMAND ${CMAKE_COMMAND} ${_gitinfo_args}
+                        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitInfo.cmake)
+add_custom_target(firedog_gitinfo
+    COMMAND ${CMAKE_COMMAND} ${_gitinfo_args} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitInfo.cmake
+    BYPRODUCTS ${FIREDOG_GITINFO_H}
+    COMMENT "Reading git state for the build info"
+    VERBATIM)
+add_dependencies(firedog_hw firedog_gitinfo)
+target_include_directories(firedog_hw PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+
 # ws2_32 for the WAGO Modbus TCP client (always compiled — no vendor SDK).
 target_link_libraries(firedog_hw PUBLIC
     nlohmann_json::nlohmann_json spdlog::spdlog ws2_32)
@@ -451,7 +470,9 @@ if(HALCON_FOUND)
     target_link_libraries(firedog_hw PUBLIC
         "${HALCON_LIB_DIR}/halconcpp.lib" "${HALCON_LIB_DIR}/halcon.lib")
     if(MSVC)
-        target_link_libraries(firedog_hw PUBLIC delayimp.lib)
+        # version.lib: the probe reads the DLLs' version resource BEFORE loading
+        # them, to refuse a runtime from another release than these import libs.
+        target_link_libraries(firedog_hw PUBLIC delayimp.lib version.lib)
         target_link_options(firedog_hw INTERFACE
             "/DELAYLOAD:halconcpp.dll" "/DELAYLOAD:halcon.dll")
     endif()
@@ -530,7 +551,6 @@ endif()
 
 add_executable(FireDog
     FireDog.cpp
-    FireDog.h
     ${FIREDOG_ICON_RC}
     ${FIREDOG_SOURCES})
 

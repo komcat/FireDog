@@ -183,13 +183,18 @@ void App::DrawCameraInfoPanel()
     ImGui::Text("X %.5f mm/px", pixelToMmX_);
     ImGui::Text("Y %.5f mm/px", pixelToMmY_);
 
-    // ---- HALCON: build / runtime / licence ---------------------------------
-    // Three independent gates, shown separately because they fail separately —
-    // "compiled in but not licensed" and "not built with the SDK" need
-    // different fixes, and only this panel can tell an operator which it is.
-    // Auto-focus does NOT depend on any of it (plain C++ focus metric).
     ImGui::Spacing();
     ImGui::Separator();
+    DrawHalconPanel(false);
+}
+
+// ---- HALCON: build / runtime / licence -------------------------------------
+// Three independent gates, shown separately because they fail separately —
+// "compiled in but not licensed" and "not built with the SDK" need different
+// fixes, and only this panel can tell an operator which it is. Auto-focus does
+// NOT depend on any of it (plain C++ focus metric).
+void App::DrawHalconPanel(bool detail)
+{
     ImGui::TextDisabled("Vision (HALCON)");
     const HalconStatus& hal = HalconEngine::Instance().Status();
     const ImVec4 okCol(0.35f, 0.85f, 0.45f, 1.0f), badCol(0.95f, 0.45f, 0.35f, 1.0f);
@@ -202,7 +207,66 @@ void App::DrawCameraInfoPanel()
     ImGui::TextColored(hal.licensed ? okCol : badCol, "%s", hal.licensed ? "[+]" : "[-]");
     ImGui::SameLine(); ImGui::TextUnformatted("licence");
     if (!hal.version.empty()) ImGui::TextDisabled("version %s", hal.version.c_str());
-    if (!hal.licenseFiles.empty()) {
+    // The runtime must be the release the SDK was: the probe refuses any other.
+    if (!hal.builtVersion.empty()) ImGui::TextDisabled("built for %s", hal.builtVersion.c_str());
+
+    if (detail) {
+        // Where it came from: with several releases installed, "which HALCON
+        // am I running?" is the first question, and the licence dir is where
+        // an operator drops a .dat.
+        if (ImGui::BeginTable("##halconwhere", 2, ImGuiTableFlags_SizingFixedFit)) {
+            auto row = [](const char* k, const std::string& v) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::TextDisabled("%s", k);
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(v.empty() ? "-" : v.c_str());
+            };
+            row("install", hal.root);
+            row("arch", hal.arch);
+            row("licence dir", hal.licenseDir);
+            ImGui::EndTable();
+        }
+        // What each licence file CLAIMS. "valid to" is checked against the
+        // running release; whether HALCON accepts the key is the [+] licence
+        // gate above, which actually ran a licensed operator.
+        if (!hal.licences.empty()) {
+            const ImGuiTableFlags tf = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                       ImGuiTableFlags_SizingFixedFit;
+            if (ImGui::BeginTable("##halconlic", 6, tf)) {
+                ImGui::TableSetupColumn("file");
+                ImGui::TableSetupColumn("key");
+                ImGui::TableSetupColumn("product");
+                ImGui::TableSetupColumn("holder");
+                ImGui::TableSetupColumn("valid to");
+                ImGui::TableSetupColumn("sessions");
+                ImGui::TableHeadersRow();
+                for (const HalconLicence& l : hal.licences) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(l.file.c_str());
+                    ImGui::TableNextColumn();
+                    // CM: is a CodeMeter container (dongle or soft licence):
+                    // the key travels with it, not with this PC.
+                    if (l.id.rfind("CM:", 0) == 0)
+                        ImGui::Text("CodeMeter %s", l.id.c_str() + 3);
+                    else
+                        ImGui::TextUnformatted(l.id.empty() ? "-" : l.id.c_str());
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(l.info.empty() ? "-" : l.info.c_str());
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(l.holder.empty() ? "-" : l.holder.c_str());
+                    ImGui::TableNextColumn();
+                    // "YY.MM" strings of equal width compare as versions.
+                    const std::string run = !hal.version.empty() && hal.version != "?"
+                                                ? hal.version : hal.builtVersion;
+                    const bool covers = run.empty() || run.size() != l.upTo.size() || l.upTo >= run;
+                    ImGui::TextColored(covers ? okCol : badCol, "%s", l.upTo.c_str());
+                    if (!covers && ImGui::IsItemHovered())
+                        ImGui::SetTooltip("this licence does not cover HALCON %s", run.c_str());
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(l.sessions.empty() ? "-" : l.sessions.c_str());
+                }
+                ImGui::EndTable();
+            }
+        } else if (!hal.licenseDir.empty()) {
+            ImGui::TextDisabled("no *.dat in %s", hal.licenseDir.c_str());
+        }
+    } else if (!hal.licenseFiles.empty()) {
         ImGui::TextDisabled("%zu licence file(s):", hal.licenseFiles.size());
         for (const std::string& f : hal.licenseFiles) ImGui::TextDisabled("  %s", f.c_str());
     } else if (!hal.licenseDir.empty()) {

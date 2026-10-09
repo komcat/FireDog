@@ -220,7 +220,7 @@ private:
     // `serialScale` = the serial's font size as a multiple of the body size,
     // before it shrinks to fit the row.
     void DrawDutBlock(float serialScale = 2.0f);
-    void DrawMiddlePanel();    // main content: vision image + overlay
+    void DrawMiddlePanel();    // main content: build identity + HALCON licence
     void DrawLowerPanel();     // 15%-height strip: log viewer
     void DrawRightPanel();     // 15% column: Overview placeholder
     void DrawJogWindow();      // undocked Jog window (toggled from View menu)
@@ -240,6 +240,9 @@ private:
     void DrawCameraDetailPanel();  // middle: exposure + pixel->mm + preview
     void DrawCameraExposureControls();   // exposure slider+input (page + Jog tab)
     void DrawCameraInfoPanel();    // right:  identity + stream info
+    // HALCON's three gates + licence files (Camera info panel). `detail` adds
+    // the install, the parsed licences and the errors in full (Overview).
+    void DrawHalconPanel(bool detail);
     // Keithley page — the configured SMU (6482 picoammeter or 2602B SourceMeter;
     // the driver is chosen from hardware.json and reached through ISmu).
     std::string KeithleyModelName(); // driver's model name, for headers + legend
@@ -697,7 +700,6 @@ private:
     float DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail);
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
-    void DrawImageOverlay();   // image + vision overlay
     void SaveUiSettings();     // persist font choice + size to disk
 
     // Product manifest (File menu). Load/New replace the session's positions
@@ -831,8 +833,6 @@ private:
     std::vector<float>        kX1_, kX2_;      // X shifted to relative time (t - now)
     double                    chartClock_ = 0.0;   // smooth rolling X right-edge
     static constexpr double   kChartWindowSec = 10.0;
-
-    unsigned int              viewportTex_ = 0;   // GL texture: main-window placeholder
 
     // Display controls (theme + font picker + size). Theme applies via
     // Theme::Apply; fonts bind to the GlHost font API.

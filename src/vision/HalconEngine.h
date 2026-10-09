@@ -4,7 +4,11 @@
 // before a HALCON-backed operator may run:
 //
 //   1. compiled in  — HAS_HALCON was defined at build time (the SDK was found).
-//   2. runtime      — halcon.dll / halconcpp.dll actually load in this process.
+//   2. runtime      — halcon.dll / halconcpp.dll actually load in this process,
+//                     and are the SAME YY.MM release as the SDK this exe was
+//                     built against (checked from the files' version resource
+//                     BEFORE loading them — a mismatched pair is refused, never
+//                     called into).
 //   3. licensed     — a licence file was found AND a licensed operator ran.
 //
 // Any of them can fail on a machine that builds fine: a dev box with the SDK
@@ -28,6 +32,20 @@
 
 namespace firedog {
 
+// One LICENSE line of a license_*.dat, read as TEXT — no HALCON call, so it
+// shows in a build without the SDK too. It says what a file CLAIMS (who, which
+// key, up to which release); whether HALCON accepts it is gate 3's job.
+struct HalconLicence {
+    std::string file;       // license_3-7676236.dat
+    std::string holder;     // the header comment: "Fabrinet West, Inc."
+    std::string info;       // INFO="...": "HALCON Progress RTL (Bundle)"
+    std::string id;         // ID=: "CM:3-7676236" (CM: = a CodeMeter container)
+    std::string upTo;       // the release it is valid up to: "28.06"
+    std::string modules;    // MODULES=
+    std::string flags;      // FLAGS=
+    std::string sessions;   // SESSIONS=
+};
+
 struct HalconStatus {
     bool compiledIn    = false;   // HAS_HALCON at build time
     bool runtimeLoaded = false;   // halcon.dll + halconcpp.dll loaded
@@ -36,8 +54,10 @@ struct HalconStatus {
     std::string root;             // HALCONROOT (build-time path if env is unset)
     std::string arch;             // HALCONARCH, e.g. "x64-win64"
     std::string version;          // reported by HALCON, e.g. "24.05"
+    std::string builtVersion;     // the SDK this exe was compiled against ("" without one)
     std::string licenseDir;       // where licence files were looked for
     std::vector<std::string> licenseFiles;   // *.dat found there
+    std::vector<HalconLicence> licences;     // their LICENSE lines, parsed
 
     std::string error;            // why it is unavailable ("" when Available)
 

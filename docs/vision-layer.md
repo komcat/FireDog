@@ -202,7 +202,7 @@ fixes:
 | Gate | Meaning | Typical fix |
 |---|---|---|
 | `compiledIn` | `HAS_HALCON` was defined — CMake found the SDK | install the SDK, re-configure |
-| `runtimeLoaded` | `halcon.dll` + `halconcpp.dll` actually load | install the HALCON runtime |
+| `runtimeLoaded` | `halcon.dll` + `halconcpp.dll` actually load, and are the SDK's YY.MM release | install the HALCON runtime of the release the panel says it was built for |
 | `licensed` | a licensed operator really ran | drop a valid `*.dat` in the licence dir |
 
 ### Detection (CMake)
@@ -228,7 +228,16 @@ the SDK still starts on a machine that has **no** HALCON.
 The catch: the first call into a missing delay-loaded import raises a Win32 SEH
 exception (`0xC06D007E`) that a C++ `catch` does not handle. So `Refresh()`
 probes the modules with `LoadLibrary` **first** and only calls HALCON if they
-loaded. Version comes from `GetSystem("version")` (no licence needed, so it is
+loaded.
+
+Before loading, each DLL's version resource is compared with the SDK's
+`HLIB_MAJOR_NUM.HLIB_MINOR_NUM` (from `HVersNum.h`, so the requirement moves with
+a rebuild — nothing types "25.11"). An install of another release is skipped
+and, if nothing matching is found, the runtime gate fails with "HALCON version
+mismatch: this build needs HALCON 25.11 …". The match is the exact YY.MM, not
+the major: HALCON does not promise binary compatibility between releases, and a
+missing export in a delay-loaded DLL is the same uncatchable SEH exception as a
+missing DLL. Deploy the release the exe was built against, or rebuild. Version comes from `GetSystem("version")` (no licence needed, so it is
 readable even on an expired box); the licence gate is a real
 `gen_image_const` + `mean_image`, because a `.dat` on disk can still be expired
 or issued for another host id.

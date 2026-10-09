@@ -908,22 +908,6 @@ void App::DrawAuxPositionLabels(ImDrawList* dl, const ImVec2& origin, const ImVe
     }
 }
 
-void App::DrawImageOverlay()
-{
-    ImGui::TextUnformatted("Vision");
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const float w = 480.0f, h = 360.0f;
-    ImGui::Image((ImTextureID)(intptr_t)viewportTex_, ImVec2(w, h));   // C-style cast: void*/ImU64 ImTextureID
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 c(origin.x + w * 0.5f, origin.y + h * 0.5f);
-    dl->AddLine(ImVec2(c.x - 20, c.y), ImVec2(c.x + 20, c.y), IM_COL32(255, 80, 80, 255), 2.0f);
-    dl->AddLine(ImVec2(c.x, c.y - 20), ImVec2(c.x, c.y + 20), IM_COL32(255, 80, 80, 255), 2.0f);
-    dl->AddRect(ImVec2(origin.x + 120, origin.y + 90), ImVec2(origin.x + 300, origin.y + 240),
-                IM_COL32(90, 250, 120, 255), 0.0f, 0, 2.0f);
-    dl->AddText(ImVec2(origin.x + 122, origin.y + 72), IM_COL32(90, 250, 120, 255), "match 0.98");
-}
-
 void App::DrawSignalOverlay()
 {
     DrawKeithleyChart(ImVec2(-1, -1));   // fill the overlay child

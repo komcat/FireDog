@@ -14,6 +14,7 @@
 #include "ui/UiSettings.h"
 #include "ui/Widgets.h"
 #include "command/Commands.h"
+#include "core/BuildInfo.h"    // the startup line names the build
 #include "core/DutSession.h"   // the DUT-open edge that drops taught frames
 #include "core/Employees.h"    // the roster behind the login gate
 #include "core/Log.h"
@@ -47,7 +48,7 @@ bool IsTakeoverPage(Page p)
 
 int App::Run()
 {
-    FD_INFO("app", "FireDog starting");
+    FD_INFO("app", "FireDog %s starting", BuildSummary().c_str());
     // Where this machine's state lives, and what the first start migrated -
     // decided by InitPaths before the logger existed, so said here.
     for (const PathNote& n : PathNotes()) {
@@ -118,19 +119,6 @@ int App::Run()
 
     Theme::Apply(themeIndex_);
     host_.SetFont(kFonts[fontIndex_].path, uiFontSize_);
-
-    // Build a placeholder frame (checkerboard) for the main-window vision view.
-    constexpr int IW = 640, IH = 480, CELL = 32;
-    std::vector<unsigned char> px(static_cast<size_t>(IW) * IH * 4);
-    for (int y = 0; y < IH; ++y) {
-        for (int x = 0; x < IW; ++x) {
-            const bool on = ((x / CELL) + (y / CELL)) & 1;
-            const unsigned char v = on ? 90 : 55;
-            const size_t i = (static_cast<size_t>(y) * IW + x) * 4;
-            px[i] = v; px[i + 1] = v; px[i + 2] = static_cast<unsigned char>(v + 12); px[i + 3] = 255;
-        }
-    }
-    viewportTex_ = host_.MakeTextureRGBA(IW, IH, px.data());
 
     // The mosaic areas and save folder: machine state, like the needle
     // calibration, read once here and written only by the Mosaic page.
