@@ -36,6 +36,10 @@ public:
     bool SupportsAxisEnable() const override { return true; }
     std::map<std::string, bool> AxisEnabled() const override;               // ACSC_MST_ENABLE
     bool SetAxisEnabled(const std::string& axis, bool on) override;         // acsc_Enable/Disable
+    bool SupportsBuffers() const override { return true; }
+    bool RunBuffer(int buffer, const std::string& label = {}) override;     // acsc_RunBuffer
+    bool StopBuffer(int buffer) override;                                   // acsc_StopBuffer
+    bool BufferRunning(int buffer) const override;                          // ACSC_PST_RUN, polled
     void RequestFastPoll() override;
 
     std::string LastError() const override;

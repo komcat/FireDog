@@ -1679,6 +1679,7 @@ void Workflow::Update(float dt)
 
     TickIoPulses(); // timed output OFFs (no-op unless a pulse is pending)
     TickPath(dt);   // mapped-path executor (no-op unless a path is running)
+    TickBufferFollow();   // the move a buffer Run asked for once it ends
 }
 
 // ---- Mapped-path executor ---------------------------------------------------
@@ -2253,6 +2254,7 @@ bool Workflow::StopMotion(std::size_t devIdx)
         pathExec_.active = false;
         FD_WARN("path", "path abandoned - device stopped");
     }
+    bufFollowCancelReq_ = true;   // any device Stop also drops a pending buffer follow-up
     IMotionController* m = hw_.MotionDevice(devIdx);
     if (!m) return false;
     FD_WARN("workflow", "STOP %s", m->Name().c_str());
@@ -2290,6 +2292,84 @@ bool Workflow::SetPivot(std::size_t devIdx, double x, double y, double z)
         return false;
     }
     return m->SetPivot(x, y, z);
+}
+
+bool Workflow::RunBuffer(std::size_t devIdx, int buffer, const std::string& label,
+                         const std::string& thenAxis, double thenTarget)
+{
+    if (devIdx >= hw_.MotionCount()) return false;
+    if (hw_.MotionState(devIdx) != ConnState::Connected) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m || !m->SupportsBuffers()) return false;
+    // A buffer program can move the axes, so it is refused exactly where a move
+    // would be: behind the safety alert, and while this device is pathing.
+    if (SafetyBlocked()) {
+        FD_WARN("safety", "buffer %d not started - acknowledge the safety alert first", buffer);
+        return false;
+    }
+    if (pathExec_.active && pathExec_.devIdx == devIdx) {
+        FD_WARN("motion", "buffer %d not started - %s is running a path", buffer,
+                hw_.MotionName(devIdx).c_str());
+        return false;
+    }
+    if (!m->RunBuffer(buffer, label)) return false;
+    bufFollow_.reset();
+    if (!thenAxis.empty()) {
+        bufFollowCancelReq_ = false;
+        bufFollow_ = BufferFollow{devIdx, buffer, thenAxis, thenTarget};
+    }
+    return true;
+}
+
+bool Workflow::BufferRunning(std::size_t devIdx, int buffer) const
+{
+    if (devIdx >= hw_.MotionCount()) return false;
+    const IMotionController* m = hw_.MotionDevice(devIdx);
+    return m && m->BufferRunning(buffer);
+}
+
+// The move a Run asked for once its program ends (UI thread, from Update). A
+// Stop - of the buffer or of the device - cancels it: the program did not
+// finish, so the pose it leaves is not the one the move was written for.
+void Workflow::TickBufferFollow()
+{
+    if (!bufFollow_) return;
+    if (bufFollowCancelReq_.exchange(false)) {
+        FD_WARN("motion", "buffer %d follow-up move to %s = %.3f cancelled - stopped",
+                bufFollow_->buffer, bufFollow_->axis.c_str(), bufFollow_->target);
+        bufFollow_.reset();
+        return;
+    }
+    const BufferFollow f = *bufFollow_;
+    IMotionController* m = f.devIdx < hw_.MotionCount() ? hw_.MotionDevice(f.devIdx) : nullptr;
+    if (!m || hw_.MotionState(f.devIdx) != ConnState::Connected) {
+        FD_WARN("motion", "buffer %d follow-up move cancelled - device not connected", f.buffer);
+        bufFollow_.reset();
+        return;
+    }
+    if (m->BufferRunning(f.buffer)) return;
+    bufFollow_.reset();
+    if (pathExec_.active && pathExec_.devIdx == f.devIdx) {
+        FD_WARN("motion", "buffer %d follow-up move skipped - %s is running a path",
+                f.buffer, m->Name().c_str());
+        return;
+    }
+    FD_INFO("motion", "%s buffer %d finished - moving %s to %.3f", m->Name().c_str(),
+            f.buffer, f.axis.c_str(), f.target);
+    if (!MoveToPosition(f.devIdx, {{f.axis, f.target}}))
+        FD_WARN("motion", "%s %s -> %.3f refused: %s", m->Name().c_str(), f.axis.c_str(),
+                f.target, m->LastError().c_str());
+}
+
+bool Workflow::StopBuffer(std::size_t devIdx, int buffer)
+{
+    if (devIdx >= hw_.MotionCount()) return false;
+    if (hw_.MotionState(devIdx) != ConnState::Connected) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m || !m->SupportsBuffers()) return false;
+    if (bufFollow_ && bufFollow_->devIdx == devIdx && bufFollow_->buffer == buffer)
+        bufFollowCancelReq_ = true;   // honoured by the next TickBufferFollow
+    return m->StopBuffer(buffer);   // never refused: stopping is always allowed
 }
 
 bool Workflow::MoveToPosition(std::size_t devIdx,

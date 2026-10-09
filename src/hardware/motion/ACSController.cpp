@@ -74,6 +74,7 @@ struct ACSController::Impl {
     mutable std::mutex       mtx;
     std::map<std::string, double> positions;
     std::map<std::string, bool>   enabled;   // ACSC_MST_ENABLE per axis, polled
+    std::map<int, bool>           bufRunning;   // ACSC_PST_RUN per started buffer, polled
     std::string              lastError;
     std::vector<DataStream*> streams;       // one DataBus topic per axis
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -133,6 +134,7 @@ struct ACSController::Impl {
             acsc_CloseComm(handle);
             handle = ACSC_INVALID;
             enabled.clear();
+            bufRunning.clear();
         }
     }
 
@@ -142,6 +144,15 @@ struct ACSController::Impl {
         while (polling.load()) {
             {
                 std::lock_guard<std::mutex> lock(mtx);
+                // Only the buffers this session started, BEFORE the positions:
+                // a "finished" seen here comes with positions read after the
+                // program ended. Read and stored under the lock RunBuffer takes,
+                // so a stale poll never overwrites its optimistic "running".
+                for (auto& [buf, running] : bufRunning) {
+                    int pst = 0;
+                    if (acsc_GetProgramState(handle, buf, &pst, NULL))
+                        running = (pst & ACSC_PST_RUN) != 0;
+                }
                 for (int i = 0; i < static_cast<int>(axes.size()); ++i) {
                     double pos = 0.0;
                     if (acsc_GetFPosition(handle, i, &pos, NULL)) positions[axes[i]] = pos;
@@ -279,6 +290,49 @@ struct ACSController::Impl {
         FD_INFO("acs", "%s axis %s %s", cfg.name.c_str(), axis.c_str(), on ? "enabled" : "disabled");
         return true;
     }
+
+    // `START <buffer>, <label>`; an empty label (NULL) runs from the first
+    // line. The controller refuses a buffer that is not compiled or a label it
+    // does not have; its error code lands in lastError.
+    bool RunBuffer(int buffer, const std::string& label)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        std::string lbl = label;   // the SDK takes a non-const char*
+        if (!acsc_RunBuffer(handle, buffer, lbl.empty() ? NULL : lbl.data(), NULL)) {
+            lastError = "acsc_RunBuffer(" + std::to_string(buffer) +
+                        (label.empty() ? "" : ", " + label) + ") failed (" +
+                        std::to_string(acsc_GetLastError()) + ")";
+            FD_ERROR("acs", "%s: %s", cfg.name.c_str(), lastError.c_str());
+            return false;
+        }
+        bufRunning[buffer] = true;   // accepted; the poll takes it from here
+        FD_INFO("acs", "%s buffer %d started%s%s", cfg.name.c_str(), buffer,
+                label.empty() ? "" : " at ", label.c_str());
+        return true;
+    }
+
+    bool BufferRunning(int buffer) const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        const auto it = bufRunning.find(buffer);
+        return it != bufRunning.end() && it->second;
+    }
+
+    bool StopBuffer(int buffer)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        if (!acsc_StopBuffer(handle, buffer, NULL)) {
+            lastError = "acsc_StopBuffer(" + std::to_string(buffer) + ") failed (" +
+                        std::to_string(acsc_GetLastError()) + ")";
+            FD_ERROR("acs", "%s: %s", cfg.name.c_str(), lastError.c_str());
+            return false;
+        }
+        bufRunning[buffer] = false;
+        FD_INFO("acs", "%s buffer %d stopped", cfg.name.c_str(), buffer);
+        return true;
+    }
 };
 
 } // namespace firedog
@@ -338,6 +392,7 @@ struct ACSController::Impl {
         connected.store(false);
         std::lock_guard<std::mutex> lock(mtx);
         enabled.clear();
+        bufUntil.clear();
     }
 
     void PollLoop()
@@ -435,6 +490,34 @@ struct ACSController::Impl {
         return connected.load();
     }
     bool StopAll() { return connected.load(); }
+    // A simulated program runs for kSimBufferRun, so Stop / the follow-up move
+    // can be exercised without a controller.
+    static constexpr std::chrono::seconds kSimBufferRun{3};
+    std::map<int, std::chrono::steady_clock::time_point> bufUntil;   // under mtx
+
+    bool RunBuffer(int buffer, const std::string& label)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        bufUntil[buffer] = std::chrono::steady_clock::now() + kSimBufferRun;
+        FD_INFO("acs", "%s buffer %d started%s%s (simulated)", cfg.name.c_str(), buffer,
+                label.empty() ? "" : " at ", label.c_str());
+        return true;
+    }
+    bool StopBuffer(int buffer)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        bufUntil.erase(buffer);
+        FD_INFO("acs", "%s buffer %d stopped (simulated)", cfg.name.c_str(), buffer);
+        return true;
+    }
+    bool BufferRunning(int buffer) const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        const auto it = bufUntil.find(buffer);
+        return it != bufUntil.end() && std::chrono::steady_clock::now() < it->second;
+    }
 };
 
 } // namespace firedog
@@ -460,6 +543,9 @@ bool ACSController::SetVelocity(double v) { return p_->SetVelocity(v); }
 bool ACSController::StopAll()            { return p_->StopAll(); }
 std::map<std::string, bool> ACSController::AxisEnabled() const { return p_->AxisEnabled(); }
 bool ACSController::SetAxisEnabled(const std::string& a, bool on) { return p_->SetAxisEnabled(a, on); }
+bool ACSController::RunBuffer(int b, const std::string& l) { return p_->RunBuffer(b, l); }
+bool ACSController::StopBuffer(int b)    { return p_->StopBuffer(b); }
+bool ACSController::BufferRunning(int b) const { return p_->BufferRunning(b); }
 void ACSController::RequestFastPoll()    { p_->RequestFastPoll(); }
 std::string ACSController::LastError() const { return p_->lastError; }
 

@@ -78,6 +78,33 @@ public:
         return false;
     }
 
+    // Controller-resident programs (ACS: ACSPL+ buffers, acsc_RunBuffer /
+    // acsc_StopBuffer). Run starts the buffer at `label` - ACSPL+'s
+    // `START 1, STARTUP` is RunBuffer(1, "STARTUP") - or at its first line when
+    // the label is empty; the program must already be compiled on the controller. Both block for one controller
+    // exchange and only say the command was accepted - the program itself runs
+    // on the controller. A driver without the concept says so and refuses.
+    virtual bool SupportsBuffers() const { return false; }
+    virtual bool RunBuffer(int buffer, const std::string& label = {})
+    {
+        (void)buffer;
+        (void)label;
+        return false;
+    }
+    virtual bool StopBuffer(int buffer)
+    {
+        (void)buffer;
+        return false;
+    }
+    // CACHED run state of a buffer this session started (polled with the
+    // positions; set on an accepted Run so the start is never missed). A buffer
+    // never started from here reads false.
+    virtual bool BufferRunning(int buffer) const
+    {
+        (void)buffer;
+        return false;
+    }
+
     // Rotation pivot point (PI hexapods: GCS SPI / qSPI on the pivot
     // coordinates R S T). Pivot() is the CACHED value — read at connect, again
     // on RequestPivotRead() by the poll thread, and read back after every

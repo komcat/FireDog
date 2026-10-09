@@ -277,6 +277,7 @@ private:
     void DrawMotionListPanel();    // left:   device list + live axes + velocity
     void DrawMotionDetailPanel();  // middle: device header + tab bar
     void DrawMotionPivot(std::size_t devIdx, IMotionController* m);   // PI rotation pivot
+    void DrawMotionBuffers(std::size_t devIdx, IMotionController* m); // ACS program buffers
     void DrawMotionPositionsTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionMapTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionScanTab(std::size_t devIdx, IMotionController* m);
@@ -911,6 +912,8 @@ private:
     unsigned    pivotEditSeq_ = 0;
     std::string pivotMsg_;           // last write's outcome, shown under the editor
     bool        pivotMsgErr_  = false;
+    std::string bufMsg_;             // last ACS buffer Run/Stop outcome (Motion page)
+    bool        bufMsgErr_    = false;
 
     // Mapped Path tab (Motion page) UI state. The maps themselves live in
     // session_ (persisted to config/maps.local.json): nodes reference saved

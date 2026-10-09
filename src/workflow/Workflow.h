@@ -22,6 +22,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -118,6 +119,18 @@ public:
     // the pivot decides what every U/V/W leg does. The controller itself
     // refuses unless U = V = W = 0; the reason is on the device's LastError.
     bool SetPivot(std::size_t devIdx, double x, double y, double z);
+
+    // Start / stop a controller-resident program buffer (Motion page; ACS only -
+    // see IMotionController::SupportsBuffers). `label` is where in the buffer to
+    // start (`START 1, STARTUP`); empty = the first line. A non-empty `thenAxis`
+    // moves that axis to `thenTarget` (absolute, axis space) once the program
+    // ENDS on its own; stopping the buffer or the device cancels that move. Run is refused while the safety
+    // alert is unacknowledged or the device is pathing, as a move would be;
+    // Stop never is. The reason for a controller refusal is on LastError.
+    bool RunBuffer(std::size_t devIdx, int buffer, const std::string& label = {},
+                   const std::string& thenAxis = {}, double thenTarget = 0.0);
+    bool BufferRunning(std::size_t devIdx, int buffer) const;   // cached, cheap
+    bool StopBuffer(std::size_t devIdx, int buffer);
 
     // Move to an absolute per-axis target set (a saved/taught position) in one
     // coordinated command. Called by the saved-positions Move button.
@@ -651,6 +664,16 @@ private:
     };
     void TickPath(float dt);   // called from Update()
 
+    // RunBuffer's follow-up move. UI-thread only, like pathExec_; StopMotion
+    // (any thread) cancels through the atomic flag, honoured on the next tick.
+    struct BufferFollow {
+        std::size_t devIdx = 0;
+        int         buffer = 0;
+        std::string axis;
+        double      target = 0.0;
+    };
+    void TickBufferFollow();   // called from Update()
+
     // Pending output pulses (PulseIoOutput): pushed by the IO tab, drained by
     // TickIoPulses from Update(); the OFF goes through SetIoOutput so it is
     // logged and refused exactly like a manual one. Mutex-guarded rather than
@@ -802,6 +825,8 @@ private:
 
     PathExec          pathExec_;
     std::atomic<bool> pathCancelReq_{false};   // set from any thread
+    std::optional<BufferFollow> bufFollow_;
+    std::atomic<bool>           bufFollowCancelReq_{false};   // set from any thread
 
     // Owned by Workflow (not HardwareManager): its callback stops motion via
     // this object, so it must die first. Declared last so it is destroyed

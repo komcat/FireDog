@@ -171,6 +171,7 @@ void App::DrawMotionDetailPanel()
     ImGui::Text("Type : %s", m->Type().c_str());
     ImGui::Text("Axes : %s", axesLine.c_str());
     if (m->SupportsPivot()) DrawMotionPivot(idx, m);
+    if (m->SupportsBuffers()) DrawMotionBuffers(idx, m);
 
     if (st == ConnState::Failed) {
         ImGui::Spacing();
@@ -282,6 +283,89 @@ void App::DrawMotionPivot(std::size_t devIdx, IMotionController* m)
     if (!pivotMsg_.empty()) {
         if (pivotMsgErr_) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", pivotMsg_.c_str());
         else              ImGui::TextDisabled("%s", pivotMsg_.c_str());
+    }
+    ImGui::PopID();
+}
+
+// ACS program buffers: Run is ACSPL+'s `START <buffer>, <label>` (buffer 1 at
+// its STARTUP label; buffer 2 from its first line). A program can move the
+// axes, so Run sits behind the jog arm and is locked while anything runs, or
+// while that buffer already runs. Stop is red and live only while the buffer
+// runs, and is never gated otherwise. Buffer 1 brings Z to 25 mm (absolute,
+// axis space) once STARTUP ends on its own - for physical clearance; a Stop
+// cancels that move.
+void App::DrawMotionBuffers(std::size_t devIdx, IMotionController* m)
+{
+    const bool connected = hardware_.MotionState(devIdx) == ConnState::Connected;
+    const bool canRun    = connected && jogArmed_ && !orch_.Busy() && !workflow_.PathActive();
+
+    ImGui::PushID("acsbuf");
+    // label "" = first line; thenAxis "" = no follow-up move
+    struct BufferButton { int buf; const char* label; const char* thenAxis; double thenTarget; };
+    static constexpr BufferButton kBuffers[] = {{1, "STARTUP", "Z", 25.0}, {2, "", "", 0.0}};
+
+    ImGui::TextUnformatted("Buffers:");
+    for (const BufferButton& b : kBuffers) {
+        const int  buf     = b.buf;
+        const bool running = connected && workflow_.BufferRunning(devIdx, buf);
+        ImGui::PushID(buf);
+        char label[48];
+        if (*b.label) std::snprintf(label, sizeof(label), "Run %d, %s", buf, b.label);
+        else          std::snprintf(label, sizeof(label), "Run %d", buf);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!canRun || running);
+        if (ImGui::Button(label)) {
+            bufMsgErr_ = !workflow_.RunBuffer(devIdx, buf, b.label, b.thenAxis, b.thenTarget);
+            bufMsg_    = bufMsgErr_ ? "buffer " + std::to_string(buf) + " not started: " + m->LastError()
+                                    : "buffer " + std::to_string(buf) + " started";
+            if (!bufMsgErr_ && *b.thenAxis) {
+                char then[64];
+                std::snprintf(then, sizeof(then), " - %s to %.3f when it finishes",
+                              b.thenAxis, b.thenTarget);
+                bufMsg_ += then;
+            }
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            char then[80] = "";
+            if (*b.thenAxis)
+                std::snprintf(then, sizeof(then), "\nThen moves %s to %.3f (absolute) once it ends.",
+                              b.thenAxis, b.thenTarget);
+            if (*b.label)
+                ImGui::SetTooltip("START %d, %s - run ACS buffer %d at label %s.\n"
+                                  "The program must be compiled on the controller.%s",
+                                  buf, b.label, buf, b.label, then);
+            else
+                ImGui::SetTooltip("START %d - run ACS buffer %d from its first line.\n"
+                                  "The program must be compiled on the controller.%s",
+                                  buf, buf, then);
+        }
+        std::snprintf(label, sizeof(label), "Stop %d", buf);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!running);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.72f, 0.20f, 0.20f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.25f, 0.25f, 1.0f));
+        if (ImGui::Button(label)) {
+            bufMsgErr_ = !workflow_.StopBuffer(devIdx, buf);
+            bufMsg_    = bufMsgErr_ ? "buffer " + std::to_string(buf) + " not stopped: " + m->LastError()
+                                    : "buffer " + std::to_string(buf) + " stopped";
+        }
+        ImGui::PopStyleColor(2);
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Arm", &jogArmed_);   // the same flag the Jog window arms
+
+    if (connected) {
+        if (orch_.Busy() || workflow_.PathActive())
+            ImGui::TextDisabled("buffers locked while a run or path is active");
+        else if (!jogArmed_)
+            ImGui::TextDisabled("arm to run a buffer");
+    }
+    if (!bufMsg_.empty()) {
+        if (bufMsgErr_) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", bufMsg_.c_str());
+        else            ImGui::TextDisabled("%s", bufMsg_.c_str());
     }
     ImGui::PopID();
 }
