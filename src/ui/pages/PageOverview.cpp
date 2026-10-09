@@ -15,6 +15,7 @@
 #include "core/DataBus.h"
 #include "core/DutSession.h"
 #include "core/Log.h"
+#include "core/Paths.h"
 #include "core/Topics.h"
 
 #include <cfloat>
@@ -204,6 +205,27 @@ void App::DrawMiddlePanel()
         row("SDKs", in);
         if (!out.empty()) row("simulated", out);
         row("exe", b.exePath);
+        ImGui::EndTable();
+    }
+
+    // Where this machine keeps its state (core/Paths.h): the live config is
+    // under the machine root, NOT beside the exe — the exe's config/ only holds
+    // the shipped defaults, which is the usual surprise when editing a file.
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Folders");
+    ImGui::Separator();
+    if (ImGui::BeginTable("##folders", 2, ImGuiTableFlags_SizingFixedFit)) {
+        auto row = [](const char* k, const std::string& v) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::TextDisabled("%s", k);
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(v.empty() ? "-" : v.c_str());
+        };
+        row("config", MachinePath("config"));
+        row("machine root", MachineRoot());
+        row("data root", DataRoot());
+        row("shipped (exe)", ExeDir());
+        row("paths from", IniPath());
         ImGui::EndTable();
     }
 
