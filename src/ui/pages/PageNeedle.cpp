@@ -114,6 +114,15 @@ void App::DrawNeedlePanel()
         ImGui::TreePop();
     }
 
+    // For a file edited or copied in by hand. Locked during a run: a dispense
+    // reads the offset mid-run, and swapping it under one moves the needle.
+    ImGui::BeginDisabled(orch_.Busy());
+    if (ImGui::Button("Reload from file", ImVec2(200.0f, 0.0f))) workflow_.ReloadNeedleCal();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Re-read %s\n(or the shipped config/needle_cal.json when it is missing)",
+                          NeedleCalLocalPath().c_str());
+
     // ---- Hardware ------------------------------------------------------------
     ImGui::SeparatorText("Hardware");
     {

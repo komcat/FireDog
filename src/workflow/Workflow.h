@@ -536,6 +536,9 @@ public:
     // needle. That is what `calibratedAt` is on the page for.
     NeedleCal Needle() const;
     void      SetNeedleCal(const NeedleCal& c);
+    // Re-read the file (local, else the shipped default) - for a calibration
+    // file edited or copied in by hand. Same load and log as at Start.
+    void      ReloadNeedleCal() { StartNeedleCal(); }
 
     // Same worker->UI hand-back as a taught frame, for the same reason: a
     // command must not write a config file from an engine thread.
