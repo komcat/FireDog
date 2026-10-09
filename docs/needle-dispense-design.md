@@ -170,7 +170,14 @@ stale when the needle is changed: re-calibrate and every taught point still
 works.
 
 1. `needle_offset{require = true}` — fail before anything travels.
-2. `move_to_position` — camera over the point; optional `auto_focus`.
+2. `move_to_position` — camera over the point. With `adjust` (default on), a
+   `manual_adjust` with **X/Y only** lets the operator centre the crosshair on
+   this part's point; everything below starts from where they leave it. Z stays
+   locked because the touch height is computed from the camera's Z. The
+   adjustment applies to **this run only**. Nothing is written back into the
+   step or the position: the next part needs its own nudge, and a run that
+   re-taught its own point would drift the point one part at a time. Then the
+   optional `auto_focus`, over the spot the operator chose.
 3. `read_position` → `cam_*`; `touch_z = cam_z + dz + dir*trim`,
    `target_z = touch_z − dir*gap`, `safety_z = target_z − dir*safety`.
    **`z_trim_mm` and `gap_mm` are not the same correction and must stay

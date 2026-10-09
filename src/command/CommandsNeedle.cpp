@@ -286,6 +286,11 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"safety_mm", PT::Double, false, 1.0, 0.0, 20.0, {},
                        "height above the target where the fast descent hands over to "
                        "the slow one"},
+                      {"adjust", PT::Bool, false, true, 0, 0, {},
+                       "after arriving, pause on a manual adjust (X/Y only) so the "
+                       "operator can centre the camera on the point; the dot goes "
+                       "where they leave it. This run only - the taught point is "
+                       "not rewritten"},
                       {"autofocus", PT::Bool, false, false, 0, 0, {},
                        "focus at the point and take the dispense height from THAT "
                        "focal plane instead of the position's taught Z"},
@@ -318,6 +323,7 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("disp_z_trim_mm", p.GetDouble("z_trim_mm"));
                       c.CtxSet("disp_gap_mm", p.GetDouble("gap_mm"));
                       c.CtxSet("disp_safety_mm", p.GetDouble("safety_mm"));
+                      c.CtxSet("disp_adjust", p.GetBool("adjust"));
                       c.CtxSet("disp_autofocus", p.GetBool("autofocus"));
                       c.CtxSet("disp_confirm", p.GetBool("confirm"));
                       c.CtxSet("disp_verify", p.GetBool("verify"));

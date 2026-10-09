@@ -31,6 +31,8 @@
 --   disp_z_trim_mm   + moves the needle CLOSER to the part (default 0)
 --   disp_gap_mm      standoff ABOVE the touch height (default 0)
 --   disp_safety_mm   fast -> slow handover height   (default 1.0)
+--   disp_adjust      after arriving, let the operator nudge X/Y onto the
+--                    point; the dot goes where they leave it (default true)
 --   disp_autofocus   take the height from a focus here instead of the
 --                    position's taught Z            (default false)
 --   disp_confirm     ask before extending and before firing (default true)
@@ -47,6 +49,7 @@ local AFTER   = math.floor(fd.param("disp_after_ms", 0))
 local TRIM    = fd.param("disp_z_trim_mm", 0.0)
 local GAP     = fd.param("disp_gap_mm", 0.0)
 local SAFETY  = fd.param("disp_safety_mm", 1.0)
+local ADJUST  = fd.param("disp_adjust", true)
 local FOCUS   = fd.param("disp_autofocus", false)
 local CONFIRM = fd.param("disp_confirm", true)
 local VERIFY  = fd.param("disp_verify", true)
@@ -85,6 +88,20 @@ end
 -- ---- 2. Camera over the point ----------------------------------------------
 fd.move_to_position{ device = DEV, position = POS, velocity_mm_s = VTRAVEL }
 
+-- The taught pose gets the camera NEAR the point; this part sits wherever it
+-- sits today. X/Y only: Z is the focus, and the touch height is computed from
+-- it below - a hand-jogged Z would quietly move every dot's height with it.
+-- Before the auto_focus, so the focus is taken over the spot actually chosen.
+-- Nothing is written back: the next part needs its own nudge, and a run that
+-- re-taught its own point would walk the point off one part at a time.
+if ADJUST then
+    fd.read_position{ device = DEV, ctx_prefix = "taught" }
+    fd.manual_adjust{ device = DEV, step_um = 10,
+                      enable_x = true, enable_y = true, enable_z = false,
+                      message = "Centre the camera crosshair on the dispense point " ..
+                                "(X/Y only), then OK. The dot goes where you leave it." }
+end
+
 -- Focusing here rather than trusting the taught Z is the option that makes dz
 -- an offset worth having: the part's actual height today, plus the arm, is the
 -- touch height today. Off by default because it costs a sweep per dot and a
@@ -95,6 +112,10 @@ end
 
 fd.read_position{ device = DEV, ctx_prefix = "cam" }
 local cam_x, cam_y, cam_z = fd.ctx.cam_x, fd.ctx.cam_y, fd.ctx.cam_z
+if ADJUST then
+    fd.logf("dispense: operator adjusted X %+.4f, Y %+.4f mm from the taught pose",
+            cam_x - fd.ctx.taught_x, cam_y - fd.ctx.taught_y)
+end
 
 -- Two Z corrections, and they are not the same thing.
 --   TRIM corrects the CALIBRATION: + brings the needle closer to the part,
