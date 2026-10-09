@@ -131,6 +131,10 @@ HardwareConfig HardwareConfig::Load(const std::string& path)
                         bc.outputDevice = b["output"].value("device", std::string());
                         bc.outputPin    = b["output"].value("pin_name", std::string());
                     }
+                    if (b.contains("indicator")) {
+                        bc.indicatorDevice = b["indicator"].value("device", std::string());
+                        bc.indicatorPin    = b["indicator"].value("pin_name", std::string());
+                    }
                     hc.ioWatch.bindings.push_back(bc);
                 }
             }
@@ -449,6 +453,8 @@ bool HardwareConfig::SaveIoWatch(const std::string& path, const IoWatchConfig& c
         e["name"]        = b.name;
         e["input"]       = {{"device", b.inputDevice}, {"pin_name", b.inputPin}};
         e["output"]      = {{"device", b.outputDevice}, {"pin_name", b.outputPin}};
+        if (!b.indicatorDevice.empty() || !b.indicatorPin.empty())
+            e["indicator"] = {{"device", b.indicatorDevice}, {"pin_name", b.indicatorPin}};
         e["trigger"]     = b.trigger;
         e["behavior"]    = b.behavior;
         e["debounce_ms"] = b.debounceMs;

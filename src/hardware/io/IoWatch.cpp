@@ -121,6 +121,9 @@ void IoWatch::Loop()
                 s.hasTrigger  = true;
             }
         }
+        // After the actions, so an output this tick switched (SetOutput
+        // updates the cache) lights its LED in the same tick.
+        for (auto& sp : slots_) MirrorIndicator(*sp);
         nextPoll += std::chrono::milliseconds(intervalMs_);
         std::this_thread::sleep_until(nextPoll);
     }
@@ -148,6 +151,29 @@ void IoWatch::Execute(Slot& s, bool inputState)
     FD_INFO("iowatch", "%s '%s': %s pin %d -> %s", BehaviorName(s.b.behavior),
             s.b.name.c_str(), s.b.outputDev->Name().c_str(), s.b.outputPin,
             newState ? "ON" : "OFF");
+}
+
+void IoWatch::MirrorIndicator(Slot& s)
+{
+    if (!s.b.indicatorDev) return;
+    const IIoDevice::IoStatus src = s.b.outputDev->Status();
+    const IIoDevice::IoStatus led = s.b.indicatorDev->Status();
+    if (!src.valid || !led.valid) return;   // unknown state: leave the LED alone
+
+    const bool want = ((src.outputs >> s.b.outputPin) & 1ull) != 0;
+    const bool have = ((led.outputs >> s.b.indicatorPin) & 1ull) != 0;
+    if (want == have) return;   // write only on a difference
+
+    if (!s.b.indicatorDev->SetOutput(s.b.indicatorPin, want)) {
+        if (!s.ledFailed) {
+            FD_WARN("iowatch", "'%s': failed to set indicator %s pin %d -> %s: %s",
+                    s.b.name.c_str(), s.b.indicatorDev->Name().c_str(), s.b.indicatorPin,
+                    want ? "ON" : "OFF", s.b.indicatorDev->LastError().c_str());
+        }
+        s.ledFailed = true;
+        return;
+    }
+    s.ledFailed = false;
 }
 
 } // namespace firedog

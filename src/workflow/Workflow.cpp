@@ -356,6 +356,22 @@ bool Workflow::ApplyIoWatch(const IoWatchConfig& cfg)
                 c.name.c_str(), IoWatch::EdgeName(b.trigger),
                 c.inputDevice.c_str(), b.inputPin, IoWatch::BehaviorName(b.behavior),
                 c.outputDevice.c_str(), b.outputPin, b.debounceMs);
+
+        // An unresolved indicator costs the LED, never the binding.
+        if (!c.indicatorDevice.empty() || !c.indicatorPin.empty()) {
+            IIoDevice* led = findIo(c.indicatorDevice);
+            const int  pin = led ? led->OutputPinByName(c.indicatorPin) : -1;
+            if (!led || pin < 0) {
+                FD_WARN("workflow", "io_watch '%s': unresolved indicator '%s'@'%s' - no LED",
+                        c.name.c_str(), c.indicatorPin.c_str(), c.indicatorDevice.c_str());
+            } else {
+                b.indicatorDev = led;
+                b.indicatorPin = pin;
+                FD_INFO("workflow", "io_watch '%s': indicator %s/%d mirrors %s/%d",
+                        c.name.c_str(), c.indicatorDevice.c_str(), pin,
+                        c.outputDevice.c_str(), b.outputPin);
+            }
+        }
         bindings.push_back(std::move(b));
     }
     if (bindings.empty()) {

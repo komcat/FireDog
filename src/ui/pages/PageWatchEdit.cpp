@@ -121,6 +121,19 @@ void App::DrawWatchEditPanel()
         ImGui::SetNextItemWidth(90.0f);
         ImGui::InputInt("ms", &b.debounceMs);
 
+        // Optional indicator: an output (a switch LED) that mirrors the bound
+        // output's level, whoever sets it.
+        ImGui::TextDisabled("led");
+        ImGui::SameLine();
+        deviceCombo("##leddev", b.indicatorDevice);
+        ImGui::SameLine();
+        pinCombo("##ledpin", b.indicatorDevice, b.indicatorPin, true);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##led")) {
+            b.indicatorDevice.clear();
+            b.indicatorPin.clear();
+        }
+
         ImGui::PopID();
     }
     if (deleteRow >= 0) {

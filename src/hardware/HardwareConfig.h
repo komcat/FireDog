@@ -165,10 +165,13 @@ struct PneumaticSlideConfig {
 
 // One IO-watch binding (from "io_watch"): an input edge that fires an action
 // on an output pin. Pins by NAME, resolved at startup like pneumatic slides.
+// The optional indicator ("indicator") is a second output that MIRRORS the
+// bound output's level, whoever set it — a switch's LED.
 struct IoWatchBindingConfig {
     std::string name;
     std::string inputDevice,  inputPin;
     std::string outputDevice, outputPin;
+    std::string indicatorDevice, indicatorPin;   // both empty = no indicator
     std::string trigger  = "rising";    // rising | falling | both
     std::string behavior = "toggle";    // toggle | set_on | set_off | momentary
     int  debounceMs = 100;
