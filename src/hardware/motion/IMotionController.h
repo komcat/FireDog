@@ -16,6 +16,16 @@
 
 namespace firedog {
 
+// The point a hexapod's U/V/W rotate about, in the controller's own
+// coordinates (mm). `seq` changes every time the cached value is replaced
+// (read, written or invalidated), so a consumer can tell a fresh read from
+// the one it already showed.
+struct PivotPoint {
+    double   x = 0.0, y = 0.0, z = 0.0;
+    bool     valid = false;   // false until one has been read off the controller
+    unsigned seq   = 0;
+};
+
 class IMotionController {
 public:
     virtual ~IMotionController() = default;
@@ -65,6 +75,24 @@ public:
     {
         (void)axis;
         (void)on;
+        return false;
+    }
+
+    // Rotation pivot point (PI hexapods: GCS SPI / qSPI on the pivot
+    // coordinates R S T). Pivot() is the CACHED value — read at connect, again
+    // on RequestPivotRead() by the poll thread, and read back after every
+    // SetPivot — so a UI may call it every frame without a bus round trip.
+    // SetPivot blocks for one controller exchange; the C-887 accepts it only
+    // with U = V = W = 0 and refuses otherwise (LastError carries the code).
+    // A driver without the concept says so and refuses.
+    virtual bool       SupportsPivot() const { return false; }
+    virtual PivotPoint Pivot() const { return {}; }
+    virtual void       RequestPivotRead() {}
+    virtual bool SetPivot(double x, double y, double z)
+    {
+        (void)x;
+        (void)y;
+        (void)z;
         return false;
     }
 

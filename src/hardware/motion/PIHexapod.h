@@ -38,6 +38,11 @@ public:
     bool StopAll() override;                                                // PI_STP
     void RequestFastPoll() override;
 
+    bool       SupportsPivot() const override { return true; }
+    PivotPoint Pivot() const override;                                       // cached qSPI
+    void       RequestPivotRead() override;                                  // poll thread re-reads
+    bool       SetPivot(double x, double y, double z) override;              // PI_SPI R S T
+
     std::string LastError() const override;
 
 private:

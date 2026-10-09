@@ -170,6 +170,7 @@ void App::DrawMotionDetailPanel()
     for (size_t i = 0; i < axes.size(); ++i) { if (i) axesLine += ' '; axesLine += axes[i]; }
     ImGui::Text("Type : %s", m->Type().c_str());
     ImGui::Text("Axes : %s", axesLine.c_str());
+    if (m->SupportsPivot()) DrawMotionPivot(idx, m);
 
     if (st == ConnState::Failed) {
         ImGui::Spacing();
@@ -193,6 +194,96 @@ void App::DrawMotionDetailPanel()
         }
         ImGui::EndTabBar();
     }
+}
+
+// Rotation pivot of a PI hexapod (GCS SPI / qSPI, shown as X Y Z): the
+// controller's value, a Read that re-queries it, and an editor that writes a
+// new one. The displayed value is always the driver's cached read-back, never
+// what was typed. Writing changes what every later U/V/W move does, so it sits
+// behind the jog arm and is locked while anything runs.
+void App::DrawMotionPivot(std::size_t devIdx, IMotionController* m)
+{
+    const PivotPoint pv        = m->Pivot();
+    const bool       connected = hardware_.MotionState(devIdx) == ConnState::Connected;
+
+    // Re-seed the fields on a device switch or a fresh read / write-back.
+    if (pivotEditDev_ != static_cast<int>(devIdx) || pivotEditSeq_ != pv.seq) {
+        if (pivotEditDev_ != static_cast<int>(devIdx)) pivotMsg_.clear();
+        pivotEditDev_ = static_cast<int>(devIdx);
+        pivotEditSeq_ = pv.seq;
+        if (pv.valid) {
+            pivotEdit_[0] = pv.x;
+            pivotEdit_[1] = pv.y;
+            pivotEdit_[2] = pv.z;
+        }
+    }
+
+    ImGui::PushID("pivot");
+    if (pv.valid) ImGui::Text("Pivot: X %.4f  Y %.4f  Z %.4f mm", pv.x, pv.y, pv.z);
+    else          ImGui::TextDisabled("Pivot: -- (not read)");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!connected);
+    if (ImGui::SmallButton("Read")) {
+        pivotMsg_.clear();
+        m->RequestPivotRead();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Query the pivot point from the controller (qSPI).");
+
+    const float fw = 90.0f;
+    static const char* const kLbl[3] = {"X", "Y", "Z"};
+    for (int i = 0; i < 3; ++i) {
+        if (i) ImGui::SameLine();
+        ImGui::SetNextItemWidth(fw);
+        ImGui::InputDouble(kLbl[i], &pivotEdit_[i], 0.0, 0.0, "%.4f");
+    }
+
+    // The C-887 accepts SPI only with the platform at zero rotation; say so
+    // before the click rather than after the refusal.
+    const std::map<std::string, double> pos = m->Positions();
+    bool rotated = false;
+    for (const char* r : {"U", "V", "W"}) {
+        const auto it = pos.find(r);
+        if (it != pos.end() && std::fabs(it->second) > 1e-3) rotated = true;
+    }
+
+    const bool canWrite = connected && pv.valid && jogArmed_ && !orch_.Busy() &&
+                          !workflow_.PathActive();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canWrite);
+    if (ImGui::Button("Write")) {
+        if (workflow_.SetPivot(devIdx, pivotEdit_[0], pivotEdit_[1], pivotEdit_[2])) {
+            pivotMsg_    = "pivot written";
+            pivotMsgErr_ = false;
+        } else {
+            pivotMsg_    = "write refused: " + m->LastError();
+            pivotMsgErr_ = true;
+        }
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Set the point U/V/W rotate about (X Y Z, mm).\n"
+                          "Every later rotation - jog, recipes, scans - turns about it.\n"
+                          "The controller holds it; FireDog stores it nowhere.\n"
+                          "Accepted only with U, V and W at 0.");
+    ImGui::SameLine();
+    ImGui::Checkbox("Arm", &jogArmed_);   // the same flag the Jog window arms
+
+    if (connected) {
+        if (orch_.Busy() || workflow_.PathActive())
+            ImGui::TextDisabled("pivot locked while a run or path is active");
+        else if (!jogArmed_)
+            ImGui::TextDisabled("arm to write a new pivot");
+        else if (rotated)
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                               "U/V/W are not 0 - the controller will refuse a new pivot");
+    }
+    if (!pivotMsg_.empty()) {
+        if (pivotMsgErr_) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", pivotMsg_.c_str());
+        else              ImGui::TextDisabled("%s", pivotMsg_.c_str());
+    }
+    ImGui::PopID();
 }
 
 // Scanning tab — test bench for the script-level XCAN aligner: edit the

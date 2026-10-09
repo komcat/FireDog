@@ -2230,6 +2230,20 @@ bool Workflow::SetAxisEnabled(std::size_t devIdx, const std::string& axis, bool 
     return m->SetAxisEnabled(axis, on);
 }
 
+bool Workflow::SetPivot(std::size_t devIdx, double x, double y, double z)
+{
+    if (devIdx >= hw_.MotionCount()) return false;
+    if (hw_.MotionState(devIdx) != ConnState::Connected) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m || !m->SupportsPivot()) return false;
+    if (pathExec_.active && pathExec_.devIdx == devIdx) {
+        FD_WARN("motion", "pivot not changed - %s is running a path",
+                hw_.MotionName(devIdx).c_str());
+        return false;
+    }
+    return m->SetPivot(x, y, z);
+}
+
 bool Workflow::MoveToPosition(std::size_t devIdx,
                               const std::vector<std::pair<std::string, double>>& targets)
 {

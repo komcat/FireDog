@@ -36,6 +36,10 @@ std::vector<std::string> SplitAxes(const std::string& s)
 // Stay in fast-poll mode this long after each RequestFastPoll() (steady-clock ns).
 constexpr std::int64_t kFastWindowNs = 500'000'000;   // 500 ms
 
+// The C-887 names its pivot coordinates R S T (the pivot's X Y Z, in mm). The
+// controller needs these letters; everything above the driver says X Y Z.
+constexpr const char* kPivotAxes = "R S T";
+
 std::int64_t NowNs()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -76,6 +80,8 @@ struct PIHexapod::Impl {
     std::mutex               pollMtx;       // guards fastUntilNs + the poll CV
     std::condition_variable  pollCv;
     std::int64_t             fastUntilNs = 0;   // poll fast until this steady-ns deadline
+    PivotPoint               pivot;             // cached qSPI (guarded by mtx)
+    std::atomic<bool>        pivotReadReq{false};   // poll thread re-reads the pivot
 
     explicit Impl(MotionConfig c) : cfg(std::move(c))
     {
@@ -99,6 +105,12 @@ struct PIHexapod::Impl {
         connected.store(true);
         FD_INFO("pi", "%s connected @ %s:%d (id %d)", cfg.name.c_str(),
                 cfg.ipAddress.c_str(), cfg.port, id);
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            if (QueryPivotLocked())
+                FD_INFO("pi", "%s pivot X %.4f Y %.4f Z %.4f", cfg.name.c_str(),
+                        pivot.x, pivot.y, pivot.z);
+        }
 
         streams.resize(axes.size());
         for (size_t i = 0; i < axes.size(); ++i)
@@ -122,7 +134,23 @@ struct PIHexapod::Impl {
             PI_STP(id);
             PI_CloseConnection(id);
             id = -1;
+            pivot = PivotPoint{0.0, 0.0, 0.0, false, pivot.seq + 1};
         }
+    }
+
+    // qSPI into the cache. Caller holds mtx.
+    bool QueryPivotLocked()
+    {
+        double v[3] = {};
+        if (id < 0 || !PI_qSPI(id, kPivotAxes, v)) {
+            int err = 0;
+            if (id >= 0) PI_qERR(id, &err);
+            lastError = "PI_qSPI failed (" + std::to_string(err) + ")";
+            FD_WARN("pi", "%s read pivot failed: %s", cfg.name.c_str(), lastError.c_str());
+            return false;
+        }
+        pivot = PivotPoint{v[0], v[1], v[2], true, pivot.seq + 1};
+        return true;
     }
 
     void PollLoop()
@@ -134,6 +162,7 @@ struct PIHexapod::Impl {
                 if (id >= 0 && PI_qPOS(id, axesStr.c_str(), buf.data())) {
                     for (size_t i = 0; i < axes.size(); ++i) positions[axes[i]] = buf[i];
                 }
+                if (pivotReadReq.exchange(false)) QueryPivotLocked();
             }
             // Broadcast each axis to its DataBus topic (outside the lock so a
             // subscriber callback can't deadlock against Positions()).
@@ -164,6 +193,37 @@ struct PIHexapod::Impl {
     {
         std::lock_guard<std::mutex> lock(mtx);
         return positions;
+    }
+
+    PivotPoint Pivot() const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return pivot;
+    }
+
+    void RequestPivotRead()
+    {
+        pivotReadReq.store(true);
+        std::lock_guard<std::mutex> lk(pollMtx);
+        pollCv.notify_one();   // read on the next pass, not after an idle second
+    }
+
+    // One SPI exchange, then qSPI so the cache holds what the controller
+    // ACCEPTED rather than what was asked.
+    bool SetPivot(double x, double y, double z)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        const double vals[3] = {x, y, z};
+        if (!PI_SPI(id, kPivotAxes, vals)) {
+            int err = 0; PI_qERR(id, &err);
+            lastError = "PI_SPI failed (" + std::to_string(err) + ")";
+            FD_ERROR("pi", "%s set pivot failed: %s", cfg.name.c_str(), lastError.c_str());
+            return false;
+        }
+        FD_INFO("pi", "%s pivot set to X %.4f Y %.4f Z %.4f", cfg.name.c_str(), x, y, z);
+        QueryPivotLocked();
+        return true;
     }
 
     bool MoveAbsolute(const std::string& axis, double position)
@@ -290,6 +350,8 @@ struct PIHexapod::Impl {
     std::mutex               pollMtx;          // guards fastUntilNs + the poll CV
     std::condition_variable  pollCv;
     std::int64_t             fastUntilNs = 0;
+    PivotPoint               pivot;            // what Pivot() reports (mtx)
+    double                   simPivot[3] = {0.0, 0.0, 0.0};   // the "controller's" value
 
     explicit Impl(MotionConfig c) : cfg(std::move(c))
     {
@@ -304,6 +366,10 @@ struct PIHexapod::Impl {
         connected.store(true);
         FD_INFO("pi", "%s connected (simulated) @ %s:%d", cfg.name.c_str(),
                 cfg.ipAddress.c_str(), cfg.port);
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            pivot = PivotPoint{simPivot[0], simPivot[1], simPivot[2], true, pivot.seq + 1};
+        }
         streams.resize(axes.size());
         for (size_t i = 0; i < axes.size(); ++i)
             streams[i] = &DataBus::Instance().Stream(topics::MotionAxis(cfg.name, axes[i]));
@@ -317,6 +383,8 @@ struct PIHexapod::Impl {
         { std::lock_guard<std::mutex> lk(pollMtx); was = polling.exchange(false); }
         if (was) { pollCv.notify_one(); if (pollThread.joinable()) pollThread.join(); }
         connected.store(false);
+        std::lock_guard<std::mutex> lock(mtx);
+        pivot = PivotPoint{0.0, 0.0, 0.0, false, pivot.seq + 1};
     }
 
     // Settle toward the commanded target plus a tiny live jitter, store it, and
@@ -362,6 +430,39 @@ struct PIHexapod::Impl {
     {
         std::lock_guard<std::mutex> lock(mtx);
         return positions;
+    }
+
+    PivotPoint Pivot() const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return pivot;
+    }
+
+    void RequestPivotRead()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (connected.load())
+            pivot = PivotPoint{simPivot[0], simPivot[1], simPivot[2], true, pivot.seq + 1};
+    }
+
+    // Refuses with the platform rotated, as the C-887 does.
+    bool SetPivot(double x, double y, double z)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        for (const char* r : {"U", "V", "W"}) {
+            const auto it = targets.find(r);
+            if (it != targets.end() && std::fabs(it->second) > 1e-9) {
+                lastError = "pivot can only be set with U, V, W at 0 (simulated)";
+                FD_ERROR("pi", "%s set pivot failed: %s", cfg.name.c_str(), lastError.c_str());
+                return false;
+            }
+        }
+        simPivot[0] = x; simPivot[1] = y; simPivot[2] = z;
+        pivot = PivotPoint{x, y, z, true, pivot.seq + 1};
+        FD_INFO("pi", "%s pivot set to X %.4f Y %.4f Z %.4f (simulated)", cfg.name.c_str(),
+                x, y, z);
+        return true;
     }
 
     bool MoveAbsolute(const std::string& axis, double position)
@@ -412,6 +513,9 @@ bool PIHexapod::IsSettled() const       { return p_->IsSettled(); }
 bool PIHexapod::IsOnTarget() const      { return p_->IsOnTarget(); }
 bool PIHexapod::StopAll()               { return p_->StopAll(); }
 void PIHexapod::RequestFastPoll()       { p_->RequestFastPoll(); }
+PivotPoint PIHexapod::Pivot() const     { return p_->Pivot(); }
+void PIHexapod::RequestPivotRead()      { p_->RequestPivotRead(); }
+bool PIHexapod::SetPivot(double x, double y, double z) { return p_->SetPivot(x, y, z); }
 std::string PIHexapod::LastError() const { return p_->lastError; }
 
 } // namespace firedog

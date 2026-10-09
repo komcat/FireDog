@@ -272,6 +272,7 @@ private:
     // (node-edge graph editor + path execution).
     void DrawMotionListPanel();    // left:   device list + live axes + velocity
     void DrawMotionDetailPanel();  // middle: device header + tab bar
+    void DrawMotionPivot(std::size_t devIdx, IMotionController* m);   // PI rotation pivot
     void DrawMotionPositionsTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionMapTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionScanTab(std::size_t devIdx, IMotionController* m);
@@ -900,6 +901,15 @@ private:
     Page prevPage_       = Page::Overview;
     int  selectedMotion_ = -1;   // absolute index into the HardwareManager motion fleet
     bool showHiddenPos_  = false;   // reveal hidden (system) positions in the table
+
+    // Pivot point editor (Motion page, PI hexapods). The fields re-seed from
+    // the controller's cached pivot whenever the device or its read changes
+    // (PivotPoint::seq), so typing survives until the next Read / Write.
+    double      pivotEdit_[3] = {0.0, 0.0, 0.0};
+    int         pivotEditDev_ = -1;
+    unsigned    pivotEditSeq_ = 0;
+    std::string pivotMsg_;           // last write's outcome, shown under the editor
+    bool        pivotMsgErr_  = false;
 
     // Mapped Path tab (Motion page) UI state. The maps themselves live in
     // session_ (persisted to config/maps.local.json): nodes reference saved

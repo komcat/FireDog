@@ -113,6 +113,12 @@ public:
     // the pathing device abandons the path, as a Stop does.
     bool SetAxisEnabled(std::size_t devIdx, const std::string& axis, bool on);
 
+    // Write a hexapod's rotation pivot (Motion page; PI only - see
+    // IMotionController::SupportsPivot). Refused while that device is pathing:
+    // the pivot decides what every U/V/W leg does. The controller itself
+    // refuses unless U = V = W = 0; the reason is on the device's LastError.
+    bool SetPivot(std::size_t devIdx, double x, double y, double z);
+
     // Move to an absolute per-axis target set (a saved/taught position) in one
     // coordinated command. Called by the saved-positions Move button.
     bool MoveToPosition(std::size_t devIdx,
