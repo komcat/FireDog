@@ -107,6 +107,12 @@ public:
     // Stop all motion on one device (jog panel Stop button).
     bool StopMotion(std::size_t devIdx);
 
+    // Servo enable/disable of one axis (Motion page; ACS only - see
+    // IMotionController::SupportsAxisEnable). Enabling is refused while the
+    // safety alert is unacknowledged; disabling never is. Disabling an axis of
+    // the pathing device abandons the path, as a Stop does.
+    bool SetAxisEnabled(std::size_t devIdx, const std::string& axis, bool on);
+
     // Move to an absolute per-axis target set (a saved/taught position) in one
     // coordinated command. Called by the saved-positions Move button.
     bool MoveToPosition(std::size_t devIdx,

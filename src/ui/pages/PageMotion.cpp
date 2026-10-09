@@ -26,6 +26,10 @@ namespace {
 // than this on any axis asks twice. The same number is applied to every axis,
 // rotary ones included: a 1° slip on U is as worth a second look as 1 mm on X.
 constexpr double kPosUpdWarnMm = 1.0;
+
+// Axis servo indicator: green when the controller reports the motor enabled.
+const ImVec4 kServoOn (0.35f, 0.85f, 0.45f, 1.0f);
+const ImVec4 kServoOff(0.95f, 0.45f, 0.35f, 1.0f);
 }
 
 void App::DrawMotionListPanel()
@@ -82,10 +86,23 @@ void App::DrawMotionListPanel()
 
     const std::vector<std::string>      axes = m->Axes();
     const std::map<std::string, double> pos  = m->Positions();
-    if (ImGui::BeginTable("motionpos", 2,
+    // Servo state + Enable/Disable, for a controller that has the concept
+    // (the ACS gantry). Toggling energises or drops a motor, so it sits behind
+    // the jog arm like every other actuation, and is locked while anything runs.
+    const bool servo = m->SupportsAxisEnable();
+    const std::map<std::string, bool> enabled = servo ? m->AxisEnabled()
+                                                      : std::map<std::string, bool>{};
+    const bool connected =
+        hardware_.MotionState(static_cast<size_t>(selectedMotion_)) == ConnState::Connected;
+    const bool canToggle = servo && connected && jogArmed_ && !orch_.Busy();
+    if (ImGui::BeginTable("motionpos", servo ? 4 : 2,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("Axis");
         ImGui::TableSetupColumn("Position");
+        if (servo) {
+            ImGui::TableSetupColumn("Servo");
+            ImGui::TableSetupColumn("##servobtn");
+        }
         ImGui::TableHeadersRow();
         for (const std::string& ax : axes) {
             ImGui::TableNextRow();
@@ -95,8 +112,31 @@ void App::DrawMotionListPanel()
             const auto it = pos.find(ax);
             if (it != pos.end()) ImGui::Text("%.4f", it->second);
             else                 ImGui::TextDisabled("--");
+            if (!servo) continue;
+
+            const auto en    = enabled.find(ax);
+            const bool known = en != enabled.end();
+            const bool on    = known && en->second;
+            ImGui::TableSetColumnIndex(2);
+            if (!known)  ImGui::TextDisabled("--");
+            else if (on) ImGui::TextColored(kServoOn, "ON");
+            else         ImGui::TextColored(kServoOff, "OFF");
+
+            ImGui::TableSetColumnIndex(3);
+            ImGui::PushID(ax.c_str());
+            ImGui::BeginDisabled(!canToggle || !known);
+            if (ImGui::SmallButton(on ? "Disable" : "Enable"))
+                workflow_.SetAxisEnabled(static_cast<size_t>(selectedMotion_), ax, !on);
+            ImGui::EndDisabled();
+            ImGui::PopID();
         }
         ImGui::EndTable();
+    }
+    if (servo && connected) {
+        ImGui::Checkbox("Arm", &jogArmed_);   // the same flag the Jog window arms
+        ImGui::SameLine();
+        if (orch_.Busy())     ImGui::TextDisabled("servo locked while a run is active");
+        else if (!jogArmed_)  ImGui::TextDisabled("arm to enable/disable an axis");
     }
 
     ImGui::Spacing();

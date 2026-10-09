@@ -2195,6 +2195,25 @@ bool Workflow::StopMotion(std::size_t devIdx)
     return m->StopAll();
 }
 
+bool Workflow::SetAxisEnabled(std::size_t devIdx, const std::string& axis, bool on)
+{
+    if (devIdx >= hw_.MotionCount()) return false;
+    if (hw_.MotionState(devIdx) != ConnState::Connected) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m || !m->SupportsAxisEnable()) return false;
+    if (on && SafetyBlocked()) {
+        FD_WARN("safety", "enable blocked - acknowledge the safety alert first");
+        return false;
+    }
+    // A path leg on a disabled axis would fail mid-path; end it here instead
+    // (UI thread, like StopMotion).
+    if (!on && pathExec_.active && pathExec_.devIdx == devIdx) {
+        pathExec_.active = false;
+        FD_WARN("path", "path abandoned - axis %s disabled", axis.c_str());
+    }
+    return m->SetAxisEnabled(axis, on);
+}
+
 bool Workflow::MoveToPosition(std::size_t devIdx,
                               const std::vector<std::pair<std::string, double>>& targets)
 {

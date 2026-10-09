@@ -73,6 +73,7 @@ struct ACSController::Impl {
     std::thread              pollThread;
     mutable std::mutex       mtx;
     std::map<std::string, double> positions;
+    std::map<std::string, bool>   enabled;   // ACSC_MST_ENABLE per axis, polled
     std::string              lastError;
     std::vector<DataStream*> streams;       // one DataBus topic per axis
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -131,6 +132,7 @@ struct ACSController::Impl {
             acsc_KillAll(handle, NULL);
             acsc_CloseComm(handle);
             handle = ACSC_INVALID;
+            enabled.clear();
         }
     }
 
@@ -144,6 +146,9 @@ struct ACSController::Impl {
                     double pos = 0.0;
                     if (acsc_GetFPosition(handle, i, &pos, NULL)) positions[axes[i]] = pos;
                     vals[i] = positions[axes[i]];
+                    int state = 0;
+                    if (acsc_GetMotorState(handle, i, &state, NULL))
+                        enabled[axes[i]] = (state & ACSC_MST_ENABLE) != 0;
                 }
             }
             // Broadcast each axis to its DataBus topic (outside the lock).
@@ -249,6 +254,31 @@ struct ACSController::Impl {
         std::lock_guard<std::mutex> lock(mtx);
         return connected.load() && acsc_KillAll(handle, NULL);
     }
+
+    std::map<std::string, bool> AxisEnabled() const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return enabled;
+    }
+
+    // The reply only says the controller accepted the command; the ENABLE bit
+    // the poll reads next is what the indicator shows.
+    bool SetAxisEnabled(const std::string& axis, bool on)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        const int idx = AxisIndex(axis);
+        if (idx < 0) { lastError = "invalid axis: " + axis; return false; }
+        const int ok = on ? acsc_Enable(handle, idx, NULL) : acsc_Disable(handle, idx, NULL);
+        if (!ok) {
+            lastError = std::string(on ? "acsc_Enable" : "acsc_Disable") + " failed (" +
+                        std::to_string(acsc_GetLastError()) + ")";
+            FD_ERROR("acs", "%s axis %s: %s", cfg.name.c_str(), axis.c_str(), lastError.c_str());
+            return false;
+        }
+        FD_INFO("acs", "%s axis %s %s", cfg.name.c_str(), axis.c_str(), on ? "enabled" : "disabled");
+        return true;
+    }
 };
 
 } // namespace firedog
@@ -267,6 +297,7 @@ struct ACSController::Impl {
     mutable std::mutex       mtx;
     std::map<std::string, double> targets;
     std::map<std::string, double> positions;   // current (simulated) position
+    std::map<std::string, bool>   enabled;     // servo state; empty while disconnected
     std::vector<DataStream*> streams;          // one DataBus topic per axis
     std::string              lastError;
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -287,6 +318,11 @@ struct ACSController::Impl {
         connected.store(true);
         FD_INFO("acs", "%s connected (simulated) @ %s:%d", cfg.name.c_str(),
                 cfg.ipAddress.c_str(), cfg.port);
+        {
+            // The real Connect enables every axis.
+            std::lock_guard<std::mutex> lock(mtx);
+            for (const auto& a : axes) enabled[a] = true;
+        }
         streams.resize(axes.size());
         for (size_t i = 0; i < axes.size(); ++i)
             streams[i] = &DataBus::Instance().Stream(topics::MotionAxis(cfg.name, axes[i]));
@@ -300,6 +336,8 @@ struct ACSController::Impl {
         { std::lock_guard<std::mutex> lk(pollMtx); was = polling.exchange(false); }
         if (was) { pollCv.notify_one(); if (pollThread.joinable()) pollThread.join(); }
         connected.store(false);
+        std::lock_guard<std::mutex> lock(mtx);
+        enabled.clear();
     }
 
     void PollLoop()
@@ -349,6 +387,7 @@ struct ACSController::Impl {
     {
         std::lock_guard<std::mutex> lock(mtx);
         if (!connected.load()) { lastError = "not connected"; return false; }
+        if (!Enabled(axis)) return false;
         targets[axis] = position;
         return true;
     }
@@ -356,7 +395,38 @@ struct ACSController::Impl {
     {
         std::lock_guard<std::mutex> lock(mtx);
         if (!connected.load()) { lastError = "not connected"; return false; }
+        for (const auto& kv : t)
+            if (!Enabled(kv.first)) return false;
         for (const auto& kv : t) targets[kv.first] = kv.second;
+        return true;
+    }
+    // Caller holds mtx. The controller refuses to move a disabled motor, and so
+    // does the stub, so a sim run shows the same failure the machine would.
+    bool Enabled(const std::string& axis)
+    {
+        const auto it = enabled.find(axis);
+        if (it == enabled.end()) { lastError = "invalid axis: " + axis; return false; }
+        if (!it->second) {
+            lastError = "axis " + axis + " is disabled";
+            FD_ERROR("acs", "%s move refused: %s (simulated)", cfg.name.c_str(), lastError.c_str());
+            return false;
+        }
+        return true;
+    }
+    std::map<std::string, bool> AxisEnabled() const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return enabled;
+    }
+    bool SetAxisEnabled(const std::string& axis, bool on)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        const auto it = enabled.find(axis);
+        if (it == enabled.end()) { lastError = "invalid axis: " + axis; return false; }
+        it->second = on;
+        FD_INFO("acs", "%s axis %s %s (simulated)", cfg.name.c_str(), axis.c_str(),
+                on ? "enabled" : "disabled");
         return true;
     }
     bool SetVelocity(double v)
@@ -388,6 +458,8 @@ bool ACSController::MoveAbsolute(const std::string& a, double p) { return p_->Mo
 bool ACSController::MoveAbsolute(const std::vector<std::pair<std::string, double>>& t) { return p_->MoveAbsolute(t); }
 bool ACSController::SetVelocity(double v) { return p_->SetVelocity(v); }
 bool ACSController::StopAll()            { return p_->StopAll(); }
+std::map<std::string, bool> ACSController::AxisEnabled() const { return p_->AxisEnabled(); }
+bool ACSController::SetAxisEnabled(const std::string& a, bool on) { return p_->SetAxisEnabled(a, on); }
 void ACSController::RequestFastPoll()    { p_->RequestFastPoll(); }
 std::string ACSController::LastError() const { return p_->lastError; }
 

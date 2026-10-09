@@ -33,6 +33,9 @@ public:
     bool MoveAbsolute(const std::vector<std::pair<std::string, double>>& targets) override;
     bool SetVelocity(double mmPerSec) override;                             // acsc_SetVelocity (all axes)
     bool StopAll() override;                                                // acsc_KillAll
+    bool SupportsAxisEnable() const override { return true; }
+    std::map<std::string, bool> AxisEnabled() const override;               // ACSC_MST_ENABLE
+    bool SetAxisEnabled(const std::string& axis, bool on) override;         // acsc_Enable/Disable
     void RequestFastPoll() override;
 
     std::string LastError() const override;

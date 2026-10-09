@@ -55,6 +55,19 @@ public:
     virtual bool IsOnTarget() const { return true; }
     virtual bool StopAll() = 0;
 
+    // Per-axis servo enable (ACS: acsc_Enable / acsc_Disable; the state is the
+    // ENABLE bit of the motor-state word, polled with the positions). A driver
+    // without the concept (PI) says so and refuses. An axis missing from
+    // AxisEnabled() has no known state yet (not connected, not polled).
+    virtual bool SupportsAxisEnable() const { return false; }
+    virtual std::map<std::string, bool> AxisEnabled() const { return {}; }
+    virtual bool SetAxisEnabled(const std::string& axis, bool on)
+    {
+        (void)axis;
+        (void)on;
+        return false;
+    }
+
     // Adaptive-polling demand signal. A consumer that needs realtime position
     // feedback (the PI/ACS page while open, an active-alignment procedure) calls
     // this repeatedly; the driver polls fast for a short window after each call
