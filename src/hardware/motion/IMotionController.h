@@ -105,6 +105,16 @@ public:
         return false;
     }
 
+    // Reference (homing) state. A PI hexapod forgets it on a controller restart
+    // and refuses every MOV until it is referenced again (GCS FRF). Referenced()
+    // is CACHED - read at connect, every few seconds, and continuously while a
+    // reference runs - so a UI may call it every frame. StartReference returns
+    // once the controller has ACCEPTED it; the platform then moves on its own.
+    enum class RefState { Unknown, No, Referencing, Yes };
+    virtual bool     SupportsReference() const { return false; }
+    virtual RefState Referenced() const { return RefState::Unknown; }
+    virtual bool     StartReference() { return false; }
+
     // Rotation pivot point (PI hexapods: GCS SPI / qSPI on the pivot
     // coordinates R S T). Pivot() is the CACHED value — read at connect, again
     // on RequestPivotRead() by the poll thread, and read back after every

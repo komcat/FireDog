@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <optional>
 
 namespace firedog {
 
@@ -170,6 +171,7 @@ void App::DrawMotionDetailPanel()
     for (size_t i = 0; i < axes.size(); ++i) { if (i) axesLine += ' '; axesLine += axes[i]; }
     ImGui::Text("Type : %s", m->Type().c_str());
     ImGui::Text("Axes : %s", axesLine.c_str());
+    if (m->SupportsReference()) DrawMotionReference(idx, m);
     if (m->SupportsPivot()) DrawMotionPivot(idx, m);
     if (m->SupportsBuffers()) DrawMotionBuffers(idx, m);
 
@@ -195,6 +197,73 @@ void App::DrawMotionDetailPanel()
         }
         ImGui::EndTabBar();
     }
+}
+
+// Reference state of a device that can lose it (a PI hexapod forgets it on a
+// controller restart and then refuses every move), and the button that homes
+// it again. Referencing moves the platform on its own path to the reference
+// position, so it sits behind the jog arm, is locked while anything runs, and
+// asks first. Stop (jog panel) aborts it.
+void App::DrawMotionReference(std::size_t devIdx, IMotionController* m)
+{
+    using RefState = IMotionController::RefState;
+    const RefState rs        = m->Referenced();
+    const bool     connected = hardware_.MotionState(devIdx) == ConnState::Connected;
+    const bool     canRef    = connected && jogArmed_ && !orch_.Busy() &&
+                               !workflow_.PathActive() && rs != RefState::Referencing;
+    const std::string& name  = hardware_.MotionName(devIdx);
+
+    ImGui::PushID("reference");
+    ImGui::TextUnformatted("Reference:");
+    ImGui::SameLine();
+    switch (rs) {
+        case RefState::Yes:         ImGui::TextColored(kServoOn, "referenced"); break;
+        case RefState::No:          ImGui::TextColored(kServoOff, "NOT referenced"); break;
+        case RefState::Referencing: ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                                                       "referencing..."); break;
+        default:                    ImGui::TextDisabled("--"); break;
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canRef);
+    if (ImGui::SmallButton("Reference...")) { refMsg_.clear(); openRefConfirm_ = true; }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Home the hexapod (FRF, all axes). Needed after a controller\n"
+                          "restart: until it is referenced, every move is refused.\n"
+                          "Arm (below) to enable; Stop aborts it.");
+    if (connected && rs == RefState::No && !jogArmed_) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("arm to reference");
+    }
+    if (!refMsg_.empty())
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", refMsg_.c_str());
+
+    if (openRefConfirm_) { ImGui::OpenPopup("Reference Hexapod"); openRefConfirm_ = false; }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Reference Hexapod", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (!canRef) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            ImGui::Text("Reference %s?", name.c_str());
+            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.25f, 1.0f),
+                               "The platform moves to its reference position on its own path.");
+            ImGui::TextDisabled("Make sure the gripper and anything it holds are clear.");
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.62f, 0.42f, 0.12f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.52f, 0.16f, 1.0f));
+            if (ImGui::Button("Reference")) {
+                if (!workflow_.StartReference(devIdx))
+                    refMsg_ = "reference not started: " + m->LastError();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
 }
 
 // Rotation pivot of a PI hexapod (GCS SPI / qSPI, shown as X Y Z): the
@@ -266,8 +335,10 @@ void App::DrawMotionPivot(std::size_t devIdx, IMotionController* m)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Set the point U/V/W rotate about (X Y Z, mm).\n"
                           "Every later rotation - jog, recipes, scans - turns about it.\n"
-                          "The controller holds it; FireDog stores it nowhere.\n"
-                          "Accepted only with U, V and W at 0.");
+                          "Accepted only with U, V and W at 0.\n"
+                          "A written pivot also becomes this hexapod's default: FireDog\n"
+                          "writes it back whenever the controller reports another value\n"
+                          "(a controller restart resets it to 0,0,0).");
     ImGui::SameLine();
     ImGui::Checkbox("Arm", &jogArmed_);   // the same flag the Jog window arms
 
@@ -279,6 +350,20 @@ void App::DrawMotionPivot(std::size_t devIdx, IMotionController* m)
         else if (rotated)
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
                                "U/V/W are not 0 - the controller will refuse a new pivot");
+    }
+    if (const std::optional<PivotDefault> d = workflow_.PivotDefaultFor(devIdx)) {
+        const bool off = pv.valid && (std::fabs(pv.x - d->x) > 1e-4 ||
+                                      std::fabs(pv.y - d->y) > 1e-4 ||
+                                      std::fabs(pv.z - d->z) > 1e-4);
+        if (off)
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                               "default X %.4f  Y %.4f  Z %.4f - controller differs; FireDog writes it back (see log)",
+                               d->x, d->y, d->z);
+        else
+            ImGui::TextDisabled("default X %.4f  Y %.4f  Z %.4f (restored after a controller restart)",
+                                d->x, d->y, d->z);
+    } else {
+        ImGui::TextDisabled("no default pivot yet - Write one to keep it across controller restarts");
     }
     if (!pivotMsg_.empty()) {
         if (pivotMsgErr_) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", pivotMsg_.c_str());

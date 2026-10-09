@@ -7,6 +7,7 @@
 #include "core/AlignLighting.h"        // ApplyLighting (a detection model's light)
 #include "core/DeviceReg.h"            // DeviceReg (a gripper tip in gantry space)
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
+#include "core/PivotDefaults.h"        // PivotDefault (restored after a controller restart)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
 #include "core/WaffleTray.h"           // TrayCell (the consumed-cell cursors)
 #include "hardware/HardwareConfig.h"   // AxisTransform, HardwareConfig
@@ -118,7 +119,11 @@ public:
     // IMotionController::SupportsPivot). Refused while that device is pathing:
     // the pivot decides what every U/V/W leg does. The controller itself
     // refuses unless U = V = W = 0; the reason is on the device's LastError.
+    // An accepted write also becomes the device's DEFAULT pivot
+    // (config/pivot.local.json), which TickPivotRestore puts back whenever the
+    // controller reports anything else - a C-887 restart resets it to 0,0,0.
     bool SetPivot(std::size_t devIdx, double x, double y, double z);
+    std::optional<PivotDefault> PivotDefaultFor(std::size_t devIdx) const;
 
     // Start / stop a controller-resident program buffer (Motion page; ACS only -
     // see IMotionController::SupportsBuffers). `label` is where in the buffer to
@@ -130,6 +135,12 @@ public:
     bool RunBuffer(std::size_t devIdx, int buffer, const std::string& label = {},
                    const std::string& thenAxis = {}, double thenTarget = 0.0);
     bool BufferRunning(std::size_t devIdx, int buffer) const;   // cached, cheap
+
+    // Reference (home) a device that has lost it - a PI hexapod after a
+    // controller restart (FRF; see IMotionController::SupportsReference).
+    // Refused under the safety alert and while the device is pathing; a Stop
+    // aborts it and leaves the device unreferenced.
+    bool StartReference(std::size_t devIdx);
     bool StopBuffer(std::size_t devIdx, int buffer);
 
     // Move to an absolute per-axis target set (a saved/taught position) in one
@@ -673,6 +684,14 @@ private:
         double      target = 0.0;
     };
     void TickBufferFollow();   // called from Update()
+
+    // Default pivots (UI thread only): loaded at Start, written by SetPivot and
+    // by the one-time seed. pivotSeqSeen_ is the last PivotPoint::seq each
+    // device's restore check looked at, so one read is acted on once.
+    void TickPivotRestore();   // called from Update()
+    void RememberPivot(const std::string& device, const PivotDefault& p);
+    PivotDefaults                       pivotDefaults_;
+    std::map<std::size_t, unsigned>     pivotSeqSeen_;
 
     // Pending output pulses (PulseIoOutput): pushed by the IO tab, drained by
     // TickIoPulses from Update(); the OFF goes through SetIoOutput so it is

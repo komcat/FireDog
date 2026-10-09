@@ -278,6 +278,7 @@ private:
     void DrawMotionDetailPanel();  // middle: device header + tab bar
     void DrawMotionPivot(std::size_t devIdx, IMotionController* m);   // PI rotation pivot
     void DrawMotionBuffers(std::size_t devIdx, IMotionController* m); // ACS program buffers
+    void DrawMotionReference(std::size_t devIdx, IMotionController* m); // PI reference (FRF)
     void DrawMotionPositionsTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionMapTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionScanTab(std::size_t devIdx, IMotionController* m);
@@ -914,6 +915,8 @@ private:
     bool        pivotMsgErr_  = false;
     std::string bufMsg_;             // last ACS buffer Run/Stop outcome (Motion page)
     bool        bufMsgErr_    = false;
+    bool        openRefConfirm_ = false;   // raise the Reference confirmation next frame
+    std::string refMsg_;             // last Reference request's refusal (Motion page)
 
     // Mapped Path tab (Motion page) UI state. The maps themselves live in
     // session_ (persisted to config/maps.local.json): nodes reference saved

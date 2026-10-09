@@ -40,6 +40,12 @@ constexpr std::int64_t kFastWindowNs = 500'000'000;   // 500 ms
 // controller needs these letters; everything above the driver says X Y Z.
 constexpr const char* kPivotAxes = "R S T";
 
+// How often an idle poll re-reads the reference state (qFRF), and how long
+// after FRF a "not moving" is not yet believed - the platform may not have
+// started when the first poll after the command looks.
+constexpr std::int64_t kRefCheckNs = 5'000'000'000;   // 5 s
+constexpr std::int64_t kRefGraceNs = 1'000'000'000;   // 1 s
+
 std::int64_t NowNs()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -82,6 +88,11 @@ struct PIHexapod::Impl {
     std::int64_t             fastUntilNs = 0;   // poll fast until this steady-ns deadline
     PivotPoint               pivot;             // cached qSPI (guarded by mtx)
     std::atomic<bool>        pivotReadReq{false};   // poll thread re-reads the pivot
+    RefState                 refState = RefState::Unknown;   // cached qFRF (mtx)
+    bool                     referencing = false;            // FRF issued, not yet done (mtx)
+    std::int64_t             refStartNs  = 0;                // when FRF was accepted (mtx)
+    std::int64_t             refCheckNs  = 0;                // next idle qFRF (mtx)
+    bool                     refQueryFailing = false;        // warn once, not every 5 s (mtx)
 
     explicit Impl(MotionConfig c) : cfg(std::move(c))
     {
@@ -110,6 +121,11 @@ struct PIHexapod::Impl {
             if (QueryPivotLocked())
                 FD_INFO("pi", "%s pivot X %.4f Y %.4f Z %.4f", cfg.name.c_str(),
                         pivot.x, pivot.y, pivot.z);
+            QueryRefLocked();
+            refCheckNs = NowNs() + kRefCheckNs;
+            if (refState == RefState::No)
+                FD_WARN("pi", "%s is NOT referenced - every move will be refused until it "
+                              "is (Motion page: Reference)", cfg.name.c_str());
         }
 
         streams.resize(axes.size());
@@ -135,7 +151,89 @@ struct PIHexapod::Impl {
             PI_CloseConnection(id);
             id = -1;
             pivot = PivotPoint{0.0, 0.0, 0.0, false, pivot.seq + 1};
+            refState    = RefState::Unknown;
+            referencing = false;
         }
+    }
+
+    // qFRF over every configured axis into the cache: Yes only when ALL are
+    // referenced. Caller holds mtx. A failed query leaves the cache alone.
+    bool QueryRefLocked()
+    {
+        BOOL ref[16] = {};
+        if (id < 0 || !PI_qFRF(id, axesStr.c_str(), ref)) {
+            int err = 0;
+            if (id >= 0) PI_qERR(id, &err);
+            if (!refQueryFailing)
+                FD_WARN("pi", "%s reference query failed (%d)", cfg.name.c_str(), err);
+            refQueryFailing = true;
+            return false;
+        }
+        refQueryFailing = false;
+        bool all = true;
+        for (std::size_t i = 0; i < axes.size() && i < 16; ++i) all = all && ref[i];
+        refState = all ? RefState::Yes : RefState::No;
+        return true;
+    }
+
+    // While a reference runs: done once nothing moves (after the grace), then
+    // qFRF says whether it took. Otherwise an occasional qFRF, so a controller
+    // that lost its reference behind our back still shows it. Caller holds mtx.
+    void PollRefLocked()
+    {
+        const std::int64_t now = NowNs();
+        if (referencing) {
+            if (now - refStartNs < kRefGraceNs) return;
+            BOOL moving[16] = {};
+            if (PI_IsMoving(id, axesStr.c_str(), moving)) {
+                for (std::size_t i = 0; i < axes.size() && i < 16; ++i)
+                    if (moving[i]) return;
+                referencing = false;
+                QueryRefLocked();
+            } else {
+                // Cannot tell whether it moves: finish only once qFRF says it
+                // took, or "referencing..." would never end.
+                if (!QueryRefLocked() || refState != RefState::Yes) return;
+                referencing = false;
+            }
+            if (refState == RefState::Yes) {
+                FD_INFO("pi", "%s referenced", cfg.name.c_str());
+                QueryPivotLocked();   // a fresh read: the default-pivot check retries on it
+            } else {
+                int err = 0; PI_qERR(id, &err);
+                lastError = "reference did not complete (" + std::to_string(err) + ")";
+                FD_ERROR("pi", "%s %s", cfg.name.c_str(), lastError.c_str());
+            }
+            refCheckNs = now + kRefCheckNs;
+        } else if (now >= refCheckNs) {
+            QueryRefLocked();
+            refCheckNs = now + kRefCheckNs;
+        }
+    }
+
+    RefState Referenced() const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return referencing ? RefState::Referencing : refState;
+    }
+
+    // FRF over all configured axes: the C-887 references the platform as one.
+    // Non-blocking - the poll thread follows it to the end.
+    bool StartReference()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        if (!PI_FRF(id, axesStr.c_str())) {
+            int err = 0; PI_qERR(id, &err);
+            lastError = "PI_FRF failed (" + std::to_string(err) + ")";
+            FD_ERROR("pi", "%s reference failed: %s", cfg.name.c_str(), lastError.c_str());
+            return false;
+        }
+        referencing = true;
+        refStartNs  = NowNs();
+        FD_WARN("pi", "%s referencing (FRF %s) - the platform moves to its reference "
+                      "position", cfg.name.c_str(), axesStr.c_str());
+        return true;
     }
 
     // qSPI into the cache. Caller holds mtx.
@@ -163,6 +261,7 @@ struct PIHexapod::Impl {
                     for (size_t i = 0; i < axes.size(); ++i) positions[axes[i]] = buf[i];
                 }
                 if (pivotReadReq.exchange(false)) QueryPivotLocked();
+                if (id >= 0) PollRefLocked();
             }
             // Broadcast each axis to its DataBus topic (outside the lock so a
             // subscriber callback can't deadlock against Positions()).
@@ -352,6 +451,11 @@ struct PIHexapod::Impl {
     std::int64_t             fastUntilNs = 0;
     PivotPoint               pivot;            // what Pivot() reports (mtx)
     double                   simPivot[3] = {0.0, 0.0, 0.0};   // the "controller's" value
+    // A simulated reference runs kSimRefNs, drives every axis to 0 and ends
+    // referenced; a connect starts referenced.
+    static constexpr std::int64_t kSimRefNs = 3'000'000'000;
+    std::int64_t             simRefUntilNs = 0;      // (mtx)
+    bool                     simReferenced = true;   // (mtx)
 
     explicit Impl(MotionConfig c) : cfg(std::move(c))
     {
@@ -486,7 +590,32 @@ struct PIHexapod::Impl {
     }
     bool IsSettled() { return true; }   // sim snaps to target — never "moving"
     bool IsOnTarget() { return true; }
-    bool StopAll() { return connected.load(); }
+    bool StopAll()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (NowNs() < simRefUntilNs) {   // a stop mid-reference leaves it unreferenced
+            simRefUntilNs = 0;
+            simReferenced = false;
+        }
+        return connected.load();
+    }
+    RefState Referenced() const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) return RefState::Unknown;
+        if (NowNs() < simRefUntilNs) return RefState::Referencing;
+        return simReferenced ? RefState::Yes : RefState::No;
+    }
+    bool StartReference()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        simRefUntilNs = NowNs() + kSimRefNs;
+        simReferenced = true;
+        for (auto& [a, v] : targets) v = 0.0;
+        FD_WARN("pi", "%s referencing (simulated)", cfg.name.c_str());
+        return true;
+    }
 };
 
 } // namespace firedog
@@ -513,6 +642,8 @@ bool PIHexapod::IsSettled() const       { return p_->IsSettled(); }
 bool PIHexapod::IsOnTarget() const      { return p_->IsOnTarget(); }
 bool PIHexapod::StopAll()               { return p_->StopAll(); }
 void PIHexapod::RequestFastPoll()       { p_->RequestFastPoll(); }
+IMotionController::RefState PIHexapod::Referenced() const { return p_->Referenced(); }
+bool PIHexapod::StartReference()        { return p_->StartReference(); }
 PivotPoint PIHexapod::Pivot() const     { return p_->Pivot(); }
 void PIHexapod::RequestPivotRead()      { p_->RequestPivotRead(); }
 bool PIHexapod::SetPivot(double x, double y, double z) { return p_->SetPivot(x, y, z); }

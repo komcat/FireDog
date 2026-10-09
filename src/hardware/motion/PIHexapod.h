@@ -38,6 +38,10 @@ public:
     bool StopAll() override;                                                // PI_STP
     void RequestFastPoll() override;
 
+    bool     SupportsReference() const override { return true; }
+    RefState Referenced() const override;                                    // cached qFRF
+    bool     StartReference() override;                                      // PI_FRF (all axes)
+
     bool       SupportsPivot() const override { return true; }
     PivotPoint Pivot() const override;                                       // cached qSPI
     void       RequestPivotRead() override;                                  // poll thread re-reads

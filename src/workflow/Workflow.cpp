@@ -77,6 +77,7 @@ void Workflow::Start(const HardwareConfig& hw)
     StartLight(hw);
     StartNeedleCal();
     StartDeviceRegs();   // after StartMotion — logs against the fleet it found
+    pivotDefaults_ = LoadPivotDefaults();
 }
 
 // The needle lever arm is read from disk, not from the hardware config: it is
@@ -1680,6 +1681,7 @@ void Workflow::Update(float dt)
     TickIoPulses(); // timed output OFFs (no-op unless a pulse is pending)
     TickPath(dt);   // mapped-path executor (no-op unless a path is running)
     TickBufferFollow();   // the move a buffer Run asked for once it ends
+    TickPivotRestore();   // put a hexapod's pivot back after a controller restart
 }
 
 // ---- Mapped-path executor ---------------------------------------------------
@@ -2291,7 +2293,68 @@ bool Workflow::SetPivot(std::size_t devIdx, double x, double y, double z)
                 hw_.MotionName(devIdx).c_str());
         return false;
     }
-    return m->SetPivot(x, y, z);
+    if (!m->SetPivot(x, y, z)) return false;
+    RememberPivot(hw_.MotionName(devIdx), PivotDefault{x, y, z});
+    return true;
+}
+
+std::optional<PivotDefault> Workflow::PivotDefaultFor(std::size_t devIdx) const
+{
+    if (devIdx >= hw_.MotionCount()) return std::nullopt;
+    const auto it = pivotDefaults_.find(hw_.MotionName(devIdx));
+    if (it == pivotDefaults_.end()) return std::nullopt;
+    return it->second;
+}
+
+void Workflow::RememberPivot(const std::string& device, const PivotDefault& p)
+{
+    pivotDefaults_[device] = p;
+    if (SavePivotDefaults(pivotDefaults_))
+        FD_INFO("pivot", "%s default pivot = X %.4f Y %.4f Z %.4f", device.c_str(),
+                p.x, p.y, p.z);
+}
+
+// The pivot lives only in the controller's volatile memory. Each fresh read
+// (connect, the Read button, after a reference, after a write) is compared
+// with the device's default once: a match is the normal case, a mismatch is
+// written back. A refusal is logged and waits for the next read - the C-887
+// takes SPI only with U = V = W = 0, which a reference restores. A device with
+// no default yet adopts the first NON-zero pivot it reports: 0,0,0 is exactly
+// the value a restart leaves, never one somebody chose.
+void Workflow::TickPivotRestore()
+{
+    constexpr double kTolMm = 1e-4;
+    for (std::size_t i = 0; i < hw_.MotionCount(); ++i) {
+        IMotionController* m = hw_.MotionDevice(i);
+        if (!m || !m->SupportsPivot() || hw_.MotionState(i) != ConnState::Connected) continue;
+        const PivotPoint pv = m->Pivot();
+        if (!pv.valid) continue;
+        const auto seen = pivotSeqSeen_.find(i);
+        if (seen != pivotSeqSeen_.end() && seen->second == pv.seq) continue;
+        // Not now, but not forgotten: the same read is looked at again later.
+        if (pathExec_.active && pathExec_.devIdx == i) continue;
+        if (m->Referenced() == IMotionController::RefState::Referencing) continue;
+        pivotSeqSeen_[i] = pv.seq;
+
+        const std::string& name = hw_.MotionName(i);
+        const auto it = pivotDefaults_.find(name);
+        if (it == pivotDefaults_.end()) {
+            if (std::fabs(pv.x) < kTolMm && std::fabs(pv.y) < kTolMm && std::fabs(pv.z) < kTolMm)
+                continue;
+            FD_INFO("pivot", "%s has no default pivot - adopting the controller's", name.c_str());
+            RememberPivot(name, PivotDefault{pv.x, pv.y, pv.z});
+            continue;
+        }
+        const PivotDefault d = it->second;
+        if (std::fabs(pv.x - d.x) < kTolMm && std::fabs(pv.y - d.y) < kTolMm &&
+            std::fabs(pv.z - d.z) < kTolMm)
+            continue;
+        FD_WARN("pivot", "%s pivot is X %.4f Y %.4f Z %.4f, default X %.4f Y %.4f Z %.4f - "
+                         "restoring", name.c_str(), pv.x, pv.y, pv.z, d.x, d.y, d.z);
+        if (!m->SetPivot(d.x, d.y, d.z))
+            FD_WARN("pivot", "%s pivot restore refused (%s) - trying again after the next "
+                             "read (Reference, or Read)", name.c_str(), m->LastError().c_str());
+    }
 }
 
 bool Workflow::RunBuffer(std::size_t devIdx, int buffer, const std::string& label,
@@ -2319,6 +2382,26 @@ bool Workflow::RunBuffer(std::size_t devIdx, int buffer, const std::string& labe
         bufFollow_ = BufferFollow{devIdx, buffer, thenAxis, thenTarget};
     }
     return true;
+}
+
+bool Workflow::StartReference(std::size_t devIdx)
+{
+    if (devIdx >= hw_.MotionCount()) return false;
+    if (hw_.MotionState(devIdx) != ConnState::Connected) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m || !m->SupportsReference()) return false;
+    // Referencing drives the platform through a homing move of its own, so it
+    // is refused exactly where a move would be.
+    if (SafetyBlocked()) {
+        FD_WARN("safety", "reference not started - acknowledge the safety alert first");
+        return false;
+    }
+    if (pathExec_.active && pathExec_.devIdx == devIdx) {
+        FD_WARN("motion", "reference not started - %s is running a path",
+                hw_.MotionName(devIdx).c_str());
+        return false;
+    }
+    return m->StartReference();
 }
 
 bool Workflow::BufferRunning(std::size_t devIdx, int buffer) const
