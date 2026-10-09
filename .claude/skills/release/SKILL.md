@@ -66,15 +66,22 @@ Read the build log's tail for warnings and keep the count for the report.
 tools\release\package-release.ps1 -Version vX.Y -OutDir <scratchpad>
 ```
 
-It refuses to run without a deploy exe, and it produces exactly the shape the
-v0.1 and v0.2 assets had: the two exes, every runtime `.dll`/`.cti` the preset
-staged beside them (pylon, PI, Ezi-IO), the REPO's `config/` minus
-`*.local.json` (those are THIS machine's taught positions and UI layout — and
-the build dir's `config/` is never read, since a build no longer overwrites a
-machine's own copy), and `assets/`. No libs,
-no CMake state, no logs. Expect about 15 MB. The 100 MB `FireDog.zip` /
-`x64-release-deploy.zip` lying in `out/build` are raw directory dumps and
-never what shipped. List the zip's top level in the report.
+It refuses to run without a deploy exe or without a machine root to seed
+from. From v0.13 the zip carries: the two exes, every runtime `.dll`/`.cti`
+the preset staged beside them (pylon, PI, Ezi-IO), `assets/`, the REPO's
+`config/scripts/` (code - it must match the exe), and a SEED of this
+machine's root (`-SeedRoot`, default `D:\ProgramData\FireDog`): its whole
+`config/` (hardware.json, transforms, every `*.local.json` incl. needle_cal
+and device_reg) and `products/` (the product documents AND `employees.json`
+with its plaintext passwords), minus `*.bak` / `*.zip`. The repo's
+`config/*.json` defaults are no longer shipped. The seed sits beside the exe
+where the first-start migration (core/Paths) copies it into an EMPTY machine
+root; an existing root is never touched. The user chose this on 2026-10-08,
+knowing the seed is one machine's - say so in the notes' Build section. No
+libs, no CMake state, no logs, no data/. Expect about 15 MB. The 100 MB
+`FireDog.zip` / `x64-release-deploy.zip` lying in `out/build` are raw
+directory dumps and never what shipped. List the zip's top level in the
+report.
 
 ## 4. Notes
 

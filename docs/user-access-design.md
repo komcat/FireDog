@@ -52,8 +52,11 @@ enum class UserRole { None = 0, Operator = 1, Technician = 2, Admin = 3 };
 **`config/` is what the repo ships.** A fresh build tree and every release zip
 start from the committed copy — a roster there would be replaced by whatever
 was committed, silently. The file is `<root>/products/employees.json` under the
-machine root (`docs/machine-root-design.md`), which is never shipped, staged or
-rebuilt, so it is the only place a registration survives.
+machine root (`docs/machine-root-design.md`), which is never staged or
+rebuilt, so it is the only place a registration survives. A release zip does
+carry a copy as part of its machine SEED (`products/` beside the exe, from
+`package-release.ps1 -SeedRoot`), but the first-start migration only copies it
+into an EMPTY root — it never replaces a machine's own roster.
 
 That also means **no `xxx.local.json` pair**. That convention exists to protect a
 runtime-written file from the shipped default that is about to overwrite it;
