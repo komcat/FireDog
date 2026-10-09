@@ -305,10 +305,12 @@ sol::object CtxValueToLua(sol::this_state ts, const CtxValue& v)
 // run_script command calls it inline on the recipe worker with engine=null +
 // allowRunRecipe=false (recursion cap).
 
-std::string RunLuaFile(const std::string& path, const CommandRegistry& reg,
+std::string RunLuaFile(const std::string& requested, const CommandRegistry& reg,
                        ExecutionContext& ctx, const std::vector<Recipe>& library,
                        bool allowRunRecipe, LuaEngine* engine)
 {
+    // A shipped "config/scripts/..." default may live under the machine root.
+    const std::string path = LocateShippedScript(requested);
     std::string firstErr;
     // Outlives the Lua state, so a scan the script never finished (an error,
     // Stop) is still written below — labelled by how it ended.
@@ -700,8 +702,10 @@ void LuaEngine::OnLineHook(lua_State* L, lua_Debug* ar)
     }
 }
 
-bool LuaEngine::Start(const std::string& scriptPath, Env env, std::string* err)
+bool LuaEngine::Start(const std::string& requested, Env env, std::string* err)
 {
+    // A shipped "config/scripts/..." default may live under the machine root.
+    const std::string scriptPath = LocateShippedScript(requested);
     if (running_.load()) {
         if (err) *err = "a script is already running";
         return false;
@@ -711,7 +715,12 @@ bool LuaEngine::Start(const std::string& scriptPath, Env env, std::string* err)
         return false;
     }
     if (!std::ifstream(scriptPath).is_open()) {
-        if (err) *err = "cannot open script '" + scriptPath + "'";
+        if (err) {
+            *err = "cannot open script '" + scriptPath + "'";
+            // A shipped spelling was looked for in two places; name both.
+            if (std::filesystem::path(scriptPath).parent_path().generic_string() == "config/scripts")
+                *err += " (beside the exe or in " + MachineScriptsDir() + ")";
+        }
         return false;
     }
     if (worker_.joinable()) worker_.join();   // reap the previous finished run

@@ -65,10 +65,21 @@ bool IsSystemScript(const std::string& pathOrFile)
 std::string SystemScriptPath(const std::string& pathOrFile)
 {
     if (!IsSystemScript(pathOrFile)) return std::string();
-    return "config/scripts/" + std::filesystem::path(pathOrFile).filename().string();
+    return LocateShippedScript("config/scripts/" +
+                               std::filesystem::path(pathOrFile).filename().string());
 }
 
 std::string MachineScriptsDir() { return MachinePath("config/scripts"); }
+
+std::string LocateShippedScript(const std::string& path)
+{
+    std::error_code ec;
+    if (path.empty() || std::filesystem::exists(path, ec)) return path;
+    const std::filesystem::path p(path);
+    if (p.is_absolute() || p.parent_path().generic_string() != "config/scripts") return path;
+    const std::string machine = MachineScriptsDir() + "/" + p.filename().string();
+    return std::filesystem::exists(machine, ec) ? machine : path;
+}
 
 bool IsShippedScript(const std::string& path)
 {
@@ -95,8 +106,10 @@ std::string ExecutionContext::ResolveScript(const std::string& path) const
         std::error_code ec;
         // The string check first: a MISSING shipped file makes equivalent() say
         // "different", and warning that the default is being ignored in favour
-        // of itself would send the reader looking for a copy nobody made.
-        if (path != sys && !std::filesystem::equivalent(path, sys, ec))
+        // of itself would send the reader looking for a copy nobody made. The
+        // same goes for a shipped spelling that located the machine root's copy.
+        if (path != sys && LocateShippedScript(path) != sys &&
+            !std::filesystem::equivalent(path, sys, ec))
             FD_WARN("script", "'%s' is a standard procedure - running the shipped %s "
                               "and ignoring %s", file.c_str(), sys.c_str(), path.c_str());
         return sys;

@@ -118,6 +118,16 @@ Three folders, consulted in order by `ExecutionContext::ResolveScript`:
 **Standard procedures (`IsSystemScript`) skip all of this** and always run the
 shipped copy, as before.
 
+**A shipped spelling whose file is missing beside the exe falls back to the
+machine root.** `LocateShippedScript` turns `config/scripts/<file>` into
+`<root>/config/scripts/<file>` when the exe's copy is absent and the root's
+exists — for an install whose exe folder holds only the exe (its `config/`
+renamed away after the migration). `SystemScriptPath`, `LuaEngine::Start` and
+`RunLuaFile` all apply it, so a standard procedure, a typed scan's default
+`file` and a UI launcher's literal default all find it. The exe's copy still
+wins whenever it exists — it is the one built with the commands it calls — so a
+rebuild, which restages `config/scripts/`, takes over from the root's copy.
+
 Without a product the Scripts page lists the machine folder *and* the shipped
 one (a machine copy wins by name). Saving a shipped, non-standard script writes
 the machine's copy instead (`SaveScriptEditor`), which then runs; New Script

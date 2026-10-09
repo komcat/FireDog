@@ -88,7 +88,8 @@ bool IsSystemScript(const std::string& pathOrFile);
 
 // "config/scripts/<file>" for a system script, "" for anything else. The one
 // place the shipped location is spelled, so a UI launcher and ResolveScript
-// cannot disagree about which file "the procedure" means.
+// cannot disagree about which file "the procedure" means. Passed through
+// LocateShippedScript, so it may name the machine root's copy instead.
 std::string SystemScriptPath(const std::string& pathOrFile);
 
 // The script folders other than a product's. The SHIPPED one is the exe's
@@ -98,6 +99,15 @@ std::string SystemScriptPath(const std::string& pathOrFile);
 // the shipped file of the same name, exactly as a product's copy beats both.
 std::string MachineScriptsDir();
 bool        IsShippedScript(const std::string& path);   // sits in the exe's config/scripts
+
+// A shipped spelling ("config/scripts/<file>") whose file is MISSING beside the
+// exe resolves to "<MachineScriptsDir()>/<file>" when that exists, so an install
+// whose exe folder holds only the exe keeps its scripts under the machine root
+// (D:/ProgramData/FireDog, else the C:/ProgramData fallback). The exe's copy
+// still wins while it exists: it is the one built with these commands. Any
+// other path comes back unchanged. LuaEngine::Start and RunLuaFile both apply
+// it, so a launcher that spells the shipped path needs nothing else.
+std::string LocateShippedScript(const std::string& path);
 
 class ExecutionContext {
 public:
