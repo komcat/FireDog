@@ -1502,7 +1502,7 @@ bool Workflow::LightTargets(const std::string& light, const std::string* color, 
 
     LightColor callout = LightColor::White;
     if (color && !ParseLightColor(*color, callout))
-        return fail("unknown colour '" + *color + "'");
+        return fail("unknown color '" + *color + "'");
 
     const int native = CcsPd3::PercentToNative(percent);
     bool anyLit = false;
@@ -1517,6 +1517,54 @@ bool Workflow::LightTargets(const std::string& light, const std::string* color, 
     if (color && !anyLit)
         return fail("light '" + light + "' has no channel for call-out '" + *color + "'");
     return true;
+}
+
+bool Workflow::LitCallout(const std::string& light, std::string* color, double* percent) const
+{
+    CcsPd3* l = ConnectedLight();
+    if (!l) return false;
+    const CcsPd3::Status s = l->GetStatus();
+    if (!s.valid) return false;
+
+    // The light's channels (an "off" resolves every one of them to 0), then
+    // what each one reads back. An OFF output is dark whatever its setpoint.
+    std::vector<std::pair<int, int>> chans;
+    if (!LightTargets(light, nullptr, 0.0, chans, nullptr)) return false;
+    std::vector<std::pair<int, int>> now;   // (channel, native as lit; 0 = dark)
+    int level = 0;                          // the one level every lit channel shares
+    for (const auto& target : chans) {
+        const int ch = target.first;
+        const CcsPd3::ChannelStatus* rb = nullptr;
+        for (const CcsPd3::ChannelStatus& c : s.ch)
+            if (c.channel == ch) { rb = &c; break; }
+        if (!rb) return false;
+        const int v = (rb->on && rb->intensity > 0) ? rb->intensity : 0;
+        if (v > 0) {
+            if (level > 0 && v != level) return false;   // two levels: a hand-set mix
+            level = v;
+        }
+        now.emplace_back(ch, v);
+    }
+    if (level == 0) {
+        if (color) *color = "off";
+        if (percent) *percent = 0.0;
+        return true;
+    }
+    // The first call-out whose lit set is exactly the lit set read back. The
+    // targets come from LightTargets, so this can never disagree with what a
+    // click on that call-out would send.
+    for (const std::string& name : LightColorNames()) {
+        std::vector<std::pair<int, int>> want;
+        if (!LightTargets(light, &name, 100.0, want, nullptr)) continue;
+        bool same = (want.size() == now.size());
+        for (std::size_t i = 0; same && i < want.size(); ++i)
+            same = (want[i].first == now[i].first) && ((want[i].second > 0) == (now[i].second > 0));
+        if (!same) continue;
+        if (color) *color = name;
+        if (percent) *percent = CcsPd3::NativeToPercent(level);
+        return true;
+    }
+    return false;
 }
 
 bool Workflow::SetLightChannel(int channel, double percent)

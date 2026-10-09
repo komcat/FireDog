@@ -749,7 +749,7 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
                                               : "When detection %d misses (or finds a point out of\n"
                                                 "band), try detection %d: its own model, taught at\n"
                                                 "its own exposure - for parts whose reflection or\n"
-                                                "colour varies.",
+                                                "color varies.",
                                           t - 1, t);
                     if (!AlignTierOn(st, t)) { ImGui::PopID(); continue; }
                 }

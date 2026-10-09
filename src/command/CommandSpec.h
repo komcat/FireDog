@@ -42,6 +42,8 @@ enum class ParamType {
     DevicePsu,      // PSU fleet device name; "" = the first configured PSU
                     // (so a step saved before there were several still runs)
     Slide,          // pneumatic slide name
+    LightName,      // a light on the lighting controller: a channel group
+                    // ("main_camera_light") or an ungrouped channel's name
     PositionUid,    // SavedPositions uid (resolved against the step's "device")
     AlignUid,       // Alignment-procedure uid (or name) in the product document
     NominalUid,     // Nominal uid (or name) WITHIN the step's "alignment" — the

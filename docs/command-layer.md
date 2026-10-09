@@ -30,6 +30,9 @@ other channels go dark), `light_off` (one light, or every channel when empty) an
 `light_read` (a channel's read-back percent into ctx, 0 when off). `light_color` and
 `light_off` FAIL when the light or call-out matches no channel — a step that lit nothing
 must not read as one that worked. All four reach Lua as `fd.light_*`. None is a mover.
+The `light` param of `light_color`/`light_off` is `ParamType::LightName`: the Recipe Editor
+offers the configured lights (`Workflow::LightNames`, plus "(every light)" for empty) and
+validation refuses a name that matches no enabled channel (`ChannelInLight`).
 
 **The two-speed move.** Every point-to-point move command — `move_to_position`,
 `move_to_position_offset`, `move_relative`, `move_to_position_approach`, `move_lift_off`

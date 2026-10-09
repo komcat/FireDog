@@ -47,6 +47,7 @@ public:
     CLD101x*      Cld()      { return cld_.get(); }        // null until Workflow builds it
     void SetCld(std::unique_ptr<CLD101x> c) { cld_ = std::move(c); }
     CcsPd3*       Light()    { return light_.get(); }      // null until Workflow builds it
+    const CcsPd3* Light() const { return light_.get(); }   // recipe validation (light names)
     void SetLight(std::unique_ptr<CcsPd3> l) { light_ = std::move(l); }
 
     // --- Motion fleet (PI hexapods + ACS gantry). Multiple, heterogeneous. ----

@@ -377,20 +377,21 @@ CommandResult ExecVisionDetect(ExecutionContext& ctx, const ParamValues& p)
     const VisionModel* m = ctx.FindVisionModel(name);
     if (!m) return CommandResult::Fail("detection model '" + name + "' not found");
 
+    // The light the model was taught under, FIRST (then the exposure - the
+    // order align_station uses). A model that carries one and cannot get it
+    // FAILS: a detection under the wrong light is a different picture, not a
+    // slightly worse one.
+    if (p.GetBool("apply_lighting")) {
+        std::string why;
+        if (!ctx.Wf().ApplyLighting(m->lighting, &why))
+            return CommandResult::Fail("'" + m->name + "': " + why);
+    }
     const double expo = p.GetDouble("exposure_us");
     // The model's own exposure is the default; the step may override it. A
     // detector is tuned AT an exposure, so carrying it with the model is what
     // makes a taught model reproducible.
     const double useExpo = expo > 0.0 ? expo : m->exposureUs;
     if (useExpo > 0.0) ctx.Wf().SetCameraExposure(useExpo);
-    // Same for the light it was taught under. A model that carries one and
-    // cannot get it FAILS: a detection under the wrong light is a different
-    // picture, not a slightly worse one.
-    if (p.GetBool("apply_lighting")) {
-        std::string why;
-        if (!ctx.Wf().ApplyLighting(m->lighting, &why))
-            return CommandResult::Fail("'" + m->name + "': " + why);
-    }
 
     VisionDetection d;
     bool warnedStale = false;
@@ -431,12 +432,12 @@ CommandResult ExecVisionTest(ExecutionContext& ctx, const ParamValues& p)
     const VisionModel* m = ctx.FindVisionModel(name);
     if (!m) return CommandResult::Fail("detection model '" + name + "' not found");
 
-    if (m->exposureUs > 0.0) ctx.Wf().SetCameraExposure(m->exposureUs);
-    {
+    {   // light, then exposure - the order align_station uses
         std::string why;
         if (!ctx.Wf().ApplyLighting(m->lighting, &why))
             return CommandResult::Fail("'" + m->name + "': " + why);
     }
+    if (m->exposureUs > 0.0) ctx.Wf().SetCameraExposure(m->exposureUs);
 
     std::vector<VisionDetection> hits;
     hits.reserve(static_cast<std::size_t>(runs));

@@ -30,6 +30,7 @@ const char* ParamTypeName(ParamType t)
     case ParamType::DeviceIo:     return "io device";
     case ParamType::DevicePsu:    return "psu device";
     case ParamType::Slide:        return "slide";
+    case ParamType::LightName:    return "light";
     case ParamType::PositionUid:  return "position uid";
     case ParamType::AlignUid:     return "alignment";
     case ParamType::NominalUid:   return "nominal";
@@ -90,6 +91,7 @@ bool TypeMatches(ParamType t, const nlohmann::json& v)
     case ParamType::DeviceIo:
     case ParamType::DevicePsu:
     case ParamType::Slide:
+    case ParamType::LightName:
     case ParamType::PositionUid:
     case ParamType::AlignUid:
     case ParamType::NominalUid:

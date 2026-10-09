@@ -407,9 +407,9 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
                                         "light set");
                   }});
     reg.Register({"light_color", "Instruments",
-                  "Light a colour call-out on one light; its other channels go dark",
+                  "Light a color call-out on one light; its other channels go dark",
                   {
-                      {"light", PT::String, false, "main_camera_light", 0, 0, {},
+                      {"light", PT::LightName, false, "main_camera_light", 0, 0, {},
                        "light: a channel group, or an ungrouped channel's name"},
                       {"color", PT::Enum, true, {}, 0, 0, colorOptions,
                        "white = red+green+blue; white_collimate adds the collimated light"},
@@ -425,7 +425,7 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
                   }});
     reg.Register({"light_off", "Instruments", "Switch a light (or every channel) off",
                   {
-                      {"light", PT::String, false, "", 0, 0, {},
+                      {"light", PT::LightName, false, "", 0, 0, {},
                        "light to switch off; empty = every configured channel"},
                   },
                   Needs::Light,

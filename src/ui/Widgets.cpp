@@ -1094,7 +1094,7 @@ bool LightCalloutPicker(const char* id, AlignLighting& l, const std::vector<std:
     // Older records may hold an io/psu light; this picker only drives the
     // lighting controller, so show what is there and offer to replace it.
     if (l.kind == "io" || l.kind == "psu") {
-        ImGui::TextDisabled("lighting: %s (set a colour below to replace it)",
+        ImGui::TextDisabled("lighting: %s (set a color below to replace it)",
                             AlignLightingSummary(l).c_str());
     }
 

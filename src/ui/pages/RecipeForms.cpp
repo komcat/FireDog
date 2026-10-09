@@ -440,15 +440,18 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
     case ParamType::DeviceHexapod:
     case ParamType::DeviceIo:
     case ParamType::DevicePsu:
+    case ParamType::LightName:
     case ParamType::Slide: {
         const std::string v = cur.is_string() ? cur.get<std::string>() : "";
         // An empty PSU is a real choice, not an unset one: the first supply.
+        // So is an empty light: every configured channel.
         const std::string preview =
             !v.empty() ? v
-                       : (p.type == ParamType::DevicePsu
-                              ? (hardware_.PsuCount() > 0 ? "(first: " + hardware_.PsuName(0) + ")"
-                                                          : std::string("(first PSU)"))
-                              : std::string("(pick)"));
+            : p.type == ParamType::DevicePsu
+                ? (hardware_.PsuCount() > 0 ? "(first: " + hardware_.PsuName(0) + ")"
+                                            : std::string("(first PSU)"))
+            : p.type == ParamType::LightName ? std::string("(every light)")
+                                             : std::string("(pick)");
         ImGui::SetNextItemWidth(fitW(preview));
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         previewTip(preview);
@@ -473,6 +476,15 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             } else if (p.type == ParamType::DevicePsu) {
                 for (std::size_t i = 0; i < hardware_.PsuCount(); ++i)
                     item(hardware_.PsuName(i));
+            } else if (p.type == ParamType::LightName) {
+                // The same list the Light page and the call-out pickers offer.
+                if (ImGui::Selectable("(every light)", v.empty())) {
+                    params[p.name] = std::string();
+                    changed = true;
+                }
+                const std::vector<std::string> lights = workflow_.LightNames();
+                for (const std::string& n : lights) item(n);
+                if (lights.empty()) ImGui::TextDisabled("no lights configured in hardware.json");
             } else {
                 for (std::size_t i = 0; i < hardware_.SlideCount(); ++i)
                     if (hardware_.Slide(i)) item(hardware_.Slide(i)->Name());

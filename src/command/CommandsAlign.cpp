@@ -309,20 +309,13 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
                                                         : st.exposureUs;
     };
 
-    // Exposure BEFORE the move, so the sensor settles while the axes travel:
-    // the first tier's on an auto station, the manual pick's otherwise.
-    const double expo0 = (!tiers.empty()) ? tierExposure(tiers.front()) : st.exposureUs;
-    double expoNow = 0.0;   // what was last applied, so a tier at the same value skips it
-    if (expo0 > 0.0) {
-        if (!ctx.Wf().SetCameraExposure(expo0))
-            return CommandResult::Fail("camera exposure change rejected (camera connected?)");
-        expoNow = expo0;
-    }
+    // The order is LIGHT, then EXPOSURE, then the MOVE - here and per tier -
+    // so both have settled by the time the axes have.
+    //
     // Lighting belongs to the DETECTION: each tier's model carries the light
     // it was taught under, and there is no station-level fallback - a model
     // set to None leaves the lighting exactly as it is, and so does a manual
-    // station. The first tier's is applied BEFORE the move, so it has settled
-    // by the time the axes have.
+    // station. The first tier's is applied before the move.
     static const AlignLighting kNoLight;
     const auto tierLighting = [&](const Tier& tr) -> const AlignLighting& {
         return tr.model ? tr.model->lighting : kNoLight;
@@ -331,6 +324,15 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     {
         const CommandResult light = ApplyLighting(ctx, lightNow);
         if (!light.ok) return light;
+    }
+    // Exposure, also before the move: the first tier's on an auto station, the
+    // manual pick's otherwise.
+    const double expo0 = (!tiers.empty()) ? tierExposure(tiers.front()) : st.exposureUs;
+    double expoNow = 0.0;   // what was last applied, so a tier at the same value skips it
+    if (expo0 > 0.0) {
+        if (!ctx.Wf().SetCameraExposure(expo0))
+            return CommandResult::Fail("camera exposure change rejected (camera connected?)");
+        expoNow = expo0;
     }
 
     if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
@@ -393,18 +395,19 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
             continue;
         }
         lastModel = tr.model;
-        // Each tier at its own exposure, then frames taken at it.
-        const double ex = tierExposure(tr);
-        if (ex > 0.0 && ex != expoNow) {
-            if (!ctx.Wf().SetCameraExposure(ex))
-                return CommandResult::Fail("camera exposure change rejected (camera connected?)");
-            expoNow = ex;
-        }
+        // Each tier under its own light, then at its own exposure, then frames
+        // taken at both.
         const AlignLighting& lt = tierLighting(tr);
         if (lt.Set() && !(lt == lightNow)) {
             const CommandResult light = ApplyLighting(ctx, lt);
             if (!light.ok) return light;
             lightNow = lt;
+        }
+        const double ex = tierExposure(tr);
+        if (ex > 0.0 && ex != expoNow) {
+            if (!ctx.Wf().SetCameraExposure(ex))
+                return CommandResult::Fail("camera exposure change rejected (camera connected?)");
+            expoNow = ex;
         }
         if (!waitFresh()) return CommandResult::Fail("stopped");
 

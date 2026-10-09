@@ -4,6 +4,7 @@
 #include "command/CommandRegistry.h"
 #include "command/ExecutionContext.h"   // CheckConditionShape
 #include "command/MotionWaits.h"        // kTeachParamName (parallel refuses it)
+#include "core/LightCallout.h"         // ChannelInLight (LightName params)
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "core/Product.h"               // GenerateUid — backfill for recipes without one
@@ -387,6 +388,16 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             break;
         case ParamType::Slide:
             if (!SlideKnown(env.hw, v)) Issue(env, where, path, "unknown slide '" + v + "'");
+            break;
+        case ParamType::LightName:
+            // Only when a controller is configured; without one Needs::Light
+            // below already says so. ChannelInLight is the run-time match.
+            if (const CcsPd3* lc = env.hw.Light()) {
+                bool found = false;
+                for (const CcsPd3::Channel& ch : lc->Channels())
+                    if (ch.enabled && ChannelInLight(ch.group, ch.name, v)) { found = true; break; }
+                if (!found) Issue(env, where, path, "unknown light '" + v + "'");
+            }
             break;
         case ParamType::PositionUid: {
             const auto it = env.positions.find(device);

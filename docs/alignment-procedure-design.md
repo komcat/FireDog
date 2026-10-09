@@ -1016,7 +1016,7 @@ machine-mm↔pixel projection would drift, and the point of the shared
 
 | Command | Role |
 |---|---|
-| `align_station` | drive to the station, apply exposure/lighting, capture E1 or E2 into ctx (crosshair or detector) |
+| `align_station` | set the light, then the exposure, then drive to the station (per tier: light, then exposure); capture E1 or E2 into ctx (crosshair or detector) |
 | `align_solve` | build the frame from the two ctx points, publish it to ctx, persist it |
 | `align_apply` | local (O1) → machine XY into ctx; fails unless a **live** frame was taught this session (§5b) |
 | `move_local` | `align_apply` + one coordinated move (arrival + settle via `MotionWaits.h`) |

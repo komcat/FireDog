@@ -338,7 +338,9 @@ picture being tuned against is the one the run will see. None leaves the
 lighting as it is; there is no station-level fallback. Every run of a model sets it
 first — `align_station` per tier, `vision_detect` (unless `apply_lighting` is
 off), `vision_test`, `grip_mark` — and a model whose light cannot be set FAILS
-rather than detecting under the wrong one.
+rather than detecting under the wrong one. The order is **light → exposure →
+move** (`align_station` sets both before driving to the station, and again per
+tier in that order; `vision_detect`/`vision_test` light before exposure).
 
 The camera foot moved out of the parameter column because those controls are
 properties of the *picture*: reading a luma warning two columns away from the

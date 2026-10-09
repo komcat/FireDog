@@ -278,7 +278,7 @@ public:
     bool DisconnectLight();
     bool SetLightChannel(int channel, double percent);
     bool SetLightOutput(int channel, bool on);
-    // A colour call-out on one light (group name, or an ungrouped channel's
+    // A color call-out on one light (group name, or an ungrouped channel's
     // name): the call-out's channels to `percent`, the light's others to 0.
     // `color` is a LightColorNames() entry. Fails with `why` when the light or
     // the call-out matches no channel — a call-out that lit nothing must not
@@ -292,6 +292,12 @@ public:
                              std::string* why = nullptr);
     // The configured lights (groups + ungrouped channel names), config order.
     std::vector<std::string> LightNames() const;
+    // What `light` shows right now, read off the controller's CACHED read-back
+    // (no socket I/O — safe on the UI thread): the call-out whose pattern it
+    // matches (`color` a LightColorNames() entry, `percent` its level), or
+    // `color` = "off" when every channel of it is dark. False when there is no
+    // read-back yet or the channels hold a mix no call-out produces.
+    bool LitCallout(const std::string& light, std::string* color, double* percent) const;
     // A detection model's illumination (core/AlignLighting.h) —
     // the one implementation. An empty kind is a no-op success. Blocking: call
     // from a worker, never the UI thread.

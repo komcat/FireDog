@@ -262,8 +262,9 @@ private:
 
     // Light page — the CCS PD3 LED lighting controller.
     void DrawLightListPanel();     // left:   status + connect/disconnect + warnings
-    void DrawLightDetailPanel();   // middle: colour call-outs + per-channel sliders
+    void DrawLightDetailPanel();   // middle: color call-outs + per-channel sliders
     void DrawLightInfoPanel();     // right:  identity + read-back per channel
+    void DrawLightCalloutControls();   // color call-out block (Light page + Jog Camera tab)
     // A detection model's "light" call-out, set NOW for judging it on the
     // live image (a LightCalloutPicker click). Queued — no socket I/O here.
     void ApplyLightingNow(const AlignLighting& l);

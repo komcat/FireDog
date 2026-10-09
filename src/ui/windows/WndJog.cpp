@@ -4,7 +4,8 @@
 // The window has four tabs: "Jog" (the motion fleet), "Camera" (the camera
 // fleet — device combo + the Camera page's exposure controls, reused rather
 // than copied so the seed/apply rule lives in one place, plus the live focus
-// score and the Autofocus button), "Pos" (a 3x3 pad of quick moves to
+// score, the Autofocus button and the Light page's color call-out block),
+// "Pos" (a 3x3 pad of quick moves to
 // taught positions, assigned by right-click) and "IO" (a growable list of
 // output rows — one button that toggles or pulses the pin, one dwell field).
 //
@@ -268,6 +269,29 @@ void App::DrawJogCameraTab()
     }
     if (!afErr_.empty())
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", afErr_.c_str());
+
+    // ---- Lighting: the Light page's color call-out block --------------------
+    // The same function on the same App members, so a light or % picked here
+    // shows on the Light page and the reverse. Held to the Light page's level
+    // (a page gate does not cover a window), and connect stays on that page,
+    // as the camera's stays on the Camera page.
+    ImGui::Spacing();
+    if (!CanAccess(Page::Light)) {
+        ImGui::SeparatorText("Color call-out");
+        ImGui::TextDisabled("lighting needs %s access", RoleName(MinRoleFor(Page::Light)));
+    } else if (lightId_.empty()) {
+        ImGui::SeparatorText("Color call-out");
+        ImGui::TextDisabled("no lighting controller configured in hardware.json");
+    } else {
+        ImGui::PushID("jogLight");
+        DrawLightCalloutControls();
+        ImGui::PopID();
+        const ConnState lst = hardware_.LightState();
+        if (lst != ConnState::Connected)
+            ImGui::TextDisabled("lighting %s - connect it on the Lighting page", StateText(lst));
+        else if (orch_.Busy())
+            ImGui::TextDisabled("a run is active - lighting is set by the run");
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -24,7 +24,7 @@ namespace firedog {
 
 namespace {
 
-// A swatch for a channel's configured colour; collimate and unknown are white.
+// A swatch for a channel's configured color; collimate and unknown are white.
 ImVec4 SwatchColor(const std::string& color)
 {
     if (color == "red")   return ImVec4(0.90f, 0.20f, 0.20f, 1.0f);
@@ -92,6 +92,92 @@ void App::DrawLightListPanel()
     }
 }
 
+// The color call-out block: light, %, one button per call-out, All off. Drawn
+// by the Light page AND the Jog window's Camera tab, on the same App members
+// (lightSel_, lightCallPct_, lightErr_), so the two surfaces are one control:
+// a light or % picked on either shows on both. The button the controller's
+// read-back matches is highlighted, so a click on either surface — or a run's
+// light_color — shows on both as well. Locked while a run is active, like the
+// rest of the page.
+void App::DrawLightCalloutControls()
+{
+    const ConnState st = hardware_.LightState();
+    CcsPd3*         l  = hardware_.Light();
+    const bool connected = (st == ConnState::Connected) && l;
+    const bool canEdit   = connected && !orch_.Busy();
+
+    ImGui::SeparatorText("Color call-out");
+    const std::vector<std::string> lights = workflow_.LightNames();
+    if (lightSel_.empty() && !lights.empty()) lightSel_ = lights.front();
+
+    // Stay on the line only if the next widget (w px) still fits, otherwise
+    // wrap: the block lives in the wide Light page and the narrow Jog window.
+    const auto sameLineIfFits = [](float w) {
+        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + w <= right)
+            ImGui::SameLine();
+    };
+    const auto buttonW = [](const char* label) {
+        return ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    };
+
+    std::string litColor;
+    double      litPct = 0.0;
+    const bool  lit = connected && workflow_.LitCallout(lightSel_, &litColor, &litPct);
+
+    ImGui::BeginDisabled(!canEdit);
+    ImGui::SetNextItemWidth(160.0f);
+    if (ImGui::BeginCombo("light", lightSel_.c_str())) {
+        for (const std::string& n : lights)
+            if (ImGui::Selectable(n.c_str(), n == lightSel_)) lightSel_ = n;
+        ImGui::EndCombo();
+    }
+    sameLineIfFits(200.0f);
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::SliderFloat("%##callpct", &lightCallPct_, 0.0f, 100.0f, "%.0f %%");
+
+    bool first = true;
+    for (const std::string& name : LightColorNames()) {
+        LightColor c = LightColor::White;
+        ParseLightColor(name, c);
+        const std::string label = LightColorLabel(c);
+        if (!first) sameLineIfFits(buttonW(label.c_str()));
+        first = false;
+        const bool active = lit && litColor == name;
+        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button(label.c_str())) {
+            lightErr_.clear();
+            if (!workflow_.RequestLightCallout(lightSel_, name, lightCallPct_, &lightErr_))
+                FD_WARN("light", "call-out refused: %s", lightErr_.c_str());
+        }
+        if (active) ImGui::PopStyleColor();
+    }
+    if (ImGui::Button("All off") && l) {
+        lightErr_.clear();
+        for (const CcsPd3::Channel& ch : l->Channels())
+            workflow_.RequestLightChannel(ch.channel, 0.0);
+    }
+    ImGui::EndDisabled();
+
+    // What the controller says the selected light is showing right now.
+    if (connected) {
+        if (!lit) {
+            ImGui::TextDisabled("lit: (no call-out)");
+        } else if (litColor == "off") {
+            ImGui::TextDisabled("lit: off");
+        } else {
+            LightColor c = LightColor::White;
+            ParseLightColor(litColor, c);
+            ImGui::TextDisabled("lit: %s %.0f %%", LightColorLabel(c).c_str(), litPct);
+        }
+    }
+    if (!lightErr_.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, StateColor(ConnState::Failed));
+        ImGui::TextWrapped("%s", lightErr_.c_str());
+        ImGui::PopStyleColor();
+    }
+}
+
 void App::DrawLightDetailPanel()
 {
     const ConnState st = hardware_.LightState();
@@ -102,43 +188,8 @@ void App::DrawLightDetailPanel()
     const bool running = orch_.Busy();
     const bool canEdit = connected && !running;
 
-    // ---- colour call-outs ------------------------------------------------
-    ImGui::SeparatorText("Colour call-out");
-    const std::vector<std::string> lights = workflow_.LightNames();
-    if (lightSel_.empty() && !lights.empty()) lightSel_ = lights.front();
-
-    ImGui::BeginDisabled(!canEdit);
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::BeginCombo("light", lightSel_.c_str())) {
-        for (const std::string& n : lights)
-            if (ImGui::Selectable(n.c_str(), n == lightSel_)) lightSel_ = n;
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(200.0f);
-    ImGui::SliderFloat("%##callpct", &lightCallPct_, 0.0f, 100.0f, "%.0f %%");
-
-    for (const std::string& name : LightColorNames()) {
-        LightColor c = LightColor::White;
-        ParseLightColor(name, c);
-        if (name != LightColorNames().front()) ImGui::SameLine();
-        if (ImGui::Button(LightColorLabel(c).c_str())) {
-            lightErr_.clear();
-            if (!workflow_.RequestLightCallout(lightSel_, name, lightCallPct_, &lightErr_))
-                FD_WARN("light", "call-out refused: %s", lightErr_.c_str());
-        }
-    }
-    if (ImGui::Button("All off") && l) {
-        lightErr_.clear();
-        for (const CcsPd3::Channel& ch : l->Channels())
-            workflow_.RequestLightChannel(ch.channel, 0.0);
-    }
-    ImGui::EndDisabled();
-    if (!lightErr_.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, StateColor(ConnState::Failed));
-        ImGui::TextWrapped("%s", lightErr_.c_str());
-        ImGui::PopStyleColor();
-    }
+    // ---- color call-outs -------------------------------------------------
+    DrawLightCalloutControls();
 
     // ---- per channel -----------------------------------------------------
     ImGui::SeparatorText("Channels");
