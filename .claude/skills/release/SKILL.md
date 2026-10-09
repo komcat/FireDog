@@ -34,31 +34,58 @@ Configuring is allowed (CLAUDE.md permits `cmake --preset`); it re-globs
 sources so a build sees every file added since the last configure. Expect
 "HALCON SDK found", "PI GCS2 SDK found" etc. in the tail.
 
-## 2. The build is the user's - then VERIFY it landed
+## 2. Build it yourself - then VERIFY it landed
 
-The project rule is that the user compiles. Hand them the one command, which
-runs the build inside the VS 18 developer environment:
+**Inside `/release`, Claude runs the deploy build.** The user asked for this on
+2026-10-08: the release is automated end to end. It is the ONE exception to
+the project rule that the user compiles - a normal session still never runs
+`cmake --build`; outside this skill, hand the user the command.
+
+**Tag first, locally (do NOT push yet).** The exe reports `git describe`
+(core/BuildInfo, re-read on every build), so the tag must exist on the commit
+being built or the exe calls itself `v<previous>-N-g<hash>`:
 
 ```
-! cmd /c "call \"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat\" && cmake --build out/build/x64-release-deploy"
+git tag -a vX.Y -m "FireDog vX.Y" <head-sha>
 ```
 
-When they say it is built, do not take their word for it - check:
+The tree must be clean at this point (a dirty tree builds `vX.Y-dirty`).
+
+Before building, make sure no other build is using the folder
+(`Get-Process ninja, cl, link -ErrorAction SilentlyContinue`) - a concurrent
+build fails with "ninja: error: failed recompaction: Permission denied". If one
+is running, it is probably the user's: wait for it rather than start a second.
+
+Then build in the BACKGROUND (a release build from a fresh folder takes
+minutes; never block a foreground call on it), logging to the scratchpad:
+
+```
+$vc = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
+cmd /c "`"$vc`" >nul 2>&1 && cmake --build out/build/x64-release-deploy" *> <scratchpad>\build-vX.Y.log
+```
+
+(PowerShell tool, `run_in_background: true`; you are notified when it ends.)
+On failure, report the first error lines from the log and stop - do not pack.
+
+Verify, whatever ran the build:
 
 ```
 Get-Item out\build\x64-release-deploy\FireDog.exe, out\build\x64-release-deploy\FireDogRig.exe | Select-Object Name, Length, LastWriteTime
+Get-Content out\build\x64-release-deploy\generated\firedog_gitinfo.h
 ```
 
-Both timestamps must be newer than HEAD's commit time (`git log -1 --format=%cI`).
-Twice in a row the "built" binary turned out to be `out\build\x64-debug\FireDog.exe`
-(17 MB, debug runtime) because the IDE's active configuration was Debug; the
-deploy exe was still weeks old. Say exactly that - which exe is fresh, which is
-stale - and give the command again. If the user has explicitly delegated
-("go ahead") and the build still has not landed, run the command yourself in
-the background with a log in the scratchpad, and say plainly in the report
-that you did. A release from a stale or debug binary is worse than a delay.
+Both exe timestamps must be newer than HEAD's commit time
+(`git log -1 --format=%cI`), and `FD_GIT_DESCRIBE` must be exactly `vX.Y` (no
+`-dirty`, no `-N-g…`). Twice the "built" binary turned out to be
+`out\build\x64-debug\FireDog.exe` (17 MB, debug runtime) while the deploy exe
+was weeks old - never take a timestamp on trust. A release from a stale,
+dirty or debug binary is worse than a delay.
 
 Read the build log's tail for warnings and keep the count for the report.
+
+If a commit lands AFTER the tag but before publishing (e.g. a packaging or
+docs fix that does not change the exe), leave the tag on the built commit -
+the tag names the source of the binary - and push master as well.
 
 ## 3. Pack
 
@@ -101,8 +128,11 @@ style of the v0.1 and v0.2 releases (`gh release view v0.2 --json body`):
 
 ## 5. Tag, publish, verify
 
+The tag was made locally in step 2, on the commit that was built. Push master
+first, then the tag:
+
 ```
-git tag -a vX.Y -m "FireDog vX.Y" <head-sha> && git push origin vX.Y
+git push origin master && git push origin vX.Y
 gh release create vX.Y <zip> --title "FireDog vX.Y" --notes-file <notes.md> --latest
 gh release view vX.Y --json tagName,name,isDraft,targetCommitish,assets,url
 gh release list --limit 3
@@ -124,6 +154,12 @@ the packaging script and this skill in mind for follow-ups the user may want.
   own folder are un-ignored explicitly. A new `release/` folder needs the same.
 - `cmake` is not on PATH in Git Bash; every cmake call goes through the VS 18
   vcvars in PowerShell (`cmd /c "call vcvars64.bat && cmake ..."`).
+- `gh` (GitHub CLI) was installed with winget on 2026-10-08 at
+  `C:\Program Files\GitHub CLI\gh.exe`. A session started before an install
+  does not have it on PATH - call it by that full path. If `gh auth status`
+  says not logged in, the user runs
+  `! & "C:\Program Files\GitHub CLI\gh.exe" auth login --web` (interactive,
+  so it cannot be done for them).
 - Do not create the release before the tag is pushed, and do not tag before
   master is pushed: `gh release create` on an unknown tag makes its own tag on
   the default branch head, which may not be the commit you packaged.

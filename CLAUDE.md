@@ -29,7 +29,7 @@ Three targets: **`firedog_hw`** (static lib — `src/core` + `src/hardware` +
 
 CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first configure needs network). Vendor SDKs are optional, each gated by a compile def (`HAS_PYLON`/`HAS_VISA`/`HAS_PI`/`HAS_ACS`/`HAS_EZIIO`/`HAS_HALCON`) with a simulated stub fallback, so the build always stays green — details in `docs/build-and-sdks.md`.
 
-**The user compiles and tests themselves** (global preference). Do **not** run `cmake --build …` or launch the app — `cmake --preset` is fine; leave building and running to the user.
+**The user compiles and tests themselves** (global preference). Do **not** run `cmake --build …` or launch the app — `cmake --preset` is fine; leave building and running to the user. **One exception: the `/release` skill builds `x64-release-deploy` itself** (in the background, logged, then verified) — the user asked for releases to be automated. Nowhere else.
 
 ## Where things are
 
@@ -46,7 +46,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 | — Mosaic | `core/MosaicConfig`, `vision/MosaicLayout` + `ImageShift`, `mosaic/`, `command/CommandsMosaic.cpp`, `ui/pages/PageMosaic.cpp` | large-area capture: an area from 3/4 taught corners walked by `mosaic_capture`, viewed tile-paged with pan/zoom, markers + crop labels, stitched/crop exports, camera-map calibration, seam refinement | `docs/mosaic-design.md` |
 | — Tools | `tools/rig/` | `FireDogRig`, the console bring-up rig (layers 1–2, no UI) | `docs/rig-console.md` |
 | — ML data | `tools/xcan/xcan_label.py`, `xcan_label_ui.py` | offline Python labeler for `<data root>/xcan/`: automatic stall/peak/recovery labels from the scan chains; a tkinter review window for overrides (`data/xcan/overrides.csv`); export to `xcan_labeled/` (CSVs + per-label COPIES — raw day folders are never moved) | `docs/xcan-dataset.md` |
-| — Release | `tools/release/package-release.ps1`, `.claude/skills/release/` | the release zip from the `x64-release-deploy` build (exes + runtime DLLs + the repo's `config/scripts/` + `assets/` + a SEED of a machine root's `config/` and `products/`, laid out for the first-start migration); `/release` is the whole procedure: configure (VS 18 env), the user's build verified by timestamp, pack, notes, tag, `gh release create` | — |
+| — Release | `tools/release/package-release.ps1`, `.claude/skills/release/` | the release zip from the `x64-release-deploy` build (exes + runtime DLLs + the repo's `config/scripts/` + `assets/` + a SEED of a machine root's `config/` and `products/`, laid out for the first-start migration); `/release` is the whole procedure: configure (VS 18 env), tag locally, build (the skill runs it), verify timestamp + describe, pack, notes, push, `gh release create` | — |
 
 ### Topic docs (`docs/`)
 
