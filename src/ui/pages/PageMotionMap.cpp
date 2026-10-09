@@ -170,7 +170,9 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         ImGui::EndPopup();
     }
 
-    if (!mapValid) {
+    // Re-checked, not `mapValid`: the Delete dialog above may have just erased
+    // the selected map (the last one leaves mapSel_ == -1).
+    if (mapSel_ < 0 || mapSel_ >= static_cast<int>(maps.size())) {
         ImGui::Spacing();
         ImGui::TextDisabled("No maps for this device yet - create one with \"+ New\".");
         return;
