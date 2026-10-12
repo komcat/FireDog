@@ -303,7 +303,8 @@ private:
     std::string AutoNickname(const RecipeStep& s) const;   // live label from params
     void DrawRecipeTreeToolbar(Recipe& r, bool canEdit);   // move/delete row
     void DrawRecipePalette(Recipe& r, bool canEdit);       // searchable add-step column
-    bool DrawParamWidget(const ParamSpec& p, nlohmann::json& params);  // schema form row
+    bool DrawParamWidget(const CommandSpec& spec, const ParamSpec& p,
+                         nlohmann::json& params);   // schema form row
     void DrawTeachPositionModal();    // "Teach here" confirm, raised from a form row
     // Overwrite an existing saved position (by uid) with the device's live
     // pose. In place — the uid survives, so every reference to it survives.

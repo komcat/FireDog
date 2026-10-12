@@ -1,7 +1,8 @@
 -- Dispense procedure: put a metered dot of epoxy where the camera is looking
 --
--- The dispense point is a SAVED POSITION holding the camera over the target.
--- That is the whole trick: a position is taught by driving the camera to the
+-- The dispense point is a CAMERA POSE over the target: a point taught into the
+-- dispense_run step itself (Teach here), or a saved position when several steps
+-- share one. The whole trick: a point is taught by driving the camera to the
 -- feature and looking at it, which an operator can do and check, and the needle
 -- calibration is what turns "where the camera stands" into "where the needle
 -- stands". Nothing here holds a needle coordinate, so nothing here goes stale
@@ -23,7 +24,10 @@
 -- convention.
 --
 -- Parameters (fd.param -> ctx keys, injected by a dispense_run recipe step):
---   disp_position    saved position with the CAMERA over the point  (required)
+--   disp_point       true = the step carries a taught camera point:
+--   disp_x/_y/_z       its X, Y, Z in the device's axis space
+--   disp_position    else a saved position with the CAMERA over the point
+--                    (exactly one of the two; dispense_run refuses both/none)
 --   disp_device      the gantry carrying both       (default "gantry-main")
 --   disp_shot_ms     valve open time = shot size    (default 300)
 --   disp_before_ms   settle at height before firing (default 0)
@@ -42,6 +46,10 @@
 --                    velocities, mm/s
 
 local POS     = fd.param("disp_position", "")
+local POINT   = fd.param("disp_point", false)
+local PX      = fd.param("disp_x", 0.0)
+local PY      = fd.param("disp_y", 0.0)
+local PZ      = fd.param("disp_z", 0.0)
 local DEV     = fd.param("disp_device", "gantry-main")
 local SHOT    = math.floor(fd.param("disp_shot_ms", 300))
 local BEFORE  = math.floor(fd.param("disp_before_ms", 0))
@@ -59,10 +67,10 @@ local VAPPR   = fd.param("disp_v_approach", 20.0)
 local VFINAL  = fd.param("disp_v_final", 5.0)
 local VLIFT   = fd.param("disp_v_liftoff", 5.0)
 
-if POS == "" then
-    error("disp_position is not set (the saved position holding the camera over " ..
-          "the dispense point). Launch this from a dispense_run recipe step - " ..
-          "running the file directly from the Scripts page injects no parameters.")
+if POS == "" and not POINT then
+    error("no dispense point (disp_point / disp_position) - the camera pose over " ..
+          "the point. Launch this from a dispense_run recipe step - running the " ..
+          "file directly from the Scripts page injects no parameters.")
 end
 
 -- ---- 1. The lever arm ------------------------------------------------------
@@ -86,7 +94,12 @@ if not fd.ctx.arm_verified then
 end
 
 -- ---- 2. Camera over the point ----------------------------------------------
-fd.move_to_position{ device = DEV, position = POS, velocity_mm_s = VTRAVEL }
+if POINT then
+    fd.move_axis_to{ device = DEV, axes = "XYZ", x_mm = PX, y_mm = PY, z_mm = PZ,
+                     velocity_mm_s = VTRAVEL }
+else
+    fd.move_to_position{ device = DEV, position = POS, velocity_mm_s = VTRAVEL }
+end
 
 -- The taught pose gets the camera NEAR the point; this part sits wherever it
 -- sits today. X/Y only: Z is the focus, and the touch height is computed from

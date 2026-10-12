@@ -162,22 +162,34 @@ Deliberately absent from `IsSystemScript`. Where the needle is, is a fact about
 the machine; how much glue goes where is a fact about the **product**, so a
 product's own copy of this file wins over the shipped one and is meant to.
 
-The dispense point is a **saved position holding the camera over the target** —
-which is what FireDog's saved positions already are, and what bobcat reproduced
-with one `navigation_<uid>.json` side file per recipe step (18 of them on the
-live machine). Nothing in the recipe holds a needle coordinate, so nothing goes
-stale when the needle is changed: re-calibrate and every taught point still
-works.
+The dispense point is a **camera pose over the target**, held one of two ways,
+and a step holds exactly one:
+
+- **`point`** (`ParamType::PointXyz`, `{"X","Y","Z"}` in the device's axis
+  space) — taught INTO the step by the editor's *Teach here*. This is the usual
+  case: a dot is one step's business, and bobcat needed one
+  `navigation_<uid>.json` side file per recipe step (18 on the live machine) to
+  say the same thing. No saved position to create or name, no confirmation —
+  nothing else references it.
+- **`position`** — a saved position, for when several steps share one pose.
+
+The `position` picker is the choice: its empty entry reads *custom point —
+taught in this step*, and only then does the `point` row (with its own Go /
+Teach here / Clear) appear. Picking a position clears the point and hides the
+row; teaching a point clears the position;
+`dispense_run` fails before anything moves if it holds both or neither. Nothing
+in the recipe holds a needle coordinate either way, so nothing goes stale when
+the needle is changed: re-calibrate and every taught point still works.
 
 1. `needle_offset{require = true}` — fail before anything travels.
-2. `move_to_position` — camera over the point. With `adjust` (default on), a
-   `manual_adjust` with **X/Y only** lets the operator centre the crosshair on
-   this part's point; everything below starts from where they leave it. Z stays
-   locked because the touch height is computed from the camera's Z. The
-   adjustment applies to **this run only**. Nothing is written back into the
-   step or the position: the next part needs its own nudge, and a run that
-   re-taught its own point would drift the point one part at a time. Then the
-   optional `auto_focus`, over the spot the operator chose.
+2. `move_axis_to` the point (or `move_to_position`) — camera over it. With
+   `adjust` (default on), a `manual_adjust` with **X/Y only** lets the operator
+   centre the crosshair on this part's point; everything below starts from where
+   they leave it. Z stays locked because the touch height is computed from the
+   camera's Z. The adjustment applies to **this run only**. Nothing is written
+   back into the step or the position: the next part needs its own nudge, and a
+   run that re-taught its own point would drift the point one part at a time.
+   Then the optional `auto_focus`, over the spot the operator chose.
 3. `read_position` → `cam_*`; `touch_z = cam_z + dz + dir*trim`,
    `target_z = touch_z − dir*gap`, `safety_z = target_z − dir*safety`.
    **`z_trim_mm` and `gap_mm` are not the same correction and must stay

@@ -825,7 +825,7 @@ std::string App::AutoNickname(const RecipeStep& s) const
                n == "pre_delay_ms" || n == "post_delay_ms";
     };
     std::string out = s.type;
-    const std::string dev = s.params.value("device", std::string());
+    const std::string dev = EffectiveString(*spec, s.params, "device");
     int added = 0;
     for (const ParamSpec& p : spec->params) {
         if (added >= 3) break;
@@ -862,6 +862,11 @@ std::string App::AutoNickname(const RecipeStep& s) const
             const int idx = static_cast<int>(v.get<double>()) - static_cast<int>(p.minVal);
             if (idx >= 0 && idx < static_cast<int>(p.options.size())) piece = p.options[idx];
             else piece = num(v.get<double>());
+        } else if (p.type == ParamType::PointXyz && v.is_object() &&
+                   v.value("X", nlohmann::json()).is_number() &&
+                   v.value("Y", nlohmann::json()).is_number()) {
+            // Where on the part, which is what tells two dispense steps apart.
+            piece = "@" + num(v["X"].get<double>()) + "," + num(v["Y"].get<double>());
         } else if (p.type == ParamType::ScriptFile && v.is_string()) {
             piece = v.get<std::string>();   // show the file name, not the path
             const std::size_t cut = piece.find_last_of("/\\");

@@ -45,7 +45,11 @@ enum class ParamType {
     LightName,      // a light on the lighting controller: a channel group
                     // ("main_camera_light") or an ungrouped channel's name
     PositionUid,    // SavedPositions uid (resolved against the step's "device")
-    AlignUid,       // Alignment-procedure uid (or name) in the product document
+    PointXyz,       // {"X":x,"Y":y,"Z":z} in the step's "device" axis space,
+                    // taught INTO the step by the editor's Teach here — a pose
+                    // that belongs to one step and so needs no saved position.
+                    // Not a string, so CheckReferences never sees it
+    AlignUid,      // Alignment-procedure uid (or name) in the product document
     NominalUid,     // Nominal uid (or name) WITHIN the step's "alignment" — the
                     // same scoping convention PositionUid has to "device", one
                     // level down: a nominal only means anything on its procedure
@@ -148,6 +152,14 @@ struct CommandSpec {
 // (if given) receives the params with defaults substituted.
 std::string ValidateParams(const CommandSpec& spec, const nlohmann::json& params,
                            nlohmann::json* merged = nullptr);
+
+// The string a step will RUN with for one of its params: the stored value,
+// else the schema default, else "". For the editor's sibling lookups (a
+// position picker resolving against "device"): a defaulted device is never
+// written into the step, so reading params alone sees "" where the run sees
+// "gantry-main". Works on an invalid step too, unlike ValidateParams' merge.
+std::string EffectiveString(const CommandSpec& spec, const nlohmann::json& params,
+                            const std::string& name);
 
 // Shared mechanical-settle delays, appended to every command that physically
 // moves something (motion, IO outputs, pneumatics). Both default 0 = off:

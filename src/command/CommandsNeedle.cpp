@@ -264,8 +264,17 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
     reg.Register({"dispense_run", "Needle",
                   "Dispense at a taught camera position (dispense_procedure.lua)",
                   {
-                      {"position", PT::PositionUid, true, {}, 0, 0, {},
-                       "saved position holding the CAMERA over the dispense point - "
+                      // Two ways to say where, and a step holds exactly one:
+                      // the position picker is the choice (its empty entry is
+                      // "custom point"), the editor clears the other when
+                      // either is set, and the step fails before moving if it
+                      // holds both or none.
+                      {"position", PT::PositionUid, false, "", 0, 0, {},
+                       "where the CAMERA stands over the dispense point: a saved "
+                       "position (when several steps share it), or 'custom point' "
+                       "to teach the pose into this step below"},
+                      {"point", PT::PointXyz, false, {}, 0, 0, {},
+                       "the custom camera pose, taught into this step (Teach here) - "
                        "the needle offset is what turns it into a needle move"},
                       {"device", PT::DeviceMotion, false, "gantry-main", 0, 0, {},
                        "the gantry carrying both the camera and the needle"},
@@ -315,6 +324,25 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   },
                   CommandSpec::Needs::None,
                   [rp](ExecutionContext& c, const ParamValues& p) {
+                      const bool hasPos   = !p.GetString("position").empty();
+                      const bool hasPoint = p.Has("point");
+                      if (hasPos && hasPoint)
+                          return CommandResult::Fail(
+                              "dispense_run holds both a taught point and a saved "
+                              "position - clear one");
+                      if (!hasPos && !hasPoint)
+                          return CommandResult::Fail(
+                              "dispense_run has no dispense point - pick a saved "
+                              "position, or 'custom point' and Teach here");
+                      // Every key set on every run, point or not: a recipe
+                      // shares one ctx, and a previous step's disp_x must not
+                      // survive into a step that names a position.
+                      c.CtxSet("disp_point", hasPoint);
+                      const nlohmann::json pt =
+                          hasPoint ? p.Raw().at("point") : nlohmann::json::object();
+                      c.CtxSet("disp_x", hasPoint ? pt.at("X").get<double>() : 0.0);
+                      c.CtxSet("disp_y", hasPoint ? pt.at("Y").get<double>() : 0.0);
+                      c.CtxSet("disp_z", hasPoint ? pt.at("Z").get<double>() : 0.0);
                       c.CtxSet("disp_position", p.GetString("position"));
                       c.CtxSet("disp_device", p.GetString("device"));
                       c.CtxSet("disp_shot_ms", static_cast<double>(p.GetInt("shot_ms")));

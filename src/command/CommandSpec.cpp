@@ -32,6 +32,7 @@ const char* ParamTypeName(ParamType t)
     case ParamType::Slide:        return "slide";
     case ParamType::LightName:    return "light";
     case ParamType::PositionUid:  return "position uid";
+    case ParamType::PointXyz:     return "xyz point";
     case ParamType::AlignUid:     return "alignment";
     case ParamType::NominalUid:   return "nominal";
     case ParamType::VisionUid:    return "detection model";
@@ -85,6 +86,9 @@ bool TypeMatches(ParamType t, const nlohmann::json& v)
     case ParamType::IntChoice: return v.is_number_integer() || v.is_number_unsigned();
     case ParamType::Double: return v.is_number();
     case ParamType::Value:  return v.is_boolean() || v.is_number() || v.is_string();
+    case ParamType::PointXyz:
+        return v.is_object() && v.contains("X") && v["X"].is_number() &&
+               v.contains("Y") && v["Y"].is_number() && v.contains("Z") && v["Z"].is_number();
     case ParamType::String:
     case ParamType::DeviceMotion:
     case ParamType::DeviceHexapod:
@@ -162,6 +166,18 @@ std::string ValidateParams(const CommandSpec& spec, const nlohmann::json& params
     }
 
     if (merged) *merged = std::move(out);
+    return {};
+}
+
+std::string EffectiveString(const CommandSpec& spec, const nlohmann::json& params,
+                            const std::string& name)
+{
+    if (params.is_object() && params.contains(name) && params[name].is_string())
+        return params[name].get<std::string>();
+    for (const ParamSpec& p : spec.params)
+        if (p.name == name)
+            return p.defaultValue.is_string() ? p.defaultValue.get<std::string>()
+                                              : std::string();
     return {};
 }
 

@@ -167,7 +167,7 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
         const std::vector<ParamSpec>& ps = spec->params;
         for (std::size_t i = 0; i < ps.size();) {
             if (ps[i].group.empty()) {
-                DrawParamWidget(ps[i], s.params);
+                DrawParamWidget(*spec, ps[i], s.params);
                 ++i;
                 continue;
             }
@@ -183,7 +183,7 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
             if (open) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
             if (ImGui::CollapsingHeader(ps[i].group.c_str())) {
                 ImGui::Indent();
-                for (std::size_t k = i; k < j; ++k) DrawParamWidget(ps[k], s.params);
+                for (std::size_t k = i; k < j; ++k) DrawParamWidget(*spec, ps[k], s.params);
                 ImGui::Unindent();
             }
             i = j;
@@ -198,7 +198,7 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
 // One schema-driven form row: reads params[p.name] (schema default when
 // absent), writes back on edit. The widget is chosen by ParamType — the whole
 // reason the typed registry exists. Returns true when the value changed.
-bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
+bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann::json& params)
 {
     bool changed = false;
     ImGui::PushID(p.name.c_str());
@@ -332,10 +332,10 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         // for move_to_nominal means "back to the frame's Z"; a stored 0 is not
         // the same thing as no value, and the box alone cannot show which.
         if (p.name == "z_mm") {
-            std::string dev = params.value("device", std::string());
+            std::string dev = EffectiveString(spec, params, "device");
             if (dev.empty())
                 if (const AlignProc* ap = FindAlignProc(session_.Aligns(),
-                                                        params.value("alignment", std::string())))
+                                                        EffectiveString(spec, params, "alignment")))
                     dev = ap->device;
             IMotionController* mc = nullptr;
             for (std::size_t i = 0; i < hardware_.MotionCount(); ++i)
@@ -494,21 +494,41 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         break;
     }
     case ParamType::PositionUid: {
-        const std::string dev = params.value("device", std::string());
+        // The device the step will RUN on: a schema default (dispense_run's
+        // "gantry-main") is never stored, and reading params alone left this
+        // picker empty and Go / Teach here disabled.
+        const std::string dev = EffectiveString(spec, params, "device");
         const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
-        std::string preview   = v.empty() ? "(pick)" : v;
+        // A step that can also carry its pose INLINE (a PointXyz sibling, e.g.
+        // dispense_run's "point") holds one answer to where, and this picker
+        // is the CHOICE: its empty entry is "custom point" (the point row below
+        // appears and its Teach here stores the pose in the step), a saved
+        // position hides the point row and clears it. With custom chosen the
+        // Go / Teach here pair stays off this row - the point row has its own.
+        const bool pointSibling =
+            std::any_of(spec.params.begin(), spec.params.end(),
+                        [](const ParamSpec& q) { return q.type == ParamType::PointXyz; });
+        const char* const emptyName = pointSibling ? "(custom point - taught in this step)"
+                                                   : "(none)";
+        std::string preview   = v.empty() ? (pointSibling ? emptyName : "(pick)") : v;
         bool resolved         = v.empty();   // empty = nothing to warn about yet
         const auto it = session_.Positions().find(dev);
         if (it != session_.Positions().end()) {
             for (const SavedPos& sp : it->second)
                 if (sp.uid == v) { preview = sp.name; resolved = true; break; }
         }
+        const bool showPair = !(pointSibling && v.empty());
         if (!resolved) pushStale();
-        ImGui::SetNextItemWidth(fitW(preview, smallButtonsW({"Go", "Teach here"})));
+        ImGui::SetNextItemWidth(
+            fitW(preview, showPair ? smallButtonsW({"Go", "Teach here"}) : 0.0f));
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
         previewTip(preview);
         if (open) {
+            if (!p.required && ImGui::Selectable(emptyName, v.empty())) {
+                params.erase(p.name);
+                changed = true;
+            }
             if (it == session_.Positions().end() || it->second.empty())
                 ImGui::TextDisabled("(no saved positions for '%s')", dev.c_str());
             else
@@ -520,6 +540,8 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
                     if (sp.hidden) continue;
                     if (ImGui::Selectable(sp.name, sp.uid == v)) {
                         params[p.name] = sp.uid;   // stores the uid, shows the name
+                        for (const ParamSpec& q : spec.params)
+                            if (q.type == ParamType::PointXyz) params.erase(q.name);
                         changed = true;
                     }
                 }
@@ -548,41 +570,144 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
             break;
         }
         const bool canTeach = mc && mc->IsConnected() && resolved && !v.empty();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!canTeach);
-        if (ImGui::SmallButton("Go")) {
-            std::vector<std::pair<std::string, double>> tgt;
-            // it->second, not Positions()[dev]: operator[] would INSERT an
-            // empty device list for a name that has none. canTeach already
-            // required the lookup above to have found this position.
-            for (const SavedPos& sp : it->second) {
-                if (sp.uid != v) continue;
-                for (const std::string& ax : mc->Axes()) {
-                    const auto av = sp.vals.find(ax);
-                    if (av != sp.vals.end()) tgt.emplace_back(ax, av->second);
+        if (showPair) {
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!canTeach);
+            if (ImGui::SmallButton("Go")) {
+                std::vector<std::pair<std::string, double>> tgt;
+                // it->second, not Positions()[dev]: operator[] would INSERT an
+                // empty device list for a name that has none. canTeach already
+                // required the lookup above to have found this position.
+                for (const SavedPos& sp : it->second) {
+                    if (sp.uid != v) continue;
+                    for (const std::string& ax : mc->Axes()) {
+                        const auto av = sp.vals.find(ax);
+                        if (av != sp.vals.end()) tgt.emplace_back(ax, av->second);
+                    }
+                    break;
                 }
-                break;
+                if (!workflow_.MoveToPosition(static_cast<std::size_t>(devIdx), tgt))
+                    FD_WARN("saved", "move %s -> '%s' failed", dev.c_str(), preview.c_str());
             }
-            if (!workflow_.MoveToPosition(static_cast<std::size_t>(devIdx), tgt))
-                FD_WARN("saved", "move %s -> '%s' failed", dev.c_str(), preview.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Teach here")) {
+                // Handoff only. The pose is read when the dialog is confirmed, not
+                // now: the driver idles at 1 Hz and the dialog is what asks it to
+                // poll fast.
+                teachPosDev_  = dev;
+                teachPosUid_  = v;
+                openTeachPos_ = true;
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !canTeach)
+                ImGui::SetTooltip("%s", !mc                 ? "the step names no motion device"
+                                        : !mc->IsConnected() ? "device not connected"
+                                                             : "pick a position first");
         }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Teach here")) {
-            // Handoff only. The pose is read when the dialog is confirmed, not
-            // now: the driver idles at 1 Hz and the dialog is what asks it to
-            // poll fast.
-            teachPosDev_  = dev;
-            teachPosUid_  = v;
-            openTeachPos_ = true;
-        }
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !canTeach)
-            ImGui::SetTooltip("%s", !mc                 ? "the step names no motion device"
-                                    : !mc->IsConnected() ? "device not connected"
-                                                         : "pick a position first");
 
         if (!resolved)
             ImGui::TextColored(kStaleRed, "not a position of '%s' - re-pick", dev.c_str());
+        break;
+    }
+    case ParamType::PointXyz: {
+        // A camera pose taught INTO the step: no saved position to create,
+        // name or pick, and nothing shared with another step - so Teach here
+        // writes straight into the step with no confirmation (the PositionUid
+        // row asks because its write moves every other reference too). Axis
+        // space of the step's device, read as the live X/Y/Z - exactly what
+        // move_axis_to commands back.
+        //
+        // The buttons inherit the inspector's BeginDisabled(!canEdit), like the
+        // position row's.
+        //
+        // Shown only when the position picker above says "custom point": with
+        // a saved position chosen the step has no point (the pick cleared it),
+        // and a Teach here here would silently switch the step back.
+        const bool savedChosen =
+            std::any_of(spec.params.begin(), spec.params.end(), [&](const ParamSpec& q) {
+                return q.type == ParamType::PositionUid && params.contains(q.name) &&
+                       params[q.name].is_string() && !params[q.name].get<std::string>().empty();
+            });
+        if (savedChosen) {
+            tipShown = true;   // drew nothing: the previous row's item is not ours
+            break;
+        }
+        const std::string dev = EffectiveString(spec, params, "device");
+        IMotionController* mc = nullptr;
+        int devIdx = -1;
+        for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+            if (hardware_.MotionName(i) != dev) continue;
+            devIdx = static_cast<int>(i);
+            mc     = hardware_.MotionDevice(i);
+            break;
+        }
+        static const char* const kXyz[3] = {"X", "Y", "Z"};
+        double pt[3]   = {0.0, 0.0, 0.0};
+        double live[3] = {0.0, 0.0, 0.0};
+        bool taught = cur.is_object();
+        for (int a = 0; a < 3 && taught; ++a) {
+            taught = cur.contains(kXyz[a]) && cur[kXyz[a]].is_number();
+            if (taught) pt[a] = cur[kXyz[a]].get<double>();
+        }
+        bool hasLive = false;
+        if (mc && mc->IsConnected()) {
+            // A demand signal while the form is on screen, so the cache is
+            // fresh by the time the button is pressed (the driver idles at 1 Hz).
+            mc->RequestFastPoll();
+            const std::map<std::string, double> pos = mc->Positions();
+            hasLive = true;
+            for (int a = 0; a < 3 && hasLive; ++a) {
+                const auto f = pos.find(kXyz[a]);
+                hasLive = f != pos.end();
+                if (hasLive) live[a] = f->second;
+            }
+        }
+
+        if (taught)
+            ImGui::Text("X %.4f  Y %.4f  Z %.4f", pt[0], pt[1], pt[2]);
+        else
+            ImGui::TextDisabled("(not taught)");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(label);
+
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!taught || !mc || !mc->IsConnected());
+        if (ImGui::SmallButton("Go")) {
+            if (!workflow_.MoveToPosition(static_cast<std::size_t>(devIdx),
+                                          {{"X", pt[0]}, {"Y", pt[1]}, {"Z", pt[2]}}))
+                FD_WARN("saved", "move %s -> taught %s failed", dev.c_str(), label);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!hasLive);
+        if (ImGui::SmallButton("Teach here")) {
+            params[p.name] = {{"X", live[0]}, {"Y", live[1]}, {"Z", live[2]}};
+            for (const ParamSpec& q : spec.params)
+                if (q.type == ParamType::PositionUid) params.erase(q.name);
+            changed = true;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (hasLive)
+                ImGui::SetTooltip("Store %s's current pose in this step:\n"
+                                  "X %.4f  Y %.4f  Z %.4f (axis space)",
+                                  dev.c_str(), live[0], live[1], live[2]);
+            else
+                ImGui::SetTooltip("%s: %s", dev.empty() ? "(no device)" : dev.c_str(),
+                                  !mc                  ? "not a motion device"
+                                  : !mc->IsConnected() ? "not connected"
+                                                       : "reports no X/Y/Z");
+            tipShown = true;
+        }
+        if (!p.required) {
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!taught);
+            if (ImGui::SmallButton("Clear")) {
+                params.erase(p.name);
+                changed = true;
+            }
+            ImGui::EndDisabled();
+        }
         break;
     }
     case ParamType::AlignUid: {
@@ -781,7 +906,7 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
         break;
     }
     case ParamType::MapName: {
-        const std::string dev = params.value("device", std::string());
+        const std::string dev = EffectiveString(spec, params, "device");
         const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
         const auto it = session_.Maps().find(dev);
         bool resolved = v.empty();
@@ -813,9 +938,9 @@ bool App::DrawParamWidget(const ParamSpec& p, nlohmann::json& params)
     case ParamType::PinName: {
         // "io_device" first: the needle commands' "device" is the gantry, so a
         // pin picker keyed on that would offer the axes of a motion controller.
-        const std::string dev = params.contains("io_device")
-                                    ? params.value("io_device", std::string())
-                                    : params.value("device", std::string());
+        const bool hasIo = std::any_of(spec.params.begin(), spec.params.end(),
+                                       [](const ParamSpec& q) { return q.name == "io_device"; });
+        const std::string dev = EffectiveString(spec, params, hasIo ? "io_device" : "device");
         const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
         const IIoDevice* d = nullptr;
         for (std::size_t i = 0; i < hardware_.IoCount(); ++i)

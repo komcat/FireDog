@@ -98,6 +98,7 @@ Breaking any of these is a defect, not a style choice.
 - **Which way Z counts is derived, never assumed.** `NeedleDownSign` is `sign(dz)` from the measurement. bobcat hardcoded "+Z is down"; that is correct on one machine and a needle crash on the next.
 - **`dz` is an offset from a FOCUSED camera Z, not a height.** An absolute touch height only describes the surface it was taught on, which is why bobcat needed a `dispense_z_<uid>.json` per point. With `auto_focus`, one offset serves every point.
 - **The calibration is machine-level and its persisted record IS the licence to move** — unlike a taught frame, which describes one part and is cleared at every boundary. It goes stale for exactly one reason: the needle was changed. A worker queues it (`Workflow::QueueNeedleCal`); only `App::Update` writes `config/needle_cal.local.json`.
+- **A dispense point is the CAMERA pose, held as `point` (taught into the step, `ParamType::PointXyz`, axis space) or `position` (a saved one) — exactly one.** Each editor surface clears the other; `dispense_run` refuses both/neither before moving, and sets every `disp_*` key on every run because a recipe shares one ctx.
 - **`needle_calibration.lua` is STANDARD; `dispense_procedure.lua` is deliberately NOT.** Where the needle is, is a fact about the machine and every product must measure it identically. How much glue goes where is a fact about the product, so its own copy must keep winning.
 
 ### Device registration
