@@ -233,6 +233,12 @@ struct PylonCamera::Impl {
             if (camera.GetNodeMap().GetNode("ExposureAuto")) {
                 Pylon::CEnumParameter(camera.GetNodeMap(), "ExposureAuto").TrySetValue("Off");
             }
+            // Mono8 sensor output. Set before any grab (PixelFormat is locked
+            // while grabbing); the converter still hands RGB8 to the frame buffer.
+            if (camera.GetNodeMap().GetNode("PixelFormat")) {
+                if (!Pylon::CEnumParameter(camera.GetNodeMap(), "PixelFormat").TrySetValue("Mono8"))
+                    std::cerr << "[PylonCamera] PixelFormat Mono8 not supported; keeping camera default" << std::endl;
+            }
 
             {
                 std::lock_guard<std::mutex> lock(metaMutex);
