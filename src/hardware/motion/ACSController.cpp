@@ -260,6 +260,19 @@ struct ACSController::Impl {
         return ok;
     }
 
+    // Axis 0 speaks for the device: SetVelocity writes every axis the same.
+    bool ReadVelocity(double* v)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        if (!acsc_GetVelocity(handle, 0, v, NULL)) {
+            lastError = "acsc_GetVelocity failed (" + std::to_string(acsc_GetLastError()) + ")";
+            FD_ERROR("acs", "%s read velocity failed: %s", cfg.name.c_str(), lastError.c_str());
+            return false;
+        }
+        return true;
+    }
+
     bool StopAll()
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -487,8 +500,17 @@ struct ACSController::Impl {
     bool SetVelocity(double v)
     {
         FD_INFO("acs", "%s velocity (all axes) = %.3f mm/s (simulated)", cfg.name.c_str(), v);
-        return connected.load();
+        if (!connected.load()) return false;
+        simVelocity.store(v);
+        return true;
     }
+    bool ReadVelocity(double* v)
+    {
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        *v = simVelocity.load();
+        return true;
+    }
+    std::atomic<double> simVelocity{40.0};   // what the "controller" is set to
     bool StopAll() { return connected.load(); }
     // A simulated program runs for kSimBufferRun, so Stop / the follow-up move
     // can be exercised without a controller.
@@ -540,6 +562,7 @@ std::map<std::string, double> ACSController::Positions() const { return p_->Posi
 bool ACSController::MoveAbsolute(const std::string& a, double p) { return p_->MoveAbsolute(a, p); }
 bool ACSController::MoveAbsolute(const std::vector<std::pair<std::string, double>>& t) { return p_->MoveAbsolute(t); }
 bool ACSController::SetVelocity(double v) { return p_->SetVelocity(v); }
+bool ACSController::ReadVelocity(double* v) { return p_->ReadVelocity(v); }
 bool ACSController::StopAll()            { return p_->StopAll(); }
 std::map<std::string, bool> ACSController::AxisEnabled() const { return p_->AxisEnabled(); }
 bool ACSController::SetAxisEnabled(const std::string& a, bool on) { return p_->SetAxisEnabled(a, on); }

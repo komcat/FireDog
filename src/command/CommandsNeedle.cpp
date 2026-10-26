@@ -317,7 +317,9 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "Z velocity for the last stretch onto the part"},
                       {"v_liftoff", PT::Double, false, 5.0, 0.001, 100.0, {},
                        "Z velocity climbing away after the slide has retracted; "
-                       "v_final is for arriving on a part, not for leaving one"},
+                       "v_final is for arriving on a part, not for leaving one. "
+                       "Once clear, the gantry goes back to the velocity it had "
+                       "when the step started"},
                       {"file", PT::ScriptFile, false,
                        "config/scripts/dispense_procedure.lua", 0, 0, {},
                        "script override; a product's own copy of this name wins"},

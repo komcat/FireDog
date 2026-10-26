@@ -93,6 +93,24 @@ if not fd.ctx.arm_verified then
            "measured once and never re-checked (Needle page: calibrate with passes >= 2)")
 end
 
+-- The velocity the gantry is set to BEFORE anything here touches it. Velocity
+-- persists on the controller, and every leg below sets its own; this is what
+-- the lift-off hands back, so the next step travels at what the operator (or
+-- the step before) chose rather than at whatever the last leg here left.
+fd.read_velocity{ device = DEV, ctx_prefix = "disp_start" }
+local VSTART = fd.ctx.disp_start_mm_s
+
+-- 0.001 is set_velocity's own floor: below it the command fails validation,
+-- and failing here - with the glue already down - would report a dispense that
+-- actually worked as a failed step.
+local function restore_velocity()
+    if VSTART >= 0.001 then
+        fd.set_velocity{ device = DEV, velocity_mm_s = VSTART }
+    else
+        fd.logf("note: %s read %.4f mm/s at the start - not restored", DEV, VSTART)
+    end
+end
+
 -- ---- 2. Camera over the point ----------------------------------------------
 if POINT then
     fd.move_axis_to{ device = DEV, axes = "XYZ", x_mm = PX, y_mm = PY, z_mm = PZ,
@@ -175,6 +193,7 @@ if CONFIRM then
         -- dispense. Same order as the normal retreat below - slide first.
         fd.retract_slide{ slide = SLIDE }
         fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VLIFT }
+        restore_velocity()
         error("cancelled by operator")
     end
 end
@@ -193,8 +212,10 @@ if AFTER > 0 then fd.sleep(AFTER) end
 -- gently, and there is nothing left to arrive at once the needle is clear.
 -- XY comes last either way, so the needle never travels sideways while it is
 -- still down near the dot it just placed.
+-- Once clear, the gantry goes back to the velocity it had when this started.
 fd.retract_slide{ slide = SLIDE }
 fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VLIFT }
+restore_velocity()
 
 -- ---- 7. Look at the result ------------------------------------------------
 if VERIFY then
@@ -206,29 +227,20 @@ if VERIFY then
     end
     if CONFIRM then
         if not fd.prompt("Does the dot look right?") then
+            restore_velocity()
             error("dispense rejected by operator")
         end
     end
 end
 
--- ---- 8. Leave the device at a sane speed -----------------------------------
+-- ---- 8. Leave the device as it was found ---------------------------------
 -- Velocity persists on the controller, and this is the single most common way
--- to lose minutes to a machine that looks broken: the descent ran at v_final,
--- and whatever the LAST move here set is what the next recipe step - and the
--- next RUN of this one - travels at. A gantry left at 0.5 mm/s takes a minute
--- to cross what it crossed in a second, which reads as a hang, then as a
--- move timeout.
--- With v_travel unset there is nothing to restore to, so say so rather than
--- leave it quietly slow.
--- 0.001 is set_velocity's own floor, not a rounding guard: below it the command
--- fails validation, and failing here - with the glue already down - would report
--- a dispense that actually worked as a failed step.
-if VTRAVEL >= 0.001 then
-    fd.set_velocity{ device = DEV, velocity_mm_s = VTRAVEL }
-else
-    fd.logf("note: %s is left at %.2f mm/s (v_travel is 0, so there is nothing to " ..
-            "restore) - set v_travel if the next step should move at speed",
-            DEV, VLIFT)
+-- to lose minutes to a machine that looks broken: whatever the LAST move here
+-- set is what the next recipe step - and the next RUN of this one - travels at.
+-- The lift-off already restored the starting velocity; the verify leg above
+-- may have changed it again (v_travel), so put it back once more.
+if VERIFY and VTRAVEL > 0 then
+    restore_velocity()
 end
 
 fd.logf("dispensed %d ms at (%.4f, %.4f), needle Z %.4f (%.3f mm above touch)",

@@ -33,6 +33,7 @@ public:
     bool MoveAbsolute(const std::string& axis, double position) override;   // PI_MOV
     bool MoveAbsolute(const std::vector<std::pair<std::string, double>>& targets) override;
     bool SetVelocity(double mmPerSec) override;                             // PI_VLS (system)
+    bool ReadVelocity(double* mmPerSec) override;                           // PI_qVLS
     bool IsSettled() const override;                                        // !PI_IsMoving
     bool IsOnTarget() const override;                                       // PI_qONT (all axes)
     bool StopAll() override;                                                // PI_STP

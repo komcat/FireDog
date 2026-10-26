@@ -646,6 +646,26 @@ CommandResult ExecReadPosition(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// ---- read_velocity -------------------------------------------------------
+// The velocity the controller is set to, read off the controller itself, so a
+// script that has to change it can put it back where it found it. Fails when
+// the device cannot say: a restore to a guessed value is worse than none.
+CommandResult ExecReadVelocity(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    double v = 0.0;
+    if (!m->ReadVelocity(&v))
+        return CommandResult::Fail("cannot read the velocity of '" + device + "': " +
+                                   m->LastError());
+    ctx.CtxSet(p.GetString("ctx_prefix") + "_mm_s", v);
+    return CommandResult::Success();
+}
+
 // ---- check_position ------------------------------------------------------
 // Is the device AT a saved position right now? Writes the answer into ctx and
 // moves nothing, so an `if` step can skip a move that is already done:
@@ -988,6 +1008,16 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "ctx prefix for the axis values"},
                   },
                   CommandSpec::Needs::None, ExecReadPosition});
+
+    reg.Register({"read_velocity", "Motion",
+                  "Read the velocity the device is CURRENTLY set to into ctx as "
+                  "<prefix>_mm_s - so a later set_velocity can restore it",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
+                      {"ctx_prefix", PT::String, false, "vel", 0, 0, {},
+                       "ctx prefix for the value"},
+                  },
+                  CommandSpec::Needs::None, ExecReadVelocity});
 
     reg.Register({"check_position", "Motion",
                   "Is the device AT a saved position? Writes <prefix>_at (true/false) "
