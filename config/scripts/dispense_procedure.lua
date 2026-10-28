@@ -13,11 +13,13 @@
 -- flow, `shot_ms` sets how long it flows. Do not read `shot_ms` as a volume
 -- without knowing what the regulator is at.
 --
--- THIS FILE IS NOT A STANDARD PROCEDURE, unlike needle_calibration.lua next to
--- it, and the split is on purpose. Where the needle is, is a fact about the
--- machine and every product must measure it identically. How much glue goes
--- where is a fact about the PRODUCT - so a product's own copy of this file wins
--- over the shipped one, and is meant to.
+-- THIS FILE IS A STANDARD PROCEDURE, like needle_calibration.lua next to it:
+-- every product runs this shipped copy and a product's own copy of the name is
+-- ignored with a warning. How much glue goes where IS a fact about the product
+-- - but all of it (shot, dwells, gap, trim, speeds, confirmations) is a
+-- parameter of the dispense_run step, set in the Dispense helper. A product
+-- copy of the script would keep the motion it was copied at and silently miss
+-- every later fix to it.
 --
 -- Z SIGN: never assumed. `dir` comes from the sign of the calibrated dz, so
 -- "one millimetre above the part" is one millimetre above it on either

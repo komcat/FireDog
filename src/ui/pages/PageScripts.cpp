@@ -656,12 +656,19 @@ bool App::SaveScriptEditor()
 {
     ScriptEditorState& ed = scriptEd_;
     if (ed.path.empty()) return false;
+    // A standard procedure is never written from here: its running copy is in
+    // the exe folder, which a release replaces whole, and a fork elsewhere would
+    // be ignored. The editor is read-only for it; this is the backstop for Ctrl+S
+    // and the unsaved-changes modal.
+    if (IsSystemScript(ed.path)) {
+        FD_WARN("script", "%s is a standard procedure - view only, not saved",
+                ed.path.c_str());
+        return false;
+    }
     // A shipped script is the build's copy: a rebuild refreshes it and a release
     // replaces it. Saving one writes the MACHINE's copy instead, which the list
-    // and ResolveScript then prefer by name. A standard procedure is never forked
-    // (IsSystemScript), so an edit to one stays in the shipped file, to be
-    // mirrored into the repo.
-    if (IsShippedScript(ed.path) && !IsSystemScript(ed.path)) {
+    // and ResolveScript then prefer by name.
+    if (IsShippedScript(ed.path)) {
         const std::string dir = MachineScriptsDir();
         std::error_code   ec;
         std::filesystem::create_directories(dir, ec);
@@ -867,7 +874,11 @@ void App::DrawScriptsPanel()
         for (const ScriptInfo& s : session_.Scripts())
             if (s.path == ed.path) { si = &s; break; }
         const std::string fileName = std::filesystem::path(ed.path).filename().string();
-        const bool        ro       = orch_.Busy();
+        // A STANDARD procedure is view-only: the copy that runs lives in the
+        // exe folder, which an update replaces whole (Velopack's current\), so
+        // an edit saved there would vanish at the next update without a word.
+        const bool        locked   = IsSystemScript(ed.path);
+        const bool        ro       = orch_.Busy() || locked;
         const bool        dirty    = ScriptDirty();
 
         if (si && !si->description.empty()) ImGui::TextWrapped("%s", si->description.c_str());
@@ -879,25 +890,21 @@ void App::DrawScriptsPanel()
         // launched from. Say so on the file being edited, because a product
         // copy opened here looks exactly like the one that runs, and editing
         // it would change nothing at all.
-        if (IsSystemScript(ed.path)) {
+        if (locked) {
             const std::string shipped = SystemScriptPath(ed.path);
             std::error_code   ec;
             if (!std::filesystem::equivalent(ed.path, shipped, ec))
                 ImGui::TextColored(kColWarn,
-                                   "STANDARD procedure - align_run and the "
-                                   "page buttons are served from %s, never this copy",
+                                   "STANDARD procedure - every step and page button runs %s, "
+                                   "never this copy (it can be deleted)",
                                    shipped.c_str());
             else
-                ImGui::TextDisabled("standard procedure - kept in step with the "
-                                    "align_ commands; a product cannot fork it");
-        }
-        if (IsShippedScript(ed.path)) {
-            if (IsSystemScript(ed.path))
-                ImGui::TextDisabled("shipped copy: a rebuild recopies the repo's config/scripts "
-                                    "over it - mirror a durable edit back into the repo");
-            else
-                ImGui::TextDisabled("shipped copy: Save writes this machine's copy to %s, "
-                                    "which then runs instead", MachineScriptsDir().c_str());
+                ImGui::TextDisabled("STANDARD procedure - view only. It changes with the "
+                                    "commands it calls, so it changes only in the repository "
+                                    "and reaches a station with a release.");
+        } else if (IsShippedScript(ed.path)) {
+            ImGui::TextDisabled("shipped copy: Save writes this machine's copy to %s, "
+                                "which then runs instead", MachineScriptsDir().c_str());
         }
 
         // Toolbar: Save / Revert / Verify | state | Find
@@ -912,7 +919,8 @@ void App::DrawScriptsPanel()
         ImGui::SameLine();
         if (ImGui::SmallButton("Verify")) VerifyScript();
         ImGui::SameLine();
-        if (ro)         ImGui::TextDisabled("read-only while a run is active");
+        if (locked)     ImGui::TextDisabled("view only (standard procedure)");
+        else if (ro)    ImGui::TextDisabled("read-only while a run is active");
         else if (dirty) ImGui::TextColored(kColWarn, "modified");
         else            ImGui::TextDisabled("saved");
         ImGui::SameLine();
@@ -1133,7 +1141,7 @@ void App::DrawScriptEditor(bool thisRunning, bool paused, int execLine)
     ScriptEditorState& ed = scriptEd_;
     const ImGuiStyle&  sty = ImGui::GetStyle();
     const bool followExec = thisRunning && !paused;
-    ed.readOnly = orch_.Busy();
+    ed.readOnly = orch_.Busy() || IsSystemScript(ed.path);   // standard = view only
     if (ed.readOnly) AcClose(ed);
 
     // Derived tables: once per text change, or when the font changed.
@@ -1452,13 +1460,19 @@ void App::DrawScriptModals()
         const std::string name = SanitizeScriptName(scNewName_);
         const std::string path = dir + "/" + name + ".lua";
         std::error_code   ec;
-        const bool exists = !name.empty() && std::filesystem::exists(path, ec);
+        // A standard procedure's name is reserved: a file by that name here would
+        // never run (ResolveScript serves the shipped one) yet look like it does.
+        const bool reserved = !name.empty() && IsSystemScript(name + ".lua");
+        const bool exists   = !name.empty() && std::filesystem::exists(path, ec);
         if (name.empty())  ImGui::TextDisabled("letters, digits, _ and - only");
+        else if (reserved) ImGui::TextColored(kColWarn, "%s.lua is a standard procedure name",
+                                              name.c_str());
         else if (exists)   ImGui::TextColored(kColWarn, "%s.lua already exists", name.c_str());
         else               ImGui::TextDisabled("%s", path.c_str());
         ImGui::Separator();
-        ImGui::BeginDisabled(name.empty() || exists);
-        if (ImGui::Button("Create", ImVec2(90.0f, 0.0f)) || (enter && !name.empty() && !exists)) {
+        const bool blocked = name.empty() || exists || reserved;
+        ImGui::BeginDisabled(blocked);
+        if (ImGui::Button("Create", ImVec2(90.0f, 0.0f)) || (enter && !blocked)) {
             std::filesystem::create_directories(dir, ec);
             std::ofstream f(path, std::ios::binary | std::ios::trunc);
             if (f) {

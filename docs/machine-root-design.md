@@ -133,8 +133,9 @@ rebuild, which restages `config/scripts/`, takes over from the root's copy.
 Without a product the Scripts page lists the machine folder *and* the shipped
 one (a machine copy wins by name). Saving a shipped, non-standard script writes
 the machine's copy instead (`SaveScriptEditor`), which then runs; New Script
-creates in the machine folder. Editing a standard procedure still writes the
-shipped file, to be mirrored into the repo.
+creates in the machine folder. A standard procedure is view only (and its name
+reserved for New Script): the shipped file is replaced whole by an update, so it
+changes only in the repository and reaches a station with a release.
 
 ## Mosaic
 

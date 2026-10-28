@@ -65,9 +65,14 @@ std::string CtxValueToString(const CtxValue& v);
 //
 // The needle calibration is here for a slightly different reason worth keeping
 // straight: it measures the MACHINE, so there is no such thing as one product's
-// version of the answer. Dispensing is the opposite — how much glue goes where
-// is a product's business — so dispense_procedure.lua is deliberately NOT on
-// this list and a product's own copy still wins.
+// version of the answer.
+//
+// dispense_procedure.lua is here for grip_measure's reason (below). How much
+// glue goes where IS a product's business - but all of it is now a parameter
+// of the dispense_run step (shot, dwells, gap, trim, speeds, confirmations,
+// set in the Dispense helper), so a product never needs its own copy of the
+// script, and a copy it once took would keep the motion it was copied at: a
+// release that changed the retreat order reached no product that had forked.
 //
 // The two device-registration procedures are on the list for the needle's
 // reason. Where a gripper is, is a fact about the machine; five products with

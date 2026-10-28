@@ -299,11 +299,11 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                                          : CommandResult::Fail(err);
                   }});
 
-    // Deliberately NOT a system script, unlike the calibration above. Where the
-    // needle is, is a fact about the machine and every product must measure it
-    // the same way. How much glue goes where is a fact about the PRODUCT — dot
-    // count, dwell, whether the operator confirms — so a product's own
-    // dispense_procedure.lua has to keep winning over the shipped one.
+    // A STANDARD script, like the calibration above. How much glue goes where is
+    // a fact about the PRODUCT - dot size, dwell, standoff, whether the operator
+    // confirms - but every one of those is a parameter of THIS step, so the
+    // product's business lives in its recipe and the script stays one file.
+    // A forked copy would keep the motion it was copied at.
     reg.Register({"dispense_run", "Needle",
                   "Dispense at a taught camera position (dispense_procedure.lua)",
                   {
@@ -323,7 +323,9 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "the gantry carrying both the camera and the needle"},
                       {"file", PT::ScriptFile, false,
                        "config/scripts/dispense_procedure.lua", 0, 0, {},
-                       "script override; a product's own copy of this name wins"},
+                       "script override; this name is a STANDARD procedure and always "
+                       "resolves to the shipped file - point it at a different name "
+                       "to run something else"},
                       // Everything below is edited in the Dispense helper,
                       // against the needle motion drawing - in the order of the
                       // motion: 1 traverse, 2-4 down, 5-7 shot and up, 8 back.

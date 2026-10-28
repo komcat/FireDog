@@ -193,11 +193,16 @@ the needle over the coupon by hand and hunt for the imprint afterwards; jogging
 the camera during the hunt is harmless, because `pick_point` reports the dot's
 world position and does not care where the camera stood.
 
-## `dispense_procedure.lua` — NOT standard
+## `dispense_procedure.lua` — STANDARD
 
-Deliberately absent from `IsSystemScript`. Where the needle is, is a fact about
-the machine; how much glue goes where is a fact about the **product**, so a
-product's own copy of this file wins over the shipped one and is meant to.
+On `IsSystemScript` since the release after v0.15. It used to be the one procedure a product could
+fork, on the argument that how much glue goes where is a fact about the
+**product**. That argument still holds, but every product difference is now a
+`dispense_run` param (shot, dwells, gap, trim, speeds, confirmations), so a fork
+buys nothing — and it costs every later fix: when v0.15 changed the retreat to
+lift-before-slide, no product that had copied the script would have received it.
+A product copy of the name is now ignored with a warning; product-specific
+behaviour is a new param, never a fork.
 
 **Its numbers are set in the Dispense helper, not as bare rows.** `dispense_run`
 declares `CommandSpec::helper = kDispenseHelper`, and every motion, shot and

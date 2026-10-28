@@ -227,8 +227,11 @@ handles `fd.prompt` (same engine-side pending-prompt pattern).
    dirty and the editor is read-only while `orch_.Busy()`, so the line the
    debugger reports is always a line of the text on screen. Save preserves the
    file's line endings and rescans the list (the description is the first
-   line), keeping the selection by path. The two standard procedures can be
-   edited here like any file, and the page keeps saying which copy runs.
+   line), keeping the selection by path. A standard procedure (`IsSystemScript`)
+   is VIEW ONLY here and its name is reserved for New Script: its running copy
+   is in the exe folder, which an update replaces whole, so an edit saved there
+   would vanish at the next update. It changes only in the repository. A
+   product copy of one opened here is flagged as never running.
 
 ## 9. Open questions (decide at review)
 
