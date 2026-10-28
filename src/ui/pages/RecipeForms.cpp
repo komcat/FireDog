@@ -157,6 +157,18 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
         }
         ImGui::TextWrapped("%s", spec->description.c_str());
         ImGui::Spacing();
+        // A command with a helper window: its button first, big, because the
+        // helper is where this step's numbers are meant to be set. Outside the
+        // canEdit gate's reach on purpose - the helper is a view as well, and
+        // disables its own fields while a run is active.
+        if (!spec->helper.empty()) {
+            ImGui::EndDisabled();
+            const std::string lbl = "Open " + spec->helper + "...";
+            if (ImGui::Button(lbl.c_str(), ImVec2(-1.0f, ImGui::GetFrameHeight() * 2.0f)))
+                OpenCommandHelper(spec->helper);
+            ImGui::BeginDisabled(!canEdit);
+            ImGui::Spacing();
+        }
         // One row per ParamSpec, in declaration order — except that a RUN of
         // consecutive params sharing a `group` folds under a header of that
         // name. A cluster that means nothing until one of it is set (the
@@ -172,6 +184,26 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
                 continue;
             }
             std::size_t j = i;
+            // The group the command's helper window edits: a summary line, not
+            // rows - those numbers mean something only against the helper's
+            // picture. Hovering lists what they are set to now.
+            if (ps[i].group == spec->helper) {
+                while (j < ps.size() && ps[j].group == ps[i].group) ++j;
+                ImGui::TextDisabled("%d settings in the %s", static_cast<int>(j - i),
+                                    spec->helper.c_str());
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    std::string list;
+                    for (std::size_t k = i; k < j; ++k) {
+                        const nlohmann::json v = s.params.contains(ps[k].name)
+                                                     ? s.params[ps[k].name]
+                                                     : ps[k].defaultValue;
+                        list += ps[k].name + " = " + v.dump() + "\n";
+                    }
+                    HelpTooltip(list);
+                }
+                i = j;
+                continue;
+            }
             bool open = false;
             while (j < ps.size() && ps[j].group == ps[i].group) {
                 // Open by itself when the operator has set one of these, or when

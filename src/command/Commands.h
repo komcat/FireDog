@@ -20,6 +20,9 @@ void RegisterDutCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw
 void RegisterVisionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
+// dispense_run's CommandSpec::helper - and the `group` of the params that
+// helper edits. Layer 3 opens its Dispense helper window by this name.
+inline constexpr const char* kDispenseHelper = "Dispense helper";
 void RegisterDeviceRegCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterTrayCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);

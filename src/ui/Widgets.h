@@ -459,6 +459,36 @@ const SavedPos* TaughtPosePicker(const char* id, const SavedPosMap& all,
 // device box.
 void DrawBigLabel(const char* text, const ImVec2& box, const ImVec4& color);
 
+// ---- The needle motion drawing --------------------------------------------
+// One picture of how the dispense needle moves, shared by the Needle page (the
+// calibration) and the Dispense helper window (a dispense_run step): both
+// procedures move in the same order, so they draw the same thing. It is cut
+// into four regions - 1 traverse | 2-4 down to the surface | 5-7 shot and up |
+// 8 back - and each caller lays a table of its OWN parameters under it with
+// the same column widths, so every field sits under the step it drives.
+inline constexpr int   kNeedleRegions = 4;
+inline constexpr float kNeedleRegionW[kNeedleRegions] = {255.0f, 325.0f, 290.0f, 230.0f};
+inline constexpr float kNeedleMotionW = 1100.0f;   // sum of kNeedleRegionW
+
+// The value lines under each step's name, already formatted by the caller
+// (its parameter names, its units). Empty = no line.
+struct NeedleMotionText {
+    std::string traverse;          // under "1 traverse"
+    std::string approach;          // under "3 approach"
+    std::string safety;            // beside the safety-height tick
+    std::string final1, final2;    // under "4 final"
+    std::string shot, lift;        // under "5 shot  6 lift off"
+    std::string back;              // under step 8
+    // After the slide comes up: false = one diagonal move back to the camera
+    // (the calibration's flat coupon); true = Z climbs all the way first, then
+    // XY (a real part may have features in between - the dispense).
+    bool climbFirst = false;
+    bool showBack   = true;        // false: step 8 is the climb only
+};
+// Draws at the cursor, `width` wide (>= kNeedleMotionW; the regions stretch,
+// the needles and text do not) and reserves the space.
+void DrawNeedleMotion(const NeedleMotionText& t, float width);
+
 // Format an amp value with an auto-scaled unit (mA / uA / nA / pA).
 std::string FormatCurrent(double a);
 

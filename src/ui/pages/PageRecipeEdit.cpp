@@ -13,6 +13,7 @@
 
 #include "ui/Widgets.h"
 #include "ui/Theme.h"   // kTeachOrange
+#include "command/Commands.h"   // kDispenseHelper
 #include "core/Log.h"
 #include "core/DutSession.h"
 
@@ -1098,6 +1099,21 @@ void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
         ImGui::SetTooltip("Paste steps from the clipboard at the palette's target\n"
                           "(after the selection / into it / its else branch).");
     ImGui::EndDisabled();   // canEdit
+}
+
+RecipeStep* App::EditorSelectedStep()
+{
+    if (recipeSel_ < 0 || recipeSel_ >= static_cast<int>(session_.Recipes().size()) ||
+        edStepSel_.empty())
+        return nullptr;
+    return FindStepByPathMut(&session_.Recipes()[static_cast<std::size_t>(recipeSel_)].steps,
+                             edStepSel_);
+}
+
+void App::OpenCommandHelper(const std::string& helper)
+{
+    if (helper == kDispenseHelper) showDispHelper_ = true;
+    else FD_WARN("ui", "no helper window named '%s'", helper.c_str());
 }
 
 // Plain click: this row alone. Ctrl: toggle it in the multi set (the anchor

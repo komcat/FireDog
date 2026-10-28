@@ -19,6 +19,7 @@
 #include "command/ExecutionContext.h"   // SystemScriptPath — the standard procedures
 #include "core/Log.h"
 #include "core/NeedleCal.h"
+#include "ui/Widgets.h"                 // DrawNeedleMotion
 #include "hardware/HardwareManager.h"
 #include "hardware/io/IIoDevice.h"
 #include "hardware/pneumatic/PneumaticSlide.h"
@@ -45,149 +46,15 @@ void SetBuf(char* buf, std::size_t n, const std::string& text)
     std::snprintf(buf, n, "%s", text.c_str());
 }
 
-// The drawing and the parameter table under it are cut into the SAME four
-// regions, so each column of fields sits under the part of the motion it
-// drives. Drawing units; both stretch to one shared width.
-constexpr int   kMotionRegions = 4;
-constexpr float kRegionW[kMotionRegions] = {255.0f, 325.0f, 290.0f, 230.0f};
-constexpr float kMotionW = 1100.0f;   // sum of kRegionW
-const char* const kRegionTitle[kMotionRegions] = {
+// The calibration's column titles under the shared motion drawing (ui/Widgets).
+const char* const kNeedleCalTitle[kNeedleRegions] = {
     "1  Traverse", "2-4  Down to the surface", "5-7  Shot and up", "8  Inspect and check"};
 
-// The numbers the motion drawing is labelled with — the page's own fields.
-struct MotionLabels {
-    double vTraverse, vApproach, vFinal, vLift;
-    double safetyMm, gapMm, liftMm;
-};
-
-// The needle motion, drawn the way the process engineer drew it: traverse at
-// the camera's Z, slide down, approach to the safety height, the last stretch
-// slow, the touch; then lift off, slide up, and the camera back over the dot.
-// Both procedures move in this order, so the drawing is the one picture of
-// what a Calibrate press or a dispense_run step will do.
-//
-// Positions stretch horizontally to `width` (so the regions line up with the
-// table's columns); heights, the needles and the text do not scale, and every
-// label is placed in space its own region leaves free at kMotionW.
-void DrawNeedleMotion(const MotionLabels& m, float width)
+std::string Fmt(const char* fmt, double a, double b = 0.0)
 {
-    constexpr float kH = 420.0f;
-    constexpr float yT = 150.0f;   // traverse level (needle tip, slide up)
-    constexpr float yD = 215.0f;   // slide down
-    constexpr float yS = 290.0f;   // safety height
-    constexpr float yF = 360.0f;   // surface
-
-    const float sx = width / kMotionW;
-    const ImVec2 o = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const auto X = [o, sx](float u) { return o.x + u * sx; };
-    const auto P = [&](float u, float y) { return ImVec2(X(u), o.y + y); };
-    const float lh = ImGui::GetTextLineHeight();
-
-    const ImU32 cLine = ImGui::GetColorU32(ImGuiCol_Text);
-    const ImU32 cDim  = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    const ImU32 cSep  = ImGui::GetColorU32(ImGuiCol_Separator);
-    const ImU32 cVal  = ImGui::GetColorU32(kWarn);
-    const ImU32 cBody = IM_COL32(205, 205, 210, 255);
-    const ImU32 cEdge = IM_COL32(95, 95, 100, 255);
-    const ImU32 cSurf = IM_COL32(60, 110, 255, 255);
-
-    // The region boundaries, faint: the columns of the table continue them.
-    float u = 0.0f;
-    for (int i = 0; i + 1 < kMotionRegions; ++i) {
-        u += kRegionW[i];
-        dl->AddLine(P(u, 0.0f), P(u, kH), cSep, 1.0f);
-    }
-
-    // A needle with its tip at (cx, tipY): body, taper, the needle itself.
-    // Its width is pixels, not drawing units - a needle does not get fatter
-    // because the window did.
-    const auto needle = [&](float cx, float tipY) {
-        const float x = X(cx);
-        const ImVec2 b0(x - 13.0f, o.y + tipY - 135.0f), b1(x + 13.0f, o.y + tipY - 75.0f);
-        const ImVec2 t0(x - 13.0f, o.y + tipY - 75.0f), t1(x + 13.0f, o.y + tipY - 75.0f);
-        const ImVec2 t2(x, o.y + tipY - 25.0f);
-        dl->AddRectFilled(b0, b1, cBody);
-        dl->AddRect(b0, b1, cEdge, 0.0f, 0, 1.5f);
-        dl->AddTriangleFilled(t0, t1, t2, cBody);
-        dl->AddTriangle(t0, t1, t2, cEdge, 1.5f);
-        dl->AddLine(t2, ImVec2(x, o.y + tipY), cEdge, 2.0f);
-    };
-    const auto arrow = [&](float u0, float y0, float u1, float y1) {
-        const ImVec2 a = P(u0, y0), b = P(u1, y1);
-        dl->AddLine(a, b, cLine, 1.5f);
-        float dx = b.x - a.x, dy = b.y - a.y;
-        const float len = std::sqrt(dx * dx + dy * dy);
-        if (len < 1.0f) return;
-        dx /= len;
-        dy /= len;
-        constexpr float h = 9.0f;
-        dl->AddTriangleFilled(b, ImVec2(b.x - dx * h - dy * h * 0.5f, b.y - dy * h + dx * h * 0.5f),
-                              ImVec2(b.x - dx * h + dy * h * 0.5f, b.y - dy * h - dx * h * 0.5f),
-                              cLine);
-    };
-    const auto tick = [&](float u0, float u1, float y) {
-        dl->AddLine(P(u0, y), P(u1, y), cDim, 1.0f);
-    };
-    // A step name over the value that drives it; `right` = right-aligned at u.
-    const auto label = [&](float u0, float y, const char* name, const char* value,
-                           bool right = false) {
-        float x = X(u0);
-        if (right) x -= ImGui::CalcTextSize(name).x;
-        dl->AddText(ImVec2(x, o.y + y), cLine, name);
-        if (value) dl->AddText(ImVec2(x, o.y + y + lh), cVal, value);
-    };
-    char v[96];
-
-    // ---- 1  Traverse --------------------------------------------------------
-    needle(40.0f, yT);
-    arrow(40.0f, yT, 222.0f, yT);
-    needle(238.0f, yT);
-    std::snprintf(v, sizeof(v), "v traverse %.1f mm/s", m.vTraverse);
-    label(30.0f, yT + 12.0f, "1 traverse", v);
-
-    // ---- 2-4  Down ------------------------------------------------------------
-    needle(290.0f, yD);
-    tick(270.0f, 340.0f, yT);
-    arrow(320.0f, yT, 320.0f, yD);
-    label(332.0f, yT + 18.0f, "2 slide down", nullptr);
-
-    tick(270.0f, 340.0f, yD);
-    arrow(290.0f, yD + 3.0f, 290.0f, yS);
-    std::snprintf(v, sizeof(v), "v approach %.1f mm/s", m.vApproach);
-    label(332.0f, yD + 18.0f, "3 approach", v);
-
-    tick(270.0f, 340.0f, yS);
-    std::snprintf(v, sizeof(v), "safety %.2f mm", m.safetyMm);
-    label(248.0f, yS - lh * 0.5f, v, nullptr, true);
-    arrow(290.0f, yS, 290.0f, yF);
-    std::snprintf(v, sizeof(v), "v final %.1f mm/s", m.vFinal);
-    label(332.0f, yS + 6.0f, "4 final", v);
-    std::snprintf(v, sizeof(v), "verify gap %.3f mm", m.gapMm);
-    dl->AddText(ImVec2(X(332.0f), o.y + yS + 6.0f + 2.0f * lh), cVal, v);
-
-    // ---- The surface ------------------------------------------------------
-    dl->AddLine(P(270.0f, yF), P(850.0f, yF), cSurf, 3.0f);
-    dl->AddText(ImVec2(X(300.0f), o.y + yF + 8.0f), cDim, "coupon / part surface");
-
-    // ---- 5-7  Shot, lift off, slide up ----------------------------------------
-    needle(620.0f, yF);
-    arrow(655.0f, yF, 655.0f, yF - 55.0f);
-    tick(640.0f, 760.0f, yF - 55.0f);
-    std::snprintf(v, sizeof(v), "%.2f mm @ %.1f mm/s", m.liftMm, m.vLift);
-    label(600.0f, yF + 8.0f, "5 shot  6 lift off", v);
-
-    needle(700.0f, yF - 125.0f);
-    arrow(740.0f, yF - 55.0f, 740.0f, yF - 125.0f);
-    tick(680.0f, 780.0f, yF - 125.0f);
-    label(752.0f, yF - 105.0f, "7 slide up", nullptr);
-
-    // ---- 8  Camera back over the dot ----------------------------------------
-    arrow(715.0f, 225.0f, 890.0f, 85.0f);
-    std::snprintf(v, sizeof(v), "v traverse %.1f mm/s", m.vTraverse);
-    label(880.0f, 40.0f, "8 camera back", v);
-
-    ImGui::Dummy(ImVec2(width, kH));
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), fmt, a, b);
+    return buf;
 }
 
 } // namespace
@@ -233,10 +100,17 @@ void App::DrawNeedlePanel()
     // sits under the part of the drawing it drives, and the drawing is labelled
     // with those fields - changing a number changes the picture.
     if (ImGui::CollapsingHeader("Needle motion", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const float width = std::max(ImGui::GetContentRegionAvail().x, kMotionW);
-        DrawNeedleMotion({ndlVTraverse_, ndlVApproach_, ndlVFinal_, ndlVLiftoff_,
-                          ndlClearMm_, ndlGapMm_, ndlLiftMm_},
-                         width);
+        const float width = std::max(ImGui::GetContentRegionAvail().x, kNeedleMotionW);
+        NeedleMotionText txt;
+        txt.traverse = Fmt("v traverse %.1f mm/s", ndlVTraverse_);
+        txt.approach = Fmt("v approach %.1f mm/s", ndlVApproach_);
+        txt.safety   = Fmt("safety %.2f mm", ndlClearMm_);
+        txt.final1   = Fmt("v final %.1f mm/s", ndlVFinal_);
+        txt.final2   = Fmt("verify gap %.3f mm", ndlGapMm_);
+        txt.shot     = Fmt("shot %.0f ms", static_cast<double>(ndlShotMs_));
+        txt.lift     = Fmt("%.2f mm @ %.1f mm/s", ndlLiftMm_, ndlVLiftoff_);
+        txt.back     = Fmt("v traverse %.1f mm/s", ndlVTraverse_);
+        DrawNeedleMotion(txt, width);
 
         constexpr float kFieldW = 70.0f;
         const auto num = [](const char* label, double* v, const char* fmt, double lo,
@@ -255,12 +129,12 @@ void App::DrawNeedlePanel()
             if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
         };
 
-        if (ImGui::BeginTable("##ndlparams", kMotionRegions,
+        if (ImGui::BeginTable("##ndlparams", kNeedleRegions,
                               ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp,
                               ImVec2(width, 0.0f))) {
-            for (int i = 0; i < kMotionRegions; ++i)
-                ImGui::TableSetupColumn(kRegionTitle[i], ImGuiTableColumnFlags_WidthStretch,
-                                        kRegionW[i]);
+            for (int i = 0; i < kNeedleRegions; ++i)
+                ImGui::TableSetupColumn(kNeedleCalTitle[i], ImGuiTableColumnFlags_WidthStretch,
+                                        kNeedleRegionW[i]);
             ImGui::TableHeadersRow();
             ImGui::TableNextRow();
 
@@ -325,9 +199,8 @@ void App::DrawNeedlePanel()
         ImGui::TextWrapped("Calibration pass 1 parks %.2f mm (first clear) above the previous "
                            "touch and you jog the rest; pass 2+ runs the drawing down to the "
                            "verify gap and you close it. A dispense_run step moves the same "
-                           "way with its own step parameters: v_travel, v_approach, "
-                           "safety_mm, v_final down to gap_mm above the touch, lift_mm, "
-                           "v_liftoff.", ndlFirstClearMm_);
+                           "way with its own parameters - set them in its Dispense helper "
+                           "(Recipe Editor, select the step).", ndlFirstClearMm_);
         ImGui::PopStyleColor();
     }
 

@@ -321,52 +321,72 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "the needle offset is what turns it into a needle move"},
                       {"device", PT::DeviceMotion, false, "gantry-main", 0, 0, {},
                        "the gantry carrying both the camera and the needle"},
-                      {"shot_ms", PT::Int, false, 300, 1, 60000, {},
-                       "valve open time - this IS the shot size; there is no pressure "
-                       "control in the loop"},
-                      {"before_ms", PT::Int, false, 0, 0, 60000, {},
-                       "settle after arriving at height, before the valve opens"},
-                      {"after_ms", PT::Int, false, 0, 0, 60000, {},
-                       "dwell after the valve closes, before lifting (string break)"},
-                      {"z_trim_mm", PT::Double, false, 0.0, -5.0, 5.0, {},
-                       "adjust the dispense height: + moves the needle CLOSER to the "
-                       "part, whichever way Z counts on this gantry"},
-                      {"gap_mm", PT::Double, false, 0.0, 0.0, 10.0, {},
-                       "dispense standoff: how far ABOVE the calibrated touch height "
-                       "the needle stops, letting the bead bridge the gap. Distinct "
-                       "from z_trim_mm, which corrects the calibration itself"},
-                      {"safety_mm", PT::Double, false, 1.0, 0.0, 20.0, {},
-                       "height above the target where the fast descent hands over to "
-                       "the slow one"},
+                      {"file", PT::ScriptFile, false,
+                       "config/scripts/dispense_procedure.lua", 0, 0, {},
+                       "script override; a product's own copy of this name wins"},
+                      // Everything below is edited in the Dispense helper,
+                      // against the needle motion drawing - in the order of the
+                      // motion: 1 traverse, 2-4 down, 5-7 shot and up, 8 back.
+                      {"v_travel", PT::Double, false, 0.0, 0.0, 100.0, {},
+                       "1, 8: XY travel velocity; 0 = leave the device where it is set",
+                       PinDir::Any, kDispenseHelper},
                       {"adjust", PT::Bool, false, true, 0, 0, {},
                        "after arriving, pause on a manual adjust (X/Y only) so the "
                        "operator can centre the camera on the point; the dot goes "
                        "where they leave it. This run only - the taught point is "
-                       "not rewritten"},
+                       "not rewritten",
+                       PinDir::Any, kDispenseHelper},
                       {"autofocus", PT::Bool, false, false, 0, 0, {},
                        "focus at the point and take the dispense height from THAT "
-                       "focal plane instead of the position's taught Z"},
+                       "focal plane instead of the position's taught Z",
+                       PinDir::Any, kDispenseHelper},
                       {"confirm", PT::Bool, false, true, 0, 0, {},
-                       "ask the operator before extending and before firing"},
-                      {"verify", PT::Bool, false, true, 0, 0, {},
-                       "bring the camera back over the dot afterwards"},
-                      {"capture", PT::Bool, false, true, 0, 0, {},
-                       "attach an image of the result to the open DUT"},
-                      {"v_travel", PT::Double, false, 0.0, 0.0, 100.0, {},
-                       "XY travel velocity; 0 = leave the device where it is set"},
+                       "ask the operator before extending (2), before firing (5) and "
+                       "whether the dot looks right (8)",
+                       PinDir::Any, kDispenseHelper},
                       {"v_approach", PT::Double, false, 20.0, 0.001, 100.0, {},
-                       "Z velocity down to the safety height"},
+                       "3: Z velocity down to the safety height",
+                       PinDir::Any, kDispenseHelper},
+                      {"safety_mm", PT::Double, false, 1.0, 0.0, 20.0, {},
+                       "height above the target where the fast descent hands over to "
+                       "the slow one",
+                       PinDir::Any, kDispenseHelper},
                       {"v_final", PT::Double, false, 5.0, 0.001, 100.0, {},
-                       "Z velocity for the last stretch onto the part"},
+                       "4: Z velocity for the last stretch onto the part",
+                       PinDir::Any, kDispenseHelper},
+                      {"gap_mm", PT::Double, false, 0.0, 0.0, 10.0, {},
+                       "dispense standoff: how far ABOVE the calibrated touch height "
+                       "the needle stops, letting the bead bridge the gap. Distinct "
+                       "from z_trim_mm, which corrects the calibration itself",
+                       PinDir::Any, kDispenseHelper},
+                      {"z_trim_mm", PT::Double, false, 0.0, -5.0, 5.0, {},
+                       "adjust the dispense height: + moves the needle CLOSER to the "
+                       "part, whichever way Z counts on this gantry",
+                       PinDir::Any, kDispenseHelper},
+                      {"before_ms", PT::Int, false, 0, 0, 60000, {},
+                       "settle after arriving at height, before the valve opens",
+                       PinDir::Any, kDispenseHelper},
+                      {"shot_ms", PT::Int, false, 300, 1, 60000, {},
+                       "5: valve open time - this IS the shot size; there is no "
+                       "pressure control in the loop",
+                       PinDir::Any, kDispenseHelper},
+                      {"after_ms", PT::Int, false, 0, 0, 60000, {},
+                       "dwell after the valve closes, before lifting (string break)",
+                       PinDir::Any, kDispenseHelper},
                       {"lift_mm", PT::Double, false, 1.5, 0.0, 20.0, {},
-                       "after the shot, lift Z this far off the dot BEFORE the slide "
-                       "comes up (0 = slide first)"},
+                       "6: after the shot, lift Z this far off the dot BEFORE the "
+                       "slide comes up (0 = slide first)",
+                       PinDir::Any, kDispenseHelper},
                       {"v_liftoff", PT::Double, false, 5.0, 0.001, 100.0, {},
-                       "Z velocity lifting off the dot and climbing away; v_final is "
-                       "for arriving on a part, not for leaving one"},
-                      {"file", PT::ScriptFile, false,
-                       "config/scripts/dispense_procedure.lua", 0, 0, {},
-                       "script override; a product's own copy of this name wins"},
+                       "6, 8: Z velocity lifting off the dot and climbing away; "
+                       "v_final is for arriving on a part, not for leaving one",
+                       PinDir::Any, kDispenseHelper},
+                      {"verify", PT::Bool, false, true, 0, 0, {},
+                       "8: bring the camera back over the dot afterwards",
+                       PinDir::Any, kDispenseHelper},
+                      {"capture", PT::Bool, false, true, 0, 0, {},
+                       "attach an image of the result to the open DUT",
+                       PinDir::Any, kDispenseHelper},
                   },
                   CommandSpec::Needs::None,
                   [rp](ExecutionContext& c, const ParamValues& p) {
@@ -411,7 +431,8 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       const std::string err = RunLuaFile(file, *rp, c, {}, false, nullptr);
                       return err.empty() ? CommandResult::Success()
                                          : CommandResult::Fail(err);
-                  }});
+                  },
+                  /*parallelBy*/ "", /*helper*/ kDispenseHelper});
 }
 
 } // namespace firedog

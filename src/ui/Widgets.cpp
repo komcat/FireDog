@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <initializer_list>
 
 namespace firedog {
 
@@ -1171,6 +1172,139 @@ bool Splitter(const char* id, bool vertical, float thickness, float length) {
         ImGui::SetMouseCursor(vertical ? ImGuiMouseCursor_ResizeEW : ImGuiMouseCursor_ResizeNS);
     ImGui::PopStyleColor(3);
     return active;
+}
+
+// The needle motion, drawn the way the process engineer drew it: traverse at
+// the camera's Z, slide down, approach to the safety height, the last stretch
+// slow, the touch; then lift off, slide up, and back to the camera.
+//
+// Positions stretch horizontally to `width` (so the regions line up with the
+// caller's table columns); heights, the needles and the text do not scale, and
+// every label is placed in space its own region leaves free at kNeedleMotionW.
+void DrawNeedleMotion(const NeedleMotionText& t, float width)
+{
+    constexpr float kH = 430.0f;
+    constexpr float yT = 150.0f;   // traverse level (needle tip, slide up)
+    constexpr float yD = 215.0f;   // slide down
+    constexpr float yS = 290.0f;   // safety height
+    constexpr float yF = 360.0f;   // surface
+
+    const float sx = width / kNeedleMotionW;
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const auto X = [o, sx](float u) { return o.x + u * sx; };
+    const auto P = [&](float u, float y) { return ImVec2(X(u), o.y + y); };
+    const float lh = ImGui::GetTextLineHeight();
+
+    const ImU32 cLine = ImGui::GetColorU32(ImGuiCol_Text);
+    const ImU32 cDim  = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const ImU32 cSep  = ImGui::GetColorU32(ImGuiCol_Separator);
+    const ImU32 cVal  = ImGui::GetColorU32(ImVec4(0.98f, 0.72f, 0.32f, 1.0f));
+    const ImU32 cBody = IM_COL32(205, 205, 210, 255);
+    const ImU32 cEdge = IM_COL32(95, 95, 100, 255);
+    const ImU32 cSurf = IM_COL32(60, 110, 255, 255);
+
+    // The region boundaries, faint: the caller's table columns continue them.
+    float bu = 0.0f;
+    for (int i = 0; i + 1 < kNeedleRegions; ++i) {
+        bu += kNeedleRegionW[i];
+        dl->AddLine(P(bu, 0.0f), P(bu, kH), cSep, 1.0f);
+    }
+
+    // A needle with its tip at (cx, tipY): body, taper, the needle itself. Its
+    // width is pixels, not drawing units - a needle does not get fatter because
+    // the window did.
+    const auto needle = [&](float cx, float tipY) {
+        const float x = X(cx);
+        const ImVec2 b0(x - 13.0f, o.y + tipY - 135.0f), b1(x + 13.0f, o.y + tipY - 75.0f);
+        const ImVec2 t0(x - 13.0f, o.y + tipY - 75.0f), t1(x + 13.0f, o.y + tipY - 75.0f);
+        const ImVec2 t2(x, o.y + tipY - 25.0f);
+        dl->AddRectFilled(b0, b1, cBody);
+        dl->AddRect(b0, b1, cEdge, 0.0f, 0, 1.5f);
+        dl->AddTriangleFilled(t0, t1, t2, cBody);
+        dl->AddTriangle(t0, t1, t2, cEdge, 1.5f);
+        dl->AddLine(t2, ImVec2(x, o.y + tipY), cEdge, 2.0f);
+    };
+    const auto arrow = [&](float u0, float y0, float u1, float y1) {
+        const ImVec2 a = P(u0, y0), b = P(u1, y1);
+        dl->AddLine(a, b, cLine, 1.5f);
+        float dx = b.x - a.x, dy = b.y - a.y;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len < 1.0f) return;
+        dx /= len;
+        dy /= len;
+        constexpr float h = 9.0f;
+        dl->AddTriangleFilled(b, ImVec2(b.x - dx * h - dy * h * 0.5f, b.y - dy * h + dx * h * 0.5f),
+                              ImVec2(b.x - dx * h + dy * h * 0.5f, b.y - dy * h - dx * h * 0.5f),
+                              cLine);
+    };
+    const auto tick = [&](float u0, float u1, float y) {
+        dl->AddLine(P(u0, y), P(u1, y), cDim, 1.0f);
+    };
+    // A step name, then its value lines (empty ones skipped).
+    const auto label = [&](float u0, float y, const char* name,
+                           std::initializer_list<const std::string*> values) {
+        const float x = X(u0);
+        dl->AddText(ImVec2(x, o.y + y), cLine, name);
+        float yy = o.y + y + lh;
+        for (const std::string* v : values) {
+            if (v->empty()) continue;
+            dl->AddText(ImVec2(x, yy), cVal, v->c_str());
+            yy += lh;
+        }
+    };
+
+    // ---- 1  Traverse --------------------------------------------------------
+    needle(40.0f, yT);
+    arrow(40.0f, yT, 222.0f, yT);
+    needle(238.0f, yT);
+    label(30.0f, yT + 12.0f, "1 traverse", {&t.traverse});
+
+    // ---- 2-4  Down ------------------------------------------------------------
+    needle(290.0f, yD);
+    tick(270.0f, 340.0f, yT);
+    arrow(320.0f, yT, 320.0f, yD);
+    label(332.0f, yT + 18.0f, "2 slide down", {});
+
+    tick(270.0f, 340.0f, yD);
+    arrow(290.0f, yD + 3.0f, 290.0f, yS);
+    label(332.0f, yD + 18.0f, "3 approach", {&t.approach});
+
+    tick(270.0f, 340.0f, yS);
+    if (!t.safety.empty()) {   // right-aligned against the tick, in region 1's free space
+        const float w = ImGui::CalcTextSize(t.safety.c_str()).x;
+        dl->AddText(ImVec2(X(248.0f) - w, o.y + yS - lh * 0.5f), cVal, t.safety.c_str());
+    }
+    arrow(290.0f, yS, 290.0f, yF);
+    label(332.0f, yS + 6.0f, "4 final", {&t.final1, &t.final2});
+
+    // ---- The surface ------------------------------------------------------
+    dl->AddLine(P(270.0f, yF), P(850.0f, yF), cSurf, 3.0f);
+    dl->AddText(ImVec2(X(300.0f), o.y + yF + 8.0f), cDim, "coupon / part surface");
+
+    // ---- 5-7  Shot, lift off, slide up ----------------------------------------
+    needle(620.0f, yF);
+    arrow(655.0f, yF, 655.0f, yF - 55.0f);
+    tick(640.0f, 760.0f, yF - 55.0f);
+    label(600.0f, yF + 8.0f, "5 shot  6 lift off", {&t.shot, &t.lift});
+
+    needle(700.0f, yF - 125.0f);
+    arrow(740.0f, yF - 55.0f, 740.0f, yF - 125.0f);
+    tick(680.0f, 780.0f, yF - 125.0f);
+    label(752.0f, yF - 105.0f, "7 slide up", {});
+
+    // ---- 8  Back to the camera ------------------------------------------------
+    if (t.climbFirst) {
+        arrow(775.0f, yF - 125.0f, 775.0f, 105.0f);
+        if (t.showBack) arrow(775.0f, 105.0f, 900.0f, 105.0f);
+        label(880.0f, 40.0f, t.showBack ? "8 Z up, camera back" : "8 Z up to camera Z",
+              {&t.back});
+    } else {
+        arrow(715.0f, 225.0f, 890.0f, 85.0f);
+        label(880.0f, 40.0f, "8 camera back", {&t.back});
+    }
+
+    ImGui::Dummy(ImVec2(width, kH));
 }
 
 std::string FormatCurrent(double a) {

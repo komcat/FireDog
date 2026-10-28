@@ -203,6 +203,7 @@ int App::Run()
             if (showPosHist_ && CanUse(kRoleJog)) DrawPositionHistoryWindow();
             if (showTray_  && CanUse(kRoleTray)) DrawTrayWindow();
             if (showMotionInspect_ && CanUse(kRoleInspect)) DrawMotionInspectWindow();
+            if (showDispHelper_ && CanAccess(Page::RecipeEdit)) DrawDispenseHelperWindow();
             if (showUsers_) DrawEmployeeManager();   // checks Admin itself
         }
         host_.EndFrame();

@@ -306,6 +306,16 @@ private:
                              std::vector<std::size_t>& path, bool elseBranch,
                              const std::vector<std::size_t>& runPath, bool running);
     void DrawRecipeInspector(RecipeStep& s, bool canEdit);
+    // CommandSpec::helper -> its window (the inspector's "Open ..." button).
+    void OpenCommandHelper(const std::string& helper);
+    // The step the Recipe Editor has selected, or nullptr. What a helper
+    // window edits: it follows the editor's selection rather than holding a
+    // path of its own, which would point at another step after the next edit.
+    RecipeStep* EditorSelectedStep();
+    // The Dispense helper (WndDispenseHelper.cpp): the selected dispense_run
+    // step's motion, shot and inspect settings, laid out under the needle
+    // motion drawing.
+    void DrawDispenseHelperWindow();
     std::string AutoNickname(const RecipeStep& s) const;   // live label from params
     void DrawRecipeTreeToolbar(Recipe& r, bool canEdit);   // move/delete row
     void DrawRecipePalette(Recipe& r, bool canEdit);       // searchable add-step column
@@ -1128,6 +1138,7 @@ private:
     // Selected step as a numeric path into the nested step tree; components
     // >= kElsePathBase (App.cpp) address an if-step's else branch.
     std::vector<std::size_t> edStepSel_;
+    bool showDispHelper_ = false;   // the Dispense helper window (follows edStepSel_)
     // Further selected rows beyond edStepSel_ (the ANCHOR: the inspector's
     // step, the palette's insert point). Ctrl-click toggles a row in and out,
     // Shift-click takes the visible range from the anchor. Copy and Delete

@@ -199,6 +199,16 @@ Deliberately absent from `IsSystemScript`. Where the needle is, is a fact about
 the machine; how much glue goes where is a fact about the **product**, so a
 product's own copy of this file wins over the shipped one and is meant to.
 
+**Its numbers are set in the Dispense helper, not as bare rows.** `dispense_run`
+declares `CommandSpec::helper = kDispenseHelper`, and every motion, shot and
+inspect param carries that `group`: the step form shows an *Open Dispense
+helper...* button and a one-line summary in their place. The helper window draws
+the same needle motion picture as the Needle page (`DrawNeedleMotion`), labelled
+with the step's values and drawn climb-first, and lays the params in four columns
+under the stage each drives (1 camera over the point + traverse, 2–4 down,
+5–7 shot and up, 8 back). It edits the editor's selected step in place; the point,
+device and script stay on the step form, where the point is taught.
+
 The dispense point is a **camera pose over the target**, held one of two ways,
 and a step holds exactly one:
 
