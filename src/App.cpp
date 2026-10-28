@@ -202,6 +202,7 @@ int App::Run()
             if (showData_  && CanUse(kRoleData)) DrawViewDataWindow();
             if (showPosHist_ && CanUse(kRoleJog)) DrawPositionHistoryWindow();
             if (showTray_  && CanUse(kRoleTray)) DrawTrayWindow();
+            if (showMotionInspect_ && CanUse(kRoleInspect)) DrawMotionInspectWindow();
             if (showUsers_) DrawEmployeeManager();   // checks Admin itself
         }
         host_.EndFrame();

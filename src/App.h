@@ -162,6 +162,9 @@ inline constexpr UserRole kRoleData = UserRole::Technician;
 //   full - what an operator does as parts come and go. Its Drive here is
 //   kRoleJog, like every other move.
 inline constexpr UserRole kRoleTray = UserRole::Operator;
+//   Inspect Motion only reads recipes, but it reads them step by step - the
+//   level that may open the Recipe Editor at all.
+inline constexpr UserRole kRoleInspect = UserRole::Technician;
 
 // One DUT record flattened for the View Data window: the identity columns plus
 // the LAST value written under each non-event key. The append-only log may
@@ -442,6 +445,10 @@ private:
     // the ACTIVE cell a recipe's move_to_active_cell drives to, and mark
     // cavities used or full as parts come and go.
     void DrawTrayWindow();
+    // The floating Inspect Motion window (WndMotionInspect.cpp, the Run strip's
+    // button): every move in what Execute would run - the selected item, else
+    // the slot - with its device, target, velocity, approach and exposure.
+    void DrawMotionInspectWindow();
     // The ONE writer of a corner, for "Teach here" (the live pose) and the
     // "or taught..." picker alike: both hand in COORDINATES. Stamps the date.
     void TeachTrayCorner(WaffleTray& t, TrayCornerSlot slot,
@@ -1706,6 +1713,8 @@ private:
     // closes or is reordered. Empty = slot scope.
     std::string deckNode_;
     bool runEdit_       = false;   // mirrors orgOpen_: the strip's Edit checkbox
+    bool showMotionInspect_ = false;   // the strip's Inspect Motion window
+    bool motionInspectAll_  = false;   // ...listing every step, not only motion
     // Teach mode (the Run strip's toggle). While on, EVERY recipe launch is a
     // teach run: the recipe is rewritten to its saved-position moves and each
     // arrival prompts fine-tune-and-Save (command/TeachMode.h). Deliberately
