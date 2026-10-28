@@ -586,9 +586,13 @@ else()
 endif()
 target_include_directories(FireDog PRIVATE "${velopack_libc_SOURCE_DIR}/include")
 target_link_libraries(FireDog PRIVATE "${_vpk_dll}.lib")
+# RENAMED on the way: the import lib names the DLL "velopack_libc.dll" (dumpbin
+# /dependents FireDog.exe), whatever the file in the zip is called. Copied under
+# its own name, the exe does not start - "velopack_libc.dll was not found".
 add_custom_command(TARGET FireDog POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_vpk_dll}" "$<TARGET_FILE_DIR:FireDog>"
-    COMMENT "Copying the Velopack runtime DLL")
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_vpk_dll}"
+            "$<TARGET_FILE_DIR:FireDog>/velopack_libc.dll"
+    COMMENT "Copying the Velopack runtime DLL (as velopack_libc.dll)")
 
 firedog_stage_runtime(FireDog)
 
