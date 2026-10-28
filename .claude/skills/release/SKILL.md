@@ -6,8 +6,11 @@ description: Cut a FireDog release - configure the x64-release-deploy preset, ge
 # Release
 
 The deliverable is a GitHub release at `github.com/komcat/FireDog/releases` with
-one asset, `FireDog-vX.Y-x64-release-deploy.zip`, and notes by area. Everything
-below exists because a step was skipped or done wrong once; the order matters.
+the zip `FireDog-vX.Y-x64-release-deploy.zip`, the Velopack update packages
+(`FireDog-win-Setup.exe`, `Install-FireDog.cmd`, `FireDog-win-Portable.zip`,
+the `.nupkg`s, `releases.win.json` - what installed stations update from, see
+docs/software-update-design.md), and notes by area. Everything below exists
+because a step was skipped or done wrong once; the order matters.
 
 ## 0. Preconditions
 
@@ -110,6 +113,22 @@ libs, no CMake state, no logs, no data/. Expect about 15 MB. The 100 MB
 directory dumps and never what shipped. List the zip's top level in the
 report.
 
+## 3b. Velopack packages (after the notes in step 4 exist)
+
+```
+tools\release\pack-velopack.ps1 -Version vX.Y -OutDir <scratchpad> -NotesFile <notes.md>
+```
+
+It unzips the step-3 zip and packs THAT folder, so an installed station runs
+exactly the zip's files. It fetches the previous release's full package first
+for a delta (the first Velopack release has none - fine), and writes
+`Install-FireDog.cmd` (Setup with `--installto C:\FireDog`, the station folder).
+vpk runs as `dotnet tool exec vpk@1.2.161` - the .NET 10 SDK is installed here.
+**That version must equal `velopack_libc` in CMakeLists.txt**; bump both
+together. Velopack only offers a STRICTLY newer SemVer: `vX.Y` packs as
+`X.Y.0`, so every release must be a new version (it always is). Unsigned:
+SmartScreen warns on a station's first Setup run.
+
 ## 4. Notes
 
 `git log --format='%ad %s' --date=short <last-tag>..HEAD` is the source. If a
@@ -124,7 +143,8 @@ style of the v0.1 and v0.2 releases (`gh release view v0.2 --json body`):
   the operator - not the commit subjects verbatim;
 - the Build section ends with the deployment caveat: the package carries the
   pylon runtime but camera drivers, `ACSCL_x64.dll`, `VISA64.dll` and the VC++
-  2015-2022 x64 redistributable must be present on the target.
+  2015-2022 x64 redistributable must be present on the target (the Setup
+  installs the VC++ runtime itself; the hand-unzipped zip does not).
 
 ## 5. Tag, publish, verify
 
@@ -134,12 +154,20 @@ first, then the tag:
 ```
 git push origin master && git push origin vX.Y
 gh release create vX.Y <zip> --title "FireDog vX.Y" --notes-file <notes.md> --latest
+tools\release\pack-velopack.ps1 -Version vX.Y -OutDir <scratchpad> -Upload
 gh release view vX.Y --json tagName,name,isDraft,targetCommitish,assets,url
 gh release list --limit 3
 ```
 
 `isLatest` is not a field `gh release view` knows; `gh release list` is what
-shows the Latest marker.
+shows the Latest marker. The assets must include `releases.win.json` and a
+`FireDog-X.Y.0-full.nupkg` - without them no installed station sees the
+release. If the upload failed, re-run only the `-Upload` line.
+
+The notes' Build section says how a NEW station installs: download
+`FireDog-win-Setup.exe` and `Install-FireDog.cmd` into one folder and run the
+`.cmd` (installs to `C:\FireDog`); an installed station updates from Help >
+Version / Update.
 
 ## 6. Report
 

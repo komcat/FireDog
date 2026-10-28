@@ -21,6 +21,7 @@
 #include "core/Paths.h"        // the machine root: where every file this App writes lives
 #include "core/DeviceReg.h"    // SaveDeviceRegsFile (the registration hand-back)
 #include "core/NeedleCal.h"    // SaveNeedleCalFile (the calibration hand-back)
+#include "update/AppUpdater.h"
 #include "vision/HalconEngine.h"
 
 #include <cstddef>
@@ -42,7 +43,8 @@ bool IsTakeoverPage(Page p)
            p == Page::DutView || p == Page::Run || p == Page::Align ||
            p == Page::VisionTeach || p == Page::AlignNominal ||
            p == Page::AlignPlace || p == Page::Needle || p == Page::DeviceReg ||
-           p == Page::Grip || p == Page::Tray || p == Page::Mosaic;
+           p == Page::Grip || p == Page::Tray || p == Page::Mosaic ||
+           p == Page::Version;
 }
 } // namespace
 
@@ -170,6 +172,10 @@ int App::Run()
     // somebody opens the Camera page. It never blocks bring-up: auto-focus and
     // every non-HALCON path work regardless of the answer.
     HalconEngine::Instance();
+    // Locate the Setup install and look for a newer release once, quietly, on
+    // the updater's own thread. A station without internet logs that and
+    // carries on.
+    updater_.Start();
 
     double prev = host_.Time();
     while (!host_.ShouldClose()) {

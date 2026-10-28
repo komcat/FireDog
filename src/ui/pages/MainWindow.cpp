@@ -13,6 +13,7 @@
 #include "ui/UiSettings.h"
 #include "ui/Widgets.h"
 #include "core/Log.h"
+#include "update/AppUpdater.h"
 
 #include <cmath>
 #include <cstdio>
@@ -351,7 +352,20 @@ void App::DrawMainWindow()
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Help")) {
-                ImGui::MenuItem("About", nullptr, false, false);
+                // The label carries the news: a found release says so here,
+                // where an Admin looks, without a popup over anybody's work.
+                if (CanAccess(Page::Version)) {
+                    const AppUpdater::Status us = updater_.GetStatus();
+                    const bool news = us.state == AppUpdater::State::Available ||
+                                      us.state == AppUpdater::State::Ready;
+                    const std::string label =
+                        news ? "Version / Update  (" + us.latestVersion + " available)"
+                             : std::string("Version / Update");
+                    if (ImGui::MenuItem(label.c_str(), nullptr, currentPage_ == Page::Version))
+                        ToggleEditorPage(Page::Version);
+                } else {
+                    ImGui::MenuItem("About", nullptr, false, false);
+                }
                 ImGui::EndMenu();
             }
             DrawUserMenu();   // who is signed in, sign out, manage the roster
@@ -473,7 +487,7 @@ void App::DrawMainWindow()
             currentPage_ == Page::AlignNominal || currentPage_ == Page::AlignPlace ||
             currentPage_ == Page::Needle || currentPage_ == Page::DeviceReg ||
             currentPage_ == Page::Grip || currentPage_ == Page::Tray ||
-            currentPage_ == Page::Mosaic) {
+            currentPage_ == Page::Mosaic || currentPage_ == Page::Version) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
@@ -488,6 +502,7 @@ void App::DrawMainWindow()
                                 : currentPage_ == Page::Grip          ? "Gripped object"
                                 : currentPage_ == Page::Tray          ? "Waffle tray"
                                 : currentPage_ == Page::Mosaic        ? "Mosaic"
+                                : currentPage_ == Page::Version       ? "Version and software update"
                                                                       : "Run";
             // Vision teach and the two alignment teach pages are only ever
             // reached FROM the Alignment page, and a takeover -> takeover switch
@@ -531,6 +546,7 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::Grip)          DrawGripPanel();
             else if (currentPage_ == Page::Tray)          DrawTrayPanel();
             else if (currentPage_ == Page::Mosaic)        DrawMosaicPanel();
+            else if (currentPage_ == Page::Version)       DrawVersionPanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();
@@ -689,6 +705,10 @@ void App::DrawExitConfirmModal()
             ImGui::BulletText("Script editor has unsaved edits");
         if (orch_.Busy())
             ImGui::BulletText("A recipe/script/path move is still running");
+        // Velopack's download cannot be cancelled; the process waits for it
+        // after the window closes.
+        if (updater_.GetStatus().state == AppUpdater::State::Downloading)
+            ImGui::BulletText("A software update is downloading - exit waits for it");
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.88f, 0.26f, 0.26f, 1.0f));

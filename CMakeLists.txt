@@ -79,6 +79,18 @@ FetchContent_Declare(stb
     GIT_TAG master GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(stb)
 
+# ---- Velopack (software update: Setup.exe install, update from GitHub Releases) ----
+# The prebuilt C/C++ library from Velopack's own release, pinned by hash, and
+# the SAME version /release packs with (vpk) - the two must stay equal. The
+# zip carries every platform (~30 MB); only include/ and the Windows DLL are
+# used. No CMakeLists inside, so MakeAvailable just populates.
+# docs/software-update-design.md.
+FetchContent_Declare(velopack_libc
+    URL https://github.com/velopack/velopack/releases/download/1.2.161/velopack_libc_1.2.161.zip
+    URL_HASH SHA256=31de8f2cf05a47bd5328a9f98b0c41aec1582156f6075f1058b26941f7f17c20
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+FetchContent_MakeAvailable(velopack_libc)
+
 # ---- Basler Pylon SDK (layer 1 camera) — optional ----
 # The install root is NOT fixed: Basler versions the folder on some machines
 # ("Basler/pylon 8") and leaves it bare on others ("Basler/pylon"), and a client
@@ -563,6 +575,20 @@ target_link_libraries(FireDog PRIVATE firedog_hw
 # sol2 safety checks (argument/type validation on every boundary crossing) —
 # cheap insurance for a layer that commands real hardware.
 target_compile_definitions(FireDog PRIVATE SOL_ALL_SAFETIES_ON=1)
+
+# Velopack: the client only (update/AppUpdater.cpp is its one includer). It is
+# not a vendor SDK with a stub - it is always fetched - and FireDogRig has no
+# business updating anything, so it stays off firedog_hw.
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(_vpk_dll "${velopack_libc_SOURCE_DIR}/lib/velopack_libc_win_x64_msvc.dll")
+else()
+    set(_vpk_dll "${velopack_libc_SOURCE_DIR}/lib/velopack_libc_win_x86_msvc.dll")
+endif()
+target_include_directories(FireDog PRIVATE "${velopack_libc_SOURCE_DIR}/include")
+target_link_libraries(FireDog PRIVATE "${_vpk_dll}.lib")
+add_custom_command(TARGET FireDog POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_vpk_dll}" "$<TARGET_FILE_DIR:FireDog>"
+    COMMENT "Copying the Velopack runtime DLL")
 
 firedog_stage_runtime(FireDog)
 

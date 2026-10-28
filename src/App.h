@@ -49,7 +49,9 @@ namespace firedog {
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Light, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
                   Align, VisionTeach, AlignNominal, AlignPlace, Needle,
-                  DeviceReg, Grip, Tray, Mosaic };
+                  DeviceReg, Grip, Tray, Mosaic, Version };
+
+class AppUpdater;   // update/AppUpdater.h - owned by main(), it outlives App
 
 // One XCAN launch preset (a button on the Run page's Scan band): the step
 // ladder + the hexapod_align.lua tunables injected at launch. Five slots;
@@ -181,6 +183,7 @@ inline constexpr int kPosPadSlots = kPosPadCols * kPosPadRows;
 
 class App {
 public:
+    explicit App(AppUpdater& updater) : updater_(updater) {}
     int Run();
 
 private:
@@ -489,6 +492,12 @@ private:
     // at (its measured X/Y/Z), so the live camera shows what that frame shows.
     // Same gates as GoToMosaicPoint: kRoleJog, jog armed, idle.
     void GoToMosaicTile(int i);
+    // ---- Version page (PageVersion.cpp; docs/software-update-design.md) ------
+    // This build, and the software update: check GitHub, download, restart into
+    // the new version. The update itself is applied by main() after App is
+    // gone, so the page only asks for it and closes the application.
+    void DrawVersionPanel();
+
     // The private pose sweep, by the convention the alignment procedures set:
     // the position is named after its owner, so deleting the owner drops it.
     void DropGripPositions(const GripProfile& g);
@@ -714,6 +723,10 @@ private:
     void ResetDocumentSelections();   // re-point the UI after a document reload
 
     GlHost host_;
+
+    // The software updater. NOT owned: main() holds it, because the update is
+    // handed to Velopack only after App - and every device it owns - is gone.
+    AppUpdater& updater_;
 
     // Layer 1 owns the hardware; layer 2 orchestrates it. The UI only renders.
     HardwareManager hardware_;
