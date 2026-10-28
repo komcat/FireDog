@@ -46,7 +46,11 @@ $token = (& $gh auth token).Trim()
 if (-not $token) { throw "gh is not logged in - run: gh auth login" }
 
 function Invoke-Vpk([string[]]$VpkArgs) {
-    & dotnet tool exec "vpk@$VpkVersion" --yes "--" @VpkArgs | Out-Host
+    # vpk logs to stderr; under "Stop", Windows PowerShell 5.1 turns the first
+    # stderr line of a native command into a terminating error. The exit code
+    # is the verdict here.
+    $ErrorActionPreference = "Continue"
+    & dotnet tool exec "vpk@$VpkVersion" --yes "--" @VpkArgs 2>&1 | ForEach-Object { "$_" } | Out-Host
     return $LASTEXITCODE
 }
 
