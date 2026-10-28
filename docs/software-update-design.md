@@ -83,7 +83,7 @@ nothing. Only Restart does.
 | Startup hook, owning the updater, apply after `~App` | `FireDog.cpp` |
 | Check / download / apply-at-exit, the worker | `src/update/AppUpdater.{h,cpp}` |
 | Version page: build info, status, Check / Download / Restart, notes | `src/ui/pages/PageVersion.cpp` |
-| Help menu entry (with the "available" hint), exit-confirm line | `src/ui/pages/MainWindow.cpp` |
+| Menu entry in View AND Help (one `versionItem`, with the "available" hint), exit-confirm line | `src/ui/pages/MainWindow.cpp` |
 | `FireDog.ini` above `current\` | `src/core/Paths.cpp` (`IniFolder`) |
 | Packing + upload | `tools/release/pack-velopack.ps1`, the `/release` skill |
 

@@ -214,6 +214,21 @@ void App::DrawMainWindow()
                                                  : a.nominals.front().uid);
         };
 
+        // The Version page's menu item, in View and in Help: one definition so
+        // the two cannot disagree. The label carries the news - a found release
+        // says so where an Admin looks, without a popup over anybody's work.
+        // Callers check CanAccess(Page::Version) first.
+        const auto versionItem = [&]() {
+            const AppUpdater::Status us = updater_.GetStatus();
+            const bool news = us.state == AppUpdater::State::Available ||
+                              us.state == AppUpdater::State::Ready;
+            const std::string label =
+                news ? "Version / Update  (" + us.latestVersion + " available)"
+                     : std::string("Version / Update");
+            if (ImGui::MenuItem(label.c_str(), nullptr, currentPage_ == Page::Version))
+                ToggleEditorPage(Page::Version);
+        };
+
         // ---- Menu bar (top strip) ----
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("File")) {
@@ -349,20 +364,15 @@ void App::DrawMainWindow()
                     if (currentPage_ != Page::DutView) LoadDutList();
                     ToggleEditorPage(Page::DutView);
                 }
+                if (CanAccess(Page::Version)) {
+                    ImGui::Separator();
+                    versionItem();
+                }
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Help")) {
-                // The label carries the news: a found release says so here,
-                // where an Admin looks, without a popup over anybody's work.
                 if (CanAccess(Page::Version)) {
-                    const AppUpdater::Status us = updater_.GetStatus();
-                    const bool news = us.state == AppUpdater::State::Available ||
-                                      us.state == AppUpdater::State::Ready;
-                    const std::string label =
-                        news ? "Version / Update  (" + us.latestVersion + " available)"
-                             : std::string("Version / Update");
-                    if (ImGui::MenuItem(label.c_str(), nullptr, currentPage_ == Page::Version))
-                        ToggleEditorPage(Page::Version);
+                    versionItem();
                 } else {
                     ImGui::MenuItem("About", nullptr, false, false);
                 }
