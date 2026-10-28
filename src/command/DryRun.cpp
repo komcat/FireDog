@@ -22,7 +22,8 @@ namespace {
 //   tray_next / tray_*        consume cells in the product document
 //   prompt / prompt_input / manual_adjust / wait_until / run_script
 //                             an operator, a reading, or arbitrary Lua
-constexpr std::array<std::string_view, 25> kDryRunCommands = {
+// to_array counts the entries itself: a hand-kept size breaks on every addition.
+constexpr auto kDryRunCommands = std::to_array<std::string_view>({
     // Motion
     "set_velocity", "read_velocity", "read_position", "check_position", "move_axis_to",
     "move_to_position", "move_to_position_offset", "move_to_position_axes",
@@ -36,7 +37,7 @@ constexpr std::array<std::string_view, 25> kDryRunCommands = {
     "extend_slide", "retract_slide",
     // System plumbing
     "delay", "log", "ctx_set",
-};
+});
 
 std::size_t Walk(std::vector<RecipeStep>& steps, const CommandRegistry& reg)
 {
