@@ -73,7 +73,20 @@ struct NeedleCal {
     // means nobody checked — which is not the same as zero error, and the UI
     // says so.
     double residualMm = 0.0;
+    // The Z half of the check: a verify pass drives to the PREDICTED touch Z
+    // (minus a gap) and the operator closes it, so `zResidualMm` is how far the
+    // real touch sat from cam Z + dz, signed along "down" (+ = touched lower
+    // than predicted). `zChecked` says a verify pass measured it at all.
+    double zResidualMm = 0.0;
+    bool   zChecked    = false;
+    // Verified = a later pass agreed in XY AND in Z. Never true without
+    // zChecked: dispensing drives to cam Z + dz unattended, so a check that
+    // left dz alone was not a check of the number that matters.
     bool   verified   = false;
+    // Loaded from a record marked verified by the procedure that checked XY
+    // only (no `z_checked` in the file). Read as NOT verified - this flag only
+    // lets the page say why, instead of looking like a calibration that failed.
+    bool   needsZCheck = false;
 
     std::string calibratedAt;   // "2026-08-09T14:02:11"
 };

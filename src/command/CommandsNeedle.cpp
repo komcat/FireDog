@@ -63,6 +63,8 @@ CommandResult ExecNeedleOffset(ExecutionContext& ctx, const ParamValues& p)
     ctx.CtxSet(prefix + "_at", c.calibratedAt);
     ctx.CtxSet(prefix + "_verified", c.verified);
     ctx.CtxSet(prefix + "_residual_mm", c.residualMm);
+    ctx.CtxSet(prefix + "_z_residual_mm", c.zResidualMm);
+    ctx.CtxSet(prefix + "_z_checked", c.zChecked);
 
     if (!c.valid && p.GetBool("require"))
         return CommandResult::Fail(
@@ -73,7 +75,9 @@ CommandResult ExecNeedleOffset(ExecutionContext& ctx, const ParamValues& p)
     if (c.valid)
         FD_INFO("needle", "needle offset (%.4f, %.4f, %.4f) mm on %s%s",
                 c.dx, c.dy, c.dz, c.device.c_str(),
-                c.verified ? "" : " (UNVERIFIED - single-pass calibration)");
+                c.verified      ? ""
+                : c.needsZCheck ? " (UNVERIFIED - checked in XY only, re-calibrate to check dZ)"
+                                : " (UNVERIFIED - single-pass calibration)");
     return CommandResult::Success();
 }
 
@@ -101,8 +105,16 @@ CommandResult ExecNeedleOffsetSave(ExecutionContext& ctx, const ParamValues& p)
     c.dotX = p.GetDouble("dot_x_mm");
     c.dotY = p.GetDouble("dot_y_mm");
 
-    c.residualMm = p.GetDouble("residual_mm");
-    c.verified   = p.GetBool("verified");
+    c.residualMm  = p.GetDouble("residual_mm");
+    c.zResidualMm = p.GetDouble("z_residual_mm");
+    c.zChecked    = p.GetBool("z_checked");
+    // Verified means BOTH halves were re-measured. A caller claiming it
+    // without a Z check would write a record that reloads as unverified - so
+    // it is not verified now either.
+    c.verified   = p.GetBool("verified") && c.zChecked;
+    if (p.GetBool("verified") && !c.zChecked)
+        FD_WARN("needle", "needle_offset_save: verified without z_checked - stored "
+                          "UNVERIFIED (a verify pass must check dZ as well)");
     c.calibratedAt = NowStamp();
 
     // A zero dz means the needle touches at the camera's own focal height, which
@@ -179,10 +191,19 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"shot_pin", PT::PinName, false, "Dispenser_Shot", 0, 0, {},
                        "output pin that fires a shot", PinDir::Output},
                       {"verified", PT::Bool, false, false, 0, 0, {},
-                       "a second pass re-measured this and agreed",
+                       "a second pass re-measured this and agreed in XY AND Z "
+                       "(ignored without z_checked)",
                        PinDir::Any, "Record"},
                       {"residual_mm", PT::Double, false, 0.0, 0, 0, {},
-                       "how far the verify pass had to move the answer",
+                       "how far the verify pass had to move the XY answer",
+                       PinDir::Any, "Record"},
+                      {"z_checked", PT::Bool, false, false, 0, 0, {},
+                       "a verify pass drove to the predicted touch Z and measured "
+                       "how far off it was",
+                       PinDir::Any, "Record"},
+                      {"z_residual_mm", PT::Double, false, 0.0, 0, 0, {},
+                       "real touch Z minus predicted, signed along down (+ = touched "
+                       "lower than predicted)",
                        PinDir::Any, "Record"},
                       {"cam_x_mm", PT::Double, false, 0.0, 0, 0, {}, "camera pose X", PinDir::Any, "Record"},
                       {"cam_y_mm", PT::Double, false, 0.0, 0, 0, {}, "camera pose Y", PinDir::Any, "Record"},
@@ -216,20 +237,36 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"settle_ms", PT::Int, false, 500, 0, 60000, {},
                        "pause after the slide extends, before touching down"},
                       {"clear_mm", PT::Double, false, 1.0, 0.0, 20.0, {},
-                       "park this far above the previous touch height before the "
-                       "operator jogs down"},
+                       "safety height: on a verify pass the fast approach stops this "
+                       "far above the gap and v_final takes over"},
+                      {"first_clear_mm", PT::Double, false, 3.0, 0.0, 20.0, {},
+                       "pass 1 parks this far above the PREVIOUS touch height before "
+                       "the operator jogs down - the needle may have been changed"},
+                      {"verify_gap_mm", PT::Double, false, 0.1, 0.0, 2.0, {},
+                       "a verify pass stops this far above the PREDICTED touch "
+                       "height; the operator closes the gap, and how far they jog is "
+                       "the Z residual"},
+                      {"lift_mm", PT::Double, false, 1.5, 0.0, 20.0, {},
+                       "after the shot, lift Z this far off the dot before the slide "
+                       "comes up"},
                       {"autofocus", PT::Bool, false, true, 0, 0, {},
                        "focus the camera on the coupon, so dz is measured from a "
                        "focal plane and not from wherever Z happened to be"},
                       {"passes", PT::Int, false, 2, 1, 5, {},
-                       "1 imprints once and cannot check itself; 2 re-measures and "
-                       "reports the residual"},
+                       "1 imprints once and cannot check itself; 2+ drives to the "
+                       "calibrated touch height and checks XY and Z"},
                       {"tol_mm", PT::Double, false, 0.05, 0.001, 5.0, {},
-                       "residual a verify pass has to land inside"},
+                       "XY residual a verify pass has to land inside"},
+                      {"z_tol_mm", PT::Double, false, 0.05, 0.001, 5.0, {},
+                       "Z residual a verify pass has to land inside"},
+                      {"v_traverse", PT::Double, false, 40.0, 0.001, 100.0, {},
+                       "XY traverse: needle over the spot, camera back over the dot"},
                       {"v_approach", PT::Double, false, 20.0, 0.001, 100.0, {},
-                       "Z velocity down to the clearance height"},
+                       "Z velocity down to the safety height"},
                       {"v_final", PT::Double, false, 5.0, 0.001, 100.0, {},
-                       "Z velocity for the last stretch and the jog"},
+                       "Z velocity from the safety height to the verify gap"},
+                      {"v_liftoff", PT::Double, false, 5.0, 0.001, 100.0, {},
+                       "Z velocity lifting off the dot after the shot"},
                       {"file", PT::ScriptFile, false,
                        "config/scripts/needle_calibration.lua", 0, 0, {},
                        "script override; this name is a STANDARD procedure and always "
@@ -245,11 +282,17 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("ndl_shot_ms", static_cast<double>(p.GetInt("shot_ms")));
                       c.CtxSet("ndl_settle_ms", static_cast<double>(p.GetInt("settle_ms")));
                       c.CtxSet("ndl_clear_mm", p.GetDouble("clear_mm"));
+                      c.CtxSet("ndl_first_clear_mm", p.GetDouble("first_clear_mm"));
+                      c.CtxSet("ndl_verify_gap_mm", p.GetDouble("verify_gap_mm"));
+                      c.CtxSet("ndl_lift_mm", p.GetDouble("lift_mm"));
                       c.CtxSet("ndl_autofocus", p.GetBool("autofocus"));
                       c.CtxSet("ndl_passes", static_cast<double>(p.GetInt("passes")));
                       c.CtxSet("ndl_tol_mm", p.GetDouble("tol_mm"));
+                      c.CtxSet("ndl_z_tol_mm", p.GetDouble("z_tol_mm"));
+                      c.CtxSet("ndl_v_traverse", p.GetDouble("v_traverse"));
                       c.CtxSet("ndl_v_approach", p.GetDouble("v_approach"));
                       c.CtxSet("ndl_v_final", p.GetDouble("v_final"));
+                      c.CtxSet("ndl_v_liftoff", p.GetDouble("v_liftoff"));
                       const std::string file = c.ResolveScript(p.GetString("file"));
                       const std::string err = RunLuaFile(file, *rp, c, {}, false, nullptr);
                       return err.empty() ? CommandResult::Success()
@@ -315,9 +358,12 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "Z velocity down to the safety height"},
                       {"v_final", PT::Double, false, 5.0, 0.001, 100.0, {},
                        "Z velocity for the last stretch onto the part"},
+                      {"lift_mm", PT::Double, false, 1.5, 0.0, 20.0, {},
+                       "after the shot, lift Z this far off the dot BEFORE the slide "
+                       "comes up (0 = slide first)"},
                       {"v_liftoff", PT::Double, false, 5.0, 0.001, 100.0, {},
-                       "Z velocity climbing away after the slide has retracted; "
-                       "v_final is for arriving on a part, not for leaving one"},
+                       "Z velocity lifting off the dot and climbing away; v_final is "
+                       "for arriving on a part, not for leaving one"},
                       {"file", PT::ScriptFile, false,
                        "config/scripts/dispense_procedure.lua", 0, 0, {},
                        "script override; a product's own copy of this name wins"},
@@ -360,6 +406,7 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("disp_v_approach", p.GetDouble("v_approach"));
                       c.CtxSet("disp_v_final", p.GetDouble("v_final"));
                       c.CtxSet("disp_v_liftoff", p.GetDouble("v_liftoff"));
+                      c.CtxSet("disp_lift_mm", p.GetDouble("lift_mm"));
                       const std::string file = c.ResolveScript(p.GetString("file"));
                       const std::string err = RunLuaFile(file, *rp, c, {}, false, nullptr);
                       return err.empty() ? CommandResult::Success()

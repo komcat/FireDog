@@ -39,6 +39,8 @@ nlohmann::json NeedleCalToJson(const NeedleCal& c)
     j["measured"]["imprint"]["y"] = c.dotY;
 
     j["residual_mm"]   = c.residualMm;
+    j["z_residual_mm"] = c.zResidualMm;
+    j["z_checked"]     = c.zChecked;
     j["verified"]      = c.verified;
     j["calibrated_at"] = c.calibratedAt;
     return j;
@@ -78,7 +80,14 @@ NeedleCal NeedleCalFromJson(const nlohmann::json& j)
         }
     }
     c.residualMm   = j.value("residual_mm", 0.0);
-    c.verified     = j.value("verified", false);
+    c.zResidualMm  = j.value("z_residual_mm", 0.0);
+    c.zChecked     = j.value("z_checked", false);
+    // A record verified before the Z check existed agreed in XY only; its dz
+    // was never compared with anything. It must be re-verified, so it loads as
+    // unverified and says why.
+    const bool fileVerified = j.value("verified", false);
+    c.verified     = fileVerified && c.zChecked;
+    c.needsZCheck  = fileVerified && !c.zChecked;
     c.calibratedAt = j.value("calibrated_at", std::string());
     return c;
 }

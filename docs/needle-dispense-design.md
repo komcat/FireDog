@@ -105,7 +105,20 @@ On `IsSystemScript`, so every product runs the shipped copy and a product fork i
 ignored with a warning. It measures the **machine**; there is no such thing as
 one product's version of the answer.
 
-Per pass:
+Pass 1 **measures** (the operator jogs the needle onto the coupon); pass 2+
+**verifies** (the machine drives to where pass 1 says the needle touches, stops
+a gap short, and the operator closes it). The motion of one pass:
+
+```
+traverse   needle over the spot, at the camera's Z        v_traverse (40)
+slide      pneumatic down
+approach   Z to the safety height                          v_approach (20)
+final      Z to the verify gap   (verify passes only)      v_final    (5)
+touch      operator jog → shot
+lift off   Z up lift_mm, toward the camera's Z             v_liftoff  (5)
+slide      pneumatic up
+traverse   camera back over the dot                        v_traverse
+```
 
 1. Prompt for a coupon (pass ≥ 2: *a clean spot* — a second imprint on the first
    one has nothing to measure).
@@ -113,30 +126,54 @@ Per pass:
 3. `auto_focus` — so `dz` is measured down from a focal plane.
 4. `read_position` → the camera reference.
 5. With an offset to aim by, `move_axis_to` the needle over that spot **at the
-   camera's Z**. The traverse is the length of the lever arm and happens well
-   clear of the coupon.
+   camera's Z**, at `v_traverse`. The traverse is the length of the lever arm and
+   happens well clear of the coupon.
 6. Confirm → `extend_slide` → settle.
-7. With a known `dz`, park `clear_mm` short of the last touch height; then
-   `manual_adjust` 10 µm on Z (plus XY when nothing has aimed it) → the operator
-   brings it down to contact. `read_position` takes the pose, not
-   `manual_adjust`'s `ctx_prefix`: the latter reads the poll cache, the former
-   demands a fast poll and waits a cycle out, and at a touch height that
-   difference is the measurement.
+7. Down to contact:
+   * **Pass 1**: with a previous `dz`, park `first_clear_mm` (3) above the
+     PREVIOUS touch height — wider than the safety height, because the usual
+     reason to calibrate is a changed needle, which may sit lower than the old
+     one. Then `manual_adjust` on Z (plus XY when nothing has aimed it), seeded
+     at 100 µm; the operator brings it down to contact.
+   * **Pass ≥ 2**: `predicted = cam_z + dz`. `v_approach` to
+     `predicted − dir·(gap + clear_mm)`, `v_final` to `predicted − dir·gap`
+     (`verify_gap_mm`, 0.1), then `manual_adjust` 10 µm on Z: jog down to contact
+     — or UP, if it is already pressing.
+   `read_position` takes the pose, not `manual_adjust`'s `ctx_prefix`: the latter
+   reads the poll cache, the former demands a fast poll and waits a cycle out,
+   and at a touch height that difference is the measurement.
 8. Confirm → `pulse_output` fires the shot.
-9. Retreat **Z first, then the slide, then XY** — the needle never travels
-   sideways while it is down near the dot it just made. (The *dispense*
-   procedure retracts before lifting; here Z must clear first, because the
-   operator has just jogged the tip into contact and the imprint is what is
-   being measured.)
-10. `pick_point` on the imprint, with the expected position as a hint (an edge
-    arrow with its distance when it is out of frame).
+9. Lift off **`lift_mm` (1.5) in Z first, then the slide, then XY** — the
+   needle never travels sideways while it is down near the dot it just made.
+   The lift goes TOWARD the camera's Z (where the needle came down from), so it
+   needs no `dir` and is right even on a first calibration. The dispense
+   procedure retreats in the same order.
+10. `move_axis_to` the camera back over the spot at `v_traverse` (one
+    coordinated move: the slide is up and Z only climbs), then `pick_point` on
+    the imprint, with the expected position as a hint (an edge arrow with its
+    distance when it is out of frame).
 11. `dx = tip_x − dot_wx`, `dy = tip_y − dot_wy`, `dz = tip_z − cam_z`.
 
-Two passes by default. The second re-measures and the difference is the
-residual; inside `tol_mm` the record is marked `verified`, outside it the offset
-is still saved (it is better than what was there) and the script then fails,
-because a measurement that will not repeat points at the marking or at a needle
-that deflects on contact, and neither is fixed by loosening the tolerance.
+Steps 6–9 run under `pcall`: a Cancel on the jog or on the shot lifts the needle
+off and retracts the slide before the error goes on, instead of leaving it
+standing on the coupon. An operator **Stop** is the exception — it means "no more
+motion" (the `climb_raster.lua` rule).
+
+**Verified means XY AND Z.** A verify pass yields two residuals: XY (how far the
+dot moved the answer, against `tol_mm`) and Z (`(tip_z − predicted)·dir`, how far
+the operator had to jog from the predicted touch, against `z_tol_mm`; + = touched
+lower than predicted). `dispense_procedure.lua` drives to `cam_z + dz` with
+nobody on the jog, so `dz` is the number that most needs checking — the earlier
+procedure compared XY only and silently replaced `dz` with the second hand-touch.
+The record stores `z_checked` and `z_residual_mm`; `needle_offset_save` refuses
+`verified` without `z_checked`, and a file marked `verified` by the XY-only
+procedure (no `z_checked`) **loads as unverified** with `needsZCheck`, so the
+Needle page reads *RE-VERIFY REQUIRED* until the machine is re-calibrated.
+
+Outside either tolerance the offset is still saved (it is better than what was
+there) and the script then fails, because a measurement that will not repeat
+points at the marking, the touch, or a needle that deflects on contact, and none
+of those is fixed by loosening the tolerance.
 `passes = 1` succeeds with a loud unverified warning — the same bargain
 `placement_procedure.lua` strikes, and the Needle page keeps saying so
 afterwards.
@@ -204,12 +241,16 @@ the needle is changed: re-calibrate and every taught point still works.
 7. Confirm → `before_ms` → `pulse_output` → `after_ms`. A cancel here retreats
    before failing: leaving the needle resting on the part would be worse than
    the dispense.
-8. Retreat: **retract the slide first**, then Z at `v_liftoff`, then XY. The
-   cylinder lifts the needle off the dot on its own stroke — straighter and
-   faster than Z can, and it breaks the string while the head is still
-   stationary over the point. Climbing at `v_final` instead would crawl away
-   from a part there is nothing left to arrive at. XY stays last either way, so
-   the needle never travels sideways while it is down near the dot.
+8. Retreat, in the order of the needle motion drawing (Needle page): **Z lifts
+   `lift_mm` (1.5) at `v_liftoff` first**, toward the camera's Z, then the slide
+   comes up, then Z climbs to the camera's Z, then XY. The lift is a controlled
+   straight pull off the dot (`after_ms` is the string-break dwell) instead of
+   the cylinder snapping the needle away on its stroke. `lift_mm = 0` restores
+   the earlier slide-first order. Climbing at `v_final` instead would crawl
+   away from a part there is nothing left to arrive at. XY stays last either
+   way, so the needle never travels sideways while it is down near the dot —
+   and unlike the calibration's coupon, a real part may have features between
+   the dot and the camera spot, so Z climbs all the way before XY moves.
 9. Optionally bring the camera back, capture an image to the DUT, and ask.
 
 `pulse_output` rather than on/delay/off because it closes the valve **even when

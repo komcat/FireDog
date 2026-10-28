@@ -1236,9 +1236,15 @@ private:
     int    ndlSettleMs_   = 500;
     int    ndlPasses_     = 2;
     double ndlClearMm_    = 1.0;
+    double ndlFirstClearMm_ = 3.0;
+    double ndlGapMm_      = 0.1;
+    double ndlLiftMm_     = 1.5;
     double ndlTolMm_      = 0.05;
+    double ndlZTolMm_     = 0.05;
+    double ndlVTraverse_  = 40.0;
     double ndlVApproach_  = 20.0;
     double ndlVFinal_     = 5.0;
+    double ndlVLiftoff_   = 5.0;
     bool   ndlAutofocus_  = true;
     std::string ndlStartErr_;    // why the last Run refused to start
     // The bootstrap seed: with no calibration at all the first imprint lands a
