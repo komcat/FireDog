@@ -89,6 +89,7 @@ int App::Run()
         if (ui.regCtlW       > 0.0f) regCtlW_       = ui.regCtlW;
         if (ui.gripCtlW      > 0.0f) gripCtlW_      = ui.gripCtlW;
         if (ui.trayCtlW      > 0.0f) trayCtlW_      = ui.trayCtlW;
+        if (ui.scriptsListW  > 0.0f) scListW_       = ui.scriptsListW;
         showTray_        = ui.showTrayWin;
         if (ui.mosaicLeftW   > 0.0f) mosaicLeftW_   = ui.mosaicLeftW;
         if (ui.mosaicRightW  > 0.0f) mosaicRightW_  = ui.mosaicRightW;
@@ -522,6 +523,7 @@ void App::SaveUiSettings()
     s.regCtlW       = regCtlW_;
     s.gripCtlW      = gripCtlW_;
     s.trayCtlW      = trayCtlW_;
+    s.scriptsListW  = scListW_;
     s.showTrayWin   = showTray_;
     s.mosaicLeftW   = mosaicLeftW_;
     s.mosaicRightW  = mosaicRightW_;

@@ -822,11 +822,17 @@ void App::DrawScriptsPanel()
     if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S) && ScriptDirty() && !orch_.Busy())
         SaveScriptEditor();
 
+    constexpr float kSplitW    = 6.0f;
+    constexpr float kMinListW  = 120.0f;
+    constexpr float kMinMidW   = 240.0f;
     const float  stripH = ImGui::GetFrameHeightWithSpacing() * 3.2f;
     const ImVec2 avail  = ImGui::GetContentRegionAvail();
     const float  paneH  = avail.y - stripH;
-    const float  leftW  = 230.0f;
     const float  rightW = 300.0f;
+    const float  maxListW = avail.x - rightW - kSplitW - ImGui::GetStyle().ItemSpacing.x - kMinMidW;
+    if (scListW_ > maxListW) scListW_ = maxListW;
+    if (scListW_ < kMinListW) scListW_ = kMinListW;
+    const float  leftW  = scListW_;
 
     // ---- Left: script list ----
     ImGui::BeginChild("scList", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
@@ -847,6 +853,9 @@ void App::DrawScriptsPanel()
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && ScriptDirty())
         ImGui::SetTooltip("Save or revert the open script first");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Explorer")) OpenFolderInExplorer(session_.ScriptsDirUsed());
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open %s", session_.ScriptsDirUsed().c_str());
     ImGui::TextDisabled("%s", session_.ScriptsDirUsed().c_str());
     ImGui::Separator();
     if (session_.Scripts().empty())
@@ -864,10 +873,18 @@ void App::DrawScriptsPanel()
         ImGui::PopID();
     }
     ImGui::EndChild();
-    ImGui::SameLine();
+    ImGui::SameLine(0.0f, 0.0f);
+    if (Splitter("##scsplit", true, kSplitW, paneH)) {
+        scListW_ += ImGui::GetIO().MouseDelta.x;
+        scListSplitting_ = true;
+    } else if (scListSplitting_) {
+        scListSplitting_ = false;
+        SaveUiSettings();   // persist on drag END, like every other splitter here
+    }
+    ImGui::SameLine(0.0f, 0.0f);
 
     // ---- Middle: the editor ----
-    const float midW = avail.x - leftW - rightW - ImGui::GetStyle().ItemSpacing.x * 2.0f;
+    const float midW = avail.x - leftW - kSplitW - rightW - ImGui::GetStyle().ItemSpacing.x;
     ImGui::BeginChild("scSrc", ImVec2(midW, paneH), ImGuiChildFlags_Borders);
     if (!ed.path.empty()) {
         const ScriptInfo* si = nullptr;

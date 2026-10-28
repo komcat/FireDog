@@ -82,6 +82,8 @@ struct UiSettings {
     // Waffle Tray page: width of its right-hand control column in px (same
     // shape as the two above; 0 = the App default).
     float trayCtlW = 0.0f;
+    // Scripts page: width of the script list on the left in px (0 = default).
+    float scriptsListW = 0.0f;
     // Whether the floating Waffle Tray window was open. Restored, because an
     // operator who keeps it beside the Run page wants it back next shift.
     bool  showTrayWin = false;

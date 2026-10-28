@@ -40,6 +40,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("reg_ctl_w"))  s.regCtlW  = j["reg_ctl_w"].get<float>();
         if (j.contains("grip_ctl_w")) s.gripCtlW = j["grip_ctl_w"].get<float>();
         if (j.contains("tray_ctl_w")) s.trayCtlW = j["tray_ctl_w"].get<float>();
+        if (j.contains("scripts_list_w")) s.scriptsListW = j["scripts_list_w"].get<float>();
         if (j.contains("show_tray_win")) s.showTrayWin = j["show_tray_win"].get<bool>();
         if (j.contains("mosaic_left_w"))  s.mosaicLeftW  = j["mosaic_left_w"].get<float>();
         if (j.contains("mosaic_right_w")) s.mosaicRightW = j["mosaic_right_w"].get<float>();
@@ -138,6 +139,7 @@ bool UiSettings::Save(const std::string& path) const
     j["reg_ctl_w"]       = regCtlW;
     j["grip_ctl_w"]      = gripCtlW;
     j["tray_ctl_w"]      = trayCtlW;
+    j["scripts_list_w"]  = scriptsListW;
     j["show_tray_win"]   = showTrayWin;
     j["mosaic_left_w"]   = mosaicLeftW;
     j["mosaic_right_w"]  = mosaicRightW;

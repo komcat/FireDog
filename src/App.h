@@ -1635,6 +1635,8 @@ private:
 
     // Scripts page UI state — the scanned list itself lives in session_.
     int                      scriptSel_ = -1;
+    float scListW_ = 230.0f;           // script list width, persisted
+    bool  scListSplitting_ = false;    // edge-detect the drag END
     // Per-script breakpoints (keyed by path; click a source row to toggle,
     // shift+click for a range from the anchor = last plainly clicked row).
     std::map<std::string, std::set<int>> scriptBps_;
