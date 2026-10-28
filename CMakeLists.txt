@@ -213,7 +213,7 @@ if(PYLON_FOUND AND (FIREDOG_STAGE_PYLON OR _pylon_is_vendored) AND EXISTS "${PYL
     file(GLOB PYLON_DEPLOY_FILES
         "${PYLON_RUNTIME_DIR}/PylonBase_v*.dll"
         "${PYLON_RUNTIME_DIR}/PylonUtility_v*.dll"
-        "${PYLON_RUNTIME_DIR}/*_Basler_pylon.dll"
+        "${PYLON_RUNTIME_DIR}/*_Basler_pylon*.dll"   # GenICam: *_Basler_pylon.dll (pylon 7), *_Basler_pylon_v1.dll (pylon 8)
         "${PYLON_RUNTIME_DIR}/Pylon*_TL.dll"
         "${PYLON_RUNTIME_DIR}/Producer*.cti"
         "${PYLON_RUNTIME_DIR}/gxapi_v*.dll"
