@@ -183,7 +183,8 @@ void RegisterDutCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw
                       {"serial", PT::String, false, "", 0, 0, {},
                        "part serial; empty = use ctx key 'serial'"},
                       {"new", PT::Bool, false, false, 0, 0, {},
-                       "true = start a FRESH record (destructive re-test)"},
+                       "true = start a FRESH record (the old one is kept as "
+                       "dut.replaced-<stamp>.json); a re-test of the same part wants false"},
                   },
                   CommandSpec::Needs::None, ExecDutOpen});
 

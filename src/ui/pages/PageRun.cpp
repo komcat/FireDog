@@ -1235,9 +1235,10 @@ void App::DrawRunPanel()
     // Motion page's level): it writes positions, not programs. Disabled while
     // anything runs, so a queue can never change mode between its items — the
     // runner carries its own copy of the flag regardless.
+    // Same height as Execute, like Save/Load: one row of one size of target.
+    constexpr float kStripSideW = 110.0f;
     if (CanAccess(Page::Motion)) {
         ImGui::SameLine();
-        centerNext(ImGui::GetFrameHeight());
         ImGui::BeginDisabled(orch_.Busy());
         // The push/pop pair keys off the value BEFORE the click: the button
         // flips the flag, and a pop decided on the new value pops colours that
@@ -1248,7 +1249,7 @@ void App::DrawRunPanel()
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kTeachOrangeHov);
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kTeachOrangeAct);
         }
-        if (ImGui::Button(wasOn ? "TEACH ON" : "Teach")) {
+        if (ImGui::Button(wasOn ? "TEACH ON" : "Teach", ImVec2(kStripSideW, stripBtnH))) {
             teachMode_ = !teachMode_;
             FD_INFO("program", "teach mode %s", teachMode_ ? "ON" : "off");
         }
@@ -1264,6 +1265,19 @@ void App::DrawRunPanel()
     } else if (teachMode_) {
         // Cannot happen after LogOut clears it, but never show a hidden mode.
         teachMode_ = false;
+    }
+    // Inspect Motion: a read-only window over what Execute would run, so it
+    // stays live during a run - it never drives anything.
+    if (CanUse(kRoleInspect)) {
+        ImGui::SameLine();
+        const bool wasOpen = showMotionInspect_;
+        if (wasOpen) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button("Inspect Motion", ImVec2(kStripSideW + 30.0f, stripBtnH)))
+            showMotionInspect_ = !showMotionInspect_;
+        if (wasOpen) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("List every move in the selected item (or the slot):\n"
+                              "device, target, velocity, approach and camera exposure.");
     }
     if (teachMode_ || rs.teach) {
         ImGui::SameLine();

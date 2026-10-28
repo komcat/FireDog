@@ -44,7 +44,9 @@ all go through them.
 
 ## `FireDog.ini`
 
-Beside the exe:
+Beside the exe — or, in a Setup install (`C:\FireDog\current\FireDog.exe` with
+`C:\FireDog\Update.exe`), one level up at `C:\FireDog\FireDog.ini`, because
+every update replaces `current\` whole (`docs/software-update-design.md`):
 
 ```ini
 [paths]
@@ -52,8 +54,8 @@ root = D:\ProgramData\FireDog
 data = E:\FireDogData        ; optional; default <root>\data
 ```
 
-- Read once, at startup. A relative value is taken from the exe folder;
-  `%VARIABLES%` expand.
+- Read once, at startup. A relative value is taken from the ini's own folder
+  (the exe folder, except in a Setup install); `%VARIABLES%` expand.
 - **Never shipped** — `package-release.ps1` does not put one in the zip — so
   unzipping a new version over an install cannot reset where the machine keeps
   its state. When none exists the app writes a commented template (all

@@ -49,7 +49,9 @@ namespace firedog {
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Light, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
                   Align, VisionTeach, AlignNominal, AlignPlace, Needle,
-                  DeviceReg, Grip, Tray, Mosaic };
+                  DeviceReg, Grip, Tray, Mosaic, Version };
+
+class AppUpdater;   // update/AppUpdater.h - owned by main(), it outlives App
 
 // One XCAN launch preset (a button on the Run page's Scan band): the step
 // ladder + the hexapod_align.lua tunables injected at launch. Five slots;
@@ -160,6 +162,9 @@ inline constexpr UserRole kRoleData = UserRole::Technician;
 //   full - what an operator does as parts come and go. Its Drive here is
 //   kRoleJog, like every other move.
 inline constexpr UserRole kRoleTray = UserRole::Operator;
+//   Inspect Motion only reads recipes, but it reads them step by step - the
+//   level that may open the Recipe Editor at all.
+inline constexpr UserRole kRoleInspect = UserRole::Technician;
 
 // One DUT record flattened for the View Data window: the identity columns plus
 // the LAST value written under each non-event key. The append-only log may
@@ -181,6 +186,7 @@ inline constexpr int kPosPadSlots = kPosPadCols * kPosPadRows;
 
 class App {
 public:
+    explicit App(AppUpdater& updater) : updater_(updater) {}
     int Run();
 
 private:
@@ -300,6 +306,16 @@ private:
                              std::vector<std::size_t>& path, bool elseBranch,
                              const std::vector<std::size_t>& runPath, bool running);
     void DrawRecipeInspector(RecipeStep& s, bool canEdit);
+    // CommandSpec::helper -> its window (the inspector's "Open ..." button).
+    void OpenCommandHelper(const std::string& helper);
+    // The step the Recipe Editor has selected, or nullptr. What a helper
+    // window edits: it follows the editor's selection rather than holding a
+    // path of its own, which would point at another step after the next edit.
+    RecipeStep* EditorSelectedStep();
+    // The Dispense helper (WndDispenseHelper.cpp): the selected dispense_run
+    // step's motion, shot and inspect settings, laid out under the needle
+    // motion drawing.
+    void DrawDispenseHelperWindow();
     std::string AutoNickname(const RecipeStep& s) const;   // live label from params
     void DrawRecipeTreeToolbar(Recipe& r, bool canEdit);   // move/delete row
     void DrawRecipePalette(Recipe& r, bool canEdit);       // searchable add-step column
@@ -439,6 +455,10 @@ private:
     // the ACTIVE cell a recipe's move_to_active_cell drives to, and mark
     // cavities used or full as parts come and go.
     void DrawTrayWindow();
+    // The floating Inspect Motion window (WndMotionInspect.cpp, the Run strip's
+    // button): every move in what Execute would run - the selected item, else
+    // the slot - with its device, target, velocity, approach and exposure.
+    void DrawMotionInspectWindow();
     // The ONE writer of a corner, for "Teach here" (the live pose) and the
     // "or taught..." picker alike: both hand in COORDINATES. Stamps the date.
     void TeachTrayCorner(WaffleTray& t, TrayCornerSlot slot,
@@ -489,6 +509,12 @@ private:
     // at (its measured X/Y/Z), so the live camera shows what that frame shows.
     // Same gates as GoToMosaicPoint: kRoleJog, jog armed, idle.
     void GoToMosaicTile(int i);
+    // ---- Version page (PageVersion.cpp; docs/software-update-design.md) ------
+    // This build, and the software update: check GitHub, download, restart into
+    // the new version. The update itself is applied by main() after App is
+    // gone, so the page only asks for it and closes the application.
+    void DrawVersionPanel();
+
     // The private pose sweep, by the convention the alignment procedures set:
     // the position is named after its owner, so deleting the owner drops it.
     void DropGripPositions(const GripProfile& g);
@@ -714,6 +740,10 @@ private:
     void ResetDocumentSelections();   // re-point the UI after a document reload
 
     GlHost host_;
+
+    // The software updater. NOT owned: main() holds it, because the update is
+    // handed to Velopack only after App - and every device it owns - is gone.
+    AppUpdater& updater_;
 
     // Layer 1 owns the hardware; layer 2 orchestrates it. The UI only renders.
     HardwareManager hardware_;
@@ -1108,6 +1138,7 @@ private:
     // Selected step as a numeric path into the nested step tree; components
     // >= kElsePathBase (App.cpp) address an if-step's else branch.
     std::vector<std::size_t> edStepSel_;
+    bool showDispHelper_ = false;   // the Dispense helper window (follows edStepSel_)
     // Further selected rows beyond edStepSel_ (the ANCHOR: the inspector's
     // step, the palette's insert point). Ctrl-click toggles a row in and out,
     // Shift-click takes the visible range from the anchor. Copy and Delete
@@ -1216,9 +1247,15 @@ private:
     int    ndlSettleMs_   = 500;
     int    ndlPasses_     = 2;
     double ndlClearMm_    = 1.0;
+    double ndlFirstClearMm_ = 3.0;
+    double ndlGapMm_      = 0.1;
+    double ndlLiftMm_     = 1.5;
     double ndlTolMm_      = 0.05;
+    double ndlZTolMm_     = 0.05;
+    double ndlVTraverse_  = 40.0;
     double ndlVApproach_  = 20.0;
     double ndlVFinal_     = 5.0;
+    double ndlVLiftoff_   = 5.0;
     bool   ndlAutofocus_  = true;
     std::string ndlStartErr_;    // why the last Run refused to start
     // The bootstrap seed: with no calibration at all the first imprint lands a
@@ -1693,6 +1730,8 @@ private:
     // closes or is reordered. Empty = slot scope.
     std::string deckNode_;
     bool runEdit_       = false;   // mirrors orgOpen_: the strip's Edit checkbox
+    bool showMotionInspect_ = false;   // the strip's Inspect Motion window
+    bool motionInspectAll_  = false;   // ...listing every step, not only motion
     // Teach mode (the Run strip's toggle). While on, EVERY recipe launch is a
     // teach run: the recipe is rewritten to its saved-position moves and each
     // arrival prompts fine-tune-and-Save (command/TeachMode.h). Deliberately

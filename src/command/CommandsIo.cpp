@@ -1,4 +1,4 @@
-// CommandsIo.cpp : digital-IO commands (set/pulse/wait/clear-latch).
+// CommandsIo.cpp : digital-IO commands (set/pulse/toggle/wait/clear-latch).
 #include "command/Commands.h"
 
 #include "command/CommandRegistry.h"
@@ -47,6 +47,25 @@ CommandResult ExecPulseOutput(ExecutionContext& ctx, const ParamValues& p)
     if (!full) return CommandResult::Fail("stopped");
     return offOk ? CommandResult::Success()
                  : CommandResult::Fail("pulse OFF rejected");
+}
+
+CommandResult ExecToggleOutput(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    const std::string pin    = p.GetString("pin");
+    const bool start         = p.GetBool("start_on");
+    // The starting state is a requirement, not an assumption: put the pin
+    // there first (a no-op when it already is), then toggle away from it.
+    if (!ctx.Wf().SetIoOutputByName(device, pin, start))
+        return CommandResult::Fail("starting state rejected (device/pin/connection?)");
+    if (!ctx.Wf().SetIoOutputByName(device, pin, !start))
+        return CommandResult::Fail("toggle rejected (device/pin/connection?)");
+    const bool full = ctx.Sleep(p.GetInt("dwell_ms"));
+    // Like pulse_output: the pin goes back to its starting state even on stop.
+    const bool backOk = ctx.Wf().SetIoOutputByName(device, pin, start);
+    if (!full) return CommandResult::Fail("stopped");
+    return backOk ? CommandResult::Success()
+                  : CommandResult::Fail("toggle back rejected");
 }
 
 CommandResult ExecWaitInput(ExecutionContext& ctx, const ParamValues& p)
@@ -121,6 +140,22 @@ void RegisterIoCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
                       PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecPulseOutput});
+
+    reg.Register({"toggle_output", "IO",
+                  "Switch an output away from its starting state, dwell, then switch "
+                  "it back (back even if stopped)",
+                  {
+                      {"device", PT::DeviceIo, true, {}, 0, 0, {}, "io device name"},
+                      {"pin", PT::PinName, true, {}, 0, 0, {}, "output pin name",
+                       PinDir::Output},
+                      {"start_on", PT::Bool, false, true, 0, 0, {},
+                       "starting state: true = ON (ON->OFF->ON), false = OFF (OFF->ON->OFF)"},
+                      {"dwell_ms", PT::Int, false, 100, 1, 60000, {},
+                       "time held in the toggled state"},
+                      PreDelayParam(),
+                      PostDelayParam(),
+                  },
+                  CommandSpec::Needs::None, ExecToggleOutput});
 
     reg.Register({"wait_input", "IO", "Wait for a digital input to reach a state",
                   {

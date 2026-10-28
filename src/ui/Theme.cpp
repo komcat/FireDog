@@ -26,6 +26,12 @@ void FireDogDark(ImGuiStyle& s)   // the original FireDog look (startup default)
     ImGui::StyleColorsDark(&s);
     ImVec4* c = s.Colors;
     c[ImGuiCol_WindowBg] = ImVec4(0.10f, 0.10f, 0.11f, 1.00f);
+    // Stated here, not inherited: ImGui 1.93 restyled StyleColorsDark()'s
+    // frames near-black, which vanishes on this WindowBg (input boxes with no
+    // box). These are the 1.92 values this theme was designed against.
+    c[ImGuiCol_FrameBg]        = ImVec4(0.16f, 0.29f, 0.48f, 0.54f);
+    c[ImGuiCol_FrameBgHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.40f);
+    c[ImGuiCol_FrameBgActive]  = ImVec4(0.26f, 0.59f, 0.98f, 0.67f);
     Accent(c, ImVec4(0.16f, 0.29f, 0.40f, 1.0f), ImVec4(0.20f, 0.36f, 0.50f, 1.0f));
 }
 

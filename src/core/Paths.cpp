@@ -43,6 +43,7 @@ constexpr const char* kIniTemplate =
     "; FireDog.ini - where this machine keeps its state. Read once, at startup.\n"
     "; FireDog wrote this template because none existed; edit and restart.\n"
     "; It is never shipped in a release, so unzipping a new version keeps it.\n"
+    "; In a Setup install it sits above current\\, where an update cannot reach.\n"
     ";\n"
     ";   root  machine state: hardware.json, calibrations, *.local.json,\n"
     ";         products\\ (documents + the employee roster), logs\\, imgui.ini.\n"
@@ -146,11 +147,23 @@ std::map<std::string, std::string> ReadIni(const fs::path& p)
     return out;
 }
 
-// A configured path; a relative one is taken from the exe folder.
-fs::path FromIni(const std::string& v, const fs::path& exe)
+// A configured path; a relative one is taken from the ini's own folder.
+fs::path FromIni(const std::string& v, const fs::path& iniDir)
 {
     fs::path p(v);
-    return p.is_absolute() ? p : exe / p;
+    return p.is_absolute() ? p : iniDir / p;
+}
+
+// Where FireDog.ini lives. A Velopack install (Setup.exe / Portable.zip) runs
+// from <install>/current/, and every update REPLACES current/ whole - so there
+// the ini sits one level up, beside Update.exe, where an update cannot reach
+// it. Anywhere else (a build tree, an unzipped release) it is beside the exe.
+fs::path IniFolder(const fs::path& exe)
+{
+    std::error_code ec;
+    const fs::path up = exe.parent_path();
+    if (exe.filename() == "current" && fs::exists(up / "Update.exe", ec)) return up;
+    return exe;
 }
 
 bool MakeDir(const fs::path& p, std::string* why)
@@ -340,9 +353,10 @@ void Seed(const fs::path& exe, const fs::path& root)
 void DoInit()
 {
     State& s = S();
-    const fs::path exe = ExeFolder();
+    const fs::path exe    = ExeFolder();
+    const fs::path iniDir = IniFolder(exe);
     s.exeDir = Generic(exe);
-    s.ini    = Generic(exe / kIniName);
+    s.ini    = Generic(iniDir / kIniName);
 
     // Shipped paths stay relative ("config/scripts/...", "assets/..."), so the
     // working directory must be the exe folder whatever the shortcut said.
@@ -355,10 +369,10 @@ void DoInit()
     std::map<std::string, std::string> ini;
     {
         std::error_code ec;
-        if (fs::exists(exe / kIniName, ec)) {
-            ini = ReadIni(exe / kIniName);
+        if (fs::exists(iniDir / kIniName, ec)) {
+            ini = ReadIni(iniDir / kIniName);
         } else {
-            std::ofstream f(exe / kIniName);   // best effort: a read-only folder is fine
+            std::ofstream f(iniDir / kIniName);   // best effort: a read-only folder is fine
             if (f.is_open()) {
                 f << kIniTemplate;
                 Note(false, "wrote a template " + s.ini + " (all defaults)");
@@ -367,7 +381,7 @@ void DoInit()
     }
 
     // ---- The machine root ----
-    fs::path root = ini.count("root") ? FromIni(ini["root"], exe) : DefaultRoot();
+    fs::path root = ini.count("root") ? FromIni(ini["root"], iniDir) : DefaultRoot();
     std::error_code ec;
     bool firstStart = !fs::exists(root / "config", ec);
     std::string why;
@@ -387,7 +401,7 @@ void DoInit()
     s.root = Generic(root);
 
     // ---- The data root ----
-    fs::path data = ini.count("data") ? FromIni(ini["data"], exe) : root / "data";
+    fs::path data = ini.count("data") ? FromIni(ini["data"], iniDir) : root / "data";
     if (!MakeDir(data, &why)) {
         Note(true, "data root " + Generic(data) + " is unusable (" + why + ") - using " +
                        Generic(root / "data"));

@@ -173,11 +173,37 @@ bool DutSession::Open(const std::string& serial, bool destructiveNew,
         return false;
     }
 
+    // new=true starts a fresh dut.json but never destroys the old one: it is
+    // COPIED aside first. A post-bake re-test with new=true once wiped every
+    // assembly record it touched (XCAN peaks, UV readings), and a fresh record
+    // is a statement about which entries are current, not licence to lose the
+    // rest. A copy rather than a rename: an uploader holding the file open
+    // makes a rename fail on Windows. Readers only ever open dut.json.
+    std::string archived;
+    if (destructiveNew && fs::exists(file)) {
+        std::string stamp = NowStamp();
+        stamp.erase(std::remove_if(stamp.begin(), stamp.end(),
+                                   [](char c) { return c == '-' || c == ':'; }),
+                    stamp.end());
+        archived = "dut.replaced-" + stamp + ".json";
+        fs::copy_file(file, dir + "/" + archived, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            if (err) *err = "cannot keep the existing record of '" + serial + "' (" +
+                            ec.message() + ") - not replacing it";
+            return false;
+        }
+    }
+
     // Commit point: auto-close the previous DUT (validated-first, bobcat rule).
     if (open_) {
         FD_INFO("dut", "auto-closing DUT '%s' for new DUT '%s'", serial_.c_str(),
                 serial.c_str());
         CloseLocked("auto");
+        // Same serial replaced: that close just appended to the record being set
+        // aside, so refresh the copy to end where the session did (best effort).
+        if (!archived.empty() && dirPath_ == dir)
+            fs::copy_file(file, dir + "/" + archived, fs::copy_options::overwrite_existing,
+                          ec);
     }
 
     open_     = true;
@@ -200,6 +226,13 @@ bool DutSession::Open(const std::string& serial, bool destructiveNew,
     // value so no existing reader of that entry has to change.
     if (!opId_.empty() && !AppendLocked("$operator", "object", OperatorJson(), &aerr))
         FD_WARN("dut", "operator not recorded on open: %s", aerr.c_str());
+    // Where the record this one replaced went, in the record itself.
+    if (!archived.empty()) {
+        FD_INFO("dut", "DUT '%s': previous record kept as %s", serial_.c_str(),
+                archived.c_str());
+        if (!AppendLocked("$replaced", "event", archived, &aerr))
+            FD_WARN("dut", "replaced event write failed: %s", aerr.c_str());
+    }
     FD_INFO("dut", "DUT '%s' open (%s, %zu entrie(s))", serial_.c_str(), openMode,
             entries_.size());
     return true;

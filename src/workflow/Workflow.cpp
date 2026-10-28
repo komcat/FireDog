@@ -98,7 +98,11 @@ void Workflow::StartNeedleCal()
         FD_INFO("needle", "needle offset (%.4f, %.4f, %.4f) mm from %s, calibrated %s",
                 c.dx, c.dy, c.dz, path.c_str(),
                 c.calibratedAt.empty() ? "(undated)" : c.calibratedAt.c_str());
-    else
+    if (c.valid && c.needsZCheck)
+        FD_WARN("needle", "needle calibration was verified in XY only (older procedure) - "
+                          "its dZ was never checked; re-calibrate with passes >= 2 to "
+                          "verify it");
+    else if (!c.valid)
         FD_WARN("needle", "no needle calibration (%s) - dispensing will refuse to "
                           "run until the needle calibration procedure has been done",
                 path.empty() ? "no file" : path.c_str());

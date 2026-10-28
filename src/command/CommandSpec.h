@@ -145,6 +145,16 @@ struct CommandSpec {
     // its own controller declares it; one that touches shared Workflow state
     // (the jog tracks, a prompt, the document) must not.
     std::string parallelBy;
+
+    // The name of an editor HELPER window for this command ("" = none). Set,
+    // the Recipe Editor shows an "Open <helper>" button on the step's form,
+    // and the params whose `group` equals this name are edited THERE instead
+    // of as bare rows - a cluster of numbers that only makes sense against a
+    // picture of what they do (dispense_run's motion against the needle
+    // drawing). The helper edits the step the editor has selected; it is a
+    // view, so the step stays the one record. Layer 3 maps the name to the
+    // window (App::OpenCommandHelper).
+    std::string helper;
 };
 
 // "" on success, else a human-readable error naming the parameter. Unknown

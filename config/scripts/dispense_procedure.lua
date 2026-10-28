@@ -35,6 +35,8 @@
 --   disp_z_trim_mm   + moves the needle CLOSER to the part (default 0)
 --   disp_gap_mm      standoff ABOVE the touch height (default 0)
 --   disp_safety_mm   fast -> slow handover height   (default 1.0)
+--   disp_lift_mm     Z lift-off after the shot, before the slide comes up
+--                    (default 1.5; 0 = slide first, the old order)
 --   disp_adjust      after arriving, let the operator nudge X/Y onto the
 --                    point; the dot goes where they leave it (default true)
 --   disp_autofocus   take the height from a focus here instead of the
@@ -69,6 +71,7 @@ local VTRAVEL = fd.param("disp_v_travel", 0.0)
 local VAPPR   = fd.param("disp_v_approach", 20.0)
 local VFINAL  = fd.param("disp_v_final", 5.0)
 local VLIFT   = fd.param("disp_v_liftoff", 5.0)
+local LIFT    = fd.param("disp_lift_mm", 1.5)
 
 if POS == "" and not POINT then
     error("no dispense point (disp_point / disp_position) - the camera pose over " ..
@@ -166,6 +169,21 @@ fd.logf("dispense: camera (%.4f, %.4f, %.4f), touch Z %.4f, gap %.3f -> " ..
         "needle target Z %.4f (safety %.4f)",
         cam_x, cam_y, cam_z, touch_z, GAP, target_z, safety_z)
 
+-- The retreat, in the order of the needle motion drawing (Needle page): Z lifts
+-- LIFT mm straight up off the dot at v_liftoff, THEN the slide comes up, then
+-- the head travels. The lift goes toward the camera's Z - where the needle came
+-- down from - and never past it. LIFT = 0 skips the lift: slide first.
+local function retreat()
+    if LIFT > 0.0 then
+        local d = cam_z - target_z
+        local s = (d >= 0.0) and 1.0 or -1.0
+        fd.move_axis_to{ device = DEV, axes = "Z",
+                         z_mm = target_z + s * math.min(LIFT, math.abs(d)),
+                         velocity_mm_s = VLIFT }
+    end
+    fd.retract_slide{ slide = SLIDE }
+end
+
 -- ---- 3. Needle over the point ----------------------------------------------
 -- Still at the camera's height. This leg is the length of the lever arm - tens
 -- of millimetres - and it happens well clear of the part.
@@ -193,8 +211,8 @@ if CONFIRM then
     if not fd.prompt(string.format("At dispense height. Fire a %d ms shot?", SHOT)) then
         -- Retreat before failing: leaving the needle sitting over the part
         -- because the operator said no would be a worse outcome than the
-        -- dispense. Same order as the normal retreat below - slide first.
-        fd.retract_slide{ slide = SLIDE }
+        -- dispense. Same order as the normal retreat below.
+        retreat()
         fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VLIFT }
         restore_velocity()
         error("cancelled by operator")
@@ -208,15 +226,14 @@ fd.pulse_output{ device = IO, pin = PIN, ms = SHOT }
 if AFTER > 0 then fd.sleep(AFTER) end
 
 -- ---- 6. Retreat ---------------------------------------------------------------
--- The SLIDE comes up first. It lifts the needle straight off the dot on the
--- cylinder's own stroke - faster than Z can, and it breaks the string while the
--- head is still stationary over the point. Only then does Z climb, and at the
--- lift-off velocity rather than v_final: v_final exists to arrive on a part
--- gently, and there is nothing left to arrive at once the needle is clear.
--- XY comes last either way, so the needle never travels sideways while it is
--- still down near the dot it just placed.
+-- Z lifts off first, LIFT mm at v_liftoff: a controlled, straight pull off the
+-- dot (after_ms above is the string-break dwell), rather than the cylinder
+-- snapping the needle away on its stroke. Then the slide comes up, and only
+-- then does the head climb back to the camera's Z - XY comes last either way,
+-- so the needle never travels sideways while it is still down near the dot it
+-- just placed. Same order as the needle calibration, as drawn on the Needle page.
 -- Once clear, the gantry goes back to the velocity it had when this started.
-fd.retract_slide{ slide = SLIDE }
+retreat()
 fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VLIFT }
 restore_velocity()
 

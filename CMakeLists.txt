@@ -26,22 +26,23 @@ FetchContent_Declare(glfw
 FetchContent_MakeAvailable(glfw)
 
 # ---- Dear ImGui (docking branch -> multi-viewport = real 2nd OS window) ----
-# Pinned to a COMMIT, not the branch: the docking tip moves, and a fresh build
-# tree then compiles a different ImGui than the one next to it. 1.93.1 WIP
-# re-coloured StyleColorsDark (FrameBg 0.10 grey, opaque) - the same shade as
-# FireDog Dark's WindowBg, so every input field vanished into the window. Bump
-# this hash on purpose, and look at the themes when you do. No GIT_SHALLOW: a
-# shallow clone takes a branch or tag, never a hash.
+# PINNED to a release tag, never the moving `docking` branch: every configure
+# re-fetches a branch, so a build tree silently picked up 1.93.1 WIP on
+# 2026-10-27 - whose restyled StyleColorsDark() made input boxes invisible on
+# our themes and whose ImDrawList moved line/rect strokes by half a pixel.
+# Upgrade deliberately: bump the tag, read the CHANGELOG's Breaking Changes,
+# check every theme (ui/Theme.cpp) and the custom overlays.
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG 778992face67ecefaa5c2932db4b2101545ea4df)   # docking, 1.93.0 WIP, 2026-10-07
+    GIT_TAG v1.92.9b-docking GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(imgui)
 
 # ---- ImPlot (realtime charts) ----
-# Pinned for the same reason, to a commit that builds against the ImGui above.
+# Pinned by commit for the same reason (ImPlot has no release since it began
+# tracking ImGui 1.92); this one guards its 1.93-only paths by version.
 FetchContent_Declare(implot
     GIT_REPOSITORY https://github.com/epezent/implot.git
-    GIT_TAG 09e2ba71766e25d88053a2173936c9d1043bae42)   # master, 2026-09-24
+    GIT_TAG 72de27832d1e6299bcc930ce01073d899d420392)   # 2026-10-25
 FetchContent_MakeAvailable(implot)
 
 # ---- nlohmann/json (hardware config) ----
@@ -85,6 +86,18 @@ FetchContent_Declare(stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
     GIT_TAG master GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(stb)
+
+# ---- Velopack (software update: Setup.exe install, update from GitHub Releases) ----
+# The prebuilt C/C++ library from Velopack's own release, pinned by hash, and
+# the SAME version /release packs with (vpk) - the two must stay equal. The
+# zip carries every platform (~30 MB); only include/ and the Windows DLL are
+# used. No CMakeLists inside, so MakeAvailable just populates.
+# docs/software-update-design.md.
+FetchContent_Declare(velopack_libc
+    URL https://github.com/velopack/velopack/releases/download/1.2.161/velopack_libc_1.2.161.zip
+    URL_HASH SHA256=31de8f2cf05a47bd5328a9f98b0c41aec1582156f6075f1058b26941f7f17c20
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+FetchContent_MakeAvailable(velopack_libc)
 
 # ---- Basler Pylon SDK (layer 1 camera) — optional ----
 # The install root is NOT fixed: Basler versions the folder on some machines
@@ -570,6 +583,24 @@ target_link_libraries(FireDog PRIVATE firedog_hw
 # sol2 safety checks (argument/type validation on every boundary crossing) —
 # cheap insurance for a layer that commands real hardware.
 target_compile_definitions(FireDog PRIVATE SOL_ALL_SAFETIES_ON=1)
+
+# Velopack: the client only (update/AppUpdater.cpp is its one includer). It is
+# not a vendor SDK with a stub - it is always fetched - and FireDogRig has no
+# business updating anything, so it stays off firedog_hw.
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(_vpk_dll "${velopack_libc_SOURCE_DIR}/lib/velopack_libc_win_x64_msvc.dll")
+else()
+    set(_vpk_dll "${velopack_libc_SOURCE_DIR}/lib/velopack_libc_win_x86_msvc.dll")
+endif()
+target_include_directories(FireDog PRIVATE "${velopack_libc_SOURCE_DIR}/include")
+target_link_libraries(FireDog PRIVATE "${_vpk_dll}.lib")
+# RENAMED on the way: the import lib names the DLL "velopack_libc.dll" (dumpbin
+# /dependents FireDog.exe), whatever the file in the zip is called. Copied under
+# its own name, the exe does not start - "velopack_libc.dll was not found".
+add_custom_command(TARGET FireDog POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_vpk_dll}"
+            "$<TARGET_FILE_DIR:FireDog>/velopack_libc.dll"
+    COMMENT "Copying the Velopack runtime DLL (as velopack_libc.dll)")
 
 firedog_stage_runtime(FireDog)
 

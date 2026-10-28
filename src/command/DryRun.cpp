@@ -31,7 +31,7 @@ constexpr std::array<std::string_view, 25> kDryRunCommands = {
     // Tray: a move to a cell; the cursor itself is not advanced
     "move_to_cell", "move_to_active_cell",
     // IO
-    "set_output", "pulse_output", "wait_input", "clear_latch",
+    "set_output", "pulse_output", "toggle_output", "wait_input", "clear_latch",
     // Pneumatic
     "extend_slide", "retract_slide",
     // System plumbing

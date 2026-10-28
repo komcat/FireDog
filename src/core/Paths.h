@@ -24,7 +24,9 @@
 // Both roots come from FireDog.ini beside the exe ([paths] root= / data=),
 // read once. The ini is never shipped, so a release unzipped over an install
 // cannot reset where the machine keeps its state; a missing ini means the
-// defaults, and a commented template is written for the next reader.
+// defaults, and a commented template is written for the next reader. In a
+// Setup install (exe in <install>/current/, Update.exe beside that folder) the
+// ini is <install>/FireDog.ini instead: an update replaces current/ whole.
 //
 // The FIRST start against an empty machine root copies (never moves) the old
 // exe-side state across - see InitPaths. Copying leaves an older exe able to
@@ -48,7 +50,7 @@ void InitPaths();
 const std::string& ExeDir();        // the folder FireDog.exe is in
 const std::string& MachineRoot();   // e.g. "D:/ProgramData/FireDog"
 const std::string& DataRoot();      // e.g. "D:/ProgramData/FireDog/data"
-const std::string& IniPath();       // "<exe>/FireDog.ini"
+const std::string& IniPath();       // "<exe>/FireDog.ini", or "<install>/FireDog.ini"
 
 // "<machine root>/<rel>" and "<data root>/<rel>" (forward slashes).
 std::string MachinePath(const std::string& rel);

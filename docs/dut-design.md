@@ -15,9 +15,15 @@ process-wide** (bobcat's proven model), held by a thread-safe `DutSession`.
 
 **Lifecycle** (bobcat semantics, kept):
 - **Open** (default *load-or-create*): resumes an existing record by appending,
-  or creates a fresh one. An explicit `new=true` starts a destructive fresh
-  record (re-test wipe) — never the default (in bobcat the raw `create` verb
-  silently truncated; here destruction is always opt-in).
+  or creates a fresh one. An explicit `new=true` starts a fresh record — never
+  the default (in bobcat the raw `create` verb silently truncated). It no
+  longer destroys anything: the old `dut.json` is COPIED to
+  `dut.replaced-<UTC stamp>.json` beside it first (the open fails if the copy
+  does), and the new record carries a `$replaced` event naming that file.
+  Readers (View Data, the uploader) only open `dut.json`. Until 2026-10 it was a
+  real wipe, and a post-bake probe with `new=true` erased the assembly records
+  of ~900 parts; `tools/dut/dut_recover_from_logs.py` rebuilds what the log
+  still holds. A re-test of the same part wants `new=false`.
 - **Override**: opening a new DUT while one is open **auto-closes** the
   previous — but only *after* the new identity validates, so a failed open
   never loses the current DUT (bobcat's ordering, kept).
