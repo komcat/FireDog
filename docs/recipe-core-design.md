@@ -200,8 +200,9 @@ any kind — ever runs on the UI thread.** Every command executes on the
 **IO & pneumatics**
 - `set_output` — `DeviceIo` + `PinName` + on/off (`SetIoOutputByName`).
 - `pulse_output` ⏳ — set on, interruptible sleep `ms`, set off.
-- `toggle_output` ⏳ — `start_on` + `dwell_ms`: set `!start_on`, interruptible
-  sleep, set `start_on` again (restored even on stop, like `pulse_output`).
+- `toggle_output` ⏳ — `start_on` + `dwell_ms`: set `start_on` (the starting
+  state is enforced, not assumed), set `!start_on`, interruptible sleep, set
+  `start_on` again (restored even on stop, like `pulse_output`).
 - `wait_input` ⏳ — `DeviceIo` + `PinName` + wanted state + `timeout_ms`;
   polls the driver's cached `Status()` through a `Workflow` read accessor.
 - `clear_latch` — device + mask (`ClearIoLatch`).

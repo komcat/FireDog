@@ -54,6 +54,10 @@ CommandResult ExecToggleOutput(ExecutionContext& ctx, const ParamValues& p)
     const std::string device = p.GetString("device");
     const std::string pin    = p.GetString("pin");
     const bool start         = p.GetBool("start_on");
+    // The starting state is a requirement, not an assumption: put the pin
+    // there first (a no-op when it already is), then toggle away from it.
+    if (!ctx.Wf().SetIoOutputByName(device, pin, start))
+        return CommandResult::Fail("starting state rejected (device/pin/connection?)");
     if (!ctx.Wf().SetIoOutputByName(device, pin, !start))
         return CommandResult::Fail("toggle rejected (device/pin/connection?)");
     const bool full = ctx.Sleep(p.GetInt("dwell_ms"));
