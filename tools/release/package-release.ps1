@@ -35,20 +35,28 @@
 #     reinstall, or a sister machine started from a known state) - re-measure
 #     the needle and the registration on any other machine before moving.
 #
+# -NoSeed packs an UPDATE-ONLY release: exes, runtimes, assets and the scripts,
+# and no seed at all. An installed station keeps its machine root (the
+# first-start migration never runs against a populated root), so it loses
+# nothing; a NEW station installed from such a release starts with an empty
+# config - install it from the last seeded release and update instead.
+#
 # Never shipped: the root's data/, logs/, imgui.ini, migrated_from.txt, *.bak
 # and *.zip leftovers; no libs, no CMake state, no FireDog.ini.
 param(
     [Parameter(Mandatory = $true)][string]$Version,   # e.g. v0.3
     [string]$BuildDir = "out\build\x64-release-deploy",
     [string]$SeedRoot = "D:\ProgramData\FireDog",
-    [string]$OutDir = "."
+    [string]$OutDir = ".",
+    [switch]$NoSeed
 )
 $ErrorActionPreference = "Stop"
 if (-not (Test-Path (Join-Path $BuildDir "FireDog.exe"))) {
     throw "no FireDog.exe in $BuildDir - build the x64-release-deploy preset first"
 }
-if (-not (Test-Path (Join-Path $SeedRoot "config\hardware.json"))) {
-    throw "no config\hardware.json under $SeedRoot - -SeedRoot must be a machine root"
+if (-not $NoSeed -and -not (Test-Path (Join-Path $SeedRoot "config\hardware.json"))) {
+    throw "no config\hardware.json under $SeedRoot - -SeedRoot must be a machine root " +
+          "(or pass -NoSeed for an update-only release)"
 }
 $name  = "FireDog-$Version-x64-release-deploy"
 $stage = Join-Path $OutDir $name
@@ -79,11 +87,13 @@ $cfg = Join-Path $stage "config"
 Copy-Tree (Join-Path $PSScriptRoot "..\..\config\scripts") (Join-Path $cfg "scripts") { $false }
 
 # The seed: the machine's config/ minus its scripts, and its products/.
-Copy-Tree (Join-Path $SeedRoot "config") $cfg {
-    param($rel) $rel -like "scripts\*" -or (& $leftover $rel)
-}
-if (Test-Path (Join-Path $SeedRoot "products")) {
-    Copy-Tree (Join-Path $SeedRoot "products") (Join-Path $stage "products") $leftover
+if (-not $NoSeed) {
+    Copy-Tree (Join-Path $SeedRoot "config") $cfg {
+        param($rel) $rel -like "scripts\*" -or (& $leftover $rel)
+    }
+    if (Test-Path (Join-Path $SeedRoot "products")) {
+        Copy-Tree (Join-Path $SeedRoot "products") (Join-Path $stage "products") $leftover
+    }
 }
 
 if (Test-Path (Join-Path $BuildDir "assets")) {
@@ -93,4 +103,4 @@ if (Test-Path (Join-Path $BuildDir "assets")) {
 Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
 Remove-Item -Recurse -Force $stage
 $size = [math]::Round((Get-Item $zip).Length / 1MB, 1)
-Write-Output "$zip  ($size MB)  seed from $SeedRoot"
+Write-Output ("$zip  ($size MB)  " + $(if ($NoSeed) { "NO seed (update-only)" } else { "seed from $SeedRoot" }))
