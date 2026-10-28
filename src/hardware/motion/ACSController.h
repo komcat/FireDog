@@ -33,6 +33,7 @@ public:
     bool MoveAbsolute(const std::vector<std::pair<std::string, double>>& targets) override;
     bool SetVelocity(double mmPerSec) override;                             // acsc_SetVelocity (all axes)
     bool ReadVelocity(double* mmPerSec) override;                           // acsc_GetVelocity (axis 0)
+    bool IsSettled() const override;                                        // no axis ACSC_MST_MOVE
     bool StopAll() override;                                                // acsc_KillAll
     bool SupportsAxisEnable() const override { return true; }
     std::map<std::string, bool> AxisEnabled() const override;               // ACSC_MST_ENABLE

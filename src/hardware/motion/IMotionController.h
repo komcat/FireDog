@@ -62,8 +62,9 @@ public:
     // tolerance arrival check can LEAD the controller's own motion-complete
     // state by a moment (the slow tail of the profile); commands the controller
     // rejects while moving (PI VLS -> GCS error 1005 CONTROLLER_BUSY) must wait
-    // for this. Default true: ACS accepts velocity changes mid-move, and the
-    // sim is done as soon as positions read on target.
+    // for this, and so must a coordinated move on ACS (acsc_ToPointM on an axis
+    // still in motion -> error 3065). Default true: the sims are done as soon
+    // as positions read on target.
     virtual bool IsSettled() const { return true; }
     // True when the controller reports every axis ON TARGET — its own
     // settling-window logic (position within the settle window for the settle
