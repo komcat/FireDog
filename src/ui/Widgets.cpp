@@ -412,6 +412,7 @@ const char* StepIconFile(const char* type)
         {"retract_slide",        "Retract"},
         {"set_output",           "IO"},
         {"pulse_output",         "IO"},
+        {"toggle_output",        "IO"},
         {"wait_input",           "IO"},
         {"clear_latch",          "IO"},
         // Time passing with nothing moving: a fixed delay, or a wait on a
