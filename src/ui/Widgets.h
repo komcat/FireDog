@@ -277,6 +277,19 @@ bool IconButton(const MarkIcon* icon, const char* label,
                 const ImVec2& size = ImVec2(0.0f, 0.0f));
 bool IconSmallButton(const MarkIcon* icon, const char* label);
 
+// A square TOOL button: one icon centred in a frame-height square, its meaning
+// in `tooltip` (shown even while disabled - an icon-only control has no other
+// way to say what it does). `id` is the ImGui id, unique in the window.
+// `danger` gives it a red hover/press (kDangerHov), for Delete / Remove.
+//
+// A null or unloaded icon degrades to a plain Button reading `fallback` at
+// frame height - a station missing the PNGs keeps a working, labelled toolbar.
+bool IconToolButton(const MarkIcon* icon, const char* id, const char* fallback,
+                    const char* tooltip, bool danger = false);
+// The wider gap between two groups of tool buttons on one row (call instead
+// of SameLine()).
+void ToolGroupGap();
+
 // Inputs, plus pointers to the caller's crosshair/zoom state (App members —
 // this helper keeps none of its own, per the no-state rule above).
 struct MarkPicker {

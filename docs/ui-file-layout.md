@@ -137,6 +137,19 @@ The set serves two shapes, and they differ on purpose:
   Both draw an empty-labelled button and lay the icon + text over it centred —
   `Button()` centres ONE label and has no two-part form — and tint through
   `GetColorU32` so the icon dims with the text inside `BeginDisabled`.
+- **Tool buttons** — `IconToolButton`: a frame-height SQUARE with the icon
+  alone, its meaning in a tooltip that shows even while disabled. Used by the
+  Recipe Editor's step toolbar and recipe list, and the Program Organizer's
+  program row and node row (the `tb_*` icons: move up/down, indent/outdent,
+  delete, copy, cut, paste, new, duplicate, rename, reload, show/hide, tag),
+  grouped with
+  `ToolGroupGap`; `danger` gives Delete/Remove a red hover (`kDangerHov`,
+  `ui/Theme.h`). A missing PNG degrades to a text button with the old label.
+  The icon is drawn at a whole multiple of its size on whole pixels when it
+  fits, because the textures are linear-filtered and pixel art blurs otherwise.
+  The `tb_*` PNGs are generated: `python tools/icons/make_toolbar_icons.py`
+  (stdlib only; `--preview <png>` writes a scaled sheet). Edit the shapes there
+  and re-run, or touch a PNG up in Piskel.
 
 `DrawMarkPicker` (`CameraMark` / `MarkPicker`) is the rule applied a second
 time, one level up: the whole *mark a feature* surface — crosshair, click, wheel

@@ -23,6 +23,11 @@ inline constexpr ImVec4 kTeachOrangeAct = ImVec4(0.75f, 0.36f, 0.03f, 1.0f);
 // part like a teach run, and must look like neither.
 inline constexpr ImVec4 kDryRunCyan     = ImVec4(0.30f, 0.80f, 0.95f, 1.0f);
 
+// A destructive tool button's hover / press (IconToolButton `danger`): the
+// one control on a toolbar that throws work away warns before it is clicked.
+inline constexpr ImVec4 kDangerHov      = ImVec4(0.75f, 0.20f, 0.20f, 1.0f);
+inline constexpr ImVec4 kDangerAct      = ImVec4(0.60f, 0.12f, 0.12f, 1.0f);
+
 struct Theme {
     static int         Count();              // number of selectable themes
     static const char* Name(int index);      // display name (out-of-range -> 0)

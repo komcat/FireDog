@@ -324,20 +324,23 @@ void App::DrawOrgPanel(ProgramSlot& slot, ProgramSlot* other, int panel)
     if (ImGui::SmallButton("+ Folder")) OrgAddFolder(slot, panel);
     ImGui::SameLine();
     const bool haveSel = FindNode(slot.items, sel) != nullptr;
+    // Square icon tool buttons, the Recipe Editor's set (ui/Widgets
+    // IconToolButton): move | remove | clipboard.
     ImGui::BeginDisabled(!haveSel);
-    if (ImGui::SmallButton("^"))  MoveNodeUp(slot.items, sel);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Move up (within its folder)");
+    if (IconToolButton(UiIcon("tb_move_up"), "orgUp", "^", "Move up (within its folder)"))
+        MoveNodeUp(slot.items, sel);
     ImGui::SameLine();
-    if (ImGui::SmallButton("v"))  MoveNodeDown(slot.items, sel);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Move down (within its folder)");
+    if (IconToolButton(UiIcon("tb_move_down"), "orgDown", "v", "Move down (within its folder)"))
+        MoveNodeDown(slot.items, sel);
     ImGui::SameLine();
-    if (ImGui::SmallButton(">"))  IndentNode(slot.items, sel);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Move into the folder above it");
+    if (IconToolButton(UiIcon("tb_indent"), "orgIn", ">", "Move into the folder above it"))
+        IndentNode(slot.items, sel);
     ImGui::SameLine();
-    if (ImGui::SmallButton("<"))  OutdentNode(slot.items, sel);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Move out of its folder");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Remove")) {
+    if (IconToolButton(UiIcon("tb_outdent"), "orgOut", "<", "Move out of its folder"))
+        OutdentNode(slot.items, sel);
+    ToolGroupGap();
+    if (IconToolButton(UiIcon("tb_delete"), "orgRemove", "Remove",
+                       "Remove from the slot (a folder goes with its contents)", true)) {
         // A folder goes WITH its children: the tree owns them, and leaving them
         // behind at the parent's level is a silent restructure nobody asked for.
         // A node that no longer exists cannot stay a cycle state. (A node
@@ -351,8 +354,9 @@ void App::DrawOrgPanel(ProgramSlot& slot, ProgramSlot* other, int panel)
     // Paste lands a CLONE at this panel's selection - fresh uids, so the same
     // clip can be pasted twice and a pasted folder never answers to the
     // original's name in a cycle or a run mark.
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Cut")) {
+    ToolGroupGap();
+    if (IconToolButton(UiIcon("tb_cut"), "orgCut", "Cut",
+                       "Cut: remove it and keep it on the clipboard")) {
         ProgramNode n;
         if (ExtractNode(slot.items, sel, &n)) {
             ForgetCycleState(slot, sel);
@@ -362,7 +366,7 @@ void App::DrawOrgPanel(ProgramSlot& slot, ProgramSlot* other, int panel)
         }
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Copy")) {
+    if (IconToolButton(UiIcon("tb_copy"), "orgCopy", "Copy", "Copy to the clipboard")) {
         if (const ProgramNode* n = FindNode(slot.items, sel)) {
             orgClip_.clear();
             orgClip_.push_back(*n);
@@ -370,14 +374,17 @@ void App::DrawOrgPanel(ProgramSlot& slot, ProgramSlot* other, int panel)
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(orgClip_.empty());
-    if (ImGui::SmallButton("Paste")) OrgPlace(slot, panel, CloneNode(orgClip_.front()));
-    if (ImGui::IsItemHovered() && !orgClip_.empty()) {
+    // The tooltip names what is on the clipboard, so it is built first.
+    std::string pasteTip = "Paste (the clipboard is empty)";
+    if (!orgClip_.empty()) {
         const ProgramNode& c = orgClip_.front();
         const Recipe* r = c.IsFolder() ? nullptr : RecipeByUid(session_.Recipes(), c.recipeUid);
-        ImGui::SetTooltip("Paste %s '%s' at the selection", c.IsFolder() ? "folder" : "recipe",
-                          c.IsFolder() ? c.name.c_str() : r ? r->name.c_str() : c.recipeUid.c_str());
+        pasteTip = std::string("Paste ") + (c.IsFolder() ? "folder" : "recipe") + " '" +
+                   (c.IsFolder() ? c.name : r ? r->name : c.recipeUid) + "' at the selection";
     }
+    ImGui::BeginDisabled(orgClip_.empty());
+    if (IconToolButton(UiIcon("tb_paste"), "orgPaste", "Paste", pasteTip.c_str()))
+        OrgPlace(slot, panel, CloneNode(orgClip_.front()));
     ImGui::EndDisabled();
     // Rename THIS panel's slot. The top row's name field only reaches the 1st
     // panel's slot; the 2nd panel needs its own way in. A popup rather than a
@@ -524,7 +531,7 @@ void App::DrawProgramOrganizer()
                     progSel_ < static_cast<int>(session_.Programs().size());
 
     // ---- Program row ----
-    if (IconSmallButton(UiIcon("New"), "New")) {
+    if (IconToolButton(UiIcon("tb_new"), "progNew", "New", "New program")) {
         Program p;
         p.uid = GenerateUid();   // the traceability identity, minted once
         session_.Programs().push_back(std::move(p));
@@ -539,7 +546,8 @@ void App::DrawProgramOrganizer()
     // A whole program, copied: every slot, every node, with fresh uids all the
     // way down and a new program uid (the DUT records name a program by it).
     // The copy becomes the selected program, so what you see is what you got.
-    if (ImGui::SmallButton("Duplicate")) {
+    if (IconToolButton(UiIcon("tb_duplicate"), "progDup", "Duplicate",
+                       "Copy this program (new uid, every slot)")) {
         Program copy = CloneProgram(session_.Programs()[progSel_]);
         session_.Programs().push_back(std::move(copy));
         SelectDeckProgram(static_cast<int>(session_.Programs().size()) - 1);
@@ -548,12 +556,12 @@ void App::DrawProgramOrganizer()
         orgSel_.clear();
         orgSel2_.clear();
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy this program (new uid, every slot)");
-    ImGui::SameLine();
+    ToolGroupGap();
     // The confirm is a plain popup, not a MODAL: this window can be open on a
     // second monitor while the Run page is up, and a modal would block the
     // prompt / manual_adjust windows an engine worker can be waiting on.
-    if (ImGui::SmallButton("Delete")) orgDelConfirm_ = true;
+    if (IconToolButton(UiIcon("tb_delete"), "progDel", "Delete", "Delete this program", true))
+        orgDelConfirm_ = true;
     ImGui::SameLine();
     if (haveProg) {
         Program& prog = session_.Programs()[progSel_];
