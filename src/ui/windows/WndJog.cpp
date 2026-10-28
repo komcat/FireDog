@@ -136,6 +136,7 @@ void App::DrawJogPsuTab()
     }
     if (st != ConnState::Connected)
         ImGui::TextDisabled("%s - connect it on the PSU page", StateText(st));
+    DrawPsuPresetRow();
     ImGui::Separator();
     DrawPsuChannelControls(true);
 }

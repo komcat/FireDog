@@ -268,6 +268,7 @@ private:
     // Jog window's PSU tab (compact = narrow-window layout).
     void DrawPsuChannelControls(bool compact);
     void DrawJogPsuTab();          // Jog window: quick access to the PSU fleet
+    void DrawPsuPresetRow();       // Jog PSU tab: the three presets (right-click = edit)
 
     // Light page — the CCS PD3 LED lighting controller.
     void DrawLightListPanel();     // left:   status + connect/disconnect + warnings
@@ -1121,6 +1122,8 @@ private:
     // Jog window "IO" tab: the quick-output rows (UiSettings quick_io). A row
     // names device + pin, never a fleet index - see QuickIoRow.
     std::vector<QuickIoRow> quickIo_;
+    // Jog window "PSU" tab: the three quick presets (UiSettings psu_presets).
+    std::array<PsuPreset, kPsuPresetCount> psuPresets_ = UiSettings{}.psuPresets;
 
     // Per-device velocity selection, shared by the Jog panel and the Motion
     // page so both always show the same value for a device.

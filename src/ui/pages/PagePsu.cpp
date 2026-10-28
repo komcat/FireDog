@@ -11,6 +11,7 @@
 #include "core/Log.h"
 #include "core/Topics.h"
 
+#include <algorithm>
 #include <array>
 #include <cfloat>
 #include <cstdio>
@@ -211,6 +212,105 @@ void App::DrawPsuChannelControls(bool compact)
         ImGui::PopID();
     }
     if (!connected) ImGui::TextDisabled("connect the power supply to operate it");
+}
+
+// The Jog PSU tab's three presets. A click puts the preset into the selected
+// supply's channel - its CV/CC radio, both edits, and an Apply - through the
+// same SetPsuVI the Apply button uses. It never switches an output: ON stays
+// the operator's own press. Right-click edits a preset in a POPUP (never a
+// modal, for the Pos tab's reason); the presets are a bench layout, saved in
+// UiSettings, not product state.
+void App::DrawPsuPresetRow()
+{
+    const std::size_t  idx  = PsuSelected();
+    const std::string& name = hardware_.PsuName(idx);
+    UDP3305S*          psu  = hardware_.PsuDevice(idx);
+    const bool connected = hardware_.PsuState(idx) == ConnState::Connected && psu;
+    const int  channels  = psu ? psu->Channels() : 3;
+
+    const auto amps = [](double a, char* b, std::size_t n) {
+        if (a < 1.0) std::snprintf(b, n, "%.0f mA", a * 1000.0);
+        else         std::snprintf(b, n, "%.3f A", a);
+    };
+
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    const float bw  = (ImGui::GetContentRegionAvail().x
+                       - gap * static_cast<float>(kPsuPresetCount - 1))
+                      / static_cast<float>(kPsuPresetCount);
+    const float bh  = ImGui::GetTextLineHeight() * 3.0f + ImGui::GetStyle().FramePadding.y * 2.0f;
+
+    for (int i = 0; i < kPsuPresetCount; ++i) {
+        PsuPreset& p = psuPresets_[static_cast<std::size_t>(i)];
+        p.channel = std::clamp(p.channel, 1, channels);
+        if (i > 0) ImGui::SameLine();
+        ImGui::PushID(i);
+
+        // Three lines: channel + mode, then the setpoint, then the limit.
+        char a[24];
+        amps(p.amps, a, sizeof(a));
+        char label[96];
+        if (p.mode == 1)
+            std::snprintf(label, sizeof(label), "CH%d CC\n%s\n%.2f V###preset",
+                          p.channel, a, p.volts);
+        else
+            std::snprintf(label, sizeof(label), "CH%d CV\n%.2f V\n%s###preset",
+                          p.channel, p.volts, a);
+
+        ImGui::BeginDisabled(!connected);
+        if (ImGui::Button(label, ImVec2(bw, bh))) {
+            const int ch = p.channel;
+            const float v = std::clamp(static_cast<float>(p.volts), 0.0f, PsuMaxVolts(ch));
+            const float c = std::clamp(static_cast<float>(p.amps), 0.0f, PsuMaxAmps(ch));
+            psuModes_[name][static_cast<std::size_t>(ch - 1)] = p.mode;
+            psuVSet_[ch - 1] = v;
+            psuISet_[ch - 1] = c;
+            workflow_.SetPsuVI(name, ch, v, c);
+            FD_INFO("psu", "%s CH%d preset %d: %s %.3f V / %.3f A", name.c_str(), ch, i + 1,
+                    p.mode == 1 ? "CC" : "CV", v, c);
+        }
+        ImGui::EndDisabled();
+
+        // AllowWhenDisabled: the presets can be laid out before the supply is up.
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Preset %d: set %s CH%d to %s %.3f V / %.3f A\n"
+                              "(%s). Output ON/OFF is not touched.\n"
+                              "Right-click to edit.",
+                              i + 1, name.c_str(), p.channel, p.mode == 1 ? "CC" : "CV",
+                              p.volts, p.amps,
+                              p.mode == 1 ? "A is the setpoint, V the limit"
+                                          : "V is the setpoint, A the limit");
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) ImGui::OpenPopup("psupreset");
+        }
+
+        if (ImGui::BeginPopup("psupreset")) {
+            ImGui::TextDisabled("Preset %d", i + 1);
+            ImGui::Separator();
+            bool changed = false;
+            ImGui::TextUnformatted("Channel");
+            for (int ch = 1; ch <= channels; ++ch) {
+                ImGui::SameLine();
+                char cl[8];
+                std::snprintf(cl, sizeof(cl), "%d", ch);
+                changed |= ImGui::RadioButton(cl, &p.channel, ch);
+            }
+            ImGui::TextUnformatted("Mode   ");
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("CV", &p.mode, 0);
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("CC", &p.mode, 1);
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::InputDouble(p.mode == 0 ? "V###pv" : "V limit###pv", &p.volts, 0.0, 0.0, "%.3f");
+            changed |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::InputDouble(p.mode == 0 ? "A limit###pa" : "A###pa", &p.amps, 0.0, 0.0, "%.3f");
+            changed |= ImGui::IsItemDeactivatedAfterEdit();
+            p.volts = std::clamp(p.volts, 0.0, static_cast<double>(PsuMaxVolts(p.channel)));
+            p.amps  = std::clamp(p.amps, 0.0, static_cast<double>(PsuMaxAmps(p.channel)));
+            if (changed) SaveUiSettings();
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
 }
 
 void App::DrawPsuInfoPanel()
