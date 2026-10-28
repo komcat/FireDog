@@ -26,15 +26,23 @@ FetchContent_Declare(glfw
 FetchContent_MakeAvailable(glfw)
 
 # ---- Dear ImGui (docking branch -> multi-viewport = real 2nd OS window) ----
+# PINNED to a release tag, never the moving `docking` branch: every configure
+# re-fetches a branch, so a build tree silently picked up 1.93.1 WIP on
+# 2026-10-27 - whose restyled StyleColorsDark() made input boxes invisible on
+# our themes and whose ImDrawList moved line/rect strokes by half a pixel.
+# Upgrade deliberately: bump the tag, read the CHANGELOG's Breaking Changes,
+# check every theme (ui/Theme.cpp) and the custom overlays.
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG docking GIT_SHALLOW TRUE)
+    GIT_TAG v1.92.9b-docking GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(imgui)
 
 # ---- ImPlot (realtime charts) ----
+# Pinned by commit for the same reason (ImPlot has no release since it began
+# tracking ImGui 1.92); this one guards its 1.93-only paths by version.
 FetchContent_Declare(implot
     GIT_REPOSITORY https://github.com/epezent/implot.git
-    GIT_TAG master GIT_SHALLOW TRUE)
+    GIT_TAG 72de27832d1e6299bcc930ce01073d899d420392)   # 2026-10-25
 FetchContent_MakeAvailable(implot)
 
 # ---- nlohmann/json (hardware config) ----
