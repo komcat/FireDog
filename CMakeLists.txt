@@ -26,15 +26,22 @@ FetchContent_Declare(glfw
 FetchContent_MakeAvailable(glfw)
 
 # ---- Dear ImGui (docking branch -> multi-viewport = real 2nd OS window) ----
+# Pinned to a COMMIT, not the branch: the docking tip moves, and a fresh build
+# tree then compiles a different ImGui than the one next to it. 1.93.1 WIP
+# re-coloured StyleColorsDark (FrameBg 0.10 grey, opaque) - the same shade as
+# FireDog Dark's WindowBg, so every input field vanished into the window. Bump
+# this hash on purpose, and look at the themes when you do. No GIT_SHALLOW: a
+# shallow clone takes a branch or tag, never a hash.
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG docking GIT_SHALLOW TRUE)
+    GIT_TAG 778992face67ecefaa5c2932db4b2101545ea4df)   # docking, 1.93.0 WIP, 2026-10-07
 FetchContent_MakeAvailable(imgui)
 
 # ---- ImPlot (realtime charts) ----
+# Pinned for the same reason, to a commit that builds against the ImGui above.
 FetchContent_Declare(implot
     GIT_REPOSITORY https://github.com/epezent/implot.git
-    GIT_TAG master GIT_SHALLOW TRUE)
+    GIT_TAG 09e2ba71766e25d88053a2173936c9d1043bae42)   # master, 2026-09-24
 FetchContent_MakeAvailable(implot)
 
 # ---- nlohmann/json (hardware config) ----
