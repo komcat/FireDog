@@ -41,6 +41,8 @@
 --                    position's taught Z            (default false)
 --   disp_confirm     ask before extending and before firing (default true)
 --   disp_verify      bring the camera back over the dot    (default true)
+--   disp_verify_ms   confirm OFF: the dot prompt continues by itself after
+--                    this long; 0 = no prompt              (default 3000)
 --   disp_capture     attach an image to the open DUT       (default true)
 --   disp_v_travel / disp_v_approach / disp_v_final / disp_v_liftoff
 --                    velocities, mm/s
@@ -61,6 +63,7 @@ local ADJUST  = fd.param("disp_adjust", true)
 local FOCUS   = fd.param("disp_autofocus", false)
 local CONFIRM = fd.param("disp_confirm", true)
 local VERIFY  = fd.param("disp_verify", true)
+local VERIFY_MS = math.floor(fd.param("disp_verify_ms", 3000))
 local CAPTURE = fd.param("disp_capture", true)
 local VTRAVEL = fd.param("disp_v_travel", 0.0)
 local VAPPR   = fd.param("disp_v_approach", 20.0)
@@ -225,11 +228,18 @@ if VERIFY then
     if CAPTURE and fd.dut.is_open() then
         fd.dut_capture_image{ key = "dispense" }
     end
+    -- With confirm on, the run waits for an answer. With it off, the operator
+    -- still gets a look: the prompt continues by itself after VERIFY_MS, and a
+    -- Cancel inside that window still rejects the dot.
+    local ok = true
     if CONFIRM then
-        if not fd.prompt("Does the dot look right?") then
-            restore_velocity()
-            error("dispense rejected by operator")
-        end
+        ok = fd.prompt("Does the dot look right?")
+    elseif VERIFY_MS > 0 then
+        ok = fd.prompt("Check the dot. Cancel if it is wrong.", VERIFY_MS)
+    end
+    if not ok then
+        restore_velocity()
+        error("dispense rejected by operator")
     end
 end
 

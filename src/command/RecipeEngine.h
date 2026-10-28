@@ -19,6 +19,7 @@
 #include "command/Recipe.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
@@ -67,6 +68,9 @@ public:
         // saved-position moves, each followed by a fine-tune-and-Save prompt.
         // Not a run of the part: no $run DUT event is written.
         bool teach = false;
+        // Dry run: the recipe is rewritten (command/DryRun.h) to its motion,
+        // IO and pneumatic steps. Not a run of the part: no $run DUT event.
+        bool dryRun = false;
     };
 
     // Validates (structure + params + references + devices Connected), inlines
@@ -104,6 +108,7 @@ public:
         std::string error;            // terminal cause when Failed/Stopped
         std::string pendingPrompt;    // non-empty while a prompt blocks
         bool        pendingPromptInput = false;   // the prompt wants a text answer
+        int         pendingPromptAutoOkMs = 0;  // >0: OK answers itself in this long
         // Manual-adjust handshake: valid while pendingAdjust is true.
         bool        pendingAdjust = false;
         ExecutionContext::AdjustRequest adjustReq;
@@ -117,6 +122,7 @@ public:
         std::string nextStep;
         std::vector<std::size_t> nextPath;
         bool        teach      = false;   // this run (or the last one) was a teach run
+        bool        dryRun     = false;   // this run (or the last one) was a dry run
         std::vector<std::pair<std::string, CtxValue>> ctx;   // display snapshot
         // The ctx as it stood the instant the run ENDED, captured before the
         // engine drops its pointer. `ctx` above is live and therefore empty by
@@ -141,7 +147,7 @@ private:
 
     // Prompt handshakes (worker blocks; UI answers). Guarded by mu_.
     bool AwaitPromptInternal(const std::string& message, bool wantsInput,
-                             std::string* textOut);
+                             std::string* textOut, int autoOkMs = 0);
     bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
     bool AwaitPickInternal(const ExecutionContext::PickRequest& req,
                            ExecutionContext::PickResult* out);
@@ -158,6 +164,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> stepMode_{false};   // pause before every leaf while true
     std::atomic<bool> teach_{false};      // this run is a teach run (StartOpts)
+    std::atomic<bool> dryRun_{false};     // this run is a dry run (StartOpts)
 
     mutable std::mutex      mu_;       // guards everything below
     std::condition_variable cv_;       // prompt handshake
@@ -168,6 +175,8 @@ private:
     std::string error_;
     std::string prompt_;               // pending prompt text ("" = none)
     bool        promptWantsInput_ = false;
+    // Auto-OK deadline of the pending prompt; epoch (zero) = none.
+    std::chrono::steady_clock::time_point promptAutoOkAt_{};
     std::string promptText_;           // the UI's typed answer
     bool        promptAnswered_ = false;
     bool        promptAnswer_   = false;

@@ -214,6 +214,10 @@ the needle is changed: re-calibrate and every taught point still works.
    clear, the gantry is set back to the velocity `read_velocity` read off the
    controller before the first move.
 9. Optionally bring the camera back, capture an image to the DUT, and ask.
+   With `confirm` on the run waits for the answer. With it off, `verify_ms`
+   (default 3000) still puts the dot in front of the operator: the prompt
+   counts down and continues by itself (`prompt`'s `auto_ok_ms`), and a Cancel
+   inside the window rejects the dot. `0` skips the prompt.
 
 `pulse_output` rather than on/delay/off because it closes the valve **even when
 a Stop interrupts the wait** (`CommandsIo.cpp`). A stop that left

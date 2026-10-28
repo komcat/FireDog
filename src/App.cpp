@@ -224,8 +224,10 @@ void App::Update(float dt)
     {
         // A teach run proves nothing about a part: it neither marks nodes nor
         // advances the cycle (Status.teach outlives the run for this frame).
+        // An all-dry run is the same (Status.dryRun).
         const bool runActive = orch_.programs.Active();
-        if (runWasActive_ && !runActive && !orch_.programs.GetStatus().teach)
+        const ProgramRunner::Status& prs = orch_.programs.GetStatus();
+        if (runWasActive_ && !runActive && !prs.teach && !prs.dryRun)
             AdvanceDeckCycle();
         runWasActive_ = runActive;
     }

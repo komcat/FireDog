@@ -307,6 +307,10 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "ask the operator before extending and before firing"},
                       {"verify", PT::Bool, false, true, 0, 0, {},
                        "bring the camera back over the dot afterwards"},
+                      {"verify_ms", PT::Int, false, 3000, 0, 60000, {},
+                       "with confirm OFF: how long the 'check the dot' prompt stays "
+                       "up before it continues by itself (Cancel still fails the "
+                       "step); 0 = no prompt"},
                       {"capture", PT::Bool, false, true, 0, 0, {},
                        "attach an image of the result to the open DUT"},
                       {"v_travel", PT::Double, false, 0.0, 0.0, 100.0, {},
@@ -357,6 +361,7 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("disp_autofocus", p.GetBool("autofocus"));
                       c.CtxSet("disp_confirm", p.GetBool("confirm"));
                       c.CtxSet("disp_verify", p.GetBool("verify"));
+                      c.CtxSet("disp_verify_ms", static_cast<double>(p.GetInt("verify_ms")));
                       c.CtxSet("disp_capture", p.GetBool("capture"));
                       c.CtxSet("disp_v_travel", p.GetDouble("v_travel"));
                       c.CtxSet("disp_v_approach", p.GetDouble("v_approach"));

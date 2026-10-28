@@ -256,3 +256,34 @@ Implementation notes for that pass:
 - The align run itself should be a real queue item (the shipped
   `alignment_procedure.lua` behind a recipe), not a special case inside the
   runner — same argument as §2: one execution path, or the loop grows its own.
+
+---
+
+## 6. Dry-run folders (October 2026)
+
+A folder's **dry run** checkbox (organizer, beside `loop`; JSON `"dry_run": true`)
+makes every recipe beneath it — nested folders included, and a single recipe
+node selected inside it — run **only its motion, IO and pneumatic steps**. The
+use is a motion soak: a x50 folder walks a program's moves without a part, an
+operator or the instruments.
+
+- **A recipe transform, not an engine mode** — exactly the teach-mode shape.
+  `BuildRunQueue` stamps `Item::dryRun` (inherited downward), `ProgramRunner::Tick`
+  ORs it into that item's `StartOpts`, and `RecipeEngine::Start` hands its private
+  copy through `MakeDryRunRecipe` (`command/DryRun.h`) before validation and again
+  after inlining. Non-kept leaves are DISABLED, never removed — step paths keep
+  their indices.
+- **An allowlist** (`kDryRunCommands`, `DryRun.cpp`), never a category test: a
+  command added later is skipped until somebody decides it belongs. Kept: the
+  plain movers and position reads, `move_to_cell`/`move_to_active_cell`, all IO,
+  both slides, `delay`/`log`/`ctx_set`. Skipped by design: `save_position` and the
+  tray cursor (they write the document), the scans (they read a meter), every
+  align/grip/registration/needle move (they need a measurement or a frame),
+  prompts, `manual_adjust`, `wait_until`, `run_script`.
+- **Control flow runs as written.** An `if` on a key a skipped step would have
+  written sees it missing, so it takes its else; a move fed by a missing ctx key
+  FAILS and names the step. Neither is papered over.
+- **Not a run of the part.** No recipe `$run`; no deck accent from a dry item; a
+  queue that is dry end to end writes no slot `$run`, does not reset the cycle and
+  does not advance it, and leaves the cycle values alone. A mixed slot (a dry folder
+  among real nodes) is a real run whose dry items simply mark nothing.

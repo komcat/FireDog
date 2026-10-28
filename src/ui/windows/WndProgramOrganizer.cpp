@@ -29,6 +29,7 @@
 
 #include "imgui.h"
 
+#include "ui/Theme.h"     // kDryRunCyan
 #include "ui/Widgets.h"
 #include "core/Log.h"
 
@@ -270,6 +271,10 @@ void App::DrawOrgTree(ProgramSlot& slot, std::vector<ProgramNode>& items, bool t
                 ImGui::EndDragDropSource();
             }
             DrawOrgNodeDropTarget(n.uid, /*intoFolder=*/true, panel);
+            if (n.dryRun) {
+                ImGui::SameLine();
+                ImGui::TextColored(kDryRunCyan, "[DRY RUN]");
+            }
             cycChip(n);
             if (open) {
                 DrawOrgTree(slot, n.children, /*topLevel=*/false, panel);
@@ -417,6 +422,15 @@ void App::DrawOrgPanel(ProgramSlot& slot, ProgramSlot* other, int panel)
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Passes over this folder's contents.\n"
                                   "The whole loop is expanded into the run queue at Execute.");
+            ImGui::SameLine();
+            ImGui::Checkbox("dry run", &fsel->dryRun);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Dry run: every recipe in this folder (nested folders too)\n"
+                                  "runs ONLY its motion, IO and pneumatic steps. Prompts,\n"
+                                  "manual adjust, instruments, lights, vision, scans, scripts,\n"
+                                  "DUT and saved-position writes are skipped. Loops and ifs run\n"
+                                  "as written; an if on a skipped measurement takes its else.\n"
+                                  "No DUT record, no deck marks, the cycle does not move.");
         }
     }
     // The cycle, in one line. Right-click a top-level row to set either end.

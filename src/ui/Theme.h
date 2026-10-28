@@ -18,6 +18,11 @@ inline constexpr ImVec4 kTeachOrange    = ImVec4(0.90f, 0.45f, 0.05f, 1.0f);
 inline constexpr ImVec4 kTeachOrangeHov = ImVec4(1.00f, 0.55f, 0.12f, 1.0f);
 inline constexpr ImVec4 kTeachOrangeAct = ImVec4(0.75f, 0.36f, 0.03f, 1.0f);
 
+// A dry-run folder's colour (command/DryRun.h), on the organizer, the deck and
+// the run list. Cyan: it moves the machine like a run, proves nothing about a
+// part like a teach run, and must look like neither.
+inline constexpr ImVec4 kDryRunCyan     = ImVec4(0.30f, 0.80f, 0.95f, 1.0f);
+
 struct Theme {
     static int         Count();              // number of selectable themes
     static const char* Name(int index);      // display name (out-of-range -> 0)

@@ -31,6 +31,10 @@ struct ProgramNode {
     std::string name;         // Kind::Folder — the label
     int         loop = 1;     // Kind::Folder — passes (>= 1)
     std::string alignProcUid; // Kind::Folder — reserved; empty = no folder frame
+    // Kind::Folder — every recipe beneath it runs DRY (command/DryRun.h):
+    // motion, IO and pneumatics only. Inherited by nested folders; a run that
+    // starts from a recipe node inside it is dry too.
+    bool        dryRun = false;
     std::vector<ProgramNode> children;   // Kind::Folder
 
     bool IsFolder() const { return kind == Kind::Folder; }

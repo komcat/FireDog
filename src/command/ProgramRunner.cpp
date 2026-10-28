@@ -44,6 +44,7 @@ bool ProgramRunner::Start(std::string kind, std::string label, std::string uid,
     status_.label  = label_;
     status_.total  = queue_.size();
     status_.teach  = opts_.teach;
+    status_.dryRun = true;
     status_.items.reserve(queue_.size());
     for (const Item& it : queue_) {
         ItemStatus st;
@@ -53,12 +54,15 @@ bool ProgramRunner::Start(std::string kind, std::string label, std::string uid,
         st.nodeUid    = it.nodeUid;
         st.pass       = it.pass;
         st.passes     = it.passes;
+        st.dryRun     = it.dryRun;
         st.mark       = Mark::Pending;
+        if (!it.dryRun) status_.dryRun = false;
         status_.items.push_back(std::move(st));
     }
 
-    FD_INFO("program", "%s '%s' started (%zu recipe run(s))%s", kind_.c_str(),
-            label_.c_str(), queue_.size(), opts_.teach ? " [TEACH]" : "");
+    FD_INFO("program", "%s '%s' started (%zu recipe run(s))%s%s", kind_.c_str(),
+            label_.c_str(), queue_.size(), opts_.teach ? " [TEACH]" : "",
+            status_.dryRun ? " [DRY RUN]" : "");
     Tick();   // start the first item immediately
     return active_;
 }
@@ -105,7 +109,9 @@ void ProgramRunner::Tick()
     status_.items[idx_].mark = Mark::Running;
     std::string err;
     RecipeEngine::Env env = env_;   // fresh copy per recipe run
-    if (!engine_.Start(queue_[idx_].recipe, std::move(env), &err, opts_)) {
+    RecipeEngine::StartOpts opts = opts_;
+    opts.dryRun = opts.dryRun || queue_[idx_].dryRun;
+    if (!engine_.Start(queue_[idx_].recipe, std::move(env), &err, opts)) {
         status_.items[idx_].mark = Mark::Failed;
         Finish("Failed", queue_[idx_].recipe.name + ": " + err);
         return;
@@ -128,8 +134,8 @@ void ProgramRunner::Finish(const char* result, const std::string& detail)
             queue_.size());
     // Program/slot runs get their own traceability event; a single-recipe run
     // is already covered by the recipe's own $run. A teach run is not a run of
-    // the part and leaves no trace on it.
-    if (kind_ != "recipe" && !opts_.teach) {
+    // the part and leaves no trace on it; nor is an all-dry one.
+    if (kind_ != "recipe" && !opts_.teach && !status_.dryRun) {
         DutSession::Instance().RecordRun(kind_, label_, result, uid_,
                                          static_cast<int>(done));
     }
@@ -145,6 +151,19 @@ constexpr std::size_t kMaxQueueItems = 20000;
 // Folder nesting depth. Deep enough for any real deck, shallow enough that a
 // file hand-edited into a cycle cannot recurse the UI thread off its stack.
 constexpr int kMaxDepth = 8;
+
+// True when a folder ABOVE `uid` (not the node itself) is a dry-run folder.
+bool UnderDryFolder(const std::vector<ProgramNode>& items, const std::string& uid,
+                    bool dry = false, int depth = 0)
+{
+    if (depth > kMaxDepth) return false;
+    for (const ProgramNode& n : items) {
+        if (n.uid == uid) return dry;
+        if (n.IsFolder() && NodeContains(n, uid))
+            return UnderDryFolder(n.children, uid, dry || n.dryRun, depth + 1);
+    }
+    return false;
+}
 } // namespace
 
 RunQueue BuildRunQueue(const Program& prog, RunScope scope,
@@ -170,9 +189,10 @@ RunQueue BuildRunQueue(const Program& prog, RunScope scope,
     // Flatten one node list into queue items. `path` is the folder breadcrumb
     // the item ran under; `pass`/`passes` describe the INNERMOST enclosing
     // loop, which is the one an operator watching the deck is counting.
-    std::function<void(const std::vector<ProgramNode>&, const std::string&, int, int, int)> emit;
+    // `dry` is inherited downward: a dry folder makes its whole subtree dry.
+    std::function<void(const std::vector<ProgramNode>&, const std::string&, int, int, int, bool)> emit;
     emit = [&](const std::vector<ProgramNode>& items, const std::string& path,
-               int pass, int passes, int depth) {
+               int pass, int passes, int depth, bool dry) {
         if (!ok) return;
         if (depth > kMaxDepth) {
             ok = false;
@@ -185,7 +205,7 @@ RunQueue BuildRunQueue(const Program& prog, RunScope scope,
                 const int loops = n.loop < 1 ? 1 : n.loop;
                 const std::string sub = path.empty() ? n.name : path + " / " + n.name;
                 for (int i = 1; i <= loops && ok; ++i)
-                    emit(n.children, sub, i, loops, depth + 1);
+                    emit(n.children, sub, i, loops, depth + 1, dry || n.dryRun);
                 continue;
             }
             const Recipe* r = RecipeByUid(library, n.recipeUid);
@@ -207,6 +227,7 @@ RunQueue BuildRunQueue(const Program& prog, RunScope scope,
             it.nodeUid  = n.uid;
             it.pass     = pass;
             it.passes   = passes;
+            it.dryRun   = dry;
             it.recipe   = *r;
             out.items.push_back(std::move(it));
         }
@@ -214,10 +235,11 @@ RunQueue BuildRunQueue(const Program& prog, RunScope scope,
 
     if (scope == RunScope::Slot) {
         out.label = prog.name + " / " + s.name;
-        emit(s.items, std::string(), 1, 1, 0);
+        emit(s.items, std::string(), 1, 1, 0, false);
     } else {
         const ProgramNode* n = FindNode(s.items, nodeUid);
         if (!n) return fail("nothing selected in the deck");
+        const bool dry = UnderDryFolder(s.items, nodeUid);
         if (n->IsFolder()) {
             // A folder runs as a folder: its loop count belongs to the node,
             // not to the list around it, so selecting it must repeat it.
@@ -225,7 +247,7 @@ RunQueue BuildRunQueue(const Program& prog, RunScope scope,
             out.label = prog.name + " / " + s.name + " / " + n->name;
             const int loops = n->loop < 1 ? 1 : n->loop;
             for (int i = 1; i <= loops && ok; ++i)
-                emit(n->children, n->name, i, loops, 1);
+                emit(n->children, n->name, i, loops, 1, dry || n->dryRun);
         } else {
             out.kind = "recipe";
             const Recipe* r = RecipeByUid(library, n->recipeUid);
@@ -233,6 +255,7 @@ RunQueue BuildRunQueue(const Program& prog, RunScope scope,
             ProgramRunner::Item it;
             it.slotName = s.name;
             it.nodeUid  = n->uid;
+            it.dryRun   = dry;
             it.recipe   = *r;
             out.items.push_back(std::move(it));
             out.label = prog.name + " / " + s.name + " / " + r->name;

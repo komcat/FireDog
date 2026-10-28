@@ -37,6 +37,10 @@ void App::DrawRecipePromptWindow()
     const std::string& pending = fromScript ? lst.pendingPrompt : rst.pendingPrompt;
     const bool wantsInput =
         fromScript ? lst.pendingPromptInput : rst.pendingPromptInput;
+    // > 0: the engine answers OK by itself in this long. The countdown is the
+    // engine's, not ours - this window only shows it.
+    const int autoOkMs =
+        fromScript ? lst.pendingPromptAutoOkMs : rst.pendingPromptAutoOkMs;
 
     // Edge-detect a NEW prompt (a back-to-back prompt can arrive while the
     // window is still visible, so IsWindowAppearing alone is not enough).
@@ -102,6 +106,18 @@ void App::DrawRecipePromptWindow()
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(pending.c_str());
     ImGui::PopTextWrapPos();
+    // An auto-OK prompt says so, in the frame's amber: silence continues the
+    // run, so the operator must be able to see how long Cancel stays open.
+    if (autoOkMs > 0) {
+        char line[64];
+        std::snprintf(line, sizeof(line), "Continues automatically in %d s",
+                      (autoOkMs + 999) / 1000);
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float textW = ImGui::CalcTextSize(line).x;
+        if (textW < avail)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - textW) * 0.5f);
+        ImGui::TextColored(ImVec4(1.00f, 0.76f, 0.25f, 1.00f), "%s", line);
+    }
     ImGui::Dummy(ImVec2(0.0f, promptFont * 2.0f));   // the breathing room
     const auto answer = [&](bool ok) {
         if (fromScript) orch_.lua.AnswerPrompt(ok, promptInputBuf_);
@@ -136,7 +152,10 @@ void App::DrawRecipePromptWindow()
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.42f, 0.20f, 1.00f));
-    const bool ok = ImGui::Button("OK", btn) || submit;
+    char okLabel[32] = "OK";
+    if (autoOkMs > 0)   // "###OK" keeps the ID steady while the number counts down
+        std::snprintf(okLabel, sizeof(okLabel), "OK (%d)###OK", (autoOkMs + 999) / 1000);
+    const bool ok = ImGui::Button(okLabel, btn) || submit;
     ImGui::PopStyleColor(3);
     if (ok) answer(true);
     ImGui::SameLine();
