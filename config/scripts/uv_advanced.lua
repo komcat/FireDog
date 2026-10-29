@@ -42,7 +42,7 @@
 -- Parameters (fd.param -> ctx keys; a recipe sets them with ctx_set steps
 -- before its run_script step, or leaves the defaults):
 --   uva_io             IO device                            (default "IOBottom")
---   uva_device         hexapod to correct                   (default "hex-left")
+--   uva_device         hexapod to correct                   (default "hex-right")
 --   uva_topic          feedback signal                      (default "keithley/ch1")
 --   uva_samples        reads averaged per measurement       (default 5)
 --   uva_sample_ms      wait between reads, ms               (default 100)
@@ -79,7 +79,7 @@ end
 
 local P = {
   io          = fd.param("uva_io", "IOBottom"),
-  dev         = fd.param("uva_device", "hex-left"),
+  dev         = fd.param("uva_device", "hex-right"),
   topic       = fd.param("uva_topic", "keithley/ch1"),
   samples     = int("uva_samples", 5),
   sample_ms   = int("uva_sample_ms", 100),
