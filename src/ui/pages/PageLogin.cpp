@@ -14,7 +14,7 @@
 
 #include "imgui.h"
 
-#include "ui/Widgets.h"   // StateColor (the refusal message)
+#include "ui/Widgets.h"   // StateColor (the refusal message), DrawFireDog
 #include "core/DutSession.h"
 #include "core/Log.h"
 
@@ -164,11 +164,22 @@ void App::DrawLoginScreen()
     // a door to walk through.
     const float cardW = 520.0f;
     const float cardH = 300.0f;
+    // The mascot sits above the card and the pair is centred as one block.
+    const float dogPx  = 8.0f;
+    const float dogW   = kFireDogW * dogPx;
+    const float dogH   = kFireDogH * dogPx;
+    const float dogGap = 24.0f;
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() +
-                                   (avail.x - cardW) * 0.5f,
-                               ImGui::GetCursorPosY() +
-                                   (avail.y - cardH) * 0.35f));
+    const ImVec2 top   = ImGui::GetCursorPos();
+    const float  y0    = top.y + (avail.y - (dogH + dogGap + cardH)) * 0.35f;
+
+    ImGui::SetCursorPos(ImVec2(top.x + (avail.x - dogW) * 0.5f, y0));
+    DrawFireDog(ImGui::GetWindowDrawList(), ImGui::GetCursorScreenPos(), dogPx,
+                FireDogMood::Idle, ImGui::GetTime());
+    ImGui::Dummy(ImVec2(dogW, dogH));
+
+    ImGui::SetCursorPos(ImVec2(top.x + (avail.x - cardW) * 0.5f,
+                               y0 + dogH + dogGap));
 
     ImGui::BeginChild("LoginCard", ImVec2(cardW, cardH), ImGuiChildFlags_Borders);
     ImGui::TextUnformatted("FireDog - Active Alignment");

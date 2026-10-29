@@ -1354,6 +1354,123 @@ const SavedPos* TaughtPosePicker(const char* id, const SavedPosMap& all,
     return picked;
 }
 
+// ---- The FireDog mascot ----------------------------------------------------
+// The body is the still part; the ears, the flame and the legs are what move,
+// laid over it per frame on cells the body leaves empty. '.' empty, 'O' body,
+// 'F' flame, 'Y' flame tip, 'S' smoke. The eye is the hole at (21, 4).
+namespace {
+
+constexpr const char* kDogBody[kFireDogH] = {
+    "............................",
+    "............................",
+    "............................",
+    "...................OOOOOOO..",
+    "...................OO.OOOO..",
+    "....OO.............OOOOOOOOO",
+    "....OO.............OOOOOOOOO",
+    "....OOOOOOOOOOOOOOOOOOOOOO..",
+    "....OOOOOOOOOOOOOOOOOOOOO...",
+    "....OOOOOOOOOOOOOOOOOOOOO...",
+    "....OOOOOOOOOOOOOOOOOOOOO...",
+    ".....OOOOOOOOOOOOOOOOOOO....",
+    "............................",
+    "............................",
+};
+constexpr int kDogEarX = 19;   // ears: 3 rows from the top, from this column
+constexpr int kDogLegY = 12;   // legs: the last 2 rows
+constexpr int kDogEyeX = 21, kDogEyeY = 4;
+
+constexpr const char* kDogEarsUp[3]   = {".O....O..", "OO...OO..", "OOO.OOO.."};
+constexpr const char* kDogEarsDown[3] = {".........", ".........", "OOO..OOO."};
+
+// 5x5 from the top-left corner: calm A/B, streaming A/B, smoke A/B.
+constexpr const char* kDogFlame[6][5] = {
+    {"..Y..", ".YFY.", ".YFFY", "..FFY", "...FF"},
+    {".Y...", "..YY.", ".YFFY", ".YFFY", "...FF"},
+    {"Y....", "YFY..", ".FFFY", "..FFF", "...FF"},
+    {".....", "YY...", "YFFY.", ".FFFY", "..FFF"},
+    {"..S..", ".S...", "..S..", "...S.", "....."},
+    {".S...", "..S..", "...S.", "..S..", "....."},
+};
+
+// Standing, trot A, trot B.
+constexpr const char* kDogLegs[3][2] = {
+    {".....OO.OO.......OO.OO......", ".....OO.OO.......OO.OO......"},
+    {".....OO.OO.......OO.OO......", "....OO...OO.....OO...OO....."},
+    {".....OO.OO.......OO.OO......", "......OOOO.........OOOO....."},
+};
+
+void DogLayer(ImDrawList* dl, ImVec2 o, float px, const char* const* rows, int n,
+              int x0, int y0, ImU32 body)
+{
+    for (int y = 0; y < n; ++y) {
+        for (int x = 0; rows[y][x] != '\0'; ++x) {
+            ImU32 col;
+            switch (rows[y][x]) {
+                case 'O': col = body; break;
+                case 'F': col = IM_COL32(230,  70,  40, 255); break;
+                case 'Y': col = IM_COL32(255, 200,  60, 255); break;
+                case 'S': col = IM_COL32(130, 130, 130, 255); break;
+                default:  continue;
+            }
+            const ImVec2 a(o.x + (x0 + x) * px, o.y + (y0 + y) * px);
+            dl->AddRectFilled(a, ImVec2(a.x + px, a.y + px), col);
+        }
+    }
+}
+
+// 0/1 alternating every `period` seconds.
+int DogBeat(double t, double period) { return static_cast<int>(t / period) & 1; }
+
+} // namespace
+
+void DrawFireDog(ImDrawList* dl, ImVec2 origin, float px, FireDogMood mood, double t)
+{
+    ImU32 body     = IM_COL32(217, 119, 87, 255);
+    int   flame    = DogBeat(t, 0.25);   // calm flicker
+    int   legs     = 0;                  // standing
+    bool  earsDown = false, blink = false, hop = false;
+    switch (mood) {
+        case FireDogMood::Idle:
+            blink = std::fmod(t, 3.7) < 0.12;
+            break;
+        case FireDogMood::Running:
+            legs  = 1 + DogBeat(t, 0.15);
+            flame = 2 + DogBeat(t, 0.10);
+            break;
+        case FireDogMood::Waiting: {
+            // Two quick hops a second: somebody is wanted.
+            const double p = std::fmod(t, 1.0);
+            hop = p < 0.15 || (p >= 0.30 && p < 0.45);
+            break;
+        }
+        case FireDogMood::Happy:
+            hop   = std::fmod(t, 0.4) < 0.2;
+            legs  = 1 + DogBeat(t, 0.2);
+            flame = 2 + DogBeat(t, 0.10);
+            break;
+        case FireDogMood::Sad:
+            body     = IM_COL32(150, 105, 90, 255);
+            earsDown = true;
+            flame    = 4 + DogBeat(t, 0.6);
+            break;
+        case FireDogMood::Alarm:
+            if (DogBeat(t, 0.125)) body = IM_COL32(230, 40, 40, 255);
+            flame = 2 + DogBeat(t, 0.08);
+            break;
+    }
+    if (hop) origin.y -= px;
+
+    DogLayer(dl, origin, px, kDogBody, kFireDogH, 0, 0, body);
+    DogLayer(dl, origin, px, earsDown ? kDogEarsDown : kDogEarsUp, 3, kDogEarX, 0, body);
+    DogLayer(dl, origin, px, kDogFlame[flame], 5, 0, 0, body);
+    DogLayer(dl, origin, px, kDogLegs[legs], 2, 0, kDogLegY, body);
+    if (blink) {
+        const ImVec2 a(origin.x + kDogEyeX * px, origin.y + kDogEyeY * px);
+        dl->AddRectFilled(a, ImVec2(a.x + px, a.y + px), body);
+    }
+}
+
 void OpenFolderInExplorer(const std::string& dir)
 {
     if (dir.empty()) return;

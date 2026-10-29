@@ -221,7 +221,16 @@ private:
                           const std::string& what);
     void UpdateMoveWatch(float dt);   // arrival poll; called from Update()
     void DrawMoveStatusBar();   // the banner, drawn by the main frame
-    void DrawLeftPanel();      // 20% column: hardware status + DUT + display
+    // The mascot at the right end of the quick strip, animated by what the
+    // machine is doing (MainWindow.cpp). The run's OUTCOME is only knowable on
+    // the frame orch_.Busy() falls, so these hold it until the next run.
+    void DrawStripDog(float height);
+    bool   dogWasBusy_    = false;
+    bool   dogSad_        = false;   // the last run failed, until the next starts
+    double dogHappyUntil_ = 0.0;     // ImGui::GetTime() a completed run hops until
+    bool   dogRanProgram_ = false;   // what the run in flight is, for its outcome
+    bool   dogRanLua_     = false;
+    void DrawLeftPanel();     // 20% column: hardware status + DUT + display
     // Active-DUT status + open/close (Overview left, top of the Run deck).
     // `serialScale` = the serial's font size as a multiple of the body size,
     // before it shrinks to fit the row.

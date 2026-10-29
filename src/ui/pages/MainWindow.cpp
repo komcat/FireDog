@@ -144,6 +144,91 @@ void App::DrawMoveStatusBar()
     ImGui::Separator();
 }
 
+// The mascot at the right end of the quick strip, `height` tall. It shows what
+// the machine is doing and how the last run ended — an aid at a glance, never a
+// control: it reads the same state the Run page does and decides nothing.
+void App::DrawStripDog(float height)
+{
+    const double now  = ImGui::GetTime();
+    const bool   busy = orch_.Busy();
+
+    // The outcome is read on the frame Busy falls, from the engine the run WAS:
+    // a program's result, else the script's or recipe's terminal state. Each
+    // engine keeps its last state forever, so asking one that did not run would
+    // replay an old failure. A path-executor move has no outcome. Stopped is
+    // neither: the operator meant it.
+    if (busy) {
+        if (!dogWasBusy_) {
+            dogSad_        = false;
+            dogHappyUntil_ = 0.0;
+            dogRanProgram_ = false;
+            dogRanLua_     = false;
+        }
+        dogRanProgram_ = dogRanProgram_ || orch_.programs.Active();
+        dogRanLua_     = dogRanLua_ || orch_.lua.Running();
+    } else if (dogWasBusy_) {
+        bool failed = false, completed = true;
+        if (dogRanProgram_) {
+            const std::string& r = orch_.programs.GetStatus().result;
+            failed    = (r == "Failed");
+            completed = (r == "Completed");
+        } else if (dogRanLua_) {
+            const LuaEngine::State s = orch_.lua.GetStatus().state;
+            failed    = (s == LuaEngine::State::Failed);
+            completed = (s == LuaEngine::State::Completed);
+        } else {
+            const RecipeEngine::State s = orch_.recipe.GetStatus().state;
+            failed    = (s == RecipeEngine::State::Failed);
+            completed = (s != RecipeEngine::State::Stopped);   // Idle: a path move
+        }
+        dogSad_        = failed;
+        dogHappyUntil_ = completed ? now + 3.0 : 0.0;
+    }
+    dogWasBusy_ = busy;
+
+    FireDogMood mood = FireDogMood::Idle;
+    const char* what = "idle";
+    if (workflow_.SafetyAlertActive()) {
+        mood = FireDogMood::Alarm;
+        what = "SAFETY ALERT";
+    } else if (busy) {
+        // Blocked on the operator: a prompt, a manual adjust, a crosshair pick
+        // or a step-mode pause.
+        bool waiting = false;
+        if (orch_.recipe.Running()) {
+            const RecipeEngine::Status s = orch_.recipe.GetStatus();
+            waiting = !s.pendingPrompt.empty() || s.pendingAdjust || s.pendingPick ||
+                      s.stepPaused;
+        }
+        if (orch_.lua.Running()) {
+            const LuaEngine::Status s = orch_.lua.GetStatus();
+            waiting = waiting || !s.pendingPrompt.empty() || s.pendingAdjust ||
+                      s.pendingPick;
+        }
+        mood = waiting ? FireDogMood::Waiting : FireDogMood::Running;
+        what = waiting ? "waiting for you" : "running";
+    } else if (dogSad_) {
+        mood = FireDogMood::Sad;
+        what = "the last run failed - see the Run page";
+    } else if (now < dogHappyUntil_) {
+        mood = FireDogMood::Happy;
+        what = "run completed";
+    }
+
+    // One sprite pixel of headroom above it for the hop; bottom-aligned with
+    // the buttons, right-aligned to the window, never over a button.
+    const float px = std::floor(height / static_cast<float>(kFireDogH + 1));
+    if (px < 1.0f) return;
+    const float w     = kFireDogW * px;
+    const float right = ImGui::GetContentRegionMax().x - w;
+    if (right > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(right);
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    DrawFireDog(ImGui::GetWindowDrawList(),
+                ImVec2(o.x, o.y + height - kFireDogH * px), px, mood, now);
+    ImGui::Dummy(ImVec2(w, height));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("FireDog: %s", what);
+}
+
 // The User menu plus the identity chip beside it. Called from the menu bar
 // (see DrawMainWindow), so it must be inside a BeginMenuBar block.
 //
@@ -474,7 +559,10 @@ void App::DrawMainWindow()
             // during a shift. The Waffle Tray page IS one of those: a fresh
             // tray means a Reset and a glance at which cells are taken.
             pageBtn("Waffle Tray (F10)", Page::Tray, true);
-            if (anyBtn) ImGui::Separator();
+            // The mascot closes the row at the right edge, as tall as the buttons.
+            if (anyBtn) ImGui::SameLine();
+            DrawStripDog(stripBtn.y);
+            ImGui::Separator();
         }
 
         // Above the page dispatch, so it is on screen whichever page the move

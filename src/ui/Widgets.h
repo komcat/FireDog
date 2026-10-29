@@ -489,6 +489,25 @@ struct NeedleMotionText {
 // the needles and text do not) and reserves the space.
 void DrawNeedleMotion(const NeedleMotionText& t, float width);
 
+// ---- The FireDog mascot ----------------------------------------------------
+// A corgi with a flame for a tail, drawn as `px`-sized squares with `origin` as
+// its top-left. Shared by the login screen and the quick strip. The animation
+// is a pure function of the mood and `t` (ImGui::GetTime()), so a caller keeps
+// no frame state for it — only what it needs to pick the mood.
+enum class FireDogMood {
+    Idle,      // standing; the flame flickers, the eye blinks now and then
+    Running,   // a run is in flight: trotting, the flame streams back
+    Waiting,   // a run is blocked on the operator: hops for attention
+    Happy,     // a run just completed: hopping
+    Sad,       // the last run failed: ears down, the flame gone to smoke
+    Alarm,     // safety alert: flashing red
+};
+inline constexpr int kFireDogW = 28;   // sprite size, in sprite pixels
+inline constexpr int kFireDogH = 14;
+// Draws only, reserves no space. A hop lifts the sprite one `px` above
+// `origin`, so leave that much headroom.
+void DrawFireDog(ImDrawList* dl, ImVec2 origin, float px, FireDogMood mood, double t);
+
 // Format an amp value with an auto-scaled unit (mA / uA / nA / pA).
 std::string FormatCurrent(double a);
 
