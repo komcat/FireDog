@@ -723,7 +723,7 @@ void App::DrawAlignPickWindow()
         const bool   judge = req.target.tolMm > 0.0;
         const ImVec4 tOk(0.4f, 0.9f, 0.5f, 1.0f);
         const ImVec4 tBad(1.0f, 0.65f, 0.25f, 1.0f);
-        const ImVec4 tCol = !judge ? ImVec4(0.75f, 0.75f, 0.78f, 1.0f)
+        const ImVec4 tCol = !judge ? ImGui::GetStyleColorVec4(ImGuiCol_Text)
                                    : (res <= req.target.tolMm ? tOk : tBad);
         ImGui::TextColored(tCol,
                            "off prediction  dX %+.4f  dY %+.4f  dZ %+.4f  =  %.4f mm%s",

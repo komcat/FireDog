@@ -32,6 +32,10 @@ struct Theme {
     static int         Count();              // number of selectable themes
     static const char* Name(int index);      // display name (out-of-range -> 0)
     static void        Apply(int index = 0); // apply to ImGui + ImPlot (clamped)
+    // True when the applied theme has a light background, read off WindowBg so
+    // it holds for any theme. For the few hard-coded colours (log levels) that
+    // need a darker shade to stay readable on a light window.
+    static bool        IsLight();
 };
 
 } // namespace firedog

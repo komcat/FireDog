@@ -70,6 +70,9 @@ void Light(ImGuiStyle& s)         // bright-room / shop-floor visibility
 {
     ImGui::StyleColorsLight(&s);
     ImVec4* c = s.Colors;
+    // StyleColorsLight's 0.60 grey all but vanishes on its 0.94 WindowBg, and
+    // TextDisabled carries real hints here (empty-state text, field labels).
+    c[ImGuiCol_TextDisabled] = ImVec4(0.38f, 0.38f, 0.40f, 1.00f);
     Accent(c, ImVec4(0.55f, 0.68f, 0.82f, 1.0f), ImVec4(0.44f, 0.60f, 0.78f, 1.0f));
 }
 
@@ -90,6 +93,12 @@ const char* Theme::Name(int index)
 {
     if (index < 0 || index >= kThemeCount) index = 0;
     return kThemes[index].name;
+}
+
+bool Theme::IsLight()
+{
+    const ImVec4 bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+    return 0.299f * bg.x + 0.587f * bg.y + 0.114f * bg.z > 0.5f;
 }
 
 void Theme::Apply(int index)
