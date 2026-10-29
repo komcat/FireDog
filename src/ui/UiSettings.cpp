@@ -105,6 +105,27 @@ UiSettings UiSettings::Load(const std::string& path)
                 s.quickIo.push_back(std::move(r));
             }
         }
+        // PSU presets: per field, so a missing key keeps that preset's default.
+        if (j.contains("psu_presets") && j["psu_presets"].is_array()) {
+            const auto& a = j["psu_presets"];
+            for (std::size_t i = 0; i < a.size() && i < s.psuPresets.size(); ++i) {
+                if (!a[i].is_object()) continue;
+                PsuPreset& p = s.psuPresets[i];
+                p.channel = a[i].value("ch", p.channel);
+                p.mode    = a[i].value("mode", p.mode) == 0 ? 0 : 1;
+                p.volts   = a[i].value("v", p.volts);
+                p.amps    = a[i].value("a", p.amps);
+            }
+        }
+        // Needle "clear first": the whole list, so an emptied one stays empty.
+        if (j.contains("needle_clear_moves") && j["needle_clear_moves"].is_array()) {
+            s.ndlClearMoves.clear();
+            for (const auto& m : j["needle_clear_moves"]) {
+                if (!m.is_object()) continue;
+                s.ndlClearMoves.push_back({m.value("device", std::string()),
+                                           m.value("position", std::string())});
+            }
+        }
         FD_INFO("ui", "settings loaded from %s (font %d, %.0f px)",
                 path.c_str(), s.fontIndex, s.fontSize);
     } catch (const std::exception& e) {
@@ -171,6 +192,14 @@ bool UiSettings::Save(const std::string& path) const
     for (const QuickIoRow& r : quickIo)
         qio.push_back({{"device", r.device}, {"pin", r.pin}, {"ms", r.dwellMs}});
     j["quick_io"] = qio;
+    nlohmann::json pp = nlohmann::json::array();
+    for (const PsuPreset& p : psuPresets)
+        pp.push_back({{"ch", p.channel}, {"mode", p.mode}, {"v", p.volts}, {"a", p.amps}});
+    j["psu_presets"] = pp;
+    nlohmann::json cm = nlohmann::json::array();
+    for (const NeedleClearMove& m : ndlClearMoves)
+        cm.push_back({{"device", m.device}, {"position", m.position}});
+    j["needle_clear_moves"] = cm;
 
     std::ofstream f(path);
     if (!f.is_open()) {

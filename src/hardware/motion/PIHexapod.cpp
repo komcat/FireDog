@@ -388,6 +388,19 @@ struct PIHexapod::Impl {
         }
     }
 
+    bool ReadVelocity(double* v)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        if (!PI_qVLS(id, v)) {
+            int err = 0; PI_qERR(id, &err);
+            lastError = "PI_qVLS failed (" + std::to_string(err) + ")";
+            FD_ERROR("pi", "%s read velocity failed: %s", cfg.name.c_str(), lastError.c_str());
+            return false;
+        }
+        return true;
+    }
+
     // True when no configured axis is still executing a motion profile. The
     // commands' arrival check is position-tolerance based, so it can complete
     // while the controller still reports moving — callers wait on this before
@@ -586,8 +599,17 @@ struct PIHexapod::Impl {
     bool SetVelocity(double v)
     {
         FD_INFO("pi", "%s system velocity = %.3f mm/s (simulated)", cfg.name.c_str(), v);
-        return connected.load();
+        if (!connected.load()) return false;
+        simVelocity.store(v);
+        return true;
     }
+    bool ReadVelocity(double* v)
+    {
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        *v = simVelocity.load();
+        return true;
+    }
+    std::atomic<double> simVelocity{10.0};   // what the "controller" is set to
     bool IsSettled() { return true; }   // sim snaps to target — never "moving"
     bool IsOnTarget() { return true; }
     bool StopAll()
@@ -638,6 +660,7 @@ std::map<std::string, double> PIHexapod::Positions() const { return p_->Position
 bool PIHexapod::MoveAbsolute(const std::string& a, double p) { return p_->MoveAbsolute(a, p); }
 bool PIHexapod::MoveAbsolute(const std::vector<std::pair<std::string, double>>& t) { return p_->MoveAbsolute(t); }
 bool PIHexapod::SetVelocity(double v)   { return p_->SetVelocity(v); }
+bool PIHexapod::ReadVelocity(double* v) { return p_->ReadVelocity(v); }
 bool PIHexapod::IsSettled() const       { return p_->IsSettled(); }
 bool PIHexapod::IsOnTarget() const      { return p_->IsOnTarget(); }
 bool PIHexapod::StopAll()               { return p_->StopAll(); }

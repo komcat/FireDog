@@ -72,11 +72,12 @@ move. It goes stale for exactly one reason — somebody changed the needle — a
 
 ## Commands
 
-Three of them are generic primitives that were simply missing:
+Four of them are generic primitives that were simply missing:
 
 | Command | What it adds |
 |---|---|
 | `read_position{device, ctx_prefix}` | a script can see a pose it did not ask an operator to jog to. Before this, the only pose a script could read was a side effect of `manual_adjust`. |
+| `read_velocity{device, ctx_prefix}` | the velocity the controller is set to, as `<prefix>_mm_s`, so a script that changes it can put it back. |
 | `move_axis_to{device, axes, x_mm, y_mm, z_mm, …}` | absolute per-axis coordinated move through the shared `MoveWithApproach`. `axes` is **required**: a step meaning "descend Z" that silently also commanded X=0 and Y=0 would cross the machine at speed. |
 | `pick_point{device, label, hint…, ctx_prefix}` | the crosshair pick with no alignment procedure behind it. Reuses `CaptureWorldPoint`, so the mark→world-mm maths has one implementation. |
 
@@ -120,6 +121,13 @@ slide      pneumatic up
 traverse   camera back over the dot                        v_traverse
 ```
 
+0. Once, before pass 1: **clear first** — each `ndl_clear_moves` entry
+   (`device=uid;…`) is a `move_to_position`, in order (the hexapods out of the
+   camera's way). The Needle page's *Clear first* list fills it: station
+   settings (UiSettings), positions held by NAME and resolved against the
+   loaded product at Run, which refuses before anything moves when a name is
+   missing. A `needle_cal_run` step passes nothing — a recipe clears with its
+   own `move_to_position` steps.
 1. Prompt for a coupon (pass ≥ 2: *a clean spot* — a second imprint on the first
    one has nothing to measure).
 2. `manual_adjust` 100 µm — centre the camera on it.
@@ -265,8 +273,14 @@ the needle is changed: re-calibrate and every taught point still works.
    away from a part there is nothing left to arrive at. XY stays last either
    way, so the needle never travels sideways while it is down near the dot —
    and unlike the calibration's coupon, a real part may have features between
-   the dot and the camera spot, so Z climbs all the way before XY moves.
+   the dot and the camera spot, so Z climbs all the way before XY moves. Once Z
+   is clear, the gantry is set back to the velocity `read_velocity` read off the
+   controller before the first move.
 9. Optionally bring the camera back, capture an image to the DUT, and ask.
+   With `confirm` on the run waits for the answer. With it off, `verify_ms`
+   (default 3000) still puts the dot in front of the operator: the prompt
+   counts down and continues by itself (`prompt`'s `auto_ok_ms`), and a Cancel
+   inside the window rejects the dot. `0` skips the prompt.
 
 `pulse_output` rather than on/delay/off because it closes the valve **even when
 a Stop interrupts the wait** (`CommandsIo.cpp`). A stop that left
@@ -274,12 +288,15 @@ a Stop interrupts the wait** (`CommandsIo.cpp`). A stop that left
 
 **Velocity persists on the controller, and this bites hardest here.** The
 descent runs at `v_final`, so whatever the last move sets is what the *next*
-recipe step — and the next run of this one — travels at. With `v_travel` left
-at 0 there is nothing to restore to, and the script says so rather than leaving
-the gantry quietly at half a millimetre per second; the symptom of ignoring it
-is a head that appears not to move for seconds and then a `move_axis_to`
-timeout. Set `v_travel` on any `dispense_run` that is not the last step of a
-program.
+recipe step — and the next run of this one — travels at; the symptom is a head
+that appears not to move for seconds and then a `move_axis_to` timeout. So the
+script reads the gantry's velocity **off the controller** before it moves
+(`read_velocity`: PI `qVLS`, ACS `acsc_GetVelocity`) and sets it back right
+after the lift-off — and again at the end if the verify leg travelled at
+`v_travel`. A gantry at 40 mm/s before the step is at 40 mm/s after it. Read,
+not remembered: the jog page's combo shows "(device)" until somebody sets one,
+so the only honest source of "what it was" is the controller. A device that
+cannot report its velocity fails the step before anything has moved.
 
 **There is no pressure control, no purge, no bead.** bobcat has none either. The
 external regulator sets the flow and `shot_ms` sets how long it flows; `shot_ms`

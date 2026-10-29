@@ -96,7 +96,7 @@ CommandResult ExecWaitUntil(ExecutionContext& ctx, const ParamValues& p)
 CommandResult ExecPrompt(ExecutionContext& ctx, const ParamValues& p)
 {
     const std::string msg = ctx.Substitute(p.GetString("message"));
-    return ctx.AwaitPrompt(msg)
+    return ctx.AwaitPrompt(msg, p.GetInt("auto_ok_ms"))
                ? CommandResult::Success()
                : CommandResult::Fail("cancelled by operator");
 }
@@ -204,6 +204,9 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   "Show a message and wait for operator OK (Cancel fails the step)",
                   {
                       {"message", PT::String, true, {}, 0, 0, {}, "text shown to the operator"},
+                      {"auto_ok_ms", PT::Int, false, 0, 0, 600000, {},
+                       "answer OK by itself after this long (a glance, with a Cancel); "
+                       "0 = wait for the operator"},
                   },
                   CommandSpec::Needs::None, ExecPrompt});
 

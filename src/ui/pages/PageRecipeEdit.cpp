@@ -176,10 +176,12 @@ void App::DrawRecipeEditPanel()
 
     // ---- Left: recipe list + CRUD ----
     ImGui::BeginChild("edRecipes", ImVec2(leftW, paneH), ImGuiChildFlags_Borders);
+    ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Recipes");
     ImGui::SameLine();
     ImGui::BeginDisabled(busy);
-    if (ImGui::SmallButton("Reload")) {
+    if (IconToolButton(UiIcon("tb_reload"), "recReload", "Reload",
+                       "Reload the recipes from disk")) {
         if (session_.RecipesDirty()) {
             edConfirmAction_ = 2;   // guard: reload discards unsaved edits
         } else {
@@ -189,7 +191,7 @@ void App::DrawRecipeEditPanel()
     }
     ImGui::EndDisabled();
     ImGui::BeginDisabled(busy);
-    if (IconSmallButton(UiIcon("New"), "New")) {
+    if (IconToolButton(UiIcon("tb_new"), "recNew", "New", "New recipe")) {
         Recipe r;
         r.uid  = GenerateUid();
         r.name = "new recipe";
@@ -199,7 +201,8 @@ void App::DrawRecipeEditPanel()
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!haveSel);
-    if (ImGui::SmallButton("Dup")) {
+    if (IconToolButton(UiIcon("tb_duplicate"), "recDup", "Dup",
+                       "Duplicate the selected recipe")) {
         Recipe r = session_.Recipes()[recipeSel_];
         r.uid  = GenerateUid();
         r.name += " copy";
@@ -208,25 +211,27 @@ void App::DrawRecipeEditPanel()
         ClearStepSel();
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Ren")) {
+    if (IconToolButton(UiIcon("tb_rename"), "recRen", "Ren", "Rename the selected recipe")) {
         std::snprintf(edNameBuf_, sizeof(edNameBuf_), "%s", session_.Recipes()[recipeSel_].name.c_str());
         edOpenRenameRecipe_ = true;
     }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Del")) edOpenDeleteRecipe_ = true;
+    ToolGroupGap();
+    if (IconToolButton(UiIcon("tb_delete"), "recDel", "Del", "Delete the selected recipe",
+                       true))
+        edOpenDeleteRecipe_ = true;
     ImGui::EndDisabled();
     // Clipboard round-trip: Copy puts the selected recipe's JSON on the OS
     // clipboard; Paste accepts a recipe object, a whole recipes file, or a
     // bare array, and mints a FRESH uid per pasted recipe so an in-place
     // copy never collides with the original's identity.
     ImGui::BeginDisabled(!haveSel);
-    if (ImGui::SmallButton("Copy"))
+    if (IconToolButton(UiIcon("tb_copy"), "recCopy", "Copy",
+                       "Copy the selected recipe as JSON to the clipboard"))
         ImGui::SetClipboardText(RecipeToJson(session_.Recipes()[recipeSel_]).dump(2).c_str());
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Copy the selected recipe as JSON to the clipboard");
     ImGui::SameLine();
-    if (ImGui::SmallButton("Paste")) {
+    if (IconToolButton(UiIcon("tb_paste"), "recPaste", "Paste",
+                       "Paste recipe JSON from the clipboard (new uid)")) {
         const char* clip = ImGui::GetClipboardText();
         nlohmann::json j = clip ? nlohmann::json::parse(clip, nullptr, false)
                                 : nlohmann::json();
@@ -255,8 +260,6 @@ void App::DrawRecipeEditPanel()
             FD_WARN("recipe", "paste: clipboard has no recipe JSON");
         }
     }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Paste recipe JSON from the clipboard (new uid)");
     ImGui::EndDisabled();
     // Filing: Hide/Show flips the selected recipe's `hidden` flag, Tag opens
     // the tag modal. Both edit the recipe (dirty like a rename) and neither
@@ -265,22 +268,22 @@ void App::DrawRecipeEditPanel()
     ImGui::BeginDisabled(!haveSel);
     {
         const bool selHidden = haveSel && session_.Recipes()[recipeSel_].hidden;
-        ImGui::SameLine();
-        if (ImGui::SmallButton(selHidden ? "Show" : "Hide"))
+        ToolGroupGap();
+        if (IconToolButton(UiIcon(selHidden ? "tb_show" : "tb_hide"), "recHide",
+                           selHidden ? "Show" : "Hide",
+                           selHidden ? "Unhide the selected recipe"
+                                     : "Hide the selected recipe from the lists "
+                                       "(programs that reference it still run it)"))
             session_.Recipes()[recipeSel_].hidden = !selHidden;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(selHidden ? "Unhide the selected recipe"
-                                        : "Hide the selected recipe from the lists "
-                                          "(programs that reference it still run it)");
         ImGui::SameLine();
-        if (ImGui::SmallButton("Tag")) {
+        if (IconToolButton(UiIcon("tb_tag"), "recTag", "Tag",
+                           "Edit the selected recipe's tags")) {
             std::string joined;
             for (const std::string& t : session_.Recipes()[recipeSel_].tags)
                 joined += (joined.empty() ? "" : ", ") + t;
             std::snprintf(edTagBuf_, sizeof(edTagBuf_), "%s", joined.c_str());
             edOpenTagRecipe_ = true;
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Edit the selected recipe's tags");
     }
     ImGui::EndDisabled();
     // The filter. Every tag in the library is offered, so a tag typed once is
@@ -1021,22 +1024,26 @@ void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
 
     ImGui::BeginDisabled(!canEdit);
     ImGui::BeginDisabled(multi);
+    // Square icon tool buttons (ui/Widgets IconToolButton), in three groups:
+    // move | delete | clipboard. A missing PNG falls back to the old glyph.
     ImGui::BeginDisabled(!parent || idx == 0);
-    if (ImGui::SmallButton("^")) {
+    if (IconToolButton(UiIcon("tb_move_up"), "stepUp", "^", "Move up")) {
         std::swap((*parent)[idx - 1], (*parent)[idx]);
         edStepSel_.back() -= 1;   // else-marker offset survives the +-1
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!parent || idx + 1 >= parent->size());
-    if (ImGui::SmallButton("v")) {
+    if (IconToolButton(UiIcon("tb_move_down"), "stepDown", "v", "Move down")) {
         std::swap((*parent)[idx], (*parent)[idx + 1]);
         edStepSel_.back() += 1;
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!canIndent);
-    if (ImGui::SmallButton(">")) {
+    if (IconToolButton(UiIcon("tb_indent"), "stepIn", ">",
+                       "Move into the loop/group/if directly above.\n"
+                       "(An if's else branch: palette 'else' mode.)")) {
         // Append to the previous sibling's children. The target reference
         // stays valid across the erase (it sits before the erased slot).
         RecipeStep& tgt = (*parent)[idx - 1];
@@ -1046,12 +1053,10 @@ void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
         edStepSel_.push_back(tgt.children.size() - 1);
     }
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Move into the loop/group/if directly above.\n"
-                          "(An if's else branch: palette 'else' mode.)");
     ImGui::SameLine();
     ImGui::BeginDisabled(!canOutdent);
-    if (ImGui::SmallButton("<")) {
+    if (IconToolButton(UiIcon("tb_outdent"), "stepOut", "<",
+                       "Move out of the container, to just after it.")) {
         RecipeStep moved = std::move((*parent)[idx]);
         parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(idx));
         edStepSel_.pop_back();    // now addresses the parent container
@@ -1064,40 +1069,39 @@ void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
         }
     }
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Move out of the container, to just after it.");
     ImGui::EndDisabled();   // multi
-    ImGui::SameLine();
+    ToolGroupGap();
     ImGui::BeginDisabled(!parent && !multi);
-    if (ImGui::SmallButton("Delete")) edOpenDeleteStep_ = true;
+    if (IconToolButton(UiIcon("tb_delete"), "stepDel", "Delete",
+                       "Delete the selected step(s) (asks first).", true))
+        edOpenDeleteStep_ = true;
     ImGui::EndDisabled();
     ImGui::EndDisabled();   // canEdit (reopened below Copy)
-    ImGui::SameLine();
+    ToolGroupGap();
     // Copy is a read: it stays live while a run blocks editing, so steps can be
     // lifted out of a running recipe into another one.
     ImGui::BeginDisabled(!parent && !multi);
-    if (ImGui::SmallButton("Copy")) CopySelectedSteps(r);
+    if (IconToolButton(UiIcon("tb_copy"), "stepCopy", "Copy",
+                       "Copy the selected step(s) as JSON to the clipboard.\n"
+                       "Ctrl-click adds a row, Shift-click takes a range."))
+        CopySelectedSteps(r);
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Copy the selected step(s) as JSON to the clipboard.\n"
-                          "Ctrl-click adds a row, Shift-click takes a range.");
     ImGui::BeginDisabled(!canEdit);
     ImGui::SameLine();
     // No confirm on Cut, unlike Delete: the rows are on the clipboard and
     // Paste puts them back.
     ImGui::BeginDisabled(!parent && !multi);
-    if (ImGui::SmallButton("Cut")) {
+    if (IconToolButton(UiIcon("tb_cut"), "stepCut", "Cut",
+                       "Copy the selected step(s) to the clipboard and remove them.")) {
         CopySelectedSteps(r);
         DeleteSelectedSteps(r);
     }
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Copy the selected step(s) to the clipboard and remove them.");
     ImGui::SameLine();
-    if (ImGui::SmallButton("Paste")) PasteSteps(r);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Paste steps from the clipboard at the palette's target\n"
-                          "(after the selection / into it / its else branch).");
+    if (IconToolButton(UiIcon("tb_paste"), "stepPaste", "Paste",
+                       "Paste steps from the clipboard at the palette's target\n"
+                       "(after the selection / into it / its else branch)."))
+        PasteSteps(r);
     ImGui::EndDisabled();   // canEdit
 }
 
@@ -1484,33 +1488,70 @@ void App::DrawRecipeRunStrip(float height)
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    // Run ONLY the selected row (children included), as a throwaway one-step
-    // recipe through the same engine — same validation, stop, and progress.
-    const RecipeStep* selStep =
-        (canRun && !edStepSel_.empty())
-            ? FindStepByPath(&session_.Recipes()[recipeSel_].steps, edStepSel_)
-            : nullptr;
-    ImGui::BeginDisabled(!selStep);
-    if (ImGui::Button("Run Step", ImVec2(btnW, 0.0f)) && selStep) {
+    // Run ONLY the selected rows (children included), as a throwaway recipe
+    // through the same engine — same validation, stop, and progress. Rows run
+    // in tree order (a path's lexicographic order IS tree order, then before
+    // else); a row under another selected row is already inside it and runs
+    // once. One row runs even when disabled - that is how it gets tested - but
+    // in a multi-row selection a disabled row is skipped: a range dragged
+    // across an [off] step must not fire what was turned off.
+    std::vector<std::vector<std::size_t>> runPaths;
+    if (canRun && !edStepSel_.empty()) {
+        runPaths.push_back(edStepSel_);
+        runPaths.insert(runPaths.end(), edStepMulti_.begin(), edStepMulti_.end());
+        std::sort(runPaths.begin(), runPaths.end());
+        runPaths.erase(std::unique(runPaths.begin(), runPaths.end()), runPaths.end());
+        std::vector<std::vector<std::size_t>> top;
+        for (const auto& p : runPaths) {
+            if (!top.empty() && p.size() > top.back().size() &&
+                std::equal(top.back().begin(), top.back().end(), p.begin()))
+                continue;   // inside the previous selected row
+            top.push_back(p);
+        }
+        runPaths = std::move(top);
+    }
+    const auto& lib = session_.Recipes();
+    std::vector<const RecipeStep*> runSteps;
+    for (const auto& p : runPaths) {
+        const RecipeStep* s = FindStepByPath(&lib[recipeSel_].steps, p);
+        if (!s) continue;
+        if (runPaths.size() > 1 && !s->enabled) continue;
+        runSteps.push_back(s);
+    }
+    const std::size_t skipped = runPaths.size() - runSteps.size();
+    ImGui::BeginDisabled(runSteps.empty());
+    if (ImGui::Button("Run Step", ImVec2(btnW, 0.0f)) && !runSteps.empty()) {
         Recipe one;
-        one.uid  = "step-run";
-        one.name = "step: " + (selStep->nickname.empty() ? AutoNickname(*selStep)
-                                                         : selStep->nickname);
-        one.steps.push_back(*selStep);
-        one.steps.front().enabled = true;   // a disabled row can still be tested
-        // Full Env, not just this step: sub_recipe references still resolve.
+        one.uid = "step-run";
+        if (runSteps.size() == 1)
+            one.name = "step: " + (runSteps.front()->nickname.empty()
+                                       ? AutoNickname(*runSteps.front())
+                                       : runSteps.front()->nickname);
+        else
+            one.name = "steps: " + std::to_string(runSteps.size()) + " rows";
+        for (const RecipeStep* s : runSteps) one.steps.push_back(*s);
+        if (runPaths.size() == 1)
+            one.steps.front().enabled = true;   // a disabled row can still be tested
+        // Full Env, not just these steps: sub_recipe references still resolve.
         RecipeEngine::Env env = session_.MakeRecipeEnv();
         recipeStartErr_.clear();
         if (!orch_.recipe.Start(one, std::move(env), &recipeStartErr_, RecipeStartOpts()))
             FD_WARN("recipe", "step run rejected: %s", recipeStartErr_.c_str());
     }
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(teachMode_
-                              ? "Run only the selected step (its children included).\n"
-                                "Teach mode: a step that is not a move to a saved\n"
-                                "position does nothing."
-                              : "Run only the selected step (its children included)");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        std::string tip = runPaths.size() > 1
+            ? "Run the " + std::to_string(runSteps.size()) +
+                  " selected steps, top to bottom (children included)"
+            : std::string("Run only the selected step (its children included)");
+        if (skipped > 0)
+            tip += "\n" + std::to_string(skipped) + " disabled step(s) in the selection "
+                   "are skipped";
+        if (teachMode_)
+            tip += "\nTeach mode: a step that is not a move to a saved\n"
+                   "position does nothing.";
+        ImGui::SetTooltip("%s", tip.c_str());
+    }
     ImGui::SameLine();
     ImGui::BeginDisabled(!st.stepPaused || progRun);
     if (ImGui::Button("Next", ImVec2(btnW, 0.0f))) orch_.recipe.StepAdvance();

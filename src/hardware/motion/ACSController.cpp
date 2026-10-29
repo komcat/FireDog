@@ -10,6 +10,7 @@
 #include "core/DataBus.h"
 #include "core/Topics.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -89,6 +90,26 @@ struct ACSController::Impl {
     }
     ~Impl() { Disconnect(); }
 
+    // The last error as "<code>: <controller's own text>". A bare number from
+    // the 3000s is a controller code no header here describes, so ask the
+    // controller what it means. Falls back to the number alone when the lookup
+    // fails (no connection yet, or a library-side code it does not know).
+    std::string LastErrorText() const
+    {
+        const int code = acsc_GetLastError();
+        std::string out = std::to_string(code);
+        if (handle == ACSC_INVALID) return out;
+        char buf[256] = {};
+        int  got = 0;
+        if (acsc_GetErrorString(handle, code, buf, static_cast<int>(sizeof(buf)) - 1, &got) &&
+            got > 0) {
+            buf[std::min(got, static_cast<int>(sizeof(buf)) - 1)] = '\0';
+            out += ": ";
+            out += buf;
+        }
+        return out;
+    }
+
     bool Connect()
     {
         if (connected.load()) return true;
@@ -96,8 +117,7 @@ struct ACSController::Impl {
         strncpy_s(ip, sizeof(ip), cfg.ipAddress.c_str(), _TRUNCATE);
         handle = acsc_OpenCommEthernet(ip, cfg.port);
         if (handle == ACSC_INVALID) {
-            const int err = acsc_GetLastError();
-            lastError = "acsc_OpenCommEthernet failed (" + std::to_string(err) + ")";
+            lastError = "acsc_OpenCommEthernet failed (" + LastErrorText() + ")";
             FD_ERROR("acs", "%s: %s", cfg.name.c_str(), lastError.c_str());
             return false;
         }
@@ -209,8 +229,7 @@ struct ACSController::Impl {
         // moving re-targets the running move, so jog presses override the
         // previous instead of queuing points. flags=0 => start immediately.
         if (!acsc_ToPoint(handle, 0, idx, position, NULL)) {
-            const int err = acsc_GetLastError();
-            lastError = "acsc_ToPoint failed (" + std::to_string(err) + ")";
+            lastError = "acsc_ToPoint failed (" + LastErrorText() + ")";
             FD_ERROR("acs", "%s move %s failed: %s", cfg.name.c_str(), axis.c_str(), lastError.c_str());
             return false;
         }
@@ -236,8 +255,7 @@ struct ACSController::Impl {
         // One ToPointM/GoM over all axes -> coordinated simultaneous motion.
         if (!acsc_ToPointM(handle, ACSC_AMF_WAIT, idxArr.data(), pts.data(), NULL) ||
             !acsc_GoM(handle, idxArr.data(), NULL)) {
-            const int err = acsc_GetLastError();
-            lastError = "acsc multi-move failed (" + std::to_string(err) + ")";
+            lastError = "acsc multi-move failed (" + LastErrorText() + ")";
             FD_ERROR("acs", "%s multi-move failed: %s", cfg.name.c_str(), lastError.c_str());
             return false;
         }
@@ -252,12 +270,43 @@ struct ACSController::Impl {
         for (int i = 0; i < static_cast<int>(axes.size()); ++i)
             if (!acsc_SetVelocity(handle, i, v, NULL)) ok = false;
         if (!ok) {
-            lastError = "acsc_SetVelocity failed (" + std::to_string(acsc_GetLastError()) + ")";
+            lastError = "acsc_SetVelocity failed (" + LastErrorText() + ")";
             FD_ERROR("acs", "%s set velocity failed: %s", cfg.name.c_str(), lastError.c_str());
         } else {
             FD_INFO("acs", "%s velocity (all axes) = %.3f mm/s", cfg.name.c_str(), v);
         }
         return ok;
+    }
+
+    // Axis 0 speaks for the device: SetVelocity writes every axis the same.
+    bool ReadVelocity(double* v)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        if (!acsc_GetVelocity(handle, 0, v, NULL)) {
+            lastError = "acsc_GetVelocity failed (" + LastErrorText() + ")";
+            FD_ERROR("acs", "%s read velocity failed: %s", cfg.name.c_str(), lastError.c_str());
+            return false;
+        }
+        return true;
+    }
+
+    // True when no configured axis is still executing a motion. Asked of the
+    // controller each time, not the poll cache: a position-tolerance arrival
+    // lands while the profile's tail is still running, and the controller
+    // refuses a coordinated move on an axis in motion (error 3065) - so the
+    // settle wait must see the motion end, not a second-old snapshot of it.
+    bool IsSettled() const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) return true;    // nothing can be moving
+        for (int i = 0; i < static_cast<int>(axes.size()); ++i) {
+            int state = 0;
+            if (!acsc_GetMotorState(handle, i, &state, NULL))
+                return true;                   // can't tell - don't wedge the caller
+            if (state & ACSC_MST_MOVE) return false;
+        }
+        return true;
     }
 
     bool StopAll()
@@ -283,7 +332,7 @@ struct ACSController::Impl {
         const int ok = on ? acsc_Enable(handle, idx, NULL) : acsc_Disable(handle, idx, NULL);
         if (!ok) {
             lastError = std::string(on ? "acsc_Enable" : "acsc_Disable") + " failed (" +
-                        std::to_string(acsc_GetLastError()) + ")";
+                        LastErrorText() + ")";
             FD_ERROR("acs", "%s axis %s: %s", cfg.name.c_str(), axis.c_str(), lastError.c_str());
             return false;
         }
@@ -302,7 +351,7 @@ struct ACSController::Impl {
         if (!acsc_RunBuffer(handle, buffer, lbl.empty() ? NULL : lbl.data(), NULL)) {
             lastError = "acsc_RunBuffer(" + std::to_string(buffer) +
                         (label.empty() ? "" : ", " + label) + ") failed (" +
-                        std::to_string(acsc_GetLastError()) + ")";
+                        LastErrorText() + ")";
             FD_ERROR("acs", "%s: %s", cfg.name.c_str(), lastError.c_str());
             return false;
         }
@@ -325,7 +374,7 @@ struct ACSController::Impl {
         if (!connected.load()) { lastError = "not connected"; return false; }
         if (!acsc_StopBuffer(handle, buffer, NULL)) {
             lastError = "acsc_StopBuffer(" + std::to_string(buffer) + ") failed (" +
-                        std::to_string(acsc_GetLastError()) + ")";
+                        LastErrorText() + ")";
             FD_ERROR("acs", "%s: %s", cfg.name.c_str(), lastError.c_str());
             return false;
         }
@@ -487,8 +536,18 @@ struct ACSController::Impl {
     bool SetVelocity(double v)
     {
         FD_INFO("acs", "%s velocity (all axes) = %.3f mm/s (simulated)", cfg.name.c_str(), v);
-        return connected.load();
+        if (!connected.load()) return false;
+        simVelocity.store(v);
+        return true;
     }
+    bool ReadVelocity(double* v)
+    {
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        *v = simVelocity.load();
+        return true;
+    }
+    std::atomic<double> simVelocity{40.0};   // what the "controller" is set to
+    bool IsSettled() const { return true; }   // sim snaps to target - never "moving"
     bool StopAll() { return connected.load(); }
     // A simulated program runs for kSimBufferRun, so Stop / the follow-up move
     // can be exercised without a controller.
@@ -540,6 +599,8 @@ std::map<std::string, double> ACSController::Positions() const { return p_->Posi
 bool ACSController::MoveAbsolute(const std::string& a, double p) { return p_->MoveAbsolute(a, p); }
 bool ACSController::MoveAbsolute(const std::vector<std::pair<std::string, double>>& t) { return p_->MoveAbsolute(t); }
 bool ACSController::SetVelocity(double v) { return p_->SetVelocity(v); }
+bool ACSController::ReadVelocity(double* v) { return p_->ReadVelocity(v); }
+bool ACSController::IsSettled() const    { return p_->IsSettled(); }
 bool ACSController::StopAll()            { return p_->StopAll(); }
 std::map<std::string, bool> ACSController::AxisEnabled() const { return p_->AxisEnabled(); }
 bool ACSController::SetAxisEnabled(const std::string& a, bool on) { return p_->SetAxisEnabled(a, on); }

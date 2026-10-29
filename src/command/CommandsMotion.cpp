@@ -13,6 +13,7 @@
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -645,6 +646,26 @@ CommandResult ExecReadPosition(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// ---- read_velocity -------------------------------------------------------
+// The velocity the controller is set to, read off the controller itself, so a
+// script that has to change it can put it back where it found it. Fails when
+// the device cannot say: a restore to a guessed value is worse than none.
+CommandResult ExecReadVelocity(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    double v = 0.0;
+    if (!m->ReadVelocity(&v))
+        return CommandResult::Fail("cannot read the velocity of '" + device + "': " +
+                                   m->LastError());
+    ctx.CtxSet(p.GetString("ctx_prefix") + "_mm_s", v);
+    return CommandResult::Success();
+}
+
 // ---- check_position ------------------------------------------------------
 // Is the device AT a saved position right now? Writes the answer into ctx and
 // moves nothing, so an `if` step can skip a move that is already done:
@@ -754,6 +775,55 @@ CommandResult ExecMoveAxisTo(ExecutionContext& ctx, const ParamValues& p)
     const CommandResult pre = ApplyPreMove(ctx, idx, p);
     if (!pre.ok) return pre;
     return MoveWithApproach(ctx, m, idx, targets, p, "the axis target");
+}
+
+// Move to a saved position on the NAMED axes only ("XY", "Z", "UVW"...); the
+// others are left where they are. `axes` is required for the same reason as
+// move_axis_to: a step meant to drop Z must never be one typo away from also
+// driving X and Y. An axis the position does not define fails rather than
+// being skipped - a step that moved less than it says looks like one that arrived.
+//
+// Teach writes only the named axes: the rest were never driven to the
+// position, so their live values describe wherever the device was, not it.
+CommandResult ExecMoveToPositionAxes(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    const SavedPos* pos = ctx.FindPosition(device, p.GetString("position"));
+    if (!pos) return CommandResult::Fail("position uid not found");
+
+    const std::string axes = p.GetString("axes");
+    if (axes.empty()) return CommandResult::Fail("axes is empty - name the axes to command");
+
+    const auto all = TargetsOf(*pos, m);
+    std::vector<std::pair<std::string, double>> targets;
+    SavedPos taught = *pos;   // what teach may write: the named axes only
+    taught.vals.clear();
+    for (const char raw : axes) {
+        const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(raw)));
+        const std::string axis(1, c);
+        const auto it = std::find_if(all.begin(), all.end(),
+                                     [&](const auto& t) { return t.first == axis; });
+        if (it == all.end())
+            return CommandResult::Fail("axes: position '" + std::string(pos->name) +
+                                       "' on '" + device + "' has no axis " + axis);
+        for (const auto& t : targets)
+            if (t.first == axis)
+                return CommandResult::Fail("axes names " + axis + " twice");
+        targets.push_back(*it);
+        taught.vals[axis] = it->second;
+    }
+
+    const CommandResult pre = ApplyPreMove(ctx, idx, p);
+    if (!pre.ok) return pre;
+    const CommandResult mv = MoveWithApproach(ctx, m, idx, targets, p,
+                                              "'" + std::string(pos->name) + "' (" + axes + ")");
+    if (!mv.ok || !p.GetBool(kTeachParamName)) return mv;
+    return TeachAfterMove(ctx, m, device, taught);
 }
 
 // Move to a saved position PLUS per-axis offsets (e.g. "safe" with Z -5 mm).
@@ -939,6 +1009,16 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   },
                   CommandSpec::Needs::None, ExecReadPosition});
 
+    reg.Register({"read_velocity", "Motion",
+                  "Read the velocity the device is CURRENTLY set to into ctx as "
+                  "<prefix>_mm_s - so a later set_velocity can restore it",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
+                      {"ctx_prefix", PT::String, false, "vel", 0, 0, {},
+                       "ctx prefix for the value"},
+                  },
+                  CommandSpec::Needs::None, ExecReadVelocity});
+
     reg.Register({"check_position", "Motion",
                   "Is the device AT a saved position? Writes <prefix>_at (true/false) "
                   "and <prefix>_dist_mm; moves nothing - follow it with an if step",
@@ -1016,6 +1096,28 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       TeachParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToPositionOffset, kParallelByDevice});
+
+    reg.Register({"move_to_position_axes", "Motion",
+                  "Move to a saved position on the named axes only (e.g. XY, or Z); "
+                  "the other axes are left where they are",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
+                      {"position", PT::PositionUid, true, {}, 0, 0, {}, "saved position uid"},
+                      {"axes", PT::String, true, {}, 0, 0, {},
+                       "which axes to command, e.g. \"XY\", \"Z\" - required; every one "
+                       "must be defined by the position"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
+                      VelocityParam(),
+                      ExposureParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
+                      TeachParam(),
+                  },
+                  CommandSpec::Needs::None, ExecMoveToPositionAxes, kParallelByDevice});
 
     // Now a spelling of move_to_position with the approach velocity REQUIRED.
     // Kept registered because recipes on disk name it, and because a step that

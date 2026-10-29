@@ -11,6 +11,7 @@
 
 #include "vision/VisionModel.h"   // the patch helpers: LoadGrayPgm + MakeCornerTemplate
 #include "core/LightCallout.h"    // LightCalloutPicker's colour list
+#include "ui/Theme.h"             // kDangerHov / kDangerAct (IconToolButton)
 
 // The PNG decoder, implemented here because this TU already owns the "talks to
 // the outside world" jobs (ShellExecute, the filesystem). stb_image_write's
@@ -506,6 +507,53 @@ bool IconSmallButton(const MarkIcon* icon, const char* label)
     const bool clicked = IconButton(icon, label);
     ImGui::PopStyleVar();
     return clicked;
+}
+
+bool IconToolButton(const MarkIcon* icon, const char* id, const char* fallback,
+                    const char* tooltip, bool danger)
+{
+    const float side = ImGui::GetFrameHeight();
+    if (danger) {
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kDangerHov);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kDangerAct);
+    }
+
+    char bid[96];
+    bool clicked = false;
+    if (!icon || !icon->tex) {
+        std::snprintf(bid, sizeof(bid), "%s##%s", fallback, id);
+        clicked = ImGui::Button(bid, ImVec2(0.0f, side));
+    } else {
+        std::snprintf(bid, sizeof(bid), "##%s", id);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        clicked = ImGui::Button(bid, ImVec2(side, side));
+        // Pixel art under a LINEAR texture filter: drawn at a whole multiple
+        // of its own size on whole pixels it stays crisp, so use the largest
+        // multiple that leaves a 2 px margin, and only scale freely when even
+        // 1:1 does not fit.
+        const float iconPx = static_cast<float>(icon->w > 0 ? icon->w : 32);
+        const float room   = side - 4.0f;
+        const float mult   = std::floor(room / iconPx);
+        const float s      = mult >= 1.0f ? iconPx * mult : room;
+        const float x      = std::floor(p.x + (side - s) * 0.5f);
+        const float y      = std::floor(p.y + (side - s) * 0.5f);
+        // GetColorU32 folds in the style alpha: the icon dims with the frame
+        // inside a BeginDisabled block, as IconButton's does.
+        ImGui::GetWindowDrawList()->AddImage(
+            (ImTextureID)(intptr_t)icon->tex, ImVec2(x, y), ImVec2(x + s, y + s),
+            ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
+            ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f)));
+    }
+
+    if (danger) ImGui::PopStyleColor(2);
+    if (tooltip && *tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", tooltip);
+    return clicked;
+}
+
+void ToolGroupGap()
+{
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x * 3.0f);
 }
 
 MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPicker& mp)

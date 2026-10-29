@@ -49,12 +49,22 @@ public:
     // Set jog/move velocity in mm/s. PI applies system velocity; ACS applies it
     // to every axis. Returns false if not connected.
     virtual bool SetVelocity(double mmPerSec) = 0;
+    // Read back the velocity the controller is set to (PI qVLS; ACS the first
+    // axis, which SetVelocity keeps equal to the rest). Blocks for one
+    // controller exchange. False when not connected or the driver cannot tell -
+    // a caller that meant to restore it must not invent a value.
+    virtual bool ReadVelocity(double* mmPerSec)
+    {
+        (void)mmPerSec;
+        return false;
+    }
     // True when the controller reports its motion profile finished. A position-
     // tolerance arrival check can LEAD the controller's own motion-complete
     // state by a moment (the slow tail of the profile); commands the controller
     // rejects while moving (PI VLS -> GCS error 1005 CONTROLLER_BUSY) must wait
-    // for this. Default true: ACS accepts velocity changes mid-move, and the
-    // sim is done as soon as positions read on target.
+    // for this, and so must a coordinated move on ACS (acsc_ToPointM on an axis
+    // still in motion -> error 3065). Default true: the sims are done as soon
+    // as positions read on target.
     virtual bool IsSettled() const { return true; }
     // True when the controller reports every axis ON TARGET — its own
     // settling-window logic (position within the settle window for the settle

@@ -1046,7 +1046,8 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
     }
     case ParamType::ScriptFile: {
         // Picker over the same scanned list the Scripts page shows (product
-        // scripts dir, else config/scripts). Stores the path; shows the name.
+        // scripts dir, else config/scripts), rescanned each time it opens.
+        // Stores the path; shows the name.
         const std::string v = cur.is_string() ? cur.get<std::string>() : "";
         std::string preview = v.empty() ? "(pick)" : v;
         for (const ScriptInfo& si : session_.Scripts()) {
@@ -1056,6 +1057,9 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         previewTip(preview);
         if (open) {
+            // Rescan on open: a script dropped into the folder after the
+            // product loaded must be pickable without visiting the Scripts page.
+            if (ImGui::IsWindowAppearing()) LoadScriptsList();
             if (session_.Scripts().empty())
                 ImGui::TextDisabled("(no scripts in %s)", session_.ScriptsDirUsed().c_str());
             for (const ScriptInfo& si : session_.Scripts()) {

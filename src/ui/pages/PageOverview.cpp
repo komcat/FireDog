@@ -24,15 +24,21 @@
 namespace firedog {
 
 namespace {
+// Info and Trace follow the theme's text colours; the tinted levels take a
+// darker shade on a light theme, where the dark-theme pastels wash out.
 ImVec4 LevelColor(LogLevel l) {
+    const bool light = Theme::IsLight();
     switch (l) {
-        case LogLevel::Trace: return ImVec4(0.55f, 0.55f, 0.58f, 1.0f);
-        case LogLevel::Debug: return ImVec4(0.60f, 0.75f, 0.95f, 1.0f);
-        case LogLevel::Info:  return ImVec4(0.85f, 0.88f, 0.90f, 1.0f);
-        case LogLevel::Warn:  return ImVec4(0.95f, 0.80f, 0.30f, 1.0f);
-        case LogLevel::Error: return ImVec4(0.97f, 0.45f, 0.45f, 1.0f);
+        case LogLevel::Trace: return ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+        case LogLevel::Debug: return light ? ImVec4(0.15f, 0.35f, 0.70f, 1.0f)
+                                           : ImVec4(0.60f, 0.75f, 0.95f, 1.0f);
+        case LogLevel::Info:  return ImGui::GetStyleColorVec4(ImGuiCol_Text);
+        case LogLevel::Warn:  return light ? ImVec4(0.65f, 0.42f, 0.00f, 1.0f)
+                                           : ImVec4(0.95f, 0.80f, 0.30f, 1.0f);
+        case LogLevel::Error: return light ? ImVec4(0.75f, 0.10f, 0.10f, 1.0f)
+                                           : ImVec4(0.97f, 0.45f, 0.45f, 1.0f);
     }
-    return ImVec4(1, 1, 1, 1);
+    return ImGui::GetStyleColorVec4(ImGuiCol_Text);
 }
 } // namespace
 

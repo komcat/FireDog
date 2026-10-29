@@ -5,6 +5,7 @@
 // Tolerant load: a missing or malformed file yields defaults, never throws.
 #pragma once
 
+#include <array>
 #include <map>
 #include <string>
 #include <vector>
@@ -19,6 +20,27 @@ struct QuickIoRow {
     std::string device;        // IO device name ("" = row not assigned yet)
     std::string pin;
     int         dwellMs = 0;   // 0 = toggle; > 0 = ON for this long, then OFF
+};
+
+// One quick preset of the Jog window's PSU tab: a click sets this channel of
+// the selected supply to these numbers in this mode. `mode` 0 = CV (volts is
+// the setpoint, amps the limit), 1 = CC (amps the setpoint, volts the limit) -
+// the same meaning as the channel's own CV/CC radio, which the click also sets.
+struct PsuPreset {
+    int    channel = 1;        // front-panel channel, 1-based
+    int    mode    = 1;
+    double volts   = 2.0;
+    double amps    = 0.150;
+};
+inline constexpr int kPsuPresetCount = 3;
+
+// Needle page: a device sent to one of its saved positions BEFORE the
+// calibration starts (the hexapods out of the camera's way). The position is
+// held by NAME, not uid: positions belong to the product, and this list is the
+// station's - each product's own "clear_vision" is resolved when Run is pressed.
+struct NeedleClearMove {
+    std::string device;
+    std::string position;
 };
 
 // One pinned instrument readout on the Run page, with an optional limit that
@@ -155,6 +177,20 @@ struct UiSettings {
     // layout like the pad above, and kept for the same reason: which pins an
     // operator reaches for is a property of the bench, not of the product.
     std::vector<QuickIoRow> quickIo;
+
+    // Jog window "PSU" tab: the three presets, a bench layout like the rows
+    // above. Defaults: CC 150 mA / 2 V, CC 250 mA / 2 V, CV 1 V / 100 mA.
+    std::array<PsuPreset, kPsuPresetCount> psuPresets = {{
+        {1, 1, 2.0, 0.150},
+        {1, 1, 2.0, 0.250},
+        {1, 0, 1.0, 0.100},
+    }};
+
+    // Needle page "Clear first" list, run in order before the calibration.
+    std::vector<NeedleClearMove> ndlClearMoves = {
+        {"hex-left", "clear_vision"},
+        {"hex-right", "clear_vision"},
+    };
 
     // Main OS window placement: the client rect it was last left at, in
     // virtual-screen px, plus whether it was maximized. Zero width/height

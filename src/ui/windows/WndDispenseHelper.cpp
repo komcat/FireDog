@@ -318,6 +318,10 @@ void App::DrawDispenseHelperWindow()
         flag("back over dot", "verify");
         ImGui::BeginDisabled(!verify);
         flag("image to DUT", "capture");
+        // Only read with confirm off: a confirm-on run waits for the answer.
+        ImGui::BeginDisabled(Flag(*spec, p, "confirm"));
+        numI("auto-OK ms", "verify_ms");
+        ImGui::EndDisabled();
         ImGui::EndDisabled();
         ImGui::EndTable();
     }

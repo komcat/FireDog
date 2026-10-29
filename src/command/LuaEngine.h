@@ -21,6 +21,7 @@
 #include "command/Recipe.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <set>
@@ -140,6 +141,7 @@ public:
         std::string error;             // terminal cause when Failed/Stopped
         std::string pendingPrompt;     // non-empty while fd.prompt/input blocks
         bool        pendingPromptInput = false;   // the prompt wants a text answer
+        int         pendingPromptAutoOkMs = 0;    // >0: OK answers itself in this long
         // Manual-adjust handshake: valid while pendingAdjust is true.
         bool        pendingAdjust = false;
         ExecutionContext::AdjustRequest adjustReq;
@@ -162,7 +164,7 @@ public:
 private:
     void ThreadMain(std::string path, Env env);
     bool AwaitPromptInternal(const std::string& message, bool wantsInput,
-                             std::string* textOut);
+                             std::string* textOut, int autoOkMs = 0);
     bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
     bool AwaitPickInternal(const ExecutionContext::PickRequest& req,
                            ExecutionContext::PickResult* out);
@@ -190,6 +192,8 @@ private:
     std::string error_;
     std::string prompt_;
     bool        promptWantsInput_ = false;
+    // Auto-OK deadline of the pending prompt; epoch (zero) = none.
+    std::chrono::steady_clock::time_point promptAutoOkAt_{};
     std::string promptText_;
     bool        promptAnswered_ = false;
     bool        promptAnswer_   = false;

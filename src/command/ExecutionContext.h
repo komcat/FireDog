@@ -227,7 +227,9 @@ public:
     // handshakes with the UI).
     struct Hooks {
         std::function<bool()> shouldStop;                     // required
-        std::function<bool(const std::string&)> awaitPrompt;  // null => prompt fails
+        // OK / Cancel prompt. autoOkMs > 0 answers OK by itself when that
+        // long passes unanswered; 0 waits for the operator. null => fails.
+        std::function<bool(const std::string&, int autoOkMs)> awaitPrompt;
         // Text-input prompt (operator types / barcode-scans); false = cancel.
         std::function<bool(const std::string&, std::string*)> awaitInput;
         // Manual jog-adjust prompt; false = cancel (or stop released it).
@@ -325,7 +327,9 @@ public:
                              const std::map<std::string, double>& vals);
 
     // ---- Operator prompts (block; false = cancelled or stopped) -------------
-    bool AwaitPrompt(const std::string& message);
+    // autoOkMs > 0: the prompt answers OK by itself after that long, so an
+    // operator gets a glance and a Cancel, not a stop. 0 waits for them.
+    bool AwaitPrompt(const std::string& message, int autoOkMs = 0);
     bool AwaitInput(const std::string& message, std::string* textOut);
     bool AwaitAdjust(const AdjustRequest& req);
     bool AwaitPick(const PickRequest& req, PickResult* out);

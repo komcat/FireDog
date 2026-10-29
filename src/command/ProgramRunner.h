@@ -36,6 +36,7 @@ public:
         std::string nodeUid;   // the tree node this run came from (deck highlight)
         int         pass   = 1;  // loop pass of the innermost folder, 1-based
         int         passes = 1;  // that folder's loop count (1 = not in a loop)
+        bool        dryRun = false;  // under a dry-run folder (command/DryRun.h)
         Recipe      recipe;
     };
     // Per-item outcome for the run view.
@@ -47,6 +48,8 @@ public:
     // `opts` is re-applied to EVERY queue item's engine Start: the runner goes
     // idle between items, so it carries its own copy rather than reading a
     // toggle that may have moved. A teach run (opts.teach) writes no $run.
+    // An item's own `dryRun` is OR-ed into its copy: one queue may mix dry
+    // and real items (a slot holding a dry folder), so it is per item.
     bool Start(std::string kind, std::string label, std::string uid,
                std::vector<Item> queue, RecipeEngine::Env env, std::string* err,
                RecipeEngine::StartOpts opts = {});
@@ -58,6 +61,7 @@ public:
     struct ItemStatus {
         std::string slotName, recipeName, path, nodeUid;
         int         pass = 1, passes = 1;
+        bool        dryRun = false;
         Mark        mark = Mark::Pending;
     };
     struct Status {
@@ -69,6 +73,10 @@ public:
         // Outlives the run (like the rest of this struct), so the frame that
         // sees the runner go idle can still tell a teach run from a real one.
         bool        teach = false;
+        // EVERY item ran dry. Then the run as a whole is not a run of the part:
+        // no $run, no cycle reset/advance. A mixed queue is a real run whose
+        // dry items simply leave no accent (ItemStatus::dryRun).
+        bool        dryRun = false;
     };
     const Status& GetStatus() const { return status_; }   // UI-thread only
 
@@ -116,6 +124,10 @@ struct RunQueue {
 // a second execution path with its own stop/prompt/traceability behaviour. The
 // cost is that the queue length is the EXPANDED length — hence kMaxQueueItems,
 // which refuses a mistyped loop count up front instead of after 40 minutes.
+//
+// A folder's `dryRun` marks every item beneath it, nested folders included;
+// a single recipe node selected inside a dry folder runs dry as well — the
+// deck shows it inside that folder, so that is what pressing it must mean.
 //
 // Fails (empty `items`, reason in *err) on an out-of-range selection or a
 // recipe uid the library does not contain. A missing uid is a HARD stop, not a

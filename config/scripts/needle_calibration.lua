@@ -64,6 +64,8 @@
 --   ndl_v_approach     Z down to the safety height     (default 20)
 --   ndl_v_final        Z safety height -> verify gap   (default 5)
 --   ndl_v_liftoff      Z lift-off from the dot         (default 5)
+--   ndl_clear_moves    "device=uid;..." moved to, in order, before anything
+--                      else - the Needle page's "Clear first" list (default "")
 
 local DEV      = fd.param("ndl_device", "gantry-main")
 local SLIDE    = fd.param("ndl_slide", "Dispenser_Head")
@@ -86,6 +88,12 @@ local VLIFT    = fd.param("ndl_v_liftoff", 5.0)
 
 if DEV == "" then error("ndl_device is not set - name the gantry to calibrate") end
 if PASSES < 1 then PASSES = 1 end
+
+-- Out of the camera's way first (the hexapods), before the coupon prompt.
+for dev, uid in fd.param("ndl_clear_moves", ""):gmatch("([^;=]+)=([^;]+)") do
+    fd.logf("needle calibration: clearing %s first", dev)
+    fd.move_to_position{ device = dev, position = uid }
+end
 
 -- The offset as it stands right now. Read ONCE (see note 3 above); everything
 -- after this is arithmetic on locals.

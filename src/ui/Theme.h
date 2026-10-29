@@ -18,10 +18,24 @@ inline constexpr ImVec4 kTeachOrange    = ImVec4(0.90f, 0.45f, 0.05f, 1.0f);
 inline constexpr ImVec4 kTeachOrangeHov = ImVec4(1.00f, 0.55f, 0.12f, 1.0f);
 inline constexpr ImVec4 kTeachOrangeAct = ImVec4(0.75f, 0.36f, 0.03f, 1.0f);
 
+// A dry-run folder's colour (command/DryRun.h), on the organizer, the deck and
+// the run list. Cyan: it moves the machine like a run, proves nothing about a
+// part like a teach run, and must look like neither.
+inline constexpr ImVec4 kDryRunCyan     = ImVec4(0.30f, 0.80f, 0.95f, 1.0f);
+
+// A destructive tool button's hover / press (IconToolButton `danger`): the
+// one control on a toolbar that throws work away warns before it is clicked.
+inline constexpr ImVec4 kDangerHov      = ImVec4(0.75f, 0.20f, 0.20f, 1.0f);
+inline constexpr ImVec4 kDangerAct      = ImVec4(0.60f, 0.12f, 0.12f, 1.0f);
+
 struct Theme {
     static int         Count();              // number of selectable themes
     static const char* Name(int index);      // display name (out-of-range -> 0)
     static void        Apply(int index = 0); // apply to ImGui + ImPlot (clamped)
+    // True when the applied theme has a light background, read off WindowBg so
+    // it holds for any theme. For the few hard-coded colours (log levels) that
+    // need a darker shade to stay readable on a light window.
+    static bool        IsLight();
 };
 
 } // namespace firedog

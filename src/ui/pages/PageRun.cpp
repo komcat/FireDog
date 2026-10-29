@@ -357,6 +357,13 @@ void App::StartDeckRun(RunScope scope)
     // state and layer 2.5 does not own them.
     workflow_.CarryLiveFrames("program start");
 
+    // A queue that is dry from end to end (a dry-run folder, or a recipe in
+    // one) is a motion soak, not a part: like a teach run it leaves the cycle
+    // and its accents exactly as they were.
+    bool allDry = true;
+    for (const ProgramRunner::Item& it : q.items)
+        if (!it.dryRun) { allDry = false; break; }
+
     // Running the START state is what "a new part" means, so it — and a slot
     // run, which necessarily contains it — is the ONE thing that wipes the
     // cycle's accents. Nothing else does: they are the operator's record of how
@@ -366,7 +373,8 @@ void App::StartDeckRun(RunScope scope)
     // A TEACH run is none of this: it re-teaches positions and says nothing
     // about a part, so the accents and the numbers of the part on the machine
     // stay exactly as they were.
-    if (!teachMode_ && deckSlot_ >= 0 && deckSlot_ < static_cast<int>(prog.slots.size())) {
+    if (!teachMode_ && !allDry &&
+        deckSlot_ >= 0 && deckSlot_ < static_cast<int>(prog.slots.size())) {
         const ProgramSlot& slot = prog.slots[static_cast<std::size_t>(deckSlot_)];
         if (scope == RunScope::Slot ||
             (!deckNode_.empty() && deckNode_ == slot.startNodeUid)) {
@@ -385,8 +393,10 @@ void App::StartDeckRun(RunScope scope)
     }
     // What actually launched, for AdvanceDeckCycle. A slot run leaves it empty:
     // it ran the whole chain, so there is nowhere to advance to. A teach run
-    // leaves it empty too: the cycle does not move for a run that taught.
-    runNodeUid_ = (scope == RunScope::Node && !teachMode_) ? deckNode_ : std::string();
+    // leaves it empty too: the cycle does not move for a run that taught, nor
+    // for an all-dry one.
+    runNodeUid_ = (scope == RunScope::Node && !teachMode_ && !allDry) ? deckNode_
+                                                                       : std::string();
 }
 
 // ---- Deck cycle -------------------------------------------------------------
@@ -440,6 +450,7 @@ void App::DrainDeckMarks()
     // the ninety-seven passes that never ran.
     for (const ProgramRunner::ItemStatus& it : orch_.programs.GetStatus().items) {
         if (it.nodeUid.empty()) continue;
+        if (it.dryRun) continue;   // a dry item skipped every step that judges a part
         switch (it.mark) {
         case ProgramRunner::Mark::Done:
             deckMarks_[it.nodeUid] = NodeMark::Passed;
@@ -533,7 +544,7 @@ void App::DrainCycleVars()
     // Status.ctx is EMPTY by now (the engine drops its pointer before the state
     // goes terminal) — lastCtx is the snapshot it took at that boundary.
     const RecipeEngine::Status es = orch_.recipe.GetStatus();
-    if (es.teach) return;   // a teach run measured nothing about the part
+    if (es.teach || es.dryRun) return;   // neither measured anything about the part
     for (const auto& [key, val] : es.lastCtx) {
         if (!IsOperatorCtxKey(key)) continue;
         cycleVars_[key] = CycleVar{CtxValueToString(val), es.recipeName};
@@ -1027,6 +1038,10 @@ void App::DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool runnin
                 : ImGui::TreeNodeEx("##fold", flags, "%s", n.name.c_str());
             if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) deckNode_ = n.uid;
             decorate(n);
+            if (n.dryRun) {
+                ImGui::SameLine();
+                ImGui::TextColored(kDryRunCyan, "DRY RUN");
+            }
             // The pass counter belongs to the INNERMOST folder around the
             // running item — the one whose repetitions the operator is
             // counting — so it is drawn only where that item is a direct child.
@@ -1269,6 +1284,11 @@ void App::DrawRunPanel()
         centerNext(ImGui::GetTextLineHeight());
         ImGui::TextColored(kTeachOrange, rs.active && rs.teach ? "TEACH RUN" : "TEACH");
     }
+    if (rs.active && rs.index < rs.items.size() && rs.items[rs.index].dryRun) {
+        ImGui::SameLine();
+        centerNext(ImGui::GetTextLineHeight());
+        ImGui::TextColored(kDryRunCyan, "DRY RUN");
+    }
     {
         const DutSession::Info di = DutSession::Instance().GetInfo();
         ImGui::SameLine();
@@ -1504,8 +1524,8 @@ void App::DrawRunPanel()
                     std::snprintf(pass, sizeof(pass), " [%d/%d]", it.pass, it.passes);
                     where += pass;
                 }
-                ImGui::TextColored(col, "%s  %s / %s", mark, where.c_str(),
-                                   it.recipeName.c_str());
+                ImGui::TextColored(col, "%s  %s / %s%s", mark, where.c_str(),
+                                   it.recipeName.c_str(), it.dryRun ? "  [dry]" : "");
                 // Keep it in view, but only when it has actually left: an
                 // unconditional SetScrollHereY fights the operator every frame
                 // they try to scroll back and read what already ran.

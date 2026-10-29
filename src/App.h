@@ -277,6 +277,7 @@ private:
     // Jog window's PSU tab (compact = narrow-window layout).
     void DrawPsuChannelControls(bool compact);
     void DrawJogPsuTab();          // Jog window: quick access to the PSU fleet
+    void DrawPsuPresetRow();       // Jog PSU tab: the three presets (right-click = edit)
 
     // Light page — the CCS PD3 LED lighting controller.
     void DrawLightListPanel();     // left:   status + connect/disconnect + warnings
@@ -1130,6 +1131,8 @@ private:
     // Jog window "IO" tab: the quick-output rows (UiSettings quick_io). A row
     // names device + pin, never a fleet index - see QuickIoRow.
     std::vector<QuickIoRow> quickIo_;
+    // Jog window "PSU" tab: the three quick presets (UiSettings psu_presets).
+    std::array<PsuPreset, kPsuPresetCount> psuPresets_ = UiSettings{}.psuPresets;
 
     // Per-device velocity selection, shared by the Jog panel and the Motion
     // page so both always show the same value for a device.
@@ -1150,9 +1153,9 @@ private:
     bool showDispHelper_ = false;   // the Dispense helper window (follows edStepSel_)
     // Further selected rows beyond edStepSel_ (the ANCHOR: the inspector's
     // step, the palette's insert point). Ctrl-click toggles a row in and out,
-    // Shift-click takes the visible range from the anchor. Copy and Delete
-    // act on anchor + these; the single-row moves (^ v > <) are disabled while
-    // any exist. Cleared by every plain click and every edit — a path is an
+    // Shift-click takes the visible range from the anchor. Copy, Delete and
+    // Run Step act on anchor + these; the single-row moves (^ v > <) are
+    // disabled while any exist. Cleared by every plain click and every edit — a path is an
     // index into the tree and means nothing once the tree changes under it.
     std::vector<std::vector<std::size_t>> edStepMulti_;
     // A Shift-click is resolved AFTER the tree has drawn (edTreeRows_ is
@@ -1266,6 +1269,9 @@ private:
     double ndlVFinal_     = 5.0;
     double ndlVLiftoff_   = 5.0;
     bool   ndlAutofocus_  = true;
+    // Devices parked at a saved position (by name) before the calibration
+    // starts; persisted in UiSettings.
+    std::vector<NeedleClearMove> ndlClearMoves_ = UiSettings{}.ndlClearMoves;
     std::string ndlStartErr_;    // why the last Run refused to start
     // The bootstrap seed: with no calibration at all the first imprint lands a
     // hundred millimetres outside a three-millimetre field of view, so the

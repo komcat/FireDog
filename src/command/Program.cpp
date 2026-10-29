@@ -248,6 +248,7 @@ nlohmann::json NodeToJson(const ProgramNode& n)
         j["name"] = n.name;
         j["loop"] = n.loop;
         if (!n.alignProcUid.empty()) j["align"] = n.alignProcUid;
+        if (n.dryRun) j["dry_run"] = true;
         nlohmann::json kids = nlohmann::json::array();
         for (const ProgramNode& c : n.children) kids.push_back(NodeToJson(c));
         j["items"] = std::move(kids);
@@ -268,6 +269,7 @@ ProgramNode NodeFromJson(const nlohmann::json& j)
         n.name         = j.value("name", std::string("folder"));
         n.loop         = j.value("loop", 1);
         n.alignProcUid = j.value("align", std::string());
+        n.dryRun       = j.value("dry_run", false);
         if (n.loop < 1)        n.loop = 1;
         if (n.loop > kMaxLoop) n.loop = kMaxLoop;
         if (j.contains("items") && j["items"].is_array()) {

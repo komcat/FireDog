@@ -329,10 +329,10 @@ const WaffleTray* ExecutionContext::FindTray(const std::string& uidOrName) const
     return firedog::FindWaffleTray(trays_, uidOrName);
 }
 
-bool ExecutionContext::AwaitPrompt(const std::string& message)
+bool ExecutionContext::AwaitPrompt(const std::string& message, int autoOkMs)
 {
     if (!hooks_.awaitPrompt) return false;
-    return hooks_.awaitPrompt(message);
+    return hooks_.awaitPrompt(message, autoOkMs);
 }
 
 bool ExecutionContext::AwaitInput(const std::string& message, std::string* textOut)

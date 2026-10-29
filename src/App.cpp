@@ -109,6 +109,8 @@ int App::Run()
         runValsUserOnly_ = ui.runValsUserOnly;
         if (runReadouts_.size() > 4) runReadouts_.resize(4);
         quickIo_         = ui.quickIo;
+        psuPresets_      = ui.psuPresets;
+        ndlClearMoves_   = ui.ndlClearMoves;
     }
 
     WindowPlacement place;
@@ -233,8 +235,10 @@ void App::Update(float dt)
     {
         // A teach run proves nothing about a part: it neither marks nodes nor
         // advances the cycle (Status.teach outlives the run for this frame).
+        // An all-dry run is the same (Status.dryRun).
         const bool runActive = orch_.programs.Active();
-        if (runWasActive_ && !runActive && !orch_.programs.GetStatus().teach)
+        const ProgramRunner::Status& prs = orch_.programs.GetStatus();
+        if (runWasActive_ && !runActive && !prs.teach && !prs.dryRun)
             AdvanceDeckCycle();
         runWasActive_ = runActive;
     }
@@ -542,6 +546,8 @@ void App::SaveUiSettings()
     s.runReadouts = runReadouts_;
     s.runValsUserOnly = runValsUserOnly_;
     s.quickIo     = quickIo_;
+    s.psuPresets  = psuPresets_;
+    s.ndlClearMoves = ndlClearMoves_;
     // The window's own geometry comes from the host, which is the only thing
     // that knows it — App never tracks a size it does not set.
     const WindowPlacement& place = host_.Placement();

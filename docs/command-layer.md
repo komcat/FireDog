@@ -35,8 +35,8 @@ offers the configured lights (`Workflow::LightNames`, plus "(every light)" for e
 validation refuses a name that matches no enabled channel (`ChannelInLight`).
 
 **The two-speed move.** Every point-to-point move command — `move_to_position`,
-`move_to_position_offset`, `move_relative`, `move_to_position_approach`, `move_lift_off`
-(Motion) and `move_local`, `move_to_nominal` (Align) — goes through **one** helper,
+`move_to_position_offset`, `move_to_position_axes`, `move_relative`,
+`move_to_position_approach`, `move_lift_off` (Motion) and `move_local`, `move_to_nominal` (Align) — goes through **one** helper,
 `MoveWithApproach` (`command/MotionWaits.h`), which optionally covers the last
 `approach_mm` (or `approach_pct` of the distance) at `approach_velocity_mm_s` instead of
 arriving at travel speed. With none of the three set it is exactly the plain

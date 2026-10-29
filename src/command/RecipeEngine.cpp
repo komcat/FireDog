@@ -3,6 +3,7 @@
 #include "command/RecipeEngine.h"
 
 #include "command/CommandRegistry.h"
+#include "command/DryRun.h"
 #include "command/StepRunner.h"
 #include "command/TeachMode.h"
 #include "core/DutSession.h"
@@ -63,6 +64,14 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
         FD_INFO("recipe", "teach run: %zu move(s) to teach in '%s'", movers,
                 run.name.c_str());
     }
+    // A dry run is the same kind of rewrite (command/DryRun.h): motion, IO and
+    // pneumatics only, so a meter left off behind a skipped step is no reason
+    // to refuse a motion soak.
+    if (opts.dryRun) {
+        const std::size_t kept = MakeDryRunRecipe(run, reg_);
+        FD_INFO("recipe", "dry run: %zu motion/IO step(s) kept in '%s'", kept,
+                run.name.c_str());
+    }
 
     // Run-start validation: structure + params + references + everything
     // referenced actually Connected. Recipes never connect hardware.
@@ -86,6 +95,7 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
         return false;
     }
     if (opts.teach) MakeTeachRecipe(run, reg_);   // the inlined bodies, same rule
+    if (opts.dryRun) MakeDryRunRecipe(run, reg_);
 
     {
         const std::scoped_lock lock(mu_);
@@ -110,9 +120,11 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
     }
     stepMode_.store(opts.stepMode);
     teach_.store(opts.teach);
+    dryRun_.store(opts.dryRun);
     stopReq_.store(false);
     running_.store(true);
-    FD_INFO("recipe", "run started: '%s'%s", run.name.c_str(), opts.teach ? " [TEACH]" : "");
+    FD_INFO("recipe", "run started: '%s'%s%s", run.name.c_str(),
+            opts.teach ? " [TEACH]" : "", opts.dryRun ? " [DRY RUN]" : "");
     worker_ = std::thread(&RecipeEngine::ThreadMain, this, std::move(run), std::move(env));
     return true;
 }
@@ -190,12 +202,18 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.error              = error_;
     s.pendingPrompt      = prompt_;
     s.pendingPromptInput = promptWantsInput_;
+    if (!prompt_.empty() && promptAutoOkAt_ != std::chrono::steady_clock::time_point{}) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            promptAutoOkAt_ - std::chrono::steady_clock::now()).count();
+        s.pendingPromptAutoOkMs = static_cast<int>(left > 1 ? left : 1);
+    }
     s.pendingAdjust      = adjustPending_;
     s.adjustReq          = adjustReq_;
     s.pendingPick        = pickPending_;
     s.pickReq            = pickReq_;
     s.stepMode           = stepMode_.load();
     s.teach              = teach_.load();
+    s.dryRun             = dryRun_.load();
     s.stepPaused         = stepPaused_;
     s.nextStep           = nextStep_;
     s.nextPath           = nextPath_;
@@ -210,20 +228,32 @@ bool RecipeEngine::SafetyAborted() const
 }
 
 bool RecipeEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
-                                       std::string* textOut)
+                                       std::string* textOut, int autoOkMs)
 {
+    using clock = std::chrono::steady_clock;
     std::unique_lock lock(mu_);
     prompt_           = message;
     promptWantsInput_ = wantsInput;
     promptText_.clear();
     promptAnswered_ = false;
     promptAnswer_   = false;
+    promptAutoOkAt_ = autoOkMs > 0 ? clock::now() + std::chrono::milliseconds(autoOkMs)
+                                   : clock::time_point{};
     // Wait in slices so a stop request always gets through.
     while (!promptAnswered_ && !stopReq_.load()) {
+        // Nobody answered inside the window: that IS the answer, OK.
+        if (autoOkMs > 0 && clock::now() >= promptAutoOkAt_) {
+            FD_INFO("prompt", "no answer in %d ms - continuing (auto-OK): %s", autoOkMs,
+                    message.c_str());
+            promptAnswered_ = true;
+            promptAnswer_   = true;
+            break;
+        }
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
     prompt_.clear();
     promptWantsInput_ = false;
+    promptAutoOkAt_   = clock::time_point{};
     const bool ok = promptAnswered_ && promptAnswer_ && !stopReq_.load();
     if (ok && textOut) *textOut = promptText_;
     return ok;
@@ -289,7 +319,9 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
         env.visionModels, env.grips, env.trays, env.visionDir, env.scriptsDir,
         ExecutionContext::Hooks{
             [this] { return stopReq_.load() || SafetyAborted(); },
-            [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },
+            [this](const std::string& m, int autoOkMs) {
+                return AwaitPromptInternal(m, false, nullptr, autoOkMs);
+            },
             [this](const std::string& m, std::string* out) {
                 return AwaitPromptInternal(m, true, out);
             },
@@ -362,8 +394,9 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
         FD_INFO("recipe", "run '%s' finished: %s%s%s", recipeName_.c_str(),
                 StateName(state_), error_.empty() ? "" : " - ", error_.c_str());
         // Traceability: attribute this run to the open DUT (soft no-op if none).
-        // A teach run drove the machine but proved nothing about a part.
-        if (!teach_.load())
+        // A teach run drove the machine but proved nothing about a part; nor
+        // did a dry run, which skipped every step that touches one.
+        if (!teach_.load() && !dryRun_.load())
             DutSession::Instance().RecordRun("recipe", recipeName_, StateName(state_));
     }
     running_.store(false);

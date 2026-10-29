@@ -109,7 +109,8 @@ const std::vector<LuaFdBuiltin>& LuaFdBuiltins()
         {"log", "log(", "fd.log(msg) : a line into the log band and the daily log"},
         {"logf", "logf(", "fd.logf(fmt, ...) : printf-style fd.log"},
         {"prompt", "prompt(",
-         "fd.prompt(msg) -> ok : block on the OK / Cancel prompt window"},
+         "fd.prompt(msg [, auto_ok_ms]) -> ok : block on the OK / Cancel prompt window; "
+         "with auto_ok_ms it answers OK by itself when nobody does"},
         {"input", "input(",
          "fd.input(msg) -> text | nil : block on a text prompt (keyboard or scanner); "
          "nil on Cancel"},
@@ -419,8 +420,10 @@ std::string RunLuaFile(const std::string& requested, const CommandRegistry& reg,
         fd.set_function("log", [](const std::string& msg) {
             FD_INFO("script", "%s", msg.c_str());
         });
-        fd.set_function("prompt", [&ctx](const std::string& msg) {
-            return ctx.AwaitPrompt(msg);
+        // Optional second argument: answer OK by itself after that many ms.
+        fd.set_function("prompt", [&ctx](const std::string& msg,
+                                         sol::optional<double> autoOkMs) {
+            return ctx.AwaitPrompt(msg, autoOkMs ? static_cast<int>(*autoOkMs) : 0);
         });
         // Text-input prompt (operator keyboard / barcode scanner): returns
         // the string, or nil on Cancel.
@@ -799,6 +802,11 @@ LuaEngine::Status LuaEngine::GetStatus() const
     s.error              = error_;
     s.pendingPrompt      = prompt_;
     s.pendingPromptInput = promptWantsInput_;
+    if (!prompt_.empty() && promptAutoOkAt_ != std::chrono::steady_clock::time_point{}) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            promptAutoOkAt_ - std::chrono::steady_clock::now()).count();
+        s.pendingPromptAutoOkMs = static_cast<int>(left > 1 ? left : 1);
+    }
     s.pendingAdjust      = adjustPending_;
     s.adjustReq          = adjustReq_;
     s.pendingPick        = pickPending_;
@@ -809,19 +817,31 @@ LuaEngine::Status LuaEngine::GetStatus() const
 }
 
 bool LuaEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
-                                    std::string* textOut)
+                                    std::string* textOut, int autoOkMs)
 {
+    using clock = std::chrono::steady_clock;
     std::unique_lock lock(mu_);
     prompt_           = message;
     promptWantsInput_ = wantsInput;
     promptText_.clear();
     promptAnswered_ = false;
     promptAnswer_   = false;
+    promptAutoOkAt_ = autoOkMs > 0 ? clock::now() + std::chrono::milliseconds(autoOkMs)
+                                   : clock::time_point{};
     while (!promptAnswered_ && !stopReq_.load()) {
+        // Nobody answered inside the window: that IS the answer, OK.
+        if (autoOkMs > 0 && clock::now() >= promptAutoOkAt_) {
+            FD_INFO("prompt", "no answer in %d ms - continuing (auto-OK): %s", autoOkMs,
+                    message.c_str());
+            promptAnswered_ = true;
+            promptAnswer_   = true;
+            break;
+        }
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
     prompt_.clear();
     promptWantsInput_ = false;
+    promptAutoOkAt_   = clock::time_point{};
     const bool ok = promptAnswered_ && promptAnswer_ && !stopReq_.load();
     if (ok && textOut) *textOut = promptText_;
     return ok;
@@ -867,7 +887,9 @@ void LuaEngine::ThreadMain(std::string path, Env env)
         env.visionModels, env.grips, env.trays, env.visionDir, env.scriptsDir,
         ExecutionContext::Hooks{
             [this] { return HookShouldStop(); },
-            [this](const std::string& m) { return AwaitPromptInternal(m, false, nullptr); },
+            [this](const std::string& m, int autoOkMs) {
+                return AwaitPromptInternal(m, false, nullptr, autoOkMs);
+            },
             [this](const std::string& m, std::string* out) {
                 return AwaitPromptInternal(m, true, out);
             },

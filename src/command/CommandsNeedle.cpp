@@ -381,10 +381,17 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        PinDir::Any, kDispenseHelper},
                       {"v_liftoff", PT::Double, false, 5.0, 0.001, 100.0, {},
                        "6, 8: Z velocity lifting off the dot and climbing away; "
-                       "v_final is for arriving on a part, not for leaving one",
+                       "v_final is for arriving on a part, not for leaving one. "
+                       "Once clear, the gantry goes back to the velocity it had "
+                       "when the step started",
                        PinDir::Any, kDispenseHelper},
                       {"verify", PT::Bool, false, true, 0, 0, {},
                        "8: bring the camera back over the dot afterwards",
+                       PinDir::Any, kDispenseHelper},
+                      {"verify_ms", PT::Int, false, 3000, 0, 60000, {},
+                       "8, with confirm OFF: how long the 'check the dot' prompt stays "
+                       "up before it continues by itself (Cancel still fails the "
+                       "step); 0 = no prompt",
                        PinDir::Any, kDispenseHelper},
                       {"capture", PT::Bool, false, true, 0, 0, {},
                        "attach an image of the result to the open DUT",
@@ -423,6 +430,7 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("disp_autofocus", p.GetBool("autofocus"));
                       c.CtxSet("disp_confirm", p.GetBool("confirm"));
                       c.CtxSet("disp_verify", p.GetBool("verify"));
+                      c.CtxSet("disp_verify_ms", static_cast<double>(p.GetInt("verify_ms")));
                       c.CtxSet("disp_capture", p.GetBool("capture"));
                       c.CtxSet("disp_v_travel", p.GetDouble("v_travel"));
                       c.CtxSet("disp_v_approach", p.GetDouble("v_approach"));
