@@ -121,6 +121,13 @@ slide      pneumatic up
 traverse   camera back over the dot                        v_traverse
 ```
 
+0. Once, before pass 1: **clear first** — each `ndl_clear_moves` entry
+   (`device=uid;…`) is a `move_to_position`, in order (the hexapods out of the
+   camera's way). The Needle page's *Clear first* list fills it: station
+   settings (UiSettings), positions held by NAME and resolved against the
+   loaded product at Run, which refuses before anything moves when a name is
+   missing. A `needle_cal_run` step passes nothing — a recipe clears with its
+   own `move_to_position` steps.
 1. Prompt for a coupon (pass ≥ 2: *a clean spot* — a second imprint on the first
    one has nothing to measure).
 2. `manual_adjust` 100 µm — centre the camera on it.

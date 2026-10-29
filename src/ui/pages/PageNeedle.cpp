@@ -50,6 +50,17 @@ void SetBuf(char* buf, std::size_t n, const std::string& text)
 const char* const kNeedleCalTitle[kNeedleRegions] = {
     "1  Traverse", "2-4  Down to the surface", "5-7  Shot and up", "8  Inspect and check"};
 
+// A device's saved position by its display name, or nullptr.
+const SavedPos* FindPosByName(const SavedPosMap& all, const std::string& device,
+                              const std::string& name)
+{
+    const auto it = all.find(device);
+    if (it == all.end()) return nullptr;
+    for (const SavedPos& p : it->second)
+        if (name == p.name) return &p;
+    return nullptr;
+}
+
 std::string Fmt(const char* fmt, double a, double b = 0.0)
 {
     char buf[96];
@@ -65,6 +76,25 @@ std::string Fmt(const char* fmt, double a, double b = 0.0)
 void App::StartNeedleCalRun()
 {
     const std::string script = SystemScriptPath("needle_calibration.lua");
+    ndlStartErr_.clear();
+
+    // "Clear first", resolved by name against THIS product's positions, here
+    // and not in the script: a name with no position refuses the run before
+    // anything moves. Handed over as "device=uid;..." - the script moves each
+    // in order before its first prompt.
+    std::string clearMoves;
+    for (const NeedleClearMove& m : ndlClearMoves_) {
+        if (m.device.empty() && m.position.empty()) continue;   // a blank row
+        const SavedPos* pos = FindPosByName(session_.Positions(), m.device, m.position);
+        if (!pos) {
+            ndlStartErr_ = "clear first: '" + m.device + "' has no position '" +
+                           m.position + "' in this product";
+            FD_WARN("needle", "needle calibration rejected: %s", ndlStartErr_.c_str());
+            return;
+        }
+        clearMoves += m.device + "=" + pos->uid + ";";
+    }
+
     LuaEngine::Env env = session_.MakeLuaEnv();
     env.initialCtx = {
         {"ndl_device", std::string(ndlDevice_)},
@@ -85,8 +115,8 @@ void App::StartNeedleCalRun()
         {"ndl_v_approach", ndlVApproach_},
         {"ndl_v_final", ndlVFinal_},
         {"ndl_v_liftoff", ndlVLiftoff_},
+        {"ndl_clear_moves", clearMoves},
     };
-    ndlStartErr_.clear();
     if (!orch_.lua.Start(script, std::move(env), &ndlStartErr_))
         FD_WARN("needle", "needle calibration rejected: %s", ndlStartErr_.c_str());
 }
@@ -202,6 +232,56 @@ void App::DrawNeedlePanel()
                            "way with its own parameters - set them in its Dispense helper "
                            "(Recipe Editor, select the step).", ndlFirstClearMm_);
         ImGui::PopStyleColor();
+    }
+
+    // ---- Clear first ---------------------------------------------------------
+    // Devices that must be out of the way before the camera looks down at the
+    // coupon (the hexapods). Station settings, positions by NAME: each product
+    // supplies its own position of that name, resolved when Run is pressed.
+    if (ImGui::CollapsingHeader("Clear first", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextDisabled("Before the first prompt, each device moves to its saved "
+                            "position, top to bottom.");
+        ImGui::BeginDisabled(orch_.Busy());
+        int removeAt = -1;
+        for (std::size_t i = 0; i < ndlClearMoves_.size(); ++i) {
+            NeedleClearMove& m = ndlClearMoves_[i];
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::SetNextItemWidth(170.0f);
+            if (ImGui::BeginCombo("##dev", m.device.empty() ? "(device)" : m.device.c_str())) {
+                for (std::size_t d = 0; d < hardware_.MotionCount(); ++d) {
+                    const std::string name = hardware_.MotionName(d);
+                    if (ImGui::Selectable(name.c_str(), name == m.device)) m.device = name;
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::BeginCombo("##pos", m.position.empty() ? "(position)" : m.position.c_str())) {
+                const auto it = session_.Positions().find(m.device);
+                if (it == session_.Positions().end() || it->second.empty())
+                    ImGui::TextDisabled("(no saved positions on this device)");
+                else
+                    for (const SavedPos& p : it->second) {
+                        if (p.hidden) continue;
+                        if (ImGui::Selectable(p.name, m.position == p.name)) m.position = p.name;
+                    }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            if (IconToolButton(UiIcon("tb_delete"), "ndlClrDel", "x", "Remove this move", true))
+                removeAt = static_cast<int>(i);
+            if (!m.device.empty() && !m.position.empty() &&
+                !FindPosByName(session_.Positions(), m.device, m.position)) {
+                ImGui::SameLine();
+                ImGui::TextColored(kBad, "not in this product");
+            }
+            ImGui::PopID();
+        }
+        if (removeAt >= 0) ndlClearMoves_.erase(ndlClearMoves_.begin() + removeAt);
+        if (ImGui::Button("+ Add move")) ndlClearMoves_.push_back({});
+        ImGui::EndDisabled();
+        if (ndlClearMoves_.empty())
+            ImGui::TextDisabled("(nothing moves first)");
     }
 
     // ---- Run / Stop ----------------------------------------------------------

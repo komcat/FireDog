@@ -109,6 +109,7 @@ int App::Run()
         if (runReadouts_.size() > 4) runReadouts_.resize(4);
         quickIo_         = ui.quickIo;
         psuPresets_      = ui.psuPresets;
+        ndlClearMoves_   = ui.ndlClearMoves;
     }
 
     WindowPlacement place;
@@ -544,6 +545,7 @@ void App::SaveUiSettings()
     s.runValsUserOnly = runValsUserOnly_;
     s.quickIo     = quickIo_;
     s.psuPresets  = psuPresets_;
+    s.ndlClearMoves = ndlClearMoves_;
     // The window's own geometry comes from the host, which is the only thing
     // that knows it — App never tracks a size it does not set.
     const WindowPlacement& place = host_.Placement();

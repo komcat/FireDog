@@ -34,6 +34,15 @@ struct PsuPreset {
 };
 inline constexpr int kPsuPresetCount = 3;
 
+// Needle page: a device sent to one of its saved positions BEFORE the
+// calibration starts (the hexapods out of the camera's way). The position is
+// held by NAME, not uid: positions belong to the product, and this list is the
+// station's - each product's own "clear_vision" is resolved when Run is pressed.
+struct NeedleClearMove {
+    std::string device;
+    std::string position;
+};
+
 // One pinned instrument readout on the Run page, with an optional limit that
 // colours the value: green inside, red outside. `mode` is "none", "above"
 // (value > lo), "below" (value < hi) or "between" (lo <= value <= hi).
@@ -174,6 +183,12 @@ struct UiSettings {
         {1, 1, 2.0, 0.250},
         {1, 0, 1.0, 0.100},
     }};
+
+    // Needle page "Clear first" list, run in order before the calibration.
+    std::vector<NeedleClearMove> ndlClearMoves = {
+        {"hex-left", "clear_vision"},
+        {"hex-right", "clear_vision"},
+    };
 
     // Main OS window placement: the client rect it was last left at, in
     // virtual-screen px, plus whether it was maximized. Zero width/height

@@ -116,6 +116,15 @@ UiSettings UiSettings::Load(const std::string& path)
                 p.amps    = a[i].value("a", p.amps);
             }
         }
+        // Needle "clear first": the whole list, so an emptied one stays empty.
+        if (j.contains("needle_clear_moves") && j["needle_clear_moves"].is_array()) {
+            s.ndlClearMoves.clear();
+            for (const auto& m : j["needle_clear_moves"]) {
+                if (!m.is_object()) continue;
+                s.ndlClearMoves.push_back({m.value("device", std::string()),
+                                           m.value("position", std::string())});
+            }
+        }
         FD_INFO("ui", "settings loaded from %s (font %d, %.0f px)",
                 path.c_str(), s.fontIndex, s.fontSize);
     } catch (const std::exception& e) {
@@ -185,6 +194,10 @@ bool UiSettings::Save(const std::string& path) const
     for (const PsuPreset& p : psuPresets)
         pp.push_back({{"ch", p.channel}, {"mode", p.mode}, {"v", p.volts}, {"a", p.amps}});
     j["psu_presets"] = pp;
+    nlohmann::json cm = nlohmann::json::array();
+    for (const NeedleClearMove& m : ndlClearMoves)
+        cm.push_back({{"device", m.device}, {"position", m.position}});
+    j["needle_clear_moves"] = cm;
 
     std::ofstream f(path);
     if (!f.is_open()) {

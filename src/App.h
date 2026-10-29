@@ -1260,6 +1260,9 @@ private:
     double ndlVFinal_     = 5.0;
     double ndlVLiftoff_   = 5.0;
     bool   ndlAutofocus_  = true;
+    // Devices parked at a saved position (by name) before the calibration
+    // starts; persisted in UiSettings.
+    std::vector<NeedleClearMove> ndlClearMoves_ = UiSettings{}.ndlClearMoves;
     std::string ndlStartErr_;    // why the last Run refused to start
     // The bootstrap seed: with no calibration at all the first imprint lands a
     // hundred millimetres outside a three-millimetre field of view, so the
