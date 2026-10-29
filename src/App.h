@@ -1144,9 +1144,9 @@ private:
     bool showDispHelper_ = false;   // the Dispense helper window (follows edStepSel_)
     // Further selected rows beyond edStepSel_ (the ANCHOR: the inspector's
     // step, the palette's insert point). Ctrl-click toggles a row in and out,
-    // Shift-click takes the visible range from the anchor. Copy and Delete
-    // act on anchor + these; the single-row moves (^ v > <) are disabled while
-    // any exist. Cleared by every plain click and every edit — a path is an
+    // Shift-click takes the visible range from the anchor. Copy, Delete and
+    // Run Step act on anchor + these; the single-row moves (^ v > <) are
+    // disabled while any exist. Cleared by every plain click and every edit — a path is an
     // index into the tree and means nothing once the tree changes under it.
     std::vector<std::vector<std::size_t>> edStepMulti_;
     // A Shift-click is resolved AFTER the tree has drawn (edTreeRows_ is

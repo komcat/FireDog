@@ -1488,33 +1488,70 @@ void App::DrawRecipeRunStrip(float height)
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    // Run ONLY the selected row (children included), as a throwaway one-step
-    // recipe through the same engine — same validation, stop, and progress.
-    const RecipeStep* selStep =
-        (canRun && !edStepSel_.empty())
-            ? FindStepByPath(&session_.Recipes()[recipeSel_].steps, edStepSel_)
-            : nullptr;
-    ImGui::BeginDisabled(!selStep);
-    if (ImGui::Button("Run Step", ImVec2(btnW, 0.0f)) && selStep) {
+    // Run ONLY the selected rows (children included), as a throwaway recipe
+    // through the same engine — same validation, stop, and progress. Rows run
+    // in tree order (a path's lexicographic order IS tree order, then before
+    // else); a row under another selected row is already inside it and runs
+    // once. One row runs even when disabled - that is how it gets tested - but
+    // in a multi-row selection a disabled row is skipped: a range dragged
+    // across an [off] step must not fire what was turned off.
+    std::vector<std::vector<std::size_t>> runPaths;
+    if (canRun && !edStepSel_.empty()) {
+        runPaths.push_back(edStepSel_);
+        runPaths.insert(runPaths.end(), edStepMulti_.begin(), edStepMulti_.end());
+        std::sort(runPaths.begin(), runPaths.end());
+        runPaths.erase(std::unique(runPaths.begin(), runPaths.end()), runPaths.end());
+        std::vector<std::vector<std::size_t>> top;
+        for (const auto& p : runPaths) {
+            if (!top.empty() && p.size() > top.back().size() &&
+                std::equal(top.back().begin(), top.back().end(), p.begin()))
+                continue;   // inside the previous selected row
+            top.push_back(p);
+        }
+        runPaths = std::move(top);
+    }
+    const auto& lib = session_.Recipes();
+    std::vector<const RecipeStep*> runSteps;
+    for (const auto& p : runPaths) {
+        const RecipeStep* s = FindStepByPath(&lib[recipeSel_].steps, p);
+        if (!s) continue;
+        if (runPaths.size() > 1 && !s->enabled) continue;
+        runSteps.push_back(s);
+    }
+    const std::size_t skipped = runPaths.size() - runSteps.size();
+    ImGui::BeginDisabled(runSteps.empty());
+    if (ImGui::Button("Run Step", ImVec2(btnW, 0.0f)) && !runSteps.empty()) {
         Recipe one;
-        one.uid  = "step-run";
-        one.name = "step: " + (selStep->nickname.empty() ? AutoNickname(*selStep)
-                                                         : selStep->nickname);
-        one.steps.push_back(*selStep);
-        one.steps.front().enabled = true;   // a disabled row can still be tested
-        // Full Env, not just this step: sub_recipe references still resolve.
+        one.uid = "step-run";
+        if (runSteps.size() == 1)
+            one.name = "step: " + (runSteps.front()->nickname.empty()
+                                       ? AutoNickname(*runSteps.front())
+                                       : runSteps.front()->nickname);
+        else
+            one.name = "steps: " + std::to_string(runSteps.size()) + " rows";
+        for (const RecipeStep* s : runSteps) one.steps.push_back(*s);
+        if (runPaths.size() == 1)
+            one.steps.front().enabled = true;   // a disabled row can still be tested
+        // Full Env, not just these steps: sub_recipe references still resolve.
         RecipeEngine::Env env = session_.MakeRecipeEnv();
         recipeStartErr_.clear();
         if (!orch_.recipe.Start(one, std::move(env), &recipeStartErr_, RecipeStartOpts()))
             FD_WARN("recipe", "step run rejected: %s", recipeStartErr_.c_str());
     }
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(teachMode_
-                              ? "Run only the selected step (its children included).\n"
-                                "Teach mode: a step that is not a move to a saved\n"
-                                "position does nothing."
-                              : "Run only the selected step (its children included)");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        std::string tip = runPaths.size() > 1
+            ? "Run the " + std::to_string(runSteps.size()) +
+                  " selected steps, top to bottom (children included)"
+            : std::string("Run only the selected step (its children included)");
+        if (skipped > 0)
+            tip += "\n" + std::to_string(skipped) + " disabled step(s) in the selection "
+                   "are skipped";
+        if (teachMode_)
+            tip += "\nTeach mode: a step that is not a move to a saved\n"
+                   "position does nothing.";
+        ImGui::SetTooltip("%s", tip.c_str());
+    }
     ImGui::SameLine();
     ImGui::BeginDisabled(!st.stepPaused || progRun);
     if (ImGui::Button("Next", ImVec2(btnW, 0.0f))) orch_.recipe.StepAdvance();
