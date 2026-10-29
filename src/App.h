@@ -24,6 +24,7 @@
 #include "core/Log.h"
 #include "core/MotionMap.h"
 #include "core/Employees.h"
+#include "core/OeeTracker.h"
 #include "core/Product.h"
 #include "core/SavedPositions.h"
 #include "hardware/HardwareManager.h"
@@ -49,7 +50,7 @@ namespace firedog {
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Light, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
                   Align, VisionTeach, AlignNominal, AlignPlace, Needle,
-                  DeviceReg, Grip, Tray, Mosaic, Version };
+                  DeviceReg, Grip, Tray, Mosaic, Version, Oee };
 
 class AppUpdater;   // update/AppUpdater.h - owned by main(), it outlives App
 
@@ -165,6 +166,10 @@ inline constexpr UserRole kRoleTray = UserRole::Operator;
 //   Inspect Motion only reads recipes, but it reads them step by step - the
 //   level that may open the Recipe Editor at all.
 inline constexpr UserRole kRoleInspect = UserRole::Technician;
+//   Declaring the station DOWN (and bringing it UP) signs the maintenance log:
+//   whoever repairs the machine, the level that may move it. The OEE page and
+//   the maintenance history only read, so they are Operator.
+inline constexpr UserRole kRoleDowntime = UserRole::Technician;
 
 // One DUT record flattened for the View Data window: the identity columns plus
 // the LAST value written under each non-event key. The append-only log may
@@ -230,6 +235,42 @@ private:
     double dogHappyUntil_ = 0.0;     // ImGui::GetTime() a completed run hops until
     bool   dogRanProgram_ = false;   // what the run in flight is, for its outcome
     bool   dogRanLua_     = false;
+
+    // ---- OEE (PageOee.cpp, WndMaintenance.cpp; docs/oee-design.md) ----------
+    // The record is machine-wide and lives as long as App: Start before the
+    // loop (online), End after it (offline). UI-thread only, like session_.
+    OeeTracker oee_;
+    void UpdateOee();             // from Update(): run edges, DUT units, heartbeat, tower
+    void RefreshOeeReports();     // from Update(), while the page is shown
+    // True while a run is blocked on the operator — a prompt, a manual adjust,
+    // a crosshair pick or a step pause. The tower blinks yellow and the strip
+    // dog hops on the same answer.
+    bool OperatorWanted() const;
+    void DrawOeePanel();          // the OEE page
+    void DrawOeeDowntimeForm();   // the DOWN / UP form on that page
+    void DrawMaintenanceWindow(); // the maintenance history (floating, from the page)
+    // The shown day (local midnight; 0 = follow today) and its reports, cached:
+    // rebuilt when the record changes, the day changes, or once a second while
+    // today is shown (now moves). A report never runs inside a Draw.
+    OeeMs                  oeeDay_      = 0;
+    OeeReport              oeeReport_;
+    std::vector<OeeReport> oeeWeek_;    // [0] = the shown day, then the six before
+    unsigned               oeeRepRev_   = ~0u;
+    OeeMs                  oeeRepDay_   = -1;
+    double                 oeeRepAt_    = -1.0;
+    // The DOWN / UP form. Not a modal: a declaration may be made while a run is
+    // blocked on the always-on-top prompt window.
+    bool        oeeFormOpen_ = false;
+    int         oeeCategory_ = 0;
+    char        oeeReason_[512]    = {};
+    char        oeeRootCause_[512] = {};
+    char        oeeAction_[512]    = {};
+    std::string oeeMsg_;
+    // The maintenance history window.
+    bool        showMaint_   = false;
+    int         maintDays_   = 30;
+    char        maintSearch_[128] = {};
+    std::string maintMsg_;
     void DrawLeftPanel();     // 20% column: hardware status + DUT + display
     // Active-DUT status + open/close (Overview left, top of the Run deck).
     // `serialScale` = the serial's font size as a multiple of the body size,

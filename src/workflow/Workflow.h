@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "hardware/io/SafetyWatch.h"
+#include "workflow/TowerLight.h"
 
 namespace firedog {
 
@@ -362,6 +363,12 @@ public:
         return safetyWatch_ ? safetyWatch_->ActiveAlert() : SafetyWatch::Alert{};
     }
     void AcknowledgeSafety() { if (safetyWatch_) safetyWatch_->Acknowledge(); }
+    // The stack light. NOT part of Start(): the client calls it after Start,
+    // and FireDogRig - which runs the same Start() and must never write an IO
+    // output - does not. What it shows is decided by App every frame (the OEE
+    // state + a run waiting on the operator); safety is read by the pump itself.
+    void StartTowerLight();
+    void SetTowerMode(TowerMode m) { if (tower_) tower_->SetMode(m); }
     void StopAllMotion();   // hard stop on every motion device
 
     // ---- Taught-position hand-back (save_position command) ------------------
@@ -851,6 +858,10 @@ private:
     // this object, so it must die first. Declared last so it is destroyed
     // before every other member; ~Workflow also stops it explicitly.
     std::unique_ptr<SafetyWatch> safetyWatch_;
+    // The stack light (workflow/TowerLight.h). Its pump thread reads the safety
+    // watch, so it must stop first: declared after safetyWatch_ (destroyed
+    // before it), and ~Workflow resets it explicitly ahead of both.
+    std::unique_ptr<TowerLight> tower_;
 };
 
 } // namespace firedog

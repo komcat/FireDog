@@ -31,8 +31,10 @@ namespace firedog {
 UserRole MinRoleFor(Page p)
 {
     switch (p) {
-        // The production surface.
+        // The production surface, and how the station spent its day. The OEE
+        // page only reads; declaring the station DOWN on it is kRoleDowntime.
         case Page::Run:
+        case Page::Oee:
             return UserRole::Operator;
 
         // Troubleshooting and setup of what already exists.
@@ -142,6 +144,13 @@ void App::LogOut()
     // Same rule for teach mode: the next person to sign in must not find a
     // machine that teaches instead of runs.
     teachMode_ = false;
+    // A half-written DOWN / UP form is signed by whoever is at the keyboard
+    // when it is confirmed - so it must not survive a change of hands.
+    oeeFormOpen_     = false;
+    oeeReason_[0]    = '\0';
+    oeeRootCause_[0] = '\0';
+    oeeAction_[0]    = '\0';
+    oeeMsg_.clear();
     loginId_[0] = '\0';
     loginPw_[0] = '\0';
     loginErr_.clear();

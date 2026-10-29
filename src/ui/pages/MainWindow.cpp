@@ -186,25 +186,19 @@ void App::DrawStripDog(float height)
     }
     dogWasBusy_ = busy;
 
+    // The station's OEE state ranks with the run's: a declared DOWN outranks
+    // everything but safety, and a long idle (no run for the threshold) sleeps.
+    const OeeState station = oee_.Status(OeeNowMs()).state;
     FireDogMood mood = FireDogMood::Idle;
-    const char* what = "idle";
+    const char* what = "standing by";
     if (workflow_.SafetyAlertActive()) {
         mood = FireDogMood::Alarm;
         what = "SAFETY ALERT";
+    } else if (station == OeeState::Down) {
+        mood = FireDogMood::Down;
+        what = "station DOWN - see the OEE page";
     } else if (busy) {
-        // Blocked on the operator: a prompt, a manual adjust, a crosshair pick
-        // or a step-mode pause.
-        bool waiting = false;
-        if (orch_.recipe.Running()) {
-            const RecipeEngine::Status s = orch_.recipe.GetStatus();
-            waiting = !s.pendingPrompt.empty() || s.pendingAdjust || s.pendingPick ||
-                      s.stepPaused;
-        }
-        if (orch_.lua.Running()) {
-            const LuaEngine::Status s = orch_.lua.GetStatus();
-            waiting = waiting || !s.pendingPrompt.empty() || s.pendingAdjust ||
-                      s.pendingPick;
-        }
+        const bool waiting = OperatorWanted();
         mood = waiting ? FireDogMood::Waiting : FireDogMood::Running;
         what = waiting ? "waiting for you" : "running";
     } else if (dogSad_) {
@@ -213,6 +207,9 @@ void App::DrawStripDog(float height)
     } else if (now < dogHappyUntil_) {
         mood = FireDogMood::Happy;
         what = "run completed";
+    } else if (station == OeeState::Idle) {
+        mood = FireDogMood::Sleeping;
+        what = "idle - nothing has run for 30 min";
     }
 
     // One sprite pixel of headroom above it for the hop; bottom-aligned with
@@ -395,6 +392,9 @@ void App::DrawMainWindow()
                 if (CanAccess(Page::RecipeEdit) &&
                     ImGui::MenuItem("Recipe Editor", "F2", currentPage_ == Page::RecipeEdit))
                     ToggleEditorPage(Page::RecipeEdit);
+                if (CanAccess(Page::Oee) &&
+                    ImGui::MenuItem("OEE", nullptr, currentPage_ == Page::Oee))
+                    ToggleEditorPage(Page::Oee);
                 // Everything below this line is Technician or above, so for an
                 // Operator the separator would be the last thing in the menu —
                 // a rule under nothing, which reads as items that failed to
@@ -559,6 +559,9 @@ void App::DrawMainWindow()
             // during a shift. The Waffle Tray page IS one of those: a fresh
             // tray means a Reset and a glance at which cells are taken.
             pageBtn("Waffle Tray (F10)", Page::Tray, true);
+            // How the station spent its day - the one page besides Run an
+            // operator has, and the DOWN / UP declaration for a technician.
+            pageBtn("OEE", Page::Oee, true);
             // The mascot closes the row at the right edge, as tall as the buttons.
             if (anyBtn) ImGui::SameLine();
             DrawStripDog(stripBtn.y);
@@ -585,7 +588,8 @@ void App::DrawMainWindow()
             currentPage_ == Page::AlignNominal || currentPage_ == Page::AlignPlace ||
             currentPage_ == Page::Needle || currentPage_ == Page::DeviceReg ||
             currentPage_ == Page::Grip || currentPage_ == Page::Tray ||
-            currentPage_ == Page::Mosaic || currentPage_ == Page::Version) {
+            currentPage_ == Page::Mosaic || currentPage_ == Page::Version ||
+            currentPage_ == Page::Oee) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
@@ -601,6 +605,7 @@ void App::DrawMainWindow()
                                 : currentPage_ == Page::Tray          ? "Waffle tray"
                                 : currentPage_ == Page::Mosaic        ? "Mosaic"
                                 : currentPage_ == Page::Version       ? "Version and software update"
+                                : currentPage_ == Page::Oee           ? "OEE - station utilisation"
                                                                       : "Run";
             // Vision teach and the two alignment teach pages are only ever
             // reached FROM the Alignment page, and a takeover -> takeover switch
@@ -645,6 +650,7 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::Tray)          DrawTrayPanel();
             else if (currentPage_ == Page::Mosaic)        DrawMosaicPanel();
             else if (currentPage_ == Page::Version)       DrawVersionPanel();
+            else if (currentPage_ == Page::Oee)           DrawOeePanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();

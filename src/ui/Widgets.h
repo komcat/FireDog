@@ -514,6 +514,8 @@ enum class FireDogMood {
     Happy,     // a run just completed: hopping
     Sad,       // the last run failed: ears down, the flame gone to smoke
     Alarm,     // safety alert: flashing red
+    Down,      // the station is declared DOWN: red, ears down, a blinking '!'
+    Sleeping,  // OEE idle (nothing has run for 30 min): faded, eye shut, Zzz
 };
 inline constexpr int kFireDogW = 28;   // sprite size, in sprite pixels
 inline constexpr int kFireDogH = 14;

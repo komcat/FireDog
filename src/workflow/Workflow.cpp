@@ -58,6 +58,8 @@ Workflow::Workflow(HardwareManager& hw) : hw_(hw) {}
 
 Workflow::~Workflow()
 {
+    // The tower pump reads the safety watch: stop it (all lamps off) first.
+    tower_.reset();
     // The safety watch thread calls back into this object (StopAllMotion) —
     // make sure it is fully stopped before any member is torn down.
     if (safetyWatch_) safetyWatch_->Stop();
@@ -78,6 +80,16 @@ void Workflow::Start(const HardwareConfig& hw)
     StartNeedleCal();
     StartDeviceRegs();   // after StartMotion — logs against the fleet it found
     pivotDefaults_ = LoadPivotDefaults();
+}
+
+// The stack light. Its pins come from config/tower_light.local.json, not from
+// hardware.json: the tower is a fact about the station's signalling, and the
+// file is written with Horizon's seed on the first start.
+void Workflow::StartTowerLight()
+{
+    if (tower_) return;
+    tower_ = std::make_unique<TowerLight>(hw_, [this] { return SafetyAlertActive(); });
+    tower_->Start(LoadTowerLightConfig());
 }
 
 // The needle lever arm is read from disk, not from the hardware config: it is

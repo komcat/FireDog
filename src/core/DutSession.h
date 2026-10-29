@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -87,6 +88,15 @@ public:
                    const std::string& result, const std::string& uid = std::string(),
                    int recipesDone = -1);
 
+    // Every record that CLOSED — by Close, or auto-closed by the next Open — for
+    // the OEE quality ratio (core/OeeTracker). Close runs on engine workers as
+    // well as the UI, so it is queued here and App::Update drains it. `status`
+    // is "pass" / "fail", or whatever else the close said (not judged).
+    struct ClosedUnit {
+        std::string serial, product, status;
+    };
+    std::vector<ClosedUnit> TakeClosedUnits();
+
 private:
     DutSession() = default;
     DutSession(const DutSession&) = delete;
@@ -114,6 +124,8 @@ private:
     std::string dirPath_, filePath_;
     nlohmann::json entries_ = nlohmann::json::array();
     std::size_t    seq_ = 0;
+
+    std::vector<ClosedUnit> closedUnits_;   // drained by TakeClosedUnits
 };
 
 } // namespace firedog

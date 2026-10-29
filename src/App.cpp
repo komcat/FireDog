@@ -44,7 +44,7 @@ bool IsTakeoverPage(Page p)
            p == Page::VisionTeach || p == Page::AlignNominal ||
            p == Page::AlignPlace || p == Page::Needle || p == Page::DeviceReg ||
            p == Page::Grip || p == Page::Tray || p == Page::Mosaic ||
-           p == Page::Version;
+           p == Page::Version || p == Page::Oee;
 }
 } // namespace
 
@@ -166,8 +166,13 @@ int App::Run()
     // because config/ is what a fresh build tree or a release zip ships, and
     // would replace every registration made on this machine — see core/Employees.h.
     employees_ = LoadEmployees();
+    // The station is ONLINE from here until the loop ends — the login screen
+    // included: a machine waiting for somebody to sign in is standing by, not
+    // switched off. Starting it also recovers a session a crash left open.
+    oee_.Start();
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
+    workflow_.StartTowerLight();   // the stack light follows the OEE state (not the rig's)
     RegisterBuiltinCommands(orch_.registry, workflow_, hardware_);   // layer 2.5
     FD_INFO("command", "%zu command(s) registered", orch_.registry.Count());
     // Probe HALCON once at startup (build / runtime DLLs / licence) so its
@@ -207,6 +212,7 @@ int App::Run()
             if (showTray_  && CanUse(kRoleTray)) DrawTrayWindow();
             if (showMotionInspect_ && CanUse(kRoleInspect)) DrawMotionInspectWindow();
             if (showDispHelper_ && CanAccess(Page::RecipeEdit)) DrawDispenseHelperWindow();
+            if (showMaint_ && CanAccess(Page::Oee)) DrawMaintenanceWindow();
             if (showUsers_) DrawEmployeeManager();   // checks Admin itself
         }
         host_.EndFrame();
@@ -214,6 +220,7 @@ int App::Run()
 
     SaveUiSettings();   // backstop in case the last change wasn't flushed
     FD_INFO("app", "shutting down");
+    oee_.End();         // offline: close the open run and session
     host_.Shutdown();
     return 0;
 }
@@ -394,6 +401,63 @@ void App::Update(float dt)
         if (m && m->IsConnected())
             session_.SeedHomePosition(hardware_.MotionName(i), m->Axes());
     }
+
+    UpdateOee();
+    if (currentPage_ == Page::Oee) RefreshOeeReports();
+}
+
+bool App::OperatorWanted() const
+{
+    if (orch_.recipe.Running()) {
+        const RecipeEngine::Status s = orch_.recipe.GetStatus();
+        if (!s.pendingPrompt.empty() || s.pendingAdjust || s.pendingPick || s.stepPaused)
+            return true;
+    }
+    if (orch_.lua.Running()) {
+        const LuaEngine::Status s = orch_.lua.GetStatus();
+        if (!s.pendingPrompt.empty() || s.pendingAdjust || s.pendingPick) return true;
+    }
+    return false;
+}
+
+// The OEE record is fed from here and nowhere else: Running is orch_.Busy() —
+// the one definition every Run surface gates on, so a program's momentary idle
+// between queue items is not a gap — and quality is every DUT that closed, from
+// whichever thread closed it.
+void App::UpdateOee()
+{
+    const bool busy = orch_.Busy();
+    if (busy && !oee_.Running()) {
+        std::string what = "path";
+        if (orch_.programs.Active())  what = "program " + orch_.programs.GetStatus().label;
+        else if (orch_.lua.Running()) what = "script " + orch_.lua.GetStatus().scriptName;
+        else if (orch_.recipe.Running())
+            what = "recipe " + orch_.recipe.GetStatus().recipeName;
+        oee_.SetRunning(true, what);
+    } else if (!busy && oee_.Running()) {
+        oee_.SetRunning(false, std::string());
+    }
+
+    for (const DutSession::ClosedUnit& u : DutSession::Instance().TakeClosedUnits()) {
+        const OeeVerdict v = u.status == "pass"   ? OeeVerdict::Pass
+                             : u.status == "fail" ? OeeVerdict::Fail
+                                                  : OeeVerdict::Aborted;
+        oee_.RecordUnit(u.serial, u.product, v);
+    }
+    oee_.Tick();
+
+    // The stack light: down > waiting on the operator > the OEE state. Safety
+    // outranks all of it, and the pump reads that itself.
+    TowerMode mode = TowerMode::Off;
+    switch (oee_.Status(OeeNowMs()).state) {
+        case OeeState::Down:    mode = TowerMode::Down; break;
+        case OeeState::Running: mode = TowerMode::Running; break;
+        case OeeState::Standby: mode = TowerMode::Standby; break;
+        case OeeState::Idle:    mode = TowerMode::Idle; break;
+        default: break;
+    }
+    if (mode != TowerMode::Down && OperatorWanted()) mode = TowerMode::Waiting;
+    workflow_.SetTowerMode(mode);
 }
 
 // The pt1/pt2 diagrams shown over the live image while an object is being

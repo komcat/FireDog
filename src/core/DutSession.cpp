@@ -263,6 +263,17 @@ void DutSession::CloseLocked(const std::string& statusValue)
     FD_INFO("dut", "DUT '%s' closed (%s, %zu entrie(s))", serial_.c_str(),
             statusValue.c_str(), entries_.size());
     open_ = false;
+    // Bounded: a host that never drains (the rig) must not grow it forever.
+    if (closedUnits_.size() >= 1000) closedUnits_.erase(closedUnits_.begin());
+    closedUnits_.push_back({serial_, prodName_, statusValue});
+}
+
+std::vector<DutSession::ClosedUnit> DutSession::TakeClosedUnits()
+{
+    const std::scoped_lock lock(mu_);
+    std::vector<ClosedUnit> out;
+    out.swap(closedUnits_);
+    return out;
 }
 
 bool DutSession::Insert(const std::string& key, const nlohmann::json& value,
