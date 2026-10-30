@@ -41,6 +41,16 @@ namespace firedog {
 // granularities fill the SAME runner queue; one Stop kills the whole chain.
 // Design: docs/run-page-design.md.
 
+// The parts of the page an operator reads from across the bench (the go
+// button, Save/Load, the deck, the quick-align band, the readouts) are drawn at
+// this multiple of the body font. A multiple, not a pixel size, so the
+// Display font-size slider still scales them.
+static constexpr float kRunBigText = 1.4f;
+static void PushRunBigText()
+{
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * kRunBigText);
+}
+
 // Raster first-light exit levels, in uA (feedback amps; injected x1e-6).
 static constexpr double kRasterTargetsUa[] = {5.0, 20.0};
 
@@ -1177,6 +1187,7 @@ void App::DrawRunPanel()
     ImGui::PushStyleColor(ImGuiCol_Button,        running ? stCol : goCol);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, running ? stHov : goHov);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  running ? stAct : goAct);
+    PushRunBigText();
     if (running) {
         if (IconButton(UiIcon("Stop"), "Stop", ImVec2(260.0f, stripBtnH)))
             orch_.programs.Stop();
@@ -1197,6 +1208,7 @@ void App::DrawRunPanel()
         }
         ImGui::EndDisabled();
     }
+    ImGui::PopFont();
     ImGui::PopStyleColor(3);
     ImGui::SameLine();
     centerNext(ImGui::GetTextLineHeight());
@@ -1305,8 +1317,16 @@ void App::DrawRunPanel()
     // Same height as Execute: one row, one reach, one size of target. Load is
     // wider than before because it carries an icon now (assets/recipe_icons/
     // load.png; IconButton scales it to text height whatever the file's size).
-    constexpr float kSaveW = 110.0f;
-    constexpr float kLoadW = 100.0f;
+    // Both are drawn in the big run text, so their widths are measured in it:
+    // icon (one text line square) + gap + the widest label + padding.
+    PushRunBigText();
+    const auto iconBtnW = [&style](const char* label, float minW) {
+        const float w = ImGui::GetTextLineHeight() + style.ItemInnerSpacing.x +
+                        ImGui::CalcTextSize(label).x + style.FramePadding.x * 4.0f;
+        return w > minW ? w : minW;
+    };
+    const float kSaveW = iconBtnW("Save*", 110.0f);
+    const float kLoadW = iconBtnW("Load", 100.0f);
     // Load stays with the Operator — WHICH job is in the deck is the operator's
     // call, and it mutates nothing. Save writes the programs document, so it
     // goes with the level that may edit programs at all; below that the deck is
@@ -1328,6 +1348,7 @@ void App::DrawRunPanel()
     if (IconButton(UiIcon("load"), "Load", ImVec2(kLoadW, stripBtnH))) runOpenLoad_ = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Load a program into the deck");
     ImGui::EndDisabled();
+    ImGui::PopFont();
     ImGui::EndChild();
 
     // ---- Left: the deck ----
@@ -1338,6 +1359,9 @@ void App::DrawRunPanel()
     // Pass / Fail / Close behave exactly as they did in the right column.
     DrawDutBlock(4.0f);
     ImGui::Separator();
+    // The slot combo and the tree below it are the list an operator picks
+    // from, so they share the run strip's big text (popped before EndChild).
+    PushRunBigText();
     ImGui::BeginDisabled(running);
     // Active slot: the deck shows exactly ONE slot, so this combo IS the view,
     // and it is also what Execute runs. It survives a restart (UiSettings
@@ -1359,7 +1383,7 @@ void App::DrawRunPanel()
         else
             std::snprintf(prev, sizeof(prev), "(no slots)");
         ImGui::BeginDisabled(!haveProg);
-        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SetNextItemWidth(160.0f * kRunBigText);
         if (ImGui::BeginCombo("##actslot", prev)) {
             for (int i = 0; i < nSlots; ++i) {
                 ImGui::PushID(i);
@@ -1434,6 +1458,7 @@ void App::DrawRunPanel()
             }
         }
     }
+    ImGui::PopFont();
     ImGui::EndChild();
 
     // Drag either splitter to re-proportion the row; both persist on the drag
@@ -1464,11 +1489,14 @@ void App::DrawRunPanel()
     // The quick-align band is FIXED height and sits outside runExec: it is the
     // operator's five one-press launches, so a long queue must never be able to
     // scroll them out of reach. Caption row + two button rows + child padding.
+    // Measured in the big run text it is drawn in (DrawRunQuickAlign).
+    PushRunBigText();
     const float quickBtnH = ImGui::GetFrameHeight() * 1.8f;
     const float quickH    = ImGui::GetTextLineHeightWithSpacing() +
                             quickBtnH * 2.0f + style.ItemSpacing.y +
                             style.WindowPadding.y * 2.0f +
                             style.ChildBorderSize * 2.0f;
+    ImGui::PopFont();
     // runExec + quick + splitter + runScan + runLog, four spacings between them.
     const float fixedH = logH + kSplitH + quickH + style.ItemSpacing.y * 4.0f;
     const float scanH  = clampf(runScanH_, rowH * 3.0f,
@@ -1551,7 +1579,9 @@ void App::DrawRunPanel()
     // Quick-align band: the five presses this product's operators actually
     // make, each one a target slot + a step ladder + a hexapod in one click.
     ImGui::BeginChild("runQuick", ImVec2(0.0f, quickH), ImGuiChildFlags_Borders);
+    PushRunBigText();
     DrawRunQuickAlign();
+    ImGui::PopFont();
     ImGui::EndChild();
 
     // Drag to give the scan forms more (or less) room; persists on the drag END
@@ -1604,22 +1634,28 @@ void App::DrawRunPanel()
     // The pinned instrument readouts sit between the two, at a fixed height
     // for their row count, so they neither scroll away with the values nor
     // push the engine line.
+    // Readouts and the engine line are in the big run text, so their heights
+    // are measured in it; the Values panel above them stays body size.
     {
+        PushRunBigText();
         const float lineH = ImGui::GetTextLineHeightWithSpacing();
         const float engH  = lineH * 2.0f + ImGui::GetStyle().ItemSpacing.y;
         const float rows  = static_cast<float>((std::max)(runReadouts_.size(), std::size_t{1}));
         const float readH = ImGui::GetFrameHeightWithSpacing() + lineH * rows +
                             ImGui::GetStyle().ItemSpacing.y * 2.0f;
+        ImGui::PopFont();
         const float valsH = ImGui::GetContentRegionAvail().y - engH - readH;
         ImGui::BeginChild("runVals", ImVec2(0.0f, valsH > 0.0f ? valsH : 0.0f));
         DrawRunValuesPanel();
         ImGui::EndChild();
+        PushRunBigText();
         DrawRunReadouts();
     }
     ImGui::Separator();
     ImGui::Text("Engine: %s", RecipeEngine::StateName(es.state));
     if (!es.error.empty() && es.state != RecipeEngine::State::Running)
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", es.error.c_str());
+    ImGui::PopFont();
     ImGui::EndChild();
 
     if (runSplitting_ && !splitting) SaveUiSettings();

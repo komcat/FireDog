@@ -117,13 +117,21 @@ void App::DrawDutBlock(float serialScale)
         if (ImGui::SmallButton("Close")) DutSession::Instance().Close("", &err);
         if (!err.empty()) FD_WARN("dut", "close failed: %s", err.c_str());
     } else {
-        ImGui::SetNextItemWidth(-64.0f);
+        // The serial field is read from across the bench like the open serial,
+        // so it is drawn larger than the body; the Open button shares its font
+        // so the two stay the same height.
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.5f);
+        const float bw = ImGui::CalcTextSize("Open").x +
+                         ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SetNextItemWidth(-(bw + ImGui::GetStyle().ItemSpacing.x));
         // Barcode scanners type + Enter, so Enter submits like the button.
         const bool enter = ImGui::InputTextWithHint(
             "##dutserial", "serial...", dutSerialBuf_, sizeof(dutSerialBuf_),
             ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::SameLine();
-        if ((ImGui::SmallButton("Open") || enter) && dutSerialBuf_[0] != '\0') {
+        const bool open = ImGui::Button("Open");
+        ImGui::PopFont();
+        if ((open || enter) && dutSerialBuf_[0] != '\0') {
             std::string err;
             if (!DutSession::Instance().Open(dutSerialBuf_, false, &err))
                 FD_WARN("dut", "open failed: %s", err.c_str());

@@ -621,6 +621,10 @@ void App::DrawMainWindow()
                                                                        : prevPage_;
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
+            // The title row is the page's name and its way out: drawn larger
+            // than the body so both read from a step back.
+            ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.4f);
+            ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(title);
             // No Close when there is nowhere to close TO. An Operator has only
             // the Run page, so closeTo resolves to the page they are already on
@@ -634,6 +638,7 @@ void App::DrawMainWindow()
                 if (ImGui::Button("Close"))
                     SwitchPage(closeTo);   // dirty recipe edits raise the guard
             }
+            ImGui::PopFont();
             ImGui::Separator();
             if (currentPage_ == Page::WatchEdit)          DrawWatchEditPanel();
             else if (currentPage_ == Page::TransformEdit) DrawTransformEditPanel();
