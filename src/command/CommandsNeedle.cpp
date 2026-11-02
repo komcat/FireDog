@@ -258,7 +258,7 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"tol_mm", PT::Double, false, 0.05, 0.001, 5.0, {},
                        "XY residual a verify pass has to land inside"},
                       {"z_tol_mm", PT::Double, false, 0.05, 0.001, 5.0, {},
-                       "Z residual a verify pass has to land inside"},
+                       "Z residual above this is warned, not failed - XY decides"},
                       {"v_traverse", PT::Double, false, 40.0, 0.001, 100.0, {},
                        "XY traverse: needle over the spot, camera back over the dot"},
                       {"v_approach", PT::Double, false, 20.0, 0.001, 100.0, {},

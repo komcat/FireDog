@@ -12,9 +12,10 @@
 -- Pass 2+ VERIFIES: the machine drives the needle to where the calibration says
 -- it touches, stops `verify_gap_mm` short, and the operator only closes that
 -- gap. How far they had to jog is the Z residual; where the dot lands is the XY
--- residual. A calibration is VERIFIED only when both are inside tolerance -
--- dispense_procedure.lua drives to cam_z + dz with nobody's hand on the jog, so
--- dz is the number that most needs checking, and an XY-only check never did.
+-- residual. A calibration is VERIFIED when the XY residual is inside tolerance.
+-- The Z residual is measured, saved and warned about but does not fail it: a
+-- touch judged by eye does not repeat to z_tol, and dz is the verify pass's own
+-- touch, so it is as good as the operator's last touch and no better.
 --
 -- The motion of one pass, in order (the needle-calibration illustration):
 --   traverse  needle over the spot, at the camera's Z        v_traverse
@@ -59,7 +60,7 @@
 --   ndl_autofocus      focus on the coupon first       (default true)
 --   ndl_passes         1 measures, 2+ verifies         (default 2)
 --   ndl_tol_mm         XY residual a verify pass must hit (default 0.05)
---   ndl_z_tol_mm       Z residual a verify pass must hit  (default 0.05)
+--   ndl_z_tol_mm       Z residual above this is WARNED, not failed (0.05)
 --   ndl_v_traverse     XY traverse, mm/s               (default 40)
 --   ndl_v_approach     Z down to the safety height     (default 20)
 --   ndl_v_final        Z safety height -> verify gap   (default 5)
@@ -343,8 +344,15 @@ for pass = 1, PASSES do
     dx, dy, dz = ndx, ndy, ndz
     aim, aimZ  = true, true
     -- A pass counts as verified when it re-measured the pass before it and
-    -- agreed in BOTH halves. Pass 1 is never that, however small its numbers.
-    verified = verify and (residual <= TOL) and (math.abs(zres) <= ZTOL)
+    -- agreed in XY. Pass 1 is never that, however small its numbers. Z is
+    -- ADVISORY: a hand touch judged by eye does not repeat to z_tol, so a Z
+    -- outside it is reported loudly and does not fail the calibration. dz is
+    -- this pass's touch either way.
+    verified = verify and (residual <= TOL)
+    if verified and math.abs(zres) > ZTOL then
+        fd.logf("WARNING: pass %d Z residual %+.4f mm is outside %.4f mm - accepted " ..
+                "(XY agreed); dz is now this pass's touch, %.4f mm", pass, zres, ZTOL, ndz)
+    end
 
     -- Save every pass. A pass-2 abort must not throw away a good pass-1
     -- measurement, and the value is carried in locals anyway, so re-reading it
@@ -387,7 +395,7 @@ end
 if not verified then
     error(string.format(
         "needle calibration did not repeat: the last verify pass was off by " ..
-        "%.4f mm XY (tolerance %.4f) and %+.4f mm Z (tolerance %.4f). The offset " ..
+        "%.4f mm XY (tolerance %.4f; Z %+.4f mm, advisory %.4f). The offset " ..
         "(%.4f, %.4f, %.4f) mm was saved anyway - it is better than what was there " ..
         "- but check the imprint quality, the touch, and that the needle is not " ..
         "deflecting on contact before dispensing through it.",

@@ -167,12 +167,17 @@ off and retracts the slide before the error goes on, instead of leaving it
 standing on the coupon. An operator **Stop** is the exception — it means "no more
 motion" (the `climb_raster.lua` rule).
 
-**Verified means XY AND Z.** A verify pass yields two residuals: XY (how far the
-dot moved the answer, against `tol_mm`) and Z (`(tip_z − predicted)·dir`, how far
-the operator had to jog from the predicted touch, against `z_tol_mm`; + = touched
-lower than predicted). `dispense_procedure.lua` drives to `cam_z + dz` with
-nobody on the jog, so `dz` is the number that most needs checking — the earlier
-procedure compared XY only and silently replaced `dz` with the second hand-touch.
+**Verified means XY; Z is measured and advisory.** A verify pass yields two
+residuals: XY (how far the dot moved the answer, against `tol_mm`) and Z
+(`(tip_z − predicted)·dir`, how far the operator had to jog from the predicted
+touch; + = touched lower than predicted). Only XY decides. A Z residual past
+`z_tol_mm` is logged as a WARNING and stored, and `dz` becomes the verify pass's
+own touch. Z was a gate until 2026-11-02 and was relaxed on the machine: a touch
+judged by eye did not repeat to 0.05 mm (the same coupon gave 0.1 mm either way,
+run after run), so the gate failed calibrations whose XY agreed. The price is
+plain: `dispense_procedure.lua` drives to `cam_z + dz` with nobody on the jog, so
+`dz` is exactly as good as the operator's last touch, and the Needle page shows
+the Z residual beside the verified line for that reason.
 The record stores `z_checked` and `z_residual_mm`; `needle_offset_save` refuses
 `verified` without `z_checked`, and a file marked `verified` by the XY-only
 procedure (no `z_checked`) **loads as unverified** with `needsZCheck`, so the

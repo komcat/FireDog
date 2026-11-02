@@ -217,7 +217,7 @@ void App::DrawNeedlePanel()
             num("tol XY mm", &ndlTolMm_, "%.4f", 0.001, 5.0,
                 "XY residual a verify pass must hit");
             num("tol Z mm", &ndlZTolMm_, "%.4f", 0.001, 5.0,
-                "Z residual a verify pass must hit");
+                "Z residual above this is warned, not failed - XY decides");
             if (ndlPasses_ == 1)
                 ImGui::TextColored(kWarn, "one imprint - nothing\nchecks the answer");
             else
