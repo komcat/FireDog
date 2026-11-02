@@ -161,14 +161,34 @@ TowerLight::Lamps TowerLight::Next()
     const bool downBuzz = downBuzzTicks_ > 0;
     if (downBuzz) --downBuzzTicks_;
 
+    // Operator-notice buzzer: its own cycle counter, restarted by a new
+    // pattern so the first beep sounds on the first tick, not mid-cycle.
+    const int buzz = buzz_.load();
+    if (buzz != buzzWas_) buzzTick_ = 0;
+    buzzWas_ = buzz;
+    bool noticeBuzz = false;
+    switch (static_cast<BuzzPattern>(buzz)) {
+        case BuzzPattern::Beep:   noticeBuzz = (buzzTick_ % 4) < 2; break;
+        case BuzzPattern::Double: noticeBuzz = buzzTick_ % 8 == 0 || buzzTick_ % 8 == 2; break;
+        case BuzzPattern::Triple: {
+            const int t = buzzTick_ % 12;
+            noticeBuzz  = t == 0 || t == 2 || t == 4;
+            break;
+        }
+        case BuzzPattern::Steady: noticeBuzz = true; break;
+        default: break;
+    }
+    buzzTick_ = (buzzTick_ + 1) % 24;   // a multiple of every cycle above
+
     Lamps l;
     if (tripped) {
         l.red    = blinkOn;
         l.buzzer = (beepTicks_ > 0 && blinkOn) || downBuzz;
         return l;
     }
+    l.buzzer = noticeBuzz;
     switch (mode) {
-        case TowerMode::Down:    l.red = true; l.buzzer = downBuzz; break;
+        case TowerMode::Down:    l.red = true; l.buzzer = l.buzzer || downBuzz; break;
         case TowerMode::Waiting: l.yellow = blinkOn; break;
         case TowerMode::Running: l.green = true; break;
         case TowerMode::Standby: l.green = blinkOn; break;

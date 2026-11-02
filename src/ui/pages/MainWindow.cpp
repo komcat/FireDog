@@ -577,6 +577,7 @@ void App::DrawMainWindow()
         DrawSafetyAlertModal();   // blocking safety alert (highest priority)
         DrawRecipePromptWindow(); // global recipe prompt (any page, any time)
         DrawManualAdjustWindow(); // global manual_adjust jog window
+        DrawOperatorNoticeWindow(); // global notify_operator window (yellow, OK only)
         DrawAlignPickWindow();    // global align_station crosshair pick
 
         // ---- Editor pages (View menu) replace the whole panel layout until

@@ -269,6 +269,19 @@ the needle is changed: re-calibrate and every taught point still works.
 7. Confirm → `before_ms` → `pulse_output` → `after_ms`. A cancel here retreats
    before failing: leaving the needle resting on the part would be worse than
    the dispense.
+7b. **Check before lift-off** (`check_lift`, default on, added 2026-11-02): the
+   needle stays at the dot and an `instruction`-level prompt asks the operator
+   to look — the one moment the wetting, a dry needle or a missed shot is
+   visible before the lift pulls a string or hides it. Independent of
+   `confirm` (a run can drop the go/no-go questions and keep the look); untick
+   it in the Dispense helper to skip. OK lifts off; Cancel lifts off too, by
+   the same retreat, and THEN fails the step — never a needle left in the part.
+   A third button, **Shot +`extra_ms`** (default 100; 0 hides it), tops a short
+   dot up where it stands: one more `pulse_output` of the same valve (a Stop
+   mid-pulse still closes it), then the same question again, as often as
+   pressed. Each top-up is logged and the total lands in ctx
+   `disp_extra_total_ms` — a dot that needed help says the shot size wants
+   tuning. The buttons come from `fd.choose` (below).
 8. Retreat, in the order of the needle motion drawing (Needle page): **Z lifts
    `lift_mm` (1.5) at `v_liftoff` first**, toward the camera's Z, then the slide
    comes up, then Z climbs to the camera's Z, then XY. The lift is a controlled

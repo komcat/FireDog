@@ -9,6 +9,7 @@
 //   Down (declared)                                       steady      3 s on the declaration
 //   Waiting on the operator                   blink 0.5 s
 //   Safety alert (until ack)                              blink       3 beeps on the trip
+//   Operator notice (until OK)    (as the mode beneath)               its BuzzPattern
 //   FireDog closed                off         off         off         off
 //
 // Priority: safety > down > waiting > running / standby / idle — a program
@@ -55,6 +56,15 @@ TowerLightConfig LoadTowerLightConfig();
 // worker reads the safety watch itself, so a trip shows even if the UI hangs.
 enum class TowerMode : int { Off, Running, Standby, Idle, Down, Waiting };
 
+// A buzzer pattern laid OVER whatever the lamps show, for as long as an
+// operator notice (notify_operator) is up. A safety trip still wins: its own
+// beeps replace it. 250 ms ticks:
+//   Beep    0.5 s on / 0.5 s off
+//   Double  two 250 ms beeps, then 1.5 s silence (2 s cycle)
+//   Triple  three 250 ms beeps, then 1.5 s silence (3 s cycle)
+//   Steady  on continuously
+enum class BuzzPattern : int { None, Beep, Double, Triple, Steady };
+
 class TowerLight {
 public:
     TowerLight(HardwareManager& hw, std::function<bool()> safetyTripped);
@@ -65,6 +75,8 @@ public:
     // No-op (logged) when disabled or the device is not in hardware.json.
     void Start(const TowerLightConfig& cfg);
     void SetMode(TowerMode m) { mode_.store(static_cast<int>(m)); }
+    // Any thread. None silences it at the next tick.
+    void SetBuzz(BuzzPattern p) { buzz_.store(static_cast<int>(p)); }
 
 private:
     struct Lamps {
@@ -82,6 +94,7 @@ private:
     int pinG_ = -1, pinY_ = -1, pinR_ = -1, pinB_ = -1;
 
     std::atomic<int> mode_{static_cast<int>(TowerMode::Off)};
+    std::atomic<int> buzz_{static_cast<int>(BuzzPattern::None)};
 
     std::mutex              mu_;
     std::condition_variable cv_;
@@ -97,6 +110,8 @@ private:
     int   beepTicks_     = 0;
     int   wasDown_       = -1;    // -1 until the first tick: a Down carried over a restart does not buzz
     int   downBuzzTicks_ = 0;
+    int   buzzWas_       = 0;     // the pattern last tick (a new one starts its cycle at 0)
+    int   buzzTick_      = 0;     // position in the pattern's cycle
 };
 
 } // namespace firedog

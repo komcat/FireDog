@@ -18,6 +18,7 @@
 #include "vision/VisionModel.h"   // FindVisionModel — the fallback's taught patch
 
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 
@@ -41,6 +42,12 @@ void App::DrawRecipePromptWindow()
     // engine's, not ours - this window only shows it.
     const int autoOkMs =
         fromScript ? lst.pendingPromptAutoOkMs : rst.pendingPromptAutoOkMs;
+    const PromptLevel level =
+        fromScript ? lst.pendingPromptLevel : rst.pendingPromptLevel;
+    // Non-empty: a CHOICE (ExecutionContext::AwaitChoice) - these buttons
+    // replace OK / Cancel, and the answer is the index pressed.
+    const std::vector<std::string>& choices =
+        fromScript ? lst.pendingPromptButtons : rst.pendingPromptButtons;
 
     // Edge-detect a NEW prompt (a back-to-back prompt can arrive while the
     // window is still visible, so IsWindowAppearing alone is not enough).
@@ -57,18 +64,42 @@ void App::DrawRecipePromptWindow()
     // that can be pressed, and a neutral fill leaves the amber frame as the
     // one accent — a blue slab the width of the box competes with the sentence
     // the operator is meant to read first.
+    // The prompt's LEVEL (PromptLevel) picks the title bar, the frame and a
+    // banner word above the message - and nothing else. The dark body and the
+    // white text stay put at every level, so the contrast argument below holds
+    // whatever the author chose; the level is read before the sentence is.
+    struct LevelLook {
+        const char* title;    // window title (the ID stays "###Recipe Prompt")
+        const char* banner;
+        ImVec4      bar;      // title bar
+        ImVec4      accent;   // frame, separator, banner
+    };
+    static const LevelLook kLooks[] = {
+        {"Information###Recipe Prompt", "INFORMATION",
+         ImVec4(0.13f, 0.34f, 0.64f, 1.00f), ImVec4(0.45f, 0.70f, 1.00f, 1.00f)},
+        {"Instruction###Recipe Prompt", "INSTRUCTION",
+         ImVec4(0.10f, 0.45f, 0.25f, 1.00f), ImVec4(0.35f, 0.88f, 0.50f, 1.00f)},
+        {"Warning###Recipe Prompt", "WARNING",
+         ImVec4(0.72f, 0.45f, 0.00f, 1.00f), ImVec4(1.00f, 0.76f, 0.25f, 1.00f)},
+        {"Error###Recipe Prompt", "ERROR",
+         ImVec4(0.62f, 0.10f, 0.10f, 1.00f), ImVec4(1.00f, 0.38f, 0.32f, 1.00f)},
+    };
+    const int li = static_cast<int>(level);
+    const LevelLook& look = kLooks[(li >= 0 && li < 4) ? li : 0];
+    const ImVec4 sep(look.accent.x, look.accent.y, look.accent.z, 0.60f);
+
     const float promptFont = ImGui::GetStyle().FontSizeBase * 1.5f;
     ImGui::PushFont(nullptr, promptFont);
     ImGui::PushStyleColor(ImGuiCol_WindowBg,      ImVec4(0.06f, 0.08f, 0.12f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(1.00f, 1.00f, 1.00f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_TitleBg,       ImVec4(0.13f, 0.34f, 0.64f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.13f, 0.34f, 0.64f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(1.00f, 0.76f, 0.25f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,       look.bar);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, look.bar);
+    ImGui::PushStyleColor(ImGuiCol_Border,        look.accent);
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.22f, 0.23f, 0.25f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.34f, 0.35f, 0.38f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.14f, 0.15f, 0.17f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_FrameBg,       ImVec4(0.14f, 0.17f, 0.24f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_Separator,     ImVec4(1.00f, 0.76f, 0.25f, 0.60f));
+    ImGui::PushStyleColor(ImGuiCol_Separator,     sep);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 14.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f, 8.0f));
@@ -85,10 +116,19 @@ void App::DrawRecipePromptWindow()
     // so the same prompt reads the same on a laptop panel and a bench monitor.
     const float promptW = fminf(fmaxf(pvp->Size.x * 0.55f, 640.0f), 1400.0f);
     ImGui::SetNextWindowSizeConstraints(ImVec2(promptW, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
-    ImGui::Begin("Recipe Prompt", nullptr,
+    ImGui::Begin(look.title, nullptr,
                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
                  ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings);
     ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());   // always on top
+    // The level's banner word, centred in its accent colour, above the message.
+    {
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float textW = ImGui::CalcTextSize(look.banner).x;
+        if (textW < avail)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - textW) * 0.5f);
+        ImGui::TextColored(look.accent, "%s", look.banner);
+        ImGui::Spacing();
+    }
     // Wrap at the window's own edge (0.0f), not at a fixed 560 px: the width is
     // the viewport's to decide now, and a hard-coded wrap would keep breaking
     // the message at the old width inside a wider box.
@@ -139,6 +179,38 @@ void App::DrawRecipePromptWindow()
         ImGui::PopFont();
     }
     ImGui::Separator();
+    if (!choices.empty()) {
+        // The author's buttons share the row equally, at the same double height
+        // as OK / Cancel. The FIRST is the primary answer and gets OK's green;
+        // the rest keep the window's grey - the same "go on vs. anything else"
+        // reading the two-button row gives at a glance.
+        const int n = static_cast<int>(choices.size());
+        const float sp = ImGui::GetStyle().ItemSpacing.x;
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const ImVec2 cbtn(fmaxf(promptFont * 4.0f, (avail - sp * (n - 1)) / n),
+                          ImGui::GetFrameHeight() * 2.0f);
+        for (int i = 0; i < n; ++i) {
+            if (i > 0) ImGui::SameLine();
+            ImGui::PushID(i);
+            if (i == 0) {
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.00f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.00f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.42f, 0.20f, 1.00f));
+            }
+            const bool hit = ImGui::Button(choices[i].c_str(), cbtn);
+            if (i == 0) ImGui::PopStyleColor(3);
+            ImGui::PopID();
+            if (hit) {
+                if (fromScript) orch_.lua.AnswerChoice(i);
+                else            orch_.recipe.AnswerChoice(i);
+            }
+        }
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(10);
+        ImGui::PopFont();
+        return;
+    }
     // The two answers split the row. They scale with the font as before, but a
     // wide window with two small buttons parked in its corner reads as an empty
     // box — and OK/Cancel are pressed with a glove on, in a hurry, by somebody
@@ -165,6 +237,81 @@ void App::DrawRecipePromptWindow()
 
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(10);
+    ImGui::PopFont();
+}
+
+// The notify_operator window: the machine calling somebody over (UV curing
+// complete). YELLOW, so it reads as "come here" and not as the dark prompt that
+// asks a question; ONE button, because there is nothing to decide - OK only
+// says "I am here", and it is also what silences the buzzer. Non-modal and
+// kept on top like the prompt. No App state: the slot lives on Workflow, and
+// the window disappears when the command ends it (OK, timeout or Stop).
+void App::DrawOperatorNoticeWindow()
+{
+    const Workflow::OperatorNotice n = workflow_.PendingNotice();
+    if (n.id == 0) return;
+
+    const float font = ImGui::GetStyle().FontSizeBase * 1.5f;
+    const ImVec4 yellow(1.00f, 0.85f, 0.10f, 1.00f);
+    const ImVec4 ink(0.08f, 0.07f, 0.02f, 1.00f);   // near-black on the yellow
+    ImGui::PushFont(nullptr, font);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,      yellow);
+    ImGui::PushStyleColor(ImGuiCol_Text,          ink);
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,       ImVec4(0.80f, 0.62f, 0.00f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.80f, 0.62f, 0.00f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Border,        ink);
+    ImGui::PushStyleColor(ImGuiCol_Separator,     ImVec4(0.08f, 0.07f, 0.02f, 0.45f));
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.42f, 0.20f, 1.00f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 14.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f, 8.0f));
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    const float w = fminf(fmaxf(vp->Size.x * 0.45f, 560.0f), 1200.0f);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
+    ImGui::Begin("Operator Notice", nullptr,
+                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());   // always on top
+
+    {
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float textW = ImGui::CalcTextSize(n.message.c_str()).x;
+        if (textW < avail)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - textW) * 0.5f);
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(n.message.c_str());
+    ImGui::PopTextWrapPos();
+
+    // How long the buzzer keeps calling - the command's deadline, shown only.
+    {
+        const long long left = std::chrono::duration_cast<std::chrono::seconds>(
+                                   n.deadline - std::chrono::steady_clock::now()).count();
+        const long long s = left > 0 ? left : 0;
+        char line[64];
+        std::snprintf(line, sizeof(line), "Waiting for OK - %lld:%02lld left", s / 60, s % 60);
+        ImGui::PushFont(nullptr, font * 0.7f);
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float textW = ImGui::CalcTextSize(line).x;
+        if (textW < avail)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - textW) * 0.5f);
+        ImGui::TextUnformatted(line);
+        ImGui::PopFont();
+    }
+    ImGui::Dummy(ImVec2(0.0f, font));
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));   // white on green
+    if (ImGui::Button("OK", ImVec2(-FLT_MIN, ImGui::GetFrameHeight() * 2.0f)))
+        workflow_.AckNotice(n.id);
+    ImGui::PopStyleColor();
+    ImGui::End();
+
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(9);
     ImGui::PopFont();
 }
 

@@ -114,6 +114,8 @@ public:
     void RequestStop();            // cooperative; fd waits + the Lua hook honor it
     // Resolves a blocking fd.prompt() / fd.input() (text used by input).
     void AnswerPrompt(bool ok, std::string text = std::string());
+    // Resolves a blocking fd.choose() with the 0-based index of the button.
+    void AnswerChoice(int index);
     // Resolves a blocking fd.manual_adjust{} (jogging happened UI-side).
     void AnswerAdjust(bool ok);
     // Resolves a blocking fd.align_station{} crosshair pick (marked UI-side).
@@ -142,6 +144,9 @@ public:
         std::string pendingPrompt;     // non-empty while fd.prompt/input blocks
         bool        pendingPromptInput = false;   // the prompt wants a text answer
         int         pendingPromptAutoOkMs = 0;    // >0: OK answers itself in this long
+        PromptLevel pendingPromptLevel = PromptLevel::Info;   // how the window is dressed
+        // Non-empty: the pending prompt is fd.choose() - draw these buttons.
+        std::vector<std::string> pendingPromptButtons;
         // Manual-adjust handshake: valid while pendingAdjust is true.
         bool        pendingAdjust = false;
         ExecutionContext::AdjustRequest adjustReq;
@@ -164,7 +169,10 @@ public:
 private:
     void ThreadMain(std::string path, Env env);
     bool AwaitPromptInternal(const std::string& message, bool wantsInput,
-                             std::string* textOut, int autoOkMs = 0);
+                             std::string* textOut, int autoOkMs = 0,
+                             PromptLevel level = PromptLevel::Info);
+    int  AwaitChoiceInternal(const std::string& message,
+                             const std::vector<std::string>& buttons, PromptLevel level);
     bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
     bool AwaitPickInternal(const ExecutionContext::PickRequest& req,
                            ExecutionContext::PickResult* out);
@@ -192,6 +200,9 @@ private:
     std::string error_;
     std::string prompt_;
     bool        promptWantsInput_ = false;
+    PromptLevel promptLevel_      = PromptLevel::Info;
+    std::vector<std::string> promptButtons_;   // non-empty = a choice is pending
+    int         promptChoice_     = -1;
     // Auto-OK deadline of the pending prompt; epoch (zero) = none.
     std::chrono::steady_clock::time_point promptAutoOkAt_{};
     std::string promptText_;

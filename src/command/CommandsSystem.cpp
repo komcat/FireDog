@@ -11,8 +11,10 @@
 #include "core/DataBus.h"
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"   // final-position capture (manual_adjust)
+#include "workflow/Workflow.h"          // the operator-notice slot (notify_operator)
 
 #include <cctype>
+#include <cstdint>
 
 namespace firedog {
 
@@ -96,7 +98,8 @@ CommandResult ExecWaitUntil(ExecutionContext& ctx, const ParamValues& p)
 CommandResult ExecPrompt(ExecutionContext& ctx, const ParamValues& p)
 {
     const std::string msg = ctx.Substitute(p.GetString("message"));
-    return ctx.AwaitPrompt(msg, p.GetInt("auto_ok_ms"))
+    return ctx.AwaitPrompt(msg, p.GetInt("auto_ok_ms"),
+                           PromptLevelFromName(p.GetString("level")))
                ? CommandResult::Success()
                : CommandResult::Fail("cancelled by operator");
 }
@@ -109,6 +112,42 @@ CommandResult ExecPromptInput(ExecutionContext& ctx, const ParamValues& p)
         return CommandResult::Fail("cancelled by operator");
     ctx.CtxSet(p.GetString("ctx"), text);
     return CommandResult::Success();
+}
+
+// notify_operator: buzz the tower in a pattern and put up the yellow OK-only
+// window (App::DrawOperatorNoticeWindow) until somebody acknowledges or the
+// timeout runs out. Not the prompt handshake: there is no Cancel, the wait has
+// its own (long) timeout with its own outcome, and the slot lives on Workflow
+// so a recipe and a script reach it the same way. Every exit clears the slot,
+// which also silences the buzzer.
+CommandResult ExecNotifyOperator(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string msg = ctx.Substitute(p.GetString("message"));
+    const int timeoutMin  = p.GetInt("timeout_min");
+    const int timeoutMs   = timeoutMin * 60 * 1000;
+    const std::string pat = p.GetString("buzzer");
+    const BuzzPattern buzz = pat == "beep"   ? BuzzPattern::Beep
+                           : pat == "double" ? BuzzPattern::Double
+                           : pat == "triple" ? BuzzPattern::Triple
+                           : pat == "steady" ? BuzzPattern::Steady
+                                             : BuzzPattern::None;   // "silent"
+    Workflow& wf = ctx.Wf();
+    const std::uint64_t id = wf.PostNotice(msg, timeoutMs, buzz);
+    const ExecutionContext::WaitResult r =
+        ctx.WaitUntil([&] { return wf.NoticeAcked(id); }, timeoutMs, 100);
+    wf.ClearNotice(id);
+
+    const std::string key = p.GetString("ctx");
+    if (r == ExecutionContext::WaitResult::Ok) {
+        if (!key.empty()) ctx.CtxSet(key, std::string("ack"));
+        return CommandResult::Success();
+    }
+    if (r == ExecutionContext::WaitResult::Stopped) return CommandResult::Fail("stopped");
+    if (!key.empty()) ctx.CtxSet(key, std::string("timeout"));
+    FD_WARN("notice", "no acknowledgement in %d min: %s", timeoutMin, msg.c_str());
+    if (p.GetString("on_timeout") == "continue") return CommandResult::Success();
+    return CommandResult::Fail("no operator acknowledgement in " +
+                               std::to_string(timeoutMin) + " min");
 }
 
 CommandResult ExecManualAdjust(ExecutionContext& ctx, const ParamValues& p)
@@ -207,6 +246,11 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"auto_ok_ms", PT::Int, false, 0, 0, 600000, {},
                        "answer OK by itself after this long (a glance, with a Cancel); "
                        "0 = wait for the operator"},
+                      // Last, so a positional reader of the older params is unmoved.
+                      {"level", PT::Enum, false, "info", 0, 0,
+                       {"info", "instruction", "warning", "error"},
+                       "how the window looks: info (blue), instruction (green), "
+                       "warning (amber), error (red) - it answers the same way"},
                   },
                   CommandSpec::Needs::None, ExecPrompt});
 
@@ -218,6 +262,26 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "destination ctx key (e.g. 'serial' for dut_open)"},
                   },
                   CommandSpec::Needs::None, ExecPromptInput});
+
+    reg.Register({"notify_operator", "System",
+                  "Call the operator: tower buzzer in a pattern + a yellow OK window, "
+                  "until OK or the timeout (e.g. UV curing complete)",
+                  {
+                      {"message", PT::String, false,
+                       "UV curing complete - please attend the machine", 0, 0, {},
+                       "text in the yellow window ({key} substitutes ctx values)"},
+                      {"buzzer", PT::Enum, false, "double", 0, 0,
+                       {"double", "beep", "triple", "steady", "silent"},
+                       "double/triple = 2/3 short beeps then a pause; beep = 0.5 s "
+                       "on/off; steady = continuous"},
+                      {"timeout_min", PT::Int, false, 30, 1, 480, {},
+                       "give up waiting for OK after this many minutes (the buzzer stops)"},
+                      {"on_timeout", PT::Enum, false, "fail", 0, 0, {"fail", "continue"},
+                       "nobody pressed OK in time: fail the step, or carry on"},
+                      {"ctx", PT::String, false, "", 0, 0, {},
+                       "optional ctx key: \"ack\" or \"timeout\""},
+                  },
+                  CommandSpec::Needs::None, ExecNotifyOperator});
 
     // bobcat's ManualAdjust: pause the run, let the operator jog the device
     // from a modal (step presets, live position), then OK to continue or

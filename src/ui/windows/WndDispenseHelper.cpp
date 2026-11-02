@@ -310,6 +310,10 @@ void App::DrawDispenseHelperWindow()
         numI("wait before ms", "before_ms");
         numI("shot ms", "shot_ms");
         numI("dwell after ms", "after_ms");
+        flag("check before lift-off", "check_lift");
+        ImGui::BeginDisabled(!Flag(*spec, p, "check_lift"));   // its button lives in that check
+        numI("top-up shot ms", "extra_ms");
+        ImGui::EndDisabled();
         numD("lift mm", "lift_mm", "%.2f");
         numD("v lift-off mm/s", "v_liftoff", "%.1f");
 

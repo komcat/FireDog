@@ -34,6 +34,12 @@
 --   disp_shot_ms     valve open time = shot size    (default 300)
 --   disp_before_ms   settle at height before firing (default 0)
 --   disp_after_ms    dwell after firing, string break (default 0)
+--   disp_check_lift  after the shot, hold the needle at the dot and ask the
+--                    operator to look before it lifts off (default true;
+--                    Cancel still lifts off, then fails the step)
+--   disp_extra_ms    that check's "Shot +N ms" button: one more pulse of the
+--                    valve while the needle is still at the dot, as many
+--                    times as pressed (default 100; 0 = no button)
 --   disp_z_trim_mm   + moves the needle CLOSER to the part (default 0)
 --   disp_gap_mm      standoff ABOVE the touch height (default 0)
 --   disp_safety_mm   fast -> slow handover height   (default 1.0)
@@ -60,6 +66,8 @@ local DEV     = fd.param("disp_device", "gantry-main")
 local SHOT    = math.floor(fd.param("disp_shot_ms", 300))
 local BEFORE  = math.floor(fd.param("disp_before_ms", 0))
 local AFTER   = math.floor(fd.param("disp_after_ms", 0))
+local CHECK_LIFT = fd.param("disp_check_lift", true)
+local EXTRA   = math.floor(fd.param("disp_extra_ms", 100))
 local TRIM    = fd.param("disp_z_trim_mm", 0.0)
 local GAP     = fd.param("disp_gap_mm", 0.0)
 local SAFETY  = fd.param("disp_safety_mm", 1.0)
@@ -226,6 +234,50 @@ if BEFORE > 0 then fd.sleep(BEFORE) end
 -- the only reason this is one command instead of on / delay / off.
 fd.pulse_output{ device = IO, pin = PIN, ms = SHOT }
 if AFTER > 0 then fd.sleep(AFTER) end
+
+-- ---- 5b. Look before lifting --------------------------------------------------
+-- The needle is still sitting in the dot: the one moment the operator can see
+-- whether the shot left glue on the part (and how it wetted) before the lift
+-- pulls a string off it or hides a dry needle. Independent of `confirm` - a
+-- recipe can run without the go/no-go questions and still want this look - and
+-- skipped with the step's 'check before lift-off' box. Whatever the answer, the
+-- needle lifts off first: a Cancel never leaves it standing in the part.
+--
+-- "Shot +N ms" tops a short dot up where it stands: one more pulse_output of
+-- the same valve (so a Stop mid-pulse still closes it), then the same question
+-- again, as often as the operator presses it. Every top-up is logged and the
+-- total lands in disp_extra_total_ms: a dot that needed help is worth knowing
+-- about when the shot size is tuned. No dwell after a top-up - the operator is
+-- looking at it, and the lift waits for their OK anyway.
+local extra_total = 0
+if CHECK_LIFT then
+    local buttons = { "OK - lift off" }
+    if EXTRA > 0 then buttons[#buttons + 1] = string.format("Shot +%d ms", EXTRA) end
+    buttons[#buttons + 1] = "Cancel"   -- always last; anything not 1 or the top-up is it
+    while true do
+        local msg = "Shot fired - the needle is still at the dot. Check it visually, " ..
+                    "then OK to lift off (Cancel lifts off and fails the step)."
+        if extra_total > 0 then
+            msg = msg .. string.format("\n\nTopped up so far: +%d ms (%d ms in all).",
+                                       extra_total, SHOT + extra_total)
+        end
+        local c = fd.choose(msg, buttons, "instruction")
+        if c == 1 then
+            break
+        elseif EXTRA > 0 and c == 2 then
+            fd.pulse_output{ device = IO, pin = PIN, ms = EXTRA }
+            extra_total = extra_total + EXTRA
+            fd.logf("dispense: operator top-up +%d ms (total extra %d ms)", EXTRA, extra_total)
+        else   -- Cancel, or 0 = Stop released the prompt (the moves below then raise)
+            fd.ctx.disp_extra_total_ms = extra_total
+            retreat()
+            fd.move_axis_to{ device = DEV, axes = "Z", z_mm = cam_z, velocity_mm_s = VLIFT }
+            restore_velocity()
+            error("dispense rejected by operator before lift-off")
+        end
+    end
+end
+fd.ctx.disp_extra_total_ms = extra_total
 
 -- ---- 6. Retreat ---------------------------------------------------------------
 -- Z lifts off first, LIFT mm at v_liftoff: a controlled, straight pull off the

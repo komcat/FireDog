@@ -380,6 +380,7 @@ private:
     void DrawRecipeRunStrip(float height);
     void DrawRecipePromptWindow();    // GLOBAL prompt (recipe + script) — non-modal, always on top
     void DrawManualAdjustWindow();    // GLOBAL manual_adjust jog window — non-modal, always on top
+    void DrawOperatorNoticeWindow();  // GLOBAL notify_operator window — yellow, OK only, non-modal, on top
     void DrawAlignPickWindow();       // GLOBAL align_station crosshair pick — non-modal, always on top
     // Alignment page (View menu, full-page): teach a local frame (O1) from two
     // operator-marked features. The capture itself runs through the engines, so

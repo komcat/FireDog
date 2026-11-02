@@ -92,6 +92,61 @@ void Workflow::StartTowerLight()
     tower_->Start(LoadTowerLightConfig());
 }
 
+// tower_ is created once by StartTowerLight on the UI thread before any run
+// can start and reset only in ~Workflow, so reading it here is as safe as
+// SetTowerMode. Null in FireDogRig: the notice still works, silently.
+std::uint64_t Workflow::PostNotice(const std::string& message, int timeoutMs,
+                                   BuzzPattern buzz)
+{
+    std::uint64_t id = 0;
+    {
+        const std::scoped_lock lock(noticeMu_);
+        id = noticeNextId_++;
+        notice_.id       = id;
+        notice_.message  = message;
+        notice_.deadline = std::chrono::steady_clock::now() +
+                           std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 0);
+    }
+    if (tower_) tower_->SetBuzz(buzz);
+    FD_INFO("notice", "operator notice #%llu: %s", static_cast<unsigned long long>(id),
+            message.c_str());
+    return id;
+}
+
+void Workflow::AckNotice(std::uint64_t id)
+{
+    {
+        const std::scoped_lock lock(noticeMu_);
+        if (id == 0 || notice_.id != id) return;   // a late OK on an ended notice
+        noticeAcked_ = id;
+    }
+    if (tower_) tower_->SetBuzz(BuzzPattern::None);   // silence on the click, not the poll
+    FD_INFO("notice", "operator notice #%llu acknowledged", static_cast<unsigned long long>(id));
+}
+
+bool Workflow::NoticeAcked(std::uint64_t id) const
+{
+    const std::scoped_lock lock(noticeMu_);
+    return id != 0 && noticeAcked_ == id;
+}
+
+void Workflow::ClearNotice(std::uint64_t id)
+{
+    {
+        const std::scoped_lock lock(noticeMu_);
+        if (notice_.id != id) return;   // a newer notice owns the slot (and the buzzer)
+        notice_ = OperatorNotice{};
+    }
+    if (tower_) tower_->SetBuzz(BuzzPattern::None);
+}
+
+Workflow::OperatorNotice Workflow::PendingNotice() const
+{
+    const std::scoped_lock lock(noticeMu_);
+    if (notice_.id != 0 && noticeAcked_ == notice_.id) return {};   // OK pressed: hide now
+    return notice_;
+}
+
 // The needle lever arm is read from disk, not from the hardware config: it is
 // measured on the machine and rewritten by a calibration run, so it follows the
 // xxx.local.json -> xxx.json rule rather than living in hardware.json.

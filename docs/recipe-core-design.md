@@ -363,6 +363,35 @@ parameterized action) and keeps flow semantics in exactly one place:
 - `stop_recipe` — end the run early; `ok: true|false` variant for
   success-stop vs. fail-stop.
 
+### 5.2a The on-fail recipe (`"on_fail": "<recipe uid>"`)
+
+A recipe-level field, absent (= none) by default and written only when set, so
+older files round-trip unchanged. It names a recipe the engine runs when THIS
+recipe, launched as a run, ends **Failed** — a failed step (after its
+`on_error`) or a failing `stop_recipe`. The case it exists for: a pick fails
+half way with the gripper inside the part, and `LEFT home` takes it out. Set
+in the Recipe Editor's recipe fields ("on fail", shown with no step selected).
+Added November 2026.
+
+- **Resolved, validated and inlined at `RecipeEngine::Start`**, devices
+  Connected included. A cleanup that cannot run refuses the run before the
+  machine moves, not after the pick has failed.
+- **Only after a FAILURE.** An operator Stop and a safety abort both mean
+  "stop moving", so neither runs it. A teach run has none; a dry run rewrites
+  it like the recipe (`MakeDryRunRecipe`), which keeps the moves a home is.
+- **The run still ends Failed**, with the recipe's own error plus
+  `[on-fail '<name>': <state> - <cause>]`. A cleanup that succeeded does not
+  make the part good; a Stop during the cleanup does not turn a failed part
+  into a stopped one. A program sees the Failed only after the cleanup is
+  done, so `ProgramRunner` needs nothing of its own.
+- **Same ctx** (it is still this run, like a `sub_recipe`), no step-mode
+  gate, editor highlight cleared (its paths address another recipe). The DUT
+  gets an extra `$run` of kind `on_fail` after the recipe's own.
+- **Never chained, never inherited.** The on-fail recipe's own `on_fail` is
+  ignored; a `sub_recipe` is inlined and so has none — only the LAUNCHED
+  recipe's counts. `fd.run_recipe` (Lua) does not honour it: a script handles
+  its own failures.
+
 ### 5.3 Validation
 
 `Recipe::Validate(registry, resolveCtx)` runs at load and again at run start,

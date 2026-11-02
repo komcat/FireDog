@@ -122,6 +122,9 @@ fd.sleep(500)                  -- interruptible; raises on stop
 fd.log("aligned, pd=%.3g", pd) -- printf-style to the Logger ("script" source)
 print(...)                     -- redirected to the Logger too
 fd.prompt("Continue?")         -- same operator modal; returns false on Cancel
+fd.prompt("Close the lid", 0, "warning")  -- level: info | instruction | warning | error
+fd.choose("Dot ok?", {"Lift off", "Shot +100 ms", "Cancel"}, "instruction")
+                               -- custom buttons; 1-based index pressed, 0 if stopped
 fd.positions("hex-left")       -- name->uid table of saved positions
 fd.run_recipe("<uid or name>") -- run a recipe inline (see §5)
 ```

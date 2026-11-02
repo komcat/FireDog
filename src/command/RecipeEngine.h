@@ -74,7 +74,9 @@ public:
     };
 
     // Validates (structure + params + references + devices Connected), inlines
-    // sub-recipes, then launches the worker. False + err if a run is already
+    // sub-recipes, then launches the worker. The recipe's on-fail recipe (if
+    // any) is validated and inlined here too, so a cleanup that could not run
+    // refuses the run up front. False + err if a run is already
     // active, the UI path executor is busy, or validation fails.
     bool Start(const Recipe& recipe, Env env, std::string* err = nullptr,
                StartOpts opts = {});
@@ -87,6 +89,9 @@ public:
     void SetStepMode(bool on);
     // Resolves a blocking `prompt` / `prompt_input` step (text used by input).
     void AnswerPrompt(bool ok, std::string text = std::string());
+    // Resolves a blocking custom-button prompt (ExecutionContext::AwaitChoice)
+    // with the 0-based index of the button pressed. No-op unless one is pending.
+    void AnswerChoice(int index);
     // Resolves a blocking `manual_adjust` step (jogging happened UI-side).
     void AnswerAdjust(bool ok);
     // Resolves a blocking `align_station` crosshair pick (marked UI-side).
@@ -109,6 +114,10 @@ public:
         std::string pendingPrompt;    // non-empty while a prompt blocks
         bool        pendingPromptInput = false;   // the prompt wants a text answer
         int         pendingPromptAutoOkMs = 0;  // >0: OK answers itself in this long
+        PromptLevel pendingPromptLevel = PromptLevel::Info;   // how the window is dressed
+        // Non-empty: the pending prompt is a CHOICE - draw these buttons
+        // (left to right) instead of OK / Cancel and answer with AnswerChoice.
+        std::vector<std::string> pendingPromptButtons;
         // Manual-adjust handshake: valid while pendingAdjust is true.
         bool        pendingAdjust = false;
         ExecutionContext::AdjustRequest adjustReq;
@@ -142,12 +151,17 @@ public:
 private:
     // Step execution itself lives in StepRunner (shared with fd.run_recipe);
     // this class is the worker thread + status plumbing around it.
-    void ThreadMain(Recipe recipe, Env env);
+    // `onFail` (uid "" = none) is the validated, inlined on-fail recipe, run
+    // on the same ctx when `recipe` ends Failed (see Recipe::onFailUid).
+    void ThreadMain(Recipe recipe, Recipe onFail, Env env);
     bool SafetyAborted() const;   // critical unacknowledged alert?
 
     // Prompt handshakes (worker blocks; UI answers). Guarded by mu_.
     bool AwaitPromptInternal(const std::string& message, bool wantsInput,
-                             std::string* textOut, int autoOkMs = 0);
+                             std::string* textOut, int autoOkMs = 0,
+                             PromptLevel level = PromptLevel::Info);
+    int  AwaitChoiceInternal(const std::string& message,
+                             const std::vector<std::string>& buttons, PromptLevel level);
     bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
     bool AwaitPickInternal(const ExecutionContext::PickRequest& req,
                            ExecutionContext::PickResult* out);
@@ -175,6 +189,9 @@ private:
     std::string error_;
     std::string prompt_;               // pending prompt text ("" = none)
     bool        promptWantsInput_ = false;
+    PromptLevel promptLevel_      = PromptLevel::Info;
+    std::vector<std::string> promptButtons_;   // non-empty = a choice is pending
+    int         promptChoice_     = -1;
     // Auto-OK deadline of the pending prompt; epoch (zero) = none.
     std::chrono::steady_clock::time_point promptAutoOkAt_{};
     std::string promptText_;           // the UI's typed answer

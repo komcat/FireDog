@@ -97,6 +97,42 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
     if (opts.teach) MakeTeachRecipe(run, reg_);   // the inlined bodies, same rule
     if (opts.dryRun) MakeDryRunRecipe(run, reg_);
 
+    // The on-fail recipe is resolved, validated (devices Connected) and
+    // inlined NOW, not when it is needed: a cleanup that cannot run must
+    // refuse the run before the machine moves, not after the pick has failed
+    // with the gripper inside the part. A teach run has none - the operator is
+    // standing at the machine and every non-mover is off anyway. A dry run
+    // gets the same rewrite as the recipe (its moves are what a home is).
+    Recipe onFail;   // uid "" = none
+    if (!run.onFailUid.empty() && !opts.teach) {
+        const Recipe* src = nullptr;
+        for (const Recipe& r : env.library)
+            if (r.uid == run.onFailUid) { src = &r; break; }
+        if (!src) {
+            if (err) *err = "on-fail recipe uid '" + run.onFailUid + "' not found";
+            FD_WARN("recipe", "start rejected: on-fail recipe uid '%s' not found",
+                    run.onFailUid.c_str());
+            return false;
+        }
+        onFail = *src;
+        onFail.onFailUid.clear();   // never chained, so never checked
+        if (opts.dryRun) MakeDryRunRecipe(onFail, reg_);
+        const std::vector<RecipeIssue> fIssues = ValidateRecipe(
+            onFail, reg_, hw_, env.positions, env.maps, env.aligns, env.visionModels,
+            env.grips, env.trays, env.library, true);
+        std::string fErr;
+        if (!fIssues.empty())
+            fErr = fIssues.front().where + ": " + fIssues.front().message;
+        else if (InlineSubRecipes(onFail, env.library, &fErr) && opts.dryRun)
+            MakeDryRunRecipe(onFail, reg_);   // the inlined bodies, same rule
+        if (!fErr.empty()) {
+            const std::string msg = "on-fail recipe '" + onFail.name + "': " + fErr;
+            FD_WARN("recipe", "start rejected: %s", msg.c_str());
+            if (err) *err = msg;
+            return false;
+        }
+    }
+
     {
         const std::scoped_lock lock(mu_);
         state_       = State::Running;
@@ -125,7 +161,8 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
     running_.store(true);
     FD_INFO("recipe", "run started: '%s'%s%s", run.name.c_str(),
             opts.teach ? " [TEACH]" : "", opts.dryRun ? " [DRY RUN]" : "");
-    worker_ = std::thread(&RecipeEngine::ThreadMain, this, std::move(run), std::move(env));
+    worker_ = std::thread(&RecipeEngine::ThreadMain, this, std::move(run), std::move(onFail),
+                          std::move(env));
     return true;
 }
 
@@ -151,11 +188,26 @@ void RecipeEngine::SetStepMode(bool on)
     cv_.notify_all();   // off releases a pending pause (free-run resumes)
 }
 
+void RecipeEngine::AnswerChoice(int index)
+{
+    {
+        const std::scoped_lock lock(mu_);
+        if (prompt_.empty() || promptButtons_.empty()) return;   // no choice pending
+        if (index < 0 || index >= static_cast<int>(promptButtons_.size())) return;
+        prompt_.clear();
+        promptChoice_   = index;
+        promptAnswer_   = true;
+        promptAnswered_ = true;
+    }
+    cv_.notify_all();
+}
+
 void RecipeEngine::AnswerPrompt(bool ok, std::string text)
 {
     {
         const std::scoped_lock lock(mu_);
         if (prompt_.empty()) return;   // nothing pending
+        if (!promptButtons_.empty()) return;   // a choice: only AnswerChoice answers it
         prompt_.clear();
         promptText_     = std::move(text);
         promptAnswer_   = ok;
@@ -202,6 +254,8 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.error              = error_;
     s.pendingPrompt      = prompt_;
     s.pendingPromptInput = promptWantsInput_;
+    s.pendingPromptLevel = promptLevel_;
+    s.pendingPromptButtons = promptButtons_;
     if (!prompt_.empty() && promptAutoOkAt_ != std::chrono::steady_clock::time_point{}) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
             promptAutoOkAt_ - std::chrono::steady_clock::now()).count();
@@ -228,12 +282,14 @@ bool RecipeEngine::SafetyAborted() const
 }
 
 bool RecipeEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
-                                       std::string* textOut, int autoOkMs)
+                                       std::string* textOut, int autoOkMs,
+                                       PromptLevel level)
 {
     using clock = std::chrono::steady_clock;
     std::unique_lock lock(mu_);
     prompt_           = message;
     promptWantsInput_ = wantsInput;
+    promptLevel_      = level;
     promptText_.clear();
     promptAnswered_ = false;
     promptAnswer_   = false;
@@ -257,6 +313,30 @@ bool RecipeEngine::AwaitPromptInternal(const std::string& message, bool wantsInp
     const bool ok = promptAnswered_ && promptAnswer_ && !stopReq_.load();
     if (ok && textOut) *textOut = promptText_;
     return ok;
+}
+
+// The prompt handshake with the author's buttons: same slot, same window, same
+// stop behaviour - only the answer is an index instead of OK / Cancel.
+int RecipeEngine::AwaitChoiceInternal(const std::string& message,
+                                      const std::vector<std::string>& buttons,
+                                      PromptLevel level)
+{
+    std::unique_lock lock(mu_);
+    prompt_           = message;
+    promptWantsInput_ = false;
+    promptLevel_      = level;
+    promptButtons_    = buttons;
+    promptChoice_     = -1;
+    promptAnswered_   = false;
+    promptAnswer_     = false;
+    promptAutoOkAt_   = std::chrono::steady_clock::time_point{};   // a choice never answers itself
+    // Wait in slices so a stop request always gets through.
+    while (!promptAnswered_ && !stopReq_.load()) {
+        cv_.wait_for(lock, std::chrono::milliseconds(100));
+    }
+    prompt_.clear();
+    promptButtons_.clear();
+    return (promptAnswered_ && !stopReq_.load()) ? promptChoice_ : -1;
 }
 
 bool RecipeEngine::AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req)
@@ -312,15 +392,15 @@ bool RecipeEngine::AwaitStepInternal(const std::string& label,
     return !stopReq_.load() && !SafetyAborted();
 }
 
-void RecipeEngine::ThreadMain(Recipe recipe, Env env)
+void RecipeEngine::ThreadMain(Recipe recipe, Recipe onFail, Env env)
 {
     ExecutionContext ctx(
         wf_, hw_, env.positions, env.maps, env.aligns,
         env.visionModels, env.grips, env.trays, env.visionDir, env.scriptsDir,
         ExecutionContext::Hooks{
             [this] { return stopReq_.load() || SafetyAborted(); },
-            [this](const std::string& m, int autoOkMs) {
-                return AwaitPromptInternal(m, false, nullptr, autoOkMs);
+            [this](const std::string& m, int autoOkMs, PromptLevel level) {
+                return AwaitPromptInternal(m, false, nullptr, autoOkMs, level);
             },
             [this](const std::string& m, std::string* out) {
                 return AwaitPromptInternal(m, true, out);
@@ -331,6 +411,10 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
             [this](const ExecutionContext::PickRequest& r,
                    ExecutionContext::PickResult* out) {
                 return AwaitPickInternal(r, out);
+            },
+            [this](const std::string& m, const std::vector<std::string>& b,
+                   PromptLevel level) {
+                return AwaitChoiceInternal(m, b, level);
             },
         });
     {
@@ -368,6 +452,71 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
         runErr = "unknown error";
     }
 
+    // The recipe's own outcome is decided HERE, before any on-fail recipe runs:
+    // a cleanup that succeeds does not make the run a success, and a Stop
+    // pressed during the cleanup does not turn a failed part into a stopped one.
+    const bool stopped = stopReq_.load() || out == StepRunner::Outcome::Aborted;
+    const bool failed  = !stopped && out != StepRunner::Outcome::Ok &&
+                         out != StepRunner::Outcome::StopOk;
+
+    // On-fail recipe: only after a FAILURE. An operator Stop or a safety abort
+    // means "stop moving", so neither runs it. Same ctx (it is still this run,
+    // as a sub_recipe would be), no step-mode gate (a cleanup is not something
+    // to single-step through), and the editor highlight is cleared - its step
+    // paths address another recipe. The ctx's stop hook still applies.
+    std::string onFailResult;   // "" = none ran
+    if (failed && !onFail.uid.empty() && !SafetyAborted()) {
+        FD_WARN("recipe", "'%s' failed (%s) - running on-fail recipe '%s'",
+                recipe.name.c_str(), runErr.empty() ? "step failed" : runErr.c_str(),
+                onFail.name.c_str());
+        {
+            const std::scoped_lock lock(mu_);
+            currentStep_ = "on-fail '" + onFail.name + "'";
+            curPath_.clear();
+            leafDone_  = 0;
+            leafTotal_ = CountLeafSteps(onFail.steps);
+        }
+        StepRunner::Outcome fOut = StepRunner::Outcome::Fail;
+        std::string fErr;
+        try {
+            StepRunner runner(
+                reg_, ctx,
+                StepRunner::Callbacks{
+                    [this, &onFail](const std::string& label,
+                                    const std::vector<std::size_t>&) {
+                        const std::scoped_lock lock(mu_);
+                        currentStep_ = "on-fail '" + onFail.name + "' " + label;
+                        curPath_.clear();
+                    },
+                    [this] {
+                        const std::scoped_lock lock(mu_);
+                        ++leafDone_;
+                    },
+                    nullptr,
+                });
+            fOut = runner.Run(onFail.steps);
+            fErr = runner.Error();
+        } catch (const std::exception& e) {
+            FD_ERROR("recipe", "unexpected engine exception in on-fail recipe: %s", e.what());
+            fErr = e.what();
+        } catch (...) {
+            FD_ERROR("recipe", "unexpected non-standard exception in on-fail recipe");
+            fErr = "unknown error";
+        }
+        const char* fState =
+            (fOut == StepRunner::Outcome::Ok || fOut == StepRunner::Outcome::StopOk)
+                ? StateName(State::Completed)
+            : (stopReq_.load() || fOut == StepRunner::Outcome::Aborted)
+                ? StateName(State::Stopped)
+                : StateName(State::Failed);
+        onFailResult = fState;
+        FD_INFO("recipe", "on-fail recipe '%s' finished: %s%s%s", onFail.name.c_str(),
+                fState, fErr.empty() ? "" : " - ", fErr.c_str());
+        if (runErr.empty()) runErr = "step failed";
+        runErr += " [on-fail '" + onFail.name + "': " + fState +
+                  (fErr.empty() ? "" : " - " + fErr) + "]";
+    }
+
     // Terminal state — every path lands here with the cause logged.
     {
         const std::scoped_lock lock(mu_);
@@ -377,12 +526,11 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
         lastCtx_ = ctx.CtxSnapshot();
         runCtx_  = nullptr;   // ctx dies with this frame; status stops reading it
         error_  = runErr;
-        if (stopReq_.load() || out == StepRunner::Outcome::Aborted) {
+        if (stopped) {
             state_ = State::Stopped;
             if (error_.empty())
                 error_ = SafetyAborted() ? "safety alert" : "stopped by operator";
-        } else if (out == StepRunner::Outcome::Ok ||
-                   out == StepRunner::Outcome::StopOk) {
+        } else if (!failed) {
             state_ = State::Completed;
             error_.clear();
         } else {
@@ -396,8 +544,12 @@ void RecipeEngine::ThreadMain(Recipe recipe, Env env)
         // Traceability: attribute this run to the open DUT (soft no-op if none).
         // A teach run drove the machine but proved nothing about a part; nor
         // did a dry run, which skipped every step that touches one.
-        if (!teach_.load() && !dryRun_.load())
+        if (!teach_.load() && !dryRun_.load()) {
             DutSession::Instance().RecordRun("recipe", recipeName_, StateName(state_));
+            // The cleanup moved the machine with the part in it: on the record too.
+            if (!onFailResult.empty())
+                DutSession::Instance().RecordRun("on_fail", onFail.name, onFailResult);
+        }
     }
     running_.store(false);
 }

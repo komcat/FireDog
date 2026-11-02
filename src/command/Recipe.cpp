@@ -97,6 +97,7 @@ nlohmann::json RecipeToJson(const Recipe& r)
     // byte for byte and stays clean in the dirty compare.
     if (r.hidden) j["hidden"] = true;
     if (!r.tags.empty()) j["tags"] = r.tags;
+    if (!r.onFailUid.empty()) j["on_fail"] = r.onFailUid;
     nlohmann::json arr = nlohmann::json::array();
     for (const RecipeStep& s : r.steps) arr.push_back(StepToJson(s));
     j["steps"] = std::move(arr);
@@ -116,6 +117,7 @@ Recipe RecipeFromJson(const nlohmann::json& j)
             if (t.is_string()) joined += t.get<std::string>() + ",";
         r.tags = ParseTagList(joined);   // the same trim/dedupe the editor applies
     }
+    r.onFailUid   = j.value("on_fail", std::string());
     if (r.uid.empty()) r.uid = GenerateUid();
     if (j.contains("steps") && j["steps"].is_array()) {
         for (const nlohmann::json& s : j["steps"]) {
@@ -652,6 +654,15 @@ std::vector<RecipeIssue> ValidateRecipe(const Recipe& r, const CommandRegistry& 
     ValidateEnv env{reg, hw, positions, maps, aligns, visionModels, grips, trays, library,
                     requireConnected, &issues};
     if (r.steps.empty()) issues.push_back({"(root)", "recipe has no steps", {}});
+    // The on-fail reference only; its steps are validated (devices included)
+    // by RecipeEngine::Start, before the machine moves.
+    if (!r.onFailUid.empty()) {
+        if (r.onFailUid == r.uid)
+            issues.push_back({"(on fail)", "a recipe cannot be its own on-fail recipe", {}});
+        else if (!FindByUid(library, r.onFailUid))
+            issues.push_back({"(on fail)", "on-fail recipe uid '" + r.onFailUid +
+                                           "' not found", {}});
+    }
     ValidateSteps(env, r.steps, "", {}, false, 1);
     return issues;
 }

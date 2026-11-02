@@ -114,7 +114,8 @@ run for 30 min — puts it to sleep (faded, eye shut, rising z's).
 | Standby (< 30 min) | blink 0.5 s | | | |
 | Idle (≥ 30 min) | | steady | | |
 | Down (declared) | | | steady | steady 3 s on the declaration, then off |
-| Waiting on the operator (prompt, manual adjust, crosshair pick, step pause) | | blink 0.5 s | | |
+| Waiting on the operator (prompt, manual adjust, crosshair pick, step pause, operator notice) | | blink 0.5 s | | |
+| Operator notice (`notify_operator`, until OK / timeout / Stop) | (as the state beneath) | | | its pattern: double / beep / triple / steady |
 | Safety alert (until acknowledged) | | | blink | 3 beeps on the trip |
 | FireDog closed | off | off | off | off |
 
@@ -137,6 +138,18 @@ Priority: safety > down > waiting > running / standby / idle.
   next change; a failed write is logged and retried after 5 s; a reconnect
   rewrites every pin. A Down carried over a restart does not buzz; declaring UP
   silences the buzzer at once.
+- **The operator notice** (`notify_operator`, November 2026) is the one buzzer a
+  RECIPE asks for: a `BuzzPattern` laid over the lamps (`TowerLight::SetBuzz`),
+  replaced by the safety beeps on a trip. The slot is ONE notice on `Workflow`
+  (`PostNotice` / `AckNotice` / `ClearNotice` / `PendingNotice`, mutex-guarded,
+  ids so a late OK on an ended notice is a no-op): the command posts it and waits
+  through `ExecutionContext::WaitUntil` under its own timeout (default 30 min,
+  `on_timeout` fail | continue, optional ctx key `ack` | `timeout`); the UI's
+  yellow, OK-only, non-modal `App::DrawOperatorNoticeWindow` acks it, which
+  silences the buzzer on the click; every exit of the command clears the slot.
+  It is deliberately NOT the engines' prompt handshake — there is no Cancel, the
+  wait has its own outcome, and a script reaches it exactly as a recipe does.
+  A dry run skips it (not on `kDryRunCommands`); a teach run disables it.
 - Config: `<machine root>/config/tower_light.local.json`, **written with
   Horizon's seed on the first start** (`IOTower` / `Tower_Green` /
   `Tower_Yellow` / `Tower_Red` / `Tower_Buzzer`, `safety_beeps: 3`,

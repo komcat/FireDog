@@ -369,6 +369,24 @@ public:
     // state + a run waiting on the operator); safety is read by the pump itself.
     void StartTowerLight();
     void SetTowerMode(TowerMode m) { if (tower_) tower_->SetMode(m); }
+
+    // ---- Operator notice (notify_operator) -----------------------------------
+    // ONE slot, not a queue: a buzzer and a yellow OK window that say "come to
+    // the machine" (e.g. UV curing complete). The command's worker posts it and
+    // waits for the ack under its own timeout; the UI draws the window and
+    // acks; whoever ends it (ack, timeout, Stop) clears the slot and the
+    // buzzer. Ids make a late OK on an old notice a no-op. Any thread.
+    struct OperatorNotice {
+        std::uint64_t id = 0;   // 0 = none
+        std::string   message;
+        std::chrono::steady_clock::time_point deadline{};
+    };
+    std::uint64_t  PostNotice(const std::string& message, int timeoutMs, BuzzPattern buzz);
+    void           AckNotice(std::uint64_t id);     // the UI's OK
+    bool           NoticeAcked(std::uint64_t id) const;
+    void           ClearNotice(std::uint64_t id);   // the poster ends it (ack/timeout/stop)
+    OperatorNotice PendingNotice() const;           // id 0 = nothing to show
+
     void StopAllMotion();   // hard stop on every motion device
 
     // ---- Taught-position hand-back (save_position command) ------------------
@@ -753,6 +771,12 @@ private:
 
     // Used waffle-tray cells by tray uid (see TrayNext), and the worker->UI
     // queue that carries a run's changes to the document.
+    // Operator notice slot (PostNotice/AckNotice/ClearNotice).
+    mutable std::mutex noticeMu_;
+    OperatorNotice     notice_;
+    std::uint64_t      noticeNextId_ = 1;
+    std::uint64_t      noticeAcked_  = 0;   // id of the last acked notice
+
     mutable std::mutex                       trayMu_;
     std::map<std::string, std::set<TrayCell>> trayConsumed_;
     std::map<std::string, TrayCell>          trayActive_;

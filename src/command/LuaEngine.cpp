@@ -109,8 +109,12 @@ const std::vector<LuaFdBuiltin>& LuaFdBuiltins()
         {"log", "log(", "fd.log(msg) : a line into the log band and the daily log"},
         {"logf", "logf(", "fd.logf(fmt, ...) : printf-style fd.log"},
         {"prompt", "prompt(",
-         "fd.prompt(msg [, auto_ok_ms]) -> ok : block on the OK / Cancel prompt window; "
-         "with auto_ok_ms it answers OK by itself when nobody does"},
+         "fd.prompt(msg [, auto_ok_ms [, level]]) -> ok : block on the OK / Cancel prompt "
+         "window; with auto_ok_ms (0 = wait) it answers OK by itself when nobody does; "
+         "level = \"info\" | \"instruction\" | \"warning\" | \"error\""},
+        {"choose", "choose(",
+         "fd.choose(msg, {\"A\", \"B\", ...} [, level]) -> n : the prompt window with "
+         "these buttons instead of OK / Cancel; n = 1-based index pressed, 0 if stopped"},
         {"input", "input(",
          "fd.input(msg) -> text | nil : block on a text prompt (keyboard or scanner); "
          "nil on Cancel"},
@@ -420,10 +424,30 @@ std::string RunLuaFile(const std::string& requested, const CommandRegistry& reg,
         fd.set_function("log", [](const std::string& msg) {
             FD_INFO("script", "%s", msg.c_str());
         });
-        // Optional second argument: answer OK by itself after that many ms.
+        // Optional second argument: answer OK by itself after that many ms
+        // (0 = wait). Optional third: the level that dresses the window -
+        // "info" (default) / "instruction" / "warning" / "error".
         fd.set_function("prompt", [&ctx](const std::string& msg,
-                                         sol::optional<double> autoOkMs) {
-            return ctx.AwaitPrompt(msg, autoOkMs ? static_cast<int>(*autoOkMs) : 0);
+                                         sol::optional<double> autoOkMs,
+                                         sol::optional<std::string> level) {
+            return ctx.AwaitPrompt(msg, autoOkMs ? static_cast<int>(*autoOkMs) : 0,
+                                   PromptLevelFromName(level ? *level : std::string()));
+        });
+        // Custom-button prompt: fd.choose(msg, {"A", "B", ...} [, level])
+        // returns the 1-based index of the button pressed, or 0 when Stop
+        // released it (the next fd.* command then raises "stopped").
+        fd.set_function("choose", [&ctx](const std::string& msg, sol::table labels,
+                                         sol::optional<std::string> level) {
+            std::vector<std::string> buttons;
+            for (std::size_t i = 1; i <= labels.size(); ++i) {
+                const sol::optional<std::string> b = labels.get<sol::optional<std::string>>(i);
+                if (b) buttons.push_back(*b);
+            }
+            if (buttons.empty())
+                throw std::runtime_error("fd.choose needs at least one button label");
+            const int idx = ctx.AwaitChoice(
+                msg, buttons, PromptLevelFromName(level ? *level : std::string()));
+            return idx < 0 ? 0 : idx + 1;
         });
         // Text-input prompt (operator keyboard / barcode scanner): returns
         // the string, or nil on Cancel.
@@ -752,11 +776,26 @@ void LuaEngine::RequestStop()
     cv_.notify_all();
 }
 
+void LuaEngine::AnswerChoice(int index)
+{
+    {
+        const std::scoped_lock lock(mu_);
+        if (prompt_.empty() || promptButtons_.empty()) return;   // no choice pending
+        if (index < 0 || index >= static_cast<int>(promptButtons_.size())) return;
+        prompt_.clear();
+        promptChoice_   = index;
+        promptAnswer_   = true;
+        promptAnswered_ = true;
+    }
+    cv_.notify_all();
+}
+
 void LuaEngine::AnswerPrompt(bool ok, std::string text)
 {
     {
         const std::scoped_lock lock(mu_);
         if (prompt_.empty()) return;
+        if (!promptButtons_.empty()) return;   // a choice: only AnswerChoice answers it
         prompt_.clear();
         promptText_     = std::move(text);
         promptAnswer_   = ok;
@@ -802,6 +841,8 @@ LuaEngine::Status LuaEngine::GetStatus() const
     s.error              = error_;
     s.pendingPrompt      = prompt_;
     s.pendingPromptInput = promptWantsInput_;
+    s.pendingPromptLevel = promptLevel_;
+    s.pendingPromptButtons = promptButtons_;
     if (!prompt_.empty() && promptAutoOkAt_ != std::chrono::steady_clock::time_point{}) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
             promptAutoOkAt_ - std::chrono::steady_clock::now()).count();
@@ -817,12 +858,14 @@ LuaEngine::Status LuaEngine::GetStatus() const
 }
 
 bool LuaEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
-                                    std::string* textOut, int autoOkMs)
+                                    std::string* textOut, int autoOkMs,
+                                    PromptLevel level)
 {
     using clock = std::chrono::steady_clock;
     std::unique_lock lock(mu_);
     prompt_           = message;
     promptWantsInput_ = wantsInput;
+    promptLevel_      = level;
     promptText_.clear();
     promptAnswered_ = false;
     promptAnswer_   = false;
@@ -845,6 +888,29 @@ bool LuaEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
     const bool ok = promptAnswered_ && promptAnswer_ && !stopReq_.load();
     if (ok && textOut) *textOut = promptText_;
     return ok;
+}
+
+// fd.choose(): the prompt handshake with the author's buttons (see
+// RecipeEngine::AwaitChoiceInternal - the same shape).
+int LuaEngine::AwaitChoiceInternal(const std::string& message,
+                                   const std::vector<std::string>& buttons,
+                                   PromptLevel level)
+{
+    std::unique_lock lock(mu_);
+    prompt_           = message;
+    promptWantsInput_ = false;
+    promptLevel_      = level;
+    promptButtons_    = buttons;
+    promptChoice_     = -1;
+    promptAnswered_   = false;
+    promptAnswer_     = false;
+    promptAutoOkAt_   = std::chrono::steady_clock::time_point{};   // never answers itself
+    while (!promptAnswered_ && !stopReq_.load()) {
+        cv_.wait_for(lock, std::chrono::milliseconds(100));
+    }
+    prompt_.clear();
+    promptButtons_.clear();
+    return (promptAnswered_ && !stopReq_.load()) ? promptChoice_ : -1;
 }
 
 bool LuaEngine::AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req)
@@ -887,8 +953,8 @@ void LuaEngine::ThreadMain(std::string path, Env env)
         env.visionModels, env.grips, env.trays, env.visionDir, env.scriptsDir,
         ExecutionContext::Hooks{
             [this] { return HookShouldStop(); },
-            [this](const std::string& m, int autoOkMs) {
-                return AwaitPromptInternal(m, false, nullptr, autoOkMs);
+            [this](const std::string& m, int autoOkMs, PromptLevel level) {
+                return AwaitPromptInternal(m, false, nullptr, autoOkMs, level);
             },
             [this](const std::string& m, std::string* out) {
                 return AwaitPromptInternal(m, true, out);
@@ -899,6 +965,10 @@ void LuaEngine::ThreadMain(std::string path, Env env)
             [this](const ExecutionContext::PickRequest& r,
                    ExecutionContext::PickResult* out) {
                 return AwaitPickInternal(r, out);
+            },
+            [this](const std::string& m, const std::vector<std::string>& b,
+                   PromptLevel level) {
+                return AwaitChoiceInternal(m, b, level);
             },
         });
     for (const auto& [key, val] : env.initialCtx) ctx.CtxSet(key, val);

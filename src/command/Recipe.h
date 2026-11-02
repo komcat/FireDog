@@ -59,6 +59,14 @@ struct Recipe {
     // the recipe, not about what it does, so nothing else reads them.
     bool hidden = false;
     std::vector<std::string> tags;
+    // On-fail recipe (uid into the library; "" = none, the default): what
+    // RecipeEngine runs when THIS recipe, launched as a run, ends Failed - a
+    // failed step or a failing stop_recipe. Meant for "get the tool out of the
+    // part" (a pick fails half way: run LEFT home). Never on an operator Stop
+    // or a safety abort - those mean "stop moving" - never for a teach run,
+    // and never chained: the on-fail recipe's own on-fail is ignored. Only the
+    // LAUNCHED recipe's is honoured; a sub_recipe is inlined and has none.
+    std::string onFailUid;
     std::vector<RecipeStep> steps;
 };
 

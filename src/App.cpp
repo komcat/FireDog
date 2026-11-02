@@ -408,6 +408,7 @@ void App::Update(float dt)
 
 bool App::OperatorWanted() const
 {
+    if (workflow_.PendingNotice().id != 0) return true;   // notify_operator
     if (orch_.recipe.Running()) {
         const RecipeEngine::Status s = orch_.recipe.GetStatus();
         if (!s.pendingPrompt.empty() || s.pendingAdjust || s.pendingPick || s.stepPaused)

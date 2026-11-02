@@ -114,6 +114,26 @@ bool        IsShippedScript(const std::string& path);   // sits in the exe's con
 // it, so a launcher that spells the shipped path needs nothing else.
 std::string LocateShippedScript(const std::string& path);
 
+// How an OK/Cancel prompt is dressed: the window's title, accent colour and
+// banner. Presentation only - every level blocks and answers exactly the same
+// way. Info is the default, so a prompt written before levels existed looks
+// as it always did.
+enum class PromptLevel : int { Info, Instruction, Warning, Error };
+inline constexpr const char* kPromptLevelNames[] = {"info", "instruction", "warning",
+                                                    "error"};
+inline const char* PromptLevelName(PromptLevel l)
+{
+    const int i = static_cast<int>(l);
+    return (i >= 0 && i < 4) ? kPromptLevelNames[i] : kPromptLevelNames[0];
+}
+// Unknown spellings fall back to Info (a typo must not refuse a prompt).
+inline PromptLevel PromptLevelFromName(const std::string& s)
+{
+    for (int i = 0; i < 4; ++i)
+        if (s == kPromptLevelNames[i]) return static_cast<PromptLevel>(i);
+    return PromptLevel::Info;
+}
+
 class ExecutionContext {
 public:
     // Manual position adjustment (bobcat's ManualAdjust): the run pauses while
@@ -229,13 +249,20 @@ public:
         std::function<bool()> shouldStop;                     // required
         // OK / Cancel prompt. autoOkMs > 0 answers OK by itself when that
         // long passes unanswered; 0 waits for the operator. null => fails.
-        std::function<bool(const std::string&, int autoOkMs)> awaitPrompt;
+        // `level` only dresses the window (PromptLevel).
+        std::function<bool(const std::string&, int autoOkMs, PromptLevel level)> awaitPrompt;
         // Text-input prompt (operator types / barcode-scans); false = cancel.
         std::function<bool(const std::string&, std::string*)> awaitInput;
         // Manual jog-adjust prompt; false = cancel (or stop released it).
         std::function<bool(const AdjustRequest&)> awaitAdjust;
         // Crosshair pick prompt; false = cancel (or stop released it).
         std::function<bool(const PickRequest&, PickResult*)> awaitPick;
+        // The prompt window with the AUTHOR's buttons instead of OK / Cancel:
+        // returns the 0-based index pressed, -1 when Stop released it. null =>
+        // -1. No auto-OK: a choice has no default answer. LAST on purpose -
+        // the engines brace-initialise this struct positionally.
+        std::function<int(const std::string&, const std::vector<std::string>&, PromptLevel)>
+            awaitChoice;
     };
 
     ExecutionContext(Workflow& wf, HardwareManager& hw,
@@ -329,7 +356,12 @@ public:
     // ---- Operator prompts (block; false = cancelled or stopped) -------------
     // autoOkMs > 0: the prompt answers OK by itself after that long, so an
     // operator gets a glance and a Cancel, not a stop. 0 waits for them.
-    bool AwaitPrompt(const std::string& message, int autoOkMs = 0);
+    bool AwaitPrompt(const std::string& message, int autoOkMs = 0,
+                     PromptLevel level = PromptLevel::Info);
+    // Custom buttons (left to right; the first is drawn as the primary one).
+    // 0-based index of the one pressed, -1 = stopped (or no buttons).
+    int  AwaitChoice(const std::string& message, const std::vector<std::string>& buttons,
+                     PromptLevel level = PromptLevel::Info);
     bool AwaitInput(const std::string& message, std::string* textOut);
     bool AwaitAdjust(const AdjustRequest& req);
     bool AwaitPick(const PickRequest& req, PickResult* out);

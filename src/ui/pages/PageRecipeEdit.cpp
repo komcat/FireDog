@@ -497,6 +497,34 @@ void App::DrawRecipeEditPanel()
         if (ImGui::InputTextMultiline("description", dbuf, sizeof(dbuf),
                                       ImVec2(-1.0f, 60.0f)))
             r.description = dbuf;
+        // On-fail recipe: what the engine runs when this recipe, launched as a
+        // run, ends Failed (Recipe::onFailUid). "(none)" is the default.
+        {
+            const Recipe* target = nullptr;
+            for (const Recipe& rr : session_.Recipes())
+                if (!r.onFailUid.empty() && rr.uid == r.onFailUid) { target = &rr; break; }
+            const std::string preview =
+                r.onFailUid.empty() ? std::string("(none)")
+                : target            ? target->name
+                                    : "(missing: " + r.onFailUid + ")";
+            if (ImGui::BeginCombo("on fail", preview.c_str())) {
+                if (ImGui::Selectable("(none)", r.onFailUid.empty())) r.onFailUid.clear();
+                for (const Recipe& rr : session_.Recipes()) {
+                    if (rr.uid == r.uid) continue;   // never its own cleanup
+                    ImGui::PushID(rr.uid.c_str());
+                    if (ImGui::Selectable(rr.name.c_str(), rr.uid == r.onFailUid))
+                        r.onFailUid = rr.uid;
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Recipe to run when this one FAILS (a failed step or a\n"
+                                  "failing stop_recipe), e.g. a home that takes the\n"
+                                  "gripper out of the part. The run still ends Failed.\n"
+                                  "Not run on Stop, a safety abort, or a teach run.\n"
+                                  "Checked (devices connected) before the run starts.");
+        }
         ImGui::EndDisabled();
         ImGui::TextDisabled("uid: %s", r.uid.c_str());
         ImGui::Separator();

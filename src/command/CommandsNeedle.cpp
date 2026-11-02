@@ -375,6 +375,16 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"after_ms", PT::Int, false, 0, 0, 60000, {},
                        "dwell after the valve closes, before lifting (string break)",
                        PinDir::Any, kDispenseHelper},
+                      {"check_lift", PT::Bool, false, true, 0, 0, {},
+                       "after the shot, hold the needle at the dot and ask the operator "
+                       "to check it visually before lift-off (OK lifts off; Cancel lifts "
+                       "off and fails the step). Independent of confirm; untick to skip",
+                       PinDir::Any, kDispenseHelper},
+                      {"extra_ms", PT::Int, false, 100, 0, 5000, {},
+                       "the lift-off check's 'Shot +N ms' button: one more valve pulse "
+                       "of this length while the needle is still at the dot, as often "
+                       "as pressed (total in ctx disp_extra_total_ms); 0 = no button",
+                       PinDir::Any, kDispenseHelper},
                       {"lift_mm", PT::Double, false, 1.5, 0.0, 20.0, {},
                        "6: after the shot, lift Z this far off the dot BEFORE the "
                        "slide comes up (0 = slide first)",
@@ -423,6 +433,8 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("disp_shot_ms", static_cast<double>(p.GetInt("shot_ms")));
                       c.CtxSet("disp_before_ms", static_cast<double>(p.GetInt("before_ms")));
                       c.CtxSet("disp_after_ms", static_cast<double>(p.GetInt("after_ms")));
+                      c.CtxSet("disp_check_lift", p.GetBool("check_lift"));
+                      c.CtxSet("disp_extra_ms", static_cast<double>(p.GetInt("extra_ms")));
                       c.CtxSet("disp_z_trim_mm", p.GetDouble("z_trim_mm"));
                       c.CtxSet("disp_gap_mm", p.GetDouble("gap_mm"));
                       c.CtxSet("disp_safety_mm", p.GetDouble("safety_mm"));
