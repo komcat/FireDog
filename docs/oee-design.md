@@ -156,4 +156,8 @@ Priority: safety > down > waiting > running / standby / idle.
   `down_buzzer_seconds: 3`, `enabled: true`). There is no shipped default file:
   the compiled defaults are it, and the release zip ships no repo `config/*.json`
   anyway. A device not in `hardware.json` logs once and leaves the tower off; a
-  missing pin name leaves that lamp dark.
+  missing pin name leaves that lamp dark. **`buzzer_device`** (optional, empty =
+  `device`) puts the buzzer on another IO device than the lamps — a machine whose
+  buzzer hangs off the switch panel (`"buzzer_device": "IOSwitch", "buzzer":
+  "switch_led_13"`). Each output pin tracks its own device and last-written state,
+  so two devices connecting at different times still only rewrite what changed.

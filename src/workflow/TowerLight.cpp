@@ -33,6 +33,7 @@ nlohmann::json ToJson(const TowerLightConfig& c)
             {"yellow", c.yellow},
             {"red", c.red},
             {"buzzer", c.buzzer},
+            {"buzzer_device", c.buzzerDevice},
             {"safety_beeps", c.safetyBeeps},
             {"down_buzzer_seconds", c.downBuzzerSeconds}};
 }
@@ -64,6 +65,7 @@ TowerLightConfig LoadTowerLightConfig()
         c.yellow            = j.value("yellow", c.yellow);
         c.red               = j.value("red", c.red);
         c.buzzer            = j.value("buzzer", c.buzzer);
+        c.buzzerDevice      = j.value("buzzer_device", c.buzzerDevice);
         c.safetyBeeps       = j.value("safety_beeps", c.safetyBeeps);
         c.downBuzzerSeconds = j.value("down_buzzer_seconds", c.downBuzzerSeconds);
     } catch (const std::exception& e) {
@@ -89,10 +91,10 @@ TowerLight::~TowerLight()
 
     // FireDog closed = every lamp off. Forced: whatever was last written, a
     // manual toggle may have changed since.
-    if (dev_ >= 0 && hw_.IoState(static_cast<std::size_t>(dev_)) == ConnState::Connected) {
-        haveWritten_ = false;
-        retryAt_     = {};
-        Write(Lamps{});
+    if (dev_ >= 0) {
+        for (Out* o : {&outG_, &outY_, &outR_, &outB_}) o->known = false;
+        retryAt_ = {};
+        Write(Lamps{});   // each pin only if its own device is still connected
     }
 }
 
@@ -104,28 +106,43 @@ void TowerLight::Start(const TowerLightConfig& cfg)
         FD_INFO("tower", "tower light disabled (config/tower_light.local.json)");
         return;
     }
-    for (std::size_t i = 0; i < hw_.IoCount(); ++i)
-        if (hw_.IoName(i) == cfg_.device) dev_ = static_cast<int>(i);
+    const auto devIndex = [&](const std::string& name) {
+        for (std::size_t i = 0; i < hw_.IoCount(); ++i)
+            if (hw_.IoName(i) == name) return static_cast<int>(i);
+        return -1;
+    };
+    dev_ = devIndex(cfg_.device);
     if (dev_ < 0) {
         FD_WARN("tower", "IO device '%s' is not in hardware.json - tower light off",
                 cfg_.device.c_str());
         return;
     }
-    IIoDevice* d = hw_.IoDevice(static_cast<std::size_t>(dev_));
-    const auto pin = [&](const std::string& name) {
-        if (name.empty() || !d) return -1;
-        const int p = d->OutputPinByName(name);
-        if (p < 0)
-            FD_WARN("tower", "%s has no output named '%s' - that lamp stays dark",
-                    cfg_.device.c_str(), name.c_str());
-        return p;
+    const std::string buzzDevName = cfg_.buzzerDevice.empty() ? cfg_.device : cfg_.buzzerDevice;
+    const int         buzzDev     = devIndex(buzzDevName);
+    if (buzzDev < 0 && !cfg_.buzzer.empty())
+        FD_WARN("tower", "buzzer IO device '%s' is not in hardware.json - no buzzer",
+                buzzDevName.c_str());
+    const auto bind = [&](Out& o, int dev, const std::string& devName, const std::string& name) {
+        o = Out{};
+        if (name.empty() || dev < 0) return;
+        IIoDevice* d = hw_.IoDevice(static_cast<std::size_t>(dev));
+        const int  p = d ? d->OutputPinByName(name) : -1;
+        if (p < 0) {
+            FD_WARN("tower", "%s has no output named '%s' - it stays off", devName.c_str(),
+                    name.c_str());
+            return;
+        }
+        o.dev   = dev;
+        o.pin   = p;
+        o.label = devName + "." + name;
     };
-    pinG_ = pin(cfg_.green);
-    pinY_ = pin(cfg_.yellow);
-    pinR_ = pin(cfg_.red);
-    pinB_ = pin(cfg_.buzzer);
+    bind(outG_, dev_, cfg_.device, cfg_.green);
+    bind(outY_, dev_, cfg_.device, cfg_.yellow);
+    bind(outR_, dev_, cfg_.device, cfg_.red);
+    bind(outB_, buzzDev, buzzDevName, cfg_.buzzer);
     worker_ = std::thread([this] { Run(); });
-    FD_INFO("tower", "tower light on %s", cfg_.device.c_str());
+    FD_INFO("tower", "tower light on %s, buzzer %s", cfg_.device.c_str(),
+            outB_.pin >= 0 ? outB_.label.c_str() : "(none)");
 }
 
 void TowerLight::Run()
@@ -200,36 +217,31 @@ TowerLight::Lamps TowerLight::Next()
 
 void TowerLight::Write(const Lamps& want)
 {
-    const auto idx = static_cast<std::size_t>(dev_);
-    if (hw_.IoState(idx) != ConnState::Connected) {
-        haveWritten_ = false;   // reconnects unknown: rewrite everything
-        return;
-    }
-    if (haveWritten_ && written_ == want) return;
     if (std::chrono::steady_clock::now() < retryAt_) return;
-    IIoDevice* d = hw_.IoDevice(idx);
-    if (!d) return;
 
     bool ok = true;
-    const auto set = [&](int pin, bool on, bool was, const char* name) {
-        if (pin < 0 || (haveWritten_ && was == on)) return;
-        if (!d->SetOutput(pin, on)) {
-            FD_WARN("tower", "%s.%s -> %s failed", cfg_.device.c_str(), name, on ? "ON" : "OFF");
-            ok = false;
+    const auto set = [&](Out& o, bool on) {
+        if (o.pin < 0 || (o.known && o.state == on)) return;
+        const auto idx = static_cast<std::size_t>(o.dev);
+        IIoDevice* d   = hw_.IoState(idx) == ConnState::Connected ? hw_.IoDevice(idx) : nullptr;
+        if (!d) {             // its device is down: unknown until it is back
+            o.known = false;
+            return;
         }
+        if (!d->SetOutput(o.pin, on)) {
+            FD_WARN("tower", "%s -> %s failed", o.label.c_str(), on ? "ON" : "OFF");
+            o.known = false;
+            ok      = false;
+            return;
+        }
+        o.known = true;
+        o.state = on;
     };
-    set(pinG_, want.green, written_.green, cfg_.green.c_str());
-    set(pinY_, want.yellow, written_.yellow, cfg_.yellow.c_str());
-    set(pinR_, want.red, written_.red, cfg_.red.c_str());
-    set(pinB_, want.buzzer, written_.buzzer, cfg_.buzzer.c_str());
-
-    if (ok) {
-        written_     = want;
-        haveWritten_ = true;
-    } else {
-        haveWritten_ = false;
-        retryAt_     = std::chrono::steady_clock::now() + kRetryAfter;
-    }
+    set(outG_, want.green);
+    set(outY_, want.yellow);
+    set(outR_, want.red);
+    set(outB_, want.buzzer);
+    if (!ok) retryAt_ = std::chrono::steady_clock::now() + kRetryAfter;
 }
 
 } // namespace firedog

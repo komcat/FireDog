@@ -46,6 +46,9 @@ struct TowerLightConfig {
     std::string yellow  = "Tower_Yellow";
     std::string red     = "Tower_Red";
     std::string buzzer  = "Tower_Buzzer";   // empty = no buzzer
+    // The IO device the BUZZER pin is on, when it is not the lamps' device
+    // (a machine whose buzzer hangs off a switch panel). Empty = `device`.
+    std::string buzzerDevice;
     int         safetyBeeps       = 3;      // on a safety trip (0 = silent)
     double      downBuzzerSeconds = 3.0;    // steady, on a DOWN declaration (0 = silent)
 };
@@ -90,8 +93,18 @@ private:
     HardwareManager&      hw_;
     std::function<bool()> safetyTripped_;
     TowerLightConfig      cfg_;
-    int                   dev_ = -1;   // index into the IO fleet
-    int pinG_ = -1, pinY_ = -1, pinR_ = -1, pinB_ = -1;
+    // One output: where it is and what was last written to it. Per PIN, not
+    // per device, because the lamps and the buzzer may sit on two devices that
+    // connect at different times - each pin is rewritten only when it changed
+    // or its device came back, never every tick.
+    struct Out {
+        int         dev = -1, pin = -1;   // IO fleet index, output pin (-1 = none)
+        std::string label;                // "IOTower.Tower_Green", for the log
+        bool        known = false;        // false = unknown: write it next time
+        bool        state = false;        // last value written
+    };
+    Out outG_, outY_, outR_, outB_;
+    int dev_ = -1;   // the lamps' device (index into the IO fleet)
 
     std::atomic<int> mode_{static_cast<int>(TowerMode::Off)};
     std::atomic<int> buzz_{static_cast<int>(BuzzPattern::None)};
@@ -102,8 +115,6 @@ private:
     std::thread             worker_;
 
     // Worker-thread only.
-    Lamps written_;
-    bool  haveWritten_ = false;   // false = unknown: rewrite every pin
     std::chrono::steady_clock::time_point retryAt_{};
     int   tick_          = 0;
     bool  wasTripped_    = false;
