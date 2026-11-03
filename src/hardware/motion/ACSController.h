@@ -42,6 +42,12 @@ public:
     bool RunBuffer(int buffer, const std::string& label = {}) override;     // acsc_RunBuffer
     bool StopBuffer(int buffer) override;                                   // acsc_StopBuffer
     bool BufferRunning(int buffer) const override;                          // ACSC_PST_RUN, polled
+    bool SupportsProfile() const override { return true; }
+    MotionProfile Profile() const override;                                 // cached, see RequestProfileRead
+    void RequestProfileRead() override;                                     // poll thread: VEL ACC DEC JERK KDEC
+    bool MoveAbsoluteDynamic(const std::vector<std::pair<std::string, double>>& targets,
+                             const DynamicProfile& dyn) override;           // ACC/DEC/JERK from VEL, then move
+    bool RestoreDefaultProfile() override;                                  // the connect-time profile
     void RequestFastPoll() override;
 
     std::string LastError() const override;

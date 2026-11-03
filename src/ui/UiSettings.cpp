@@ -120,6 +120,10 @@ UiSettings UiSettings::Load(const std::string& path)
                 p.amps    = a[i].value("a", p.amps);
             }
         }
+        if (j.contains("dyn_acc_per_vel") && j["dyn_acc_per_vel"].is_number())
+            s.dynAccPerVel = j["dyn_acc_per_vel"].get<double>();
+        if (j.contains("dyn_jerk_per_acc") && j["dyn_jerk_per_acc"].is_number())
+            s.dynJerkPerAcc = j["dyn_jerk_per_acc"].get<double>();
         // Needle "clear first": the whole list, so an emptied one stays empty.
         if (j.contains("needle_clear_moves") && j["needle_clear_moves"].is_array()) {
             s.ndlClearMoves.clear();
@@ -204,6 +208,8 @@ bool UiSettings::Save(const std::string& path) const
     for (const NeedleClearMove& m : ndlClearMoves)
         cm.push_back({{"device", m.device}, {"position", m.position}});
     j["needle_clear_moves"] = cm;
+    j["dyn_acc_per_vel"]    = dynAccPerVel;
+    j["dyn_jerk_per_acc"]   = dynJerkPerAcc;
 
     std::ofstream f(path);
     if (!f.is_open()) {

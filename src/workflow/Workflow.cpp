@@ -40,7 +40,7 @@ constexpr double kJogCoalesceSec = 0.4;
 // UI's clamp is convenience, this is the hard limit per controller type.
 constexpr double kMinVelMMs    = 0.001;
 constexpr double kMaxVelPIMMs  = 10.0;   // hexapods
-constexpr double kMaxVelACSMMs = 40.0;   // gantry
+constexpr double kMaxVelACSMMs = 80.0;   // gantry (= the last kVelACS preset in WndJog)
 
 // A device that has been registered with layer 1 and still needs its connect
 // thread. Shared by StartMotion and StartIO, which both build the whole fleet
@@ -2536,6 +2536,26 @@ bool Workflow::MoveToPosition(std::size_t devIdx,
     if (devIdx >= hw_.MotionCount() || targets.empty()) return false;
     IMotionController* m = hw_.MotionDevice(devIdx);
     return m && m->MoveAbsolute(targets);   // coordinated (PI_MOV / acsc_ToPointM+GoM)
+}
+
+bool Workflow::MoveToPositionDynamic(std::size_t devIdx,
+                                     const std::vector<std::pair<std::string, double>>& targets,
+                                     const DynamicProfile& dyn)
+{
+    if (SafetyBlocked()) {
+        FD_WARN("safety", "move blocked - acknowledge the safety alert first");
+        return false;
+    }
+    if (devIdx >= hw_.MotionCount() || targets.empty()) return false;
+    IMotionController* m = hw_.MotionDevice(devIdx);
+    if (!m || !m->SupportsProfile()) return false;
+    return m->MoveAbsoluteDynamic(targets, dyn);
+}
+
+bool Workflow::RestoreDefaultProfile(std::size_t devIdx)
+{
+    IMotionController* m = devIdx < hw_.MotionCount() ? hw_.MotionDevice(devIdx) : nullptr;
+    return m && m->RestoreDefaultProfile();
 }
 
 bool Workflow::SetIoOutput(std::size_t devIdx, int pin, bool on)

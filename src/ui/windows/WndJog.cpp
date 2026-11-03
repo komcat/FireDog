@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>   // std::size
 #include <map>
 #include <string>
 #include <utility>
@@ -39,7 +40,7 @@ namespace firedog {
 namespace {
 // Jog velocities (mm/s) per controller type.
 constexpr double kVelPI[]  = {1.0, 2.0, 5.0, 10.0};
-constexpr double kVelACS[] = {1.0, 5.0, 10.0, 20.0, 40.0};
+constexpr double kVelACS[] = {1.0, 5.0, 10.0, 20.0, 40.0, 80.0};   // last = ceiling; keep = Workflow kMaxVelACSMMs
 
 // The taught position a Pos-tab pad slot points at, or null when the uid is
 // unknown to the loaded product (another product, or the position was deleted).
@@ -1306,7 +1307,7 @@ void App::DrawVelocityCombo(std::size_t di)
     if (!dev) return;
     const bool    acs  = dev->Type() == "ACS";
     const double* vels = acs ? kVelACS : kVelPI;
-    const int     velN = acs ? 5 : 4;
+    const int     velN = static_cast<int>(acs ? std::size(kVelACS) : std::size(kVelPI));
     const int     key  = static_cast<int>(di);
     int& idx = velIndex_[key];
     if (idx < 0 || idx >= velN) idx = 0;
@@ -1338,7 +1339,8 @@ void App::DrawVelocityCombo(std::size_t di)
     }
 
     // Custom velocity not in the preset list. Clamped to the preset ceiling for
-    // this controller type (PI 10, ACS 40 mm/s) — raise kVel* to allow more.
+    // this controller type (PI 10, ACS 80 mm/s) — raise kVel* (and the matching
+    // Workflow kMaxVel* guardrail) to allow more.
     const double velMax = vels[velN - 1];
     double& custom = velCustomEdit_[key];
     if (custom <= 0.0) custom = vels[idx];   // seed the box on first show

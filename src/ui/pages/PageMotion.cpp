@@ -15,6 +15,7 @@
 #include "core/Log.h"
 #include "core/Topics.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -143,6 +144,29 @@ void App::DrawMotionListPanel()
     ImGui::Spacing();
     ImGui::Separator();
     DrawVelocityCombo(static_cast<size_t>(selectedMotion_));
+
+    // Dynamic profile for THIS page's Move only (saved positions). Every other
+    // move - jog, paths, recipes, the other pages - stays on the default
+    // profile, and the driver puts it back before any of them runs.
+    if (m->SupportsProfile()) {
+        ImGui::Spacing();
+        ImGui::Checkbox("Dynamic profile on Move", &motDynOn_);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Move (saved positions, this page) sets each axis's\n"
+                              "ACC = ratio x VEL, DEC = ACC, JERK = ratio x ACC first.\n"
+                              "Every other move puts the default profile back.\n"
+                              "Off at every start; recipes never use it (yet).");
+        ImGui::BeginDisabled(!motDynOn_);
+        ImGui::SetNextItemWidth(70.0f);
+        if (ImGui::InputDouble("ACC / VEL", &motDyn_.accPerVel, 0.0, 0.0, "%g"))
+            motDyn_.accPerVel = std::clamp(motDyn_.accPerVel, 0.1, 1000.0);
+        ImGui::SetNextItemWidth(70.0f);
+        if (ImGui::InputDouble("JERK / ACC", &motDyn_.jerkPerAcc, 0.0, 0.0, "%g"))
+            motDyn_.jerkPerAcc = std::clamp(motDyn_.jerkPerAcc, 0.1, 1000.0);
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("DEC = ACC; KDEC untouched");
+        if (!motDynMsg_.empty()) ImGui::TextWrapped("%s", motDynMsg_.c_str());
+    }
 }
 
 void App::DrawMotionDetailPanel()
@@ -195,8 +219,96 @@ void App::DrawMotionDetailPanel()
             DrawMotionScanTab(idx, m);
             ImGui::EndTabItem();
         }
+        if (m->SupportsProfile() && ImGui::BeginTabItem("Profile")) {
+            DrawMotionProfileTab(idx, m);
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
+}
+
+// The motion profile the controller is set to, per axis — what an operator
+// would otherwise type ?VEL0 / ?ACC0 / ?DEC0 / ?JERK0 / ?KDEC0 into the ACS
+// terminal for. READ-ONLY: the values are the driver's cached read-back (at
+// connect, after every velocity change FireDog makes, and on Read), so this
+// draw never waits on the controller. Note that VEL is the one FireDog writes:
+// a move step's velocity_mm_s and the jog speed set it on every axis.
+void App::DrawMotionProfileTab(std::size_t devIdx, IMotionController* m)
+{
+    const MotionProfile pr        = m->Profile();
+    const bool          connected = hardware_.MotionState(devIdx) == ConnState::Connected;
+
+    ImGui::PushID("profile");
+    ImGui::BeginDisabled(!connected);
+    if (ImGui::SmallButton("Read")) m->RequestProfileRead();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Read VEL / ACC / DEC / JERK / KDEC back from the controller");
+    ImGui::SameLine();
+    if (!connected)
+        ImGui::TextDisabled("not connected");
+    else if (!pr.valid)
+        ImGui::TextDisabled("reading...");
+    else
+        ImGui::TextDisabled("controller values, user units (mm, s)");
+    if (!pr.error.empty())
+        ImGui::TextColored(StateColor(ConnState::Failed), "read failed: %s", pr.error.c_str());
+    if (pr.valid) {
+        if (pr.dynamic) {
+            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.25f, 1.0f),
+                               "DYNAMIC profile on the controller (until the next ordinary move)");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!connected || orch_.Busy());
+            if (ImGui::SmallButton("Restore default")) {
+                motDynMsg_ = workflow_.RestoreDefaultProfile(devIdx)
+                                 ? std::string()
+                                 : "restore failed: " + m->LastError();
+            }
+            ImGui::EndDisabled();
+        } else if (!pr.defaults.empty()) {
+            ImGui::TextDisabled("default profile (as read at connect)");
+        }
+    }
+
+    if (pr.valid && !pr.axes.empty() &&
+        ImGui::BeginTable("##acsprofile", 6,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                              ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("Axis");
+        ImGui::TableSetupColumn("VEL mm/s");
+        ImGui::TableSetupColumn("ACC mm/s2");
+        ImGui::TableSetupColumn("DEC mm/s2");
+        ImGui::TableSetupColumn("JERK mm/s3");
+        ImGui::TableSetupColumn("KDEC mm/s2");
+        ImGui::TableHeadersRow();
+        for (std::size_t i = 0; i < pr.axes.size(); ++i) {
+            const AxisProfile& a = pr.axes[i];
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%s (%zu)", a.axis.c_str(), i);   // (n) = the ACS axis index, as in ?VELn
+            if (!a.valid) {
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextDisabled("--");
+                continue;
+            }
+            const double v[5] = {a.vel, a.acc, a.dec, a.jerk, a.kdec};
+            for (int c = 0; c < 5; ++c) {
+                ImGui::TableSetColumnIndex(c + 1);
+                ImGui::Text("%g", v[c]);
+            }
+        }
+        ImGui::EndTable();
+    }
+
+    // What every ordinary move restores: the first complete read after connect.
+    if (pr.dynamic && !pr.defaults.empty()) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("Default (restored by the next ordinary move):");
+        for (const AxisProfile& d : pr.defaults)
+            ImGui::TextDisabled("  %s  ACC %g  DEC %g  JERK %g", d.axis.c_str(), d.acc, d.dec,
+                                d.jerk);
+    }
+    ImGui::PopID();
 }
 
 // Reference state of a device that can lose it (a PI hexapod forgets it on a
@@ -847,6 +959,29 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             ImGui::Text("Move %s to '%s'?", devName.c_str(), sp.name);
             ImGui::TextDisabled("All axes travel together. Make sure the path is clear.");
             drawDiffTable(sp, m->Positions(), "Target", "Now");
+            // The dynamic profile, shown BEFORE the move from the cached VEL so
+            // the operator sees the numbers; the driver re-reads VEL itself.
+            // Never while a run is active: the run's own next move would put
+            // the default back mid-test.
+            const bool dynMove = motDynOn_ && m->SupportsProfile() && !orch_.Busy();
+            if (dynMove) {
+                const MotionProfile pr = m->Profile();
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.25f, 1.0f),
+                                   "Dynamic profile (ACC = %g x VEL, DEC = ACC, JERK = %g x ACC):",
+                                   motDyn_.accPerVel, motDyn_.jerkPerAcc);
+                for (const AxisProfile& a : pr.axes) {
+                    if (!a.valid) continue;
+                    const double acc = a.vel * motDyn_.accPerVel;
+                    ImGui::Text("  %s  VEL %g  ->  ACC %g  DEC %g  JERK %g", a.axis.c_str(),
+                                a.vel, acc, acc, acc * motDyn_.jerkPerAcc);
+                }
+                if (pr.defaults.empty())
+                    ImGui::TextColored(StateColor(ConnState::Failed),
+                                       "  default profile not read yet - the move will be refused");
+            } else if (motDynOn_ && orch_.Busy()) {
+                ImGui::TextDisabled("A run is active: this move uses the default profile.");
+            }
             ImGui::Spacing();
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.0f));
@@ -856,10 +991,18 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                     const auto it = sp.vals.find(a);
                     if (it != sp.vals.end()) tgt.emplace_back(a, it->second);
                 }
-                if (workflow_.MoveToPosition(static_cast<size_t>(selectedMotion_), tgt))
-                    FD_INFO("saved", "move %s -> '%s'", devName.c_str(), sp.name);
-                else
+                const bool ok =
+                    dynMove ? workflow_.MoveToPositionDynamic(static_cast<size_t>(selectedMotion_),
+                                                              tgt, motDyn_)
+                            : workflow_.MoveToPosition(static_cast<size_t>(selectedMotion_), tgt);
+                if (ok) {
+                    FD_INFO("saved", "move %s -> '%s'%s", devName.c_str(), sp.name,
+                            dynMove ? " (dynamic profile)" : "");
+                    if (dynMove) motDynMsg_.clear();
+                } else {
                     FD_WARN("saved", "move %s -> '%s' failed", devName.c_str(), sp.name);
+                    if (dynMove) motDynMsg_ = "dynamic move refused: " + m->LastError();
+                }
                 moveRow_ = -1;
                 ImGui::CloseCurrentPopup();
             }

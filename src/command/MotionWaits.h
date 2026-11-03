@@ -85,6 +85,24 @@ ParamSpec ApproachVelocityParam(bool required = false);
 ParamSpec ApproachMmParam();
 ParamSpec ApproachPctParam();
 
+// ---- dynamic motion profile (ACS) -----------------------------------------
+// A mover that declares these three issues every leg through IssueMove, which
+// sends it as MoveAbsoluteDynamic (each axis's ACC = dyn_acc_per_vel x its VEL,
+// DEC = ACC, JERK = dyn_jerk_per_acc x ACC) when `dynamic_profile` is on and
+// the device supports it, and as the ordinary move otherwise. The default is
+// ON for the commands that declare it (move_to_position, move_path); a command
+// that does not declare it reads false and keeps the default profile - which
+// the driver restores before that move. A PI hexapod has no profile and always
+// takes the ordinary move. Grouped "Profile" so the editor folds them away.
+ParamSpec DynamicProfileParam();
+ParamSpec DynAccPerVelParam();
+ParamSpec DynJerkPerAccParam();
+// The one place a mover decides dynamic vs ordinary. Same contract as
+// Workflow::MoveToPosition: false = the move was not accepted.
+bool IssueMove(ExecutionContext& ctx, int idx,
+               const std::vector<std::pair<std::string, double>>& targets,
+               const ParamValues& p);
+
 // The two optional pre-move params every mover appends, and the step that
 // applies them before the move: a device velocity override (persists on the
 // device, like the Jog panel's) and a camera exposure issued BEFORE travelling

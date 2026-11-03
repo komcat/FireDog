@@ -95,7 +95,7 @@ CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int 
     // The plain move, byte for byte what every one of these commands did before
     // the approach existed. No live-position read, no extra leg, no cost.
     if (approachV <= 0.0) {
-        if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
+        if (!IssueMove(ctx, idx, targets, p))
             return CommandResult::Fail("move to " + what + " rejected");
         const auto r = WaitArrive(ctx, m, targets, tol, timeoutMs);
         if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
@@ -118,7 +118,7 @@ CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int 
     // a move it has already made must still succeed, and a percentage zone of
     // zero distance is zero.
     if (dist < 1e-9) {
-        if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
+        if (!IssueMove(ctx, idx, targets, p))
             return CommandResult::Fail("move to " + what + " rejected");
         return WaitSettle(ctx, m, idx);
     }
@@ -155,7 +155,7 @@ CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int 
             const double c = cur.at(axis);
             inter.emplace_back(axis, c + (tgt - c) * frac);
         }
-        if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), inter))
+        if (!IssueMove(ctx, idx, inter, p))
             return CommandResult::Fail("travel leg to " + what + " rejected");
         const auto r = WaitArrive(ctx, m, inter, tol > 0.05 ? tol : 0.05, timeoutMs);
         if (r != ExecutionContext::WaitResult::Ok) {
@@ -173,7 +173,9 @@ CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int 
         return CommandResult::Fail("approach velocity change rejected");
     slowed = true;
 
-    if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets)) {
+    // Dynamic on this leg derives the profile from the APPROACH velocity just
+    // set, so the slow leg also starts and stops gently.
+    if (!IssueMove(ctx, idx, targets, p)) {
         restore();
         return CommandResult::Fail("approach leg to " + what + " rejected");
     }
@@ -203,6 +205,44 @@ ParamSpec ApproachMmParam()
     return {"approach_mm", ParamType::Double, false, 0.0, 0, 0, {},
             "approach zone as mm before the target (wins over approach_pct)",
             PinDir::Any, "Approach"};
+}
+
+ParamSpec DynamicProfileParam()
+{
+    return {"dynamic_profile", ParamType::Bool, false, true, 0, 0, {},
+            "ACS: set ACC/DEC/JERK from each axis's velocity before every leg "
+            "(off = the controller's default profile)",
+            PinDir::Any, "Profile"};
+}
+
+ParamSpec DynAccPerVelParam()
+{
+    return {"dyn_acc_per_vel", ParamType::Double, false, 10.0, 0.1, 1000.0, {},
+            "dynamic profile: ACC = this x VEL (DEC = ACC)", PinDir::Any, "Profile"};
+}
+
+ParamSpec DynJerkPerAccParam()
+{
+    return {"dyn_jerk_per_acc", ParamType::Double, false, 10.0, 0.1, 1000.0, {},
+            "dynamic profile: JERK = this x ACC", PinDir::Any, "Profile"};
+}
+
+bool IssueMove(ExecutionContext& ctx, int idx,
+               const std::vector<std::pair<std::string, double>>& targets,
+               const ParamValues& p)
+{
+    const std::size_t i = static_cast<std::size_t>(idx);
+    IMotionController* m = ctx.Hw().MotionDevice(i);
+    if (p.GetBool("dynamic_profile") && m && m->SupportsProfile()) {
+        DynamicProfile dyn;
+        dyn.accPerVel  = p.GetDouble("dyn_acc_per_vel");
+        dyn.jerkPerAcc = p.GetDouble("dyn_jerk_per_acc");
+        if (ctx.Wf().MoveToPositionDynamic(i, targets, dyn)) return true;
+        FD_WARN("motion", "%s dynamic move refused: %s", m->Name().c_str(),
+                m->LastError().c_str());
+        return false;
+    }
+    return ctx.Wf().MoveToPosition(i, targets);
 }
 
 ParamSpec ApproachPctParam()
@@ -410,7 +450,7 @@ CommandResult ExecMovePath(ExecutionContext& ctx, const ParamValues& p)
     for (std::size_t i = 0; i < legs.size(); ++i) {
         const MapRouteLeg& leg = legs[i];
         if (leg.targets.empty()) continue;   // node with no shared axes (first = start)
-        if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), leg.targets))
+        if (!IssueMove(ctx, idx, leg.targets, p))
             return CommandResult::Fail("move to '" + leg.label + "' rejected");
         const auto r = WaitArrive(ctx, m, leg.targets, kDefaultTolMM, legTimeout);
         if (r != ExecutionContext::WaitResult::Ok) {
@@ -1070,6 +1110,9 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       ApproachVelocityParam(),
                       ApproachMmParam(),
                       ApproachPctParam(),
+                      DynamicProfileParam(),
+                      DynAccPerVelParam(),
+                      DynJerkPerAccParam(),
                       PreDelayParam(),
                       PostDelayParam(),
                       TeachParam(),
@@ -1152,6 +1195,9 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"leg_timeout_ms", PT::Int, false, 120000, 100, 600000, {}, "per-leg timeout"},
                       VelocityParam(),
                       ExposureParam(),
+                      DynamicProfileParam(),
+                      DynAccPerVelParam(),
+                      DynJerkPerAccParam(),
                       PreDelayParam(),
                       PostDelayParam(),
                       TeachParam(),

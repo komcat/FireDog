@@ -113,6 +113,8 @@ int App::Run()
         quickIo_         = ui.quickIo;
         psuPresets_      = ui.psuPresets;
         ndlClearMoves_   = ui.ndlClearMoves;
+        if (ui.dynAccPerVel  > 0.0) motDyn_.accPerVel  = ui.dynAccPerVel;
+        if (ui.dynJerkPerAcc > 0.0) motDyn_.jerkPerAcc = ui.dynJerkPerAcc;
     }
 
     WindowPlacement place;
@@ -617,6 +619,8 @@ void App::SaveUiSettings()
     s.quickIo     = quickIo_;
     s.psuPresets  = psuPresets_;
     s.ndlClearMoves = ndlClearMoves_;
+    s.dynAccPerVel  = motDyn_.accPerVel;
+    s.dynJerkPerAcc = motDyn_.jerkPerAcc;
     // The window's own geometry comes from the host, which is the only thing
     // that knows it — App never tracks a size it does not set.
     const WindowPlacement& place = host_.Placement();

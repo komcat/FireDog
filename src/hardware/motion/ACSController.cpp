@@ -76,6 +76,10 @@ struct ACSController::Impl {
     std::map<std::string, double> positions;
     std::map<std::string, bool>   enabled;   // ACSC_MST_ENABLE per axis, polled
     std::map<int, bool>           bufRunning;   // ACSC_PST_RUN per started buffer, polled
+    MotionProfile            profile;       // cached VEL/ACC/DEC/JERK/KDEC (mtx)
+    std::atomic<bool>        profileReadReq{false};   // poll thread re-reads the profile
+    std::vector<AxisProfile> defaults;      // first complete read after connect (mtx)
+    bool                     dynamicOn = false;       // controller holds a dynamic profile (mtx)
     std::string              lastError;
     std::vector<DataStream*> streams;       // one DataBus topic per axis
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -135,9 +139,140 @@ struct ACSController::Impl {
         for (size_t i = 0; i < axes.size(); ++i)
             streams[i] = &DataBus::Instance().Stream(topics::MotionAxis(cfg.name, axes[i]));
 
+        profileReadReq.store(true);   // the poll thread's first pass reads it
         polling.store(true);
         pollThread = std::thread(&Impl::PollLoop, this);
         return true;
+    }
+
+    // Caller holds mtx. One exchange per value per axis; an axis whose read
+    // fails is reported invalid rather than half-filled, and the profile is
+    // logged once per read so the log says what the controller was set to.
+    void ReadProfileLocked()
+    {
+        MotionProfile pr;
+        pr.seq = profile.seq + 1;
+        for (int i = 0; i < static_cast<int>(axes.size()); ++i) {
+            AxisProfile a;
+            a.axis  = axes[i];
+            a.valid = acsc_GetVelocity(handle, i, &a.vel, NULL) &&
+                      acsc_GetAcceleration(handle, i, &a.acc, NULL) &&
+                      acsc_GetDeceleration(handle, i, &a.dec, NULL) &&
+                      acsc_GetJerk(handle, i, &a.jerk, NULL) &&
+                      acsc_GetKillDeceleration(handle, i, &a.kdec, NULL);
+            if (!a.valid && pr.error.empty())
+                pr.error = "axis " + axes[i] + ": " + LastErrorText();
+            pr.axes.push_back(a);
+        }
+        pr.valid = true;
+        // The DEFAULT profile is the first complete read after connect, taken
+        // before FireDog has written any ACC/DEC/JERK - so it is what the
+        // controller was configured with, and what every ordinary move restores.
+        const bool complete = std::all_of(pr.axes.begin(), pr.axes.end(),
+                                          [](const AxisProfile& a) { return a.valid; });
+        if (defaults.empty() && !dynamicOn && complete && !pr.axes.empty()) {
+            defaults = pr.axes;
+            FD_INFO("acs", "%s default profile captured", cfg.name.c_str());
+        }
+        pr.defaults = defaults;
+        pr.dynamic  = dynamicOn;
+        profile     = std::move(pr);
+        if (!profile.error.empty())
+            FD_WARN("acs", "%s profile read: %s", cfg.name.c_str(), profile.error.c_str());
+        for (const AxisProfile& a : profile.axes)
+            if (a.valid)
+                FD_INFO("acs", "%s %s: VEL %g ACC %g DEC %g JERK %g KDEC %g", cfg.name.c_str(),
+                        a.axis.c_str(), a.vel, a.acc, a.dec, a.jerk, a.kdec);
+    }
+
+    // Caller holds mtx. ACC, DEC, JERK of one axis; KDEC is never written.
+    bool WriteAxisProfileLocked(int i, double acc, double dec, double jerk)
+    {
+        return acsc_SetAcceleration(handle, i, acc, NULL) &&
+               acsc_SetDeceleration(handle, i, dec, NULL) &&
+               acsc_SetJerk(handle, i, jerk, NULL);
+    }
+
+    // Caller holds mtx. Puts the default profile back if a dynamic one is on
+    // the controller; a no-op (no exchange) otherwise. A failed restore leaves
+    // dynamicOn set, so the next move tries again rather than running on a
+    // profile nobody asked for.
+    bool RestoreDefaultsLocked()
+    {
+        if (!dynamicOn) return true;
+        for (int i = 0; i < static_cast<int>(defaults.size()) &&
+                        i < static_cast<int>(axes.size()); ++i) {
+            const AxisProfile& d = defaults[static_cast<std::size_t>(i)];
+            if (!WriteAxisProfileLocked(i, d.acc, d.dec, d.jerk)) {
+                lastError = "restoring the default profile on " + axes[i] + " failed (" +
+                            LastErrorText() + ")";
+                FD_ERROR("acs", "%s: %s", cfg.name.c_str(), lastError.c_str());
+                return false;
+            }
+        }
+        dynamicOn = false;
+        profileReadReq.store(true);
+        FD_INFO("acs", "%s default profile restored", cfg.name.c_str());
+        return true;
+    }
+
+    // Caller holds mtx. ACC/DEC/JERK of every axis from that axis's own VEL,
+    // read off the controller now (not the cache: a velocity set a moment ago
+    // must be the one the profile is derived from).
+    bool ApplyDynamicLocked(const DynamicProfile& dyn)
+    {
+        if (defaults.empty()) {
+            lastError = "the default profile has not been read yet - no dynamic profile "
+                        "until there is one to restore";
+            return false;
+        }
+        if (!(dyn.accPerVel > 0.0) || !(dyn.jerkPerAcc > 0.0)) {
+            lastError = "dynamic profile ratios must be > 0";
+            return false;
+        }
+        for (int i = 0; i < static_cast<int>(axes.size()); ++i) {
+            double vel = 0.0;
+            if (!acsc_GetVelocity(handle, i, &vel, NULL) || !(vel > 0.0)) {
+                lastError = "reading VEL of " + axes[i] + " failed (" + LastErrorText() + ")";
+                RestoreDefaultsLocked();
+                return false;
+            }
+            const double acc  = vel * dyn.accPerVel;
+            const double jerk = acc * dyn.jerkPerAcc;
+            dynamicOn = true;   // from the first write on, something must be restored
+            if (!WriteAxisProfileLocked(i, acc, acc, jerk)) {
+                const std::string why = "writing the dynamic profile on " + axes[i] +
+                                        " failed (" + LastErrorText() + ")";
+                RestoreDefaultsLocked();
+                lastError = why;
+                FD_ERROR("acs", "%s: %s", cfg.name.c_str(), lastError.c_str());
+                return false;
+            }
+            FD_INFO("acs", "%s %s dynamic profile: VEL %g ACC %g DEC %g JERK %g",
+                    cfg.name.c_str(), axes[i].c_str(), vel, acc, acc, jerk);
+        }
+        profileReadReq.store(true);
+        return true;
+    }
+
+    bool RestoreDefaultProfile()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) return true;   // nothing to restore on
+        return RestoreDefaultsLocked();
+    }
+
+    MotionProfile Profile() const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return profile;
+    }
+
+    void RequestProfileRead()
+    {
+        profileReadReq.store(true);
+        std::lock_guard<std::mutex> lk(pollMtx);
+        pollCv.notify_one();   // answer within one exchange, not the idle period
     }
 
     void Disconnect()
@@ -150,11 +285,17 @@ struct ACSController::Impl {
         }
         if (connected.exchange(false)) {
             std::lock_guard<std::mutex> lock(mtx);
+            RestoreDefaultsLocked();   // leave the controller as it was found
             acsc_KillAll(handle, NULL);
             acsc_CloseComm(handle);
             handle = ACSC_INVALID;
             enabled.clear();
             bufRunning.clear();
+            const unsigned seq = profile.seq + 1;
+            profile     = MotionProfile{};
+            profile.seq = seq;
+            defaults.clear();
+            dynamicOn = false;
         }
     }
 
@@ -168,6 +309,7 @@ struct ACSController::Impl {
                 // a "finished" seen here comes with positions read after the
                 // program ended. Read and stored under the lock RunBuffer takes,
                 // so a stale poll never overwrites its optimistic "running".
+                if (profileReadReq.exchange(false)) ReadProfileLocked();
                 for (auto& [buf, running] : bufRunning) {
                     int pst = 0;
                     if (acsc_GetProgramState(handle, buf, &pst, NULL))
@@ -225,6 +367,7 @@ struct ACSController::Impl {
         if (!connected.load()) { lastError = "not connected"; return false; }
         const int idx = AxisIndex(axis);
         if (idx < 0) { lastError = "invalid axis: " + axis; return false; }
+        if (!RestoreDefaultsLocked()) return false;   // an ordinary move never runs dynamic
         // Immediate single-axis PTP (not multipoint): issuing a new point while
         // moving re-targets the running move, so jog presses override the
         // previous instead of queuing points. flags=0 => start immediately.
@@ -241,6 +384,31 @@ struct ACSController::Impl {
         if (targets.empty()) return true;
         std::lock_guard<std::mutex> lock(mtx);
         if (!connected.load()) { lastError = "not connected"; return false; }
+        if (!RestoreDefaultsLocked()) return false;   // an ordinary move never runs dynamic
+        return MoveCoordLocked(targets);
+    }
+
+    // The one opt-in: profile first, then the same coordinated move. The axes
+    // are validated BEFORE the profile is written, so a bad target never
+    // leaves a dynamic profile behind for a move that was refused.
+    bool MoveAbsoluteDynamic(const std::vector<std::pair<std::string, double>>& targets,
+                             const DynamicProfile& dyn)
+    {
+        if (targets.empty()) return true;
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        for (const auto& kv : targets)
+            if (AxisIndex(kv.first) < 0) { lastError = "invalid axis: " + kv.first; return false; }
+        if (!ApplyDynamicLocked(dyn)) {
+            FD_ERROR("acs", "%s dynamic move refused: %s", cfg.name.c_str(), lastError.c_str());
+            return false;
+        }
+        return MoveCoordLocked(targets);
+    }
+
+    // Caller holds mtx and has checked the connection.
+    bool MoveCoordLocked(const std::vector<std::pair<std::string, double>>& targets)
+    {
         std::vector<int>    idxArr;
         std::vector<double> pts;
         idxArr.reserve(targets.size() + 1);
@@ -275,6 +443,7 @@ struct ACSController::Impl {
         } else {
             FD_INFO("acs", "%s velocity (all axes) = %.3f mm/s", cfg.name.c_str(), v);
         }
+        profileReadReq.store(true);   // the cached VEL is stale now, either way
         return ok;
     }
 
@@ -442,6 +611,7 @@ struct ACSController::Impl {
         std::lock_guard<std::mutex> lock(mtx);
         enabled.clear();
         bufUntil.clear();
+        SimRestoreLocked();
     }
 
     void PollLoop()
@@ -492,6 +662,7 @@ struct ACSController::Impl {
         std::lock_guard<std::mutex> lock(mtx);
         if (!connected.load()) { lastError = "not connected"; return false; }
         if (!Enabled(axis)) return false;
+        SimRestoreLocked();   // an ordinary move never runs dynamic
         targets[axis] = position;
         return true;
     }
@@ -501,6 +672,7 @@ struct ACSController::Impl {
         if (!connected.load()) { lastError = "not connected"; return false; }
         for (const auto& kv : t)
             if (!Enabled(kv.first)) return false;
+        SimRestoreLocked();   // an ordinary move never runs dynamic
         for (const auto& kv : t) targets[kv.first] = kv.second;
         return true;
     }
@@ -547,6 +719,69 @@ struct ACSController::Impl {
         return true;
     }
     std::atomic<double> simVelocity{40.0};   // what the "controller" is set to
+    // The simulated profile: VEL follows SetVelocity, ACC/DEC/JERK are the
+    // fixed defaults below until a dynamic move derives them from VEL, and
+    // every ordinary move puts them back - the same contract as the real one.
+    static constexpr double kSimAcc = 500.0, kSimJerk = 1000.0, kSimKdec = 5000.0;
+    double   simAcc = kSimAcc, simJerk = kSimJerk;   // under mtx
+    bool     simDynamic = false;                     // under mtx
+    unsigned profileSeq = 1;                         // under mtx
+
+    MotionProfile Profile() const
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        MotionProfile pr;
+        if (!connected.load()) return pr;
+        pr.valid   = true;
+        pr.seq     = profileSeq;
+        pr.dynamic = simDynamic;
+        for (const auto& a : axes) {
+            pr.axes.push_back({a, simVelocity.load(), simAcc, simAcc, simJerk, kSimKdec, true});
+            pr.defaults.push_back({a, simVelocity.load(), kSimAcc, kSimAcc, kSimJerk, kSimKdec, true});
+        }
+        return pr;
+    }
+    void RequestProfileRead()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        ++profileSeq;
+    }
+    // Caller holds mtx.
+    void SimRestoreLocked()
+    {
+        if (!simDynamic) return;
+        simAcc = kSimAcc;
+        simJerk = kSimJerk;
+        simDynamic = false;
+        ++profileSeq;
+        FD_INFO("acs", "%s default profile restored (simulated)", cfg.name.c_str());
+    }
+    bool RestoreDefaultProfile()
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        SimRestoreLocked();
+        return true;
+    }
+    bool MoveAbsoluteDynamic(const std::vector<std::pair<std::string, double>>& t,
+                             const DynamicProfile& dyn)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) { lastError = "not connected"; return false; }
+        if (!(dyn.accPerVel > 0.0) || !(dyn.jerkPerAcc > 0.0)) {
+            lastError = "dynamic profile ratios must be > 0";
+            return false;
+        }
+        for (const auto& kv : t)
+            if (!Enabled(kv.first)) return false;
+        simAcc     = simVelocity.load() * dyn.accPerVel;
+        simJerk    = simAcc * dyn.jerkPerAcc;
+        simDynamic = true;
+        ++profileSeq;
+        FD_INFO("acs", "%s dynamic profile: VEL %g ACC %g DEC %g JERK %g (simulated)",
+                cfg.name.c_str(), simVelocity.load(), simAcc, simAcc, simJerk);
+        for (const auto& kv : t) targets[kv.first] = kv.second;
+        return true;
+    }
     bool IsSettled() const { return true; }   // sim snaps to target - never "moving"
     bool StopAll() { return connected.load(); }
     // A simulated program runs for kSimBufferRun, so Stop / the follow-up move
@@ -607,6 +842,11 @@ bool ACSController::SetAxisEnabled(const std::string& a, bool on) { return p_->S
 bool ACSController::RunBuffer(int b, const std::string& l) { return p_->RunBuffer(b, l); }
 bool ACSController::StopBuffer(int b)    { return p_->StopBuffer(b); }
 bool ACSController::BufferRunning(int b) const { return p_->BufferRunning(b); }
+MotionProfile ACSController::Profile() const { return p_->Profile(); }
+void ACSController::RequestProfileRead() { p_->RequestProfileRead(); }
+bool ACSController::MoveAbsoluteDynamic(const std::vector<std::pair<std::string, double>>& t,
+                                        const DynamicProfile& d) { return p_->MoveAbsoluteDynamic(t, d); }
+bool ACSController::RestoreDefaultProfile() { return p_->RestoreDefaultProfile(); }
 void ACSController::RequestFastPoll()    { p_->RequestFastPoll(); }
 std::string ACSController::LastError() const { return p_->lastError; }
 

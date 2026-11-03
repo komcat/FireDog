@@ -43,7 +43,7 @@ arriving at travel speed. With none of the three set it is exactly the plain
 `MoveToPosition` → `WaitArrive` → `WaitSettle` it replaced, so no existing recipe
 changes. Full contract — the looser travel-leg tolerance, the settle-before-`VLS`
 ordering, the velocity restore, and why a half-configured approach FAILS rather than
-quietly moving fast — in `docs/pi-hexapod-motion-design.md` §5. The three parameters carry
+quietly moving fast — in `docs/pi-hexapod-motion-design.md` §5. Each leg it issues goes through **`IssueMove`**, which is also where the ACS **dynamic profile** is chosen: a mover that declares `dynamic_profile` (today `move_to_position` and `move_path`, default ON, with `dyn_acc_per_vel` / `dyn_jerk_per_acc`, group *Profile*) sends every leg as `MoveToPositionDynamic`, so ACC/DEC/JERK follow that leg's velocity — the approach leg's included; every other mover sends the ordinary move, which restores the controller's default profile (`docs/hardware-layer.md`, Motion). The three parameters carry
 **`ParamSpec::group = "Approach"`**: the editor folds a *run of consecutive params
 sharing a group* under a collapsing header (opened by itself when one is set, or when one
 is required — a validation error must never hide behind a fold), which is what keeps

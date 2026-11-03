@@ -335,6 +335,7 @@ private:
     void DrawMotionDetailPanel();  // middle: device header + tab bar
     void DrawMotionPivot(std::size_t devIdx, IMotionController* m);   // PI rotation pivot
     void DrawMotionBuffers(std::size_t devIdx, IMotionController* m); // ACS program buffers
+    void DrawMotionProfileTab(std::size_t devIdx, IMotionController* m); // ACS VEL/ACC/DEC/JERK (read-only)
     void DrawMotionReference(std::size_t devIdx, IMotionController* m); // PI reference (FRF)
     void DrawMotionPositionsTab(std::size_t devIdx, IMotionController* m);
     void DrawMotionMapTab(std::size_t devIdx, IMotionController* m);
@@ -1184,6 +1185,15 @@ private:
                                           // nothing is pushed at connect or exit)
     std::map<int, double> velCustomEdit_; // device index -> custom input-box value
     std::map<int, double> velCustomSet_;  // device index -> applied custom (0 = preset)
+
+    // Motion page: move to a saved position on a DYNAMIC profile (ACC/DEC/JERK
+    // from each axis's VEL; IMotionController::MoveAbsoluteDynamic). OFF at
+    // every start, deliberately not persisted: the default profile is the safe
+    // one and a test option must be chosen each session. The ratios ARE kept
+    // (UiSettings dynAccPerVel / dynJerkPerAcc) - they describe the machine.
+    bool           motDynOn_ = false;
+    DynamicProfile motDyn_;
+    std::string    motDynMsg_;            // last dynamic-move refusal / restore result
 
     // Recipe Editor page (View menu) UI state — the recipes themselves live in
     // session_ (product recipes file, else config/recipes.local.json).

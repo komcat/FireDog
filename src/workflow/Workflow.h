@@ -11,6 +11,7 @@
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
 #include "core/WaffleTray.h"           // TrayCell (the consumed-cell cursors)
 #include "hardware/HardwareConfig.h"   // AxisTransform, HardwareConfig
+#include "hardware/motion/IMotionController.h"   // DynamicProfile
 #include "vision/HalconDetector.h"     // the cached detectors (PIMPL, no SDK leak)
 #include "vision/VisionModel.h"
 #include "vision/VisionResult.h"
@@ -148,6 +149,15 @@ public:
     // coordinated command. Called by the saved-positions Move button.
     bool MoveToPosition(std::size_t devIdx,
                         const std::vector<std::pair<std::string, double>>& targets);
+    // The same move on a DYNAMIC profile (IMotionController::MoveAbsoluteDynamic:
+    // ACC/DEC/JERK derived from each axis's VEL, the default put back by the
+    // next ordinary move). Opt-in from the Motion page only, for now — no
+    // recipe command reaches it until it has been proven on the machine.
+    bool MoveToPositionDynamic(std::size_t devIdx,
+                               const std::vector<std::pair<std::string, double>>& targets,
+                               const DynamicProfile& dyn);
+    // Put a device's default profile back now (no-op when it is not modified).
+    bool RestoreDefaultProfile(std::size_t devIdx);
 
     // ---- Mapped-path execution (Motion page "Mapped Path" tab) --------------
     // A path is a sequence of waypoints (node label + per-axis targets), built

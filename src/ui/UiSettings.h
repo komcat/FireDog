@@ -190,6 +190,11 @@ struct UiSettings {
         {1, 0, 1.0, 0.100},
     }};
 
+    // Motion page dynamic profile ratios: ACC = dynAccPerVel x VEL, DEC = ACC,
+    // JERK = dynJerkPerAcc x ACC. The on/off switch is NOT here - it starts off.
+    double dynAccPerVel  = 10.0;
+    double dynJerkPerAcc = 10.0;
+
     // Needle page "Clear first" list, run in order before the calibration.
     std::vector<NeedleClearMove> ndlClearMoves = {
         {"hex-left", "clear_vision"},

@@ -26,6 +26,35 @@ struct PivotPoint {
     unsigned seq   = 0;
 };
 
+// The motion profile a controller is set to, per axis, in the controller's own
+// user units (ACS: VEL / ACC / DEC / JERK / KDEC, mm/s, mm/s^2, mm/s^3). Read
+// only — `seq` changes on every read so a consumer can tell a fresh one, and
+// `error` says why the last read failed (empty when it did not).
+struct AxisProfile {
+    std::string axis;
+    double vel = 0.0, acc = 0.0, dec = 0.0, jerk = 0.0, kdec = 0.0;
+    bool   valid = false;   // every value of this axis read back
+};
+struct MotionProfile {
+    std::vector<AxisProfile> axes;   // in the configured axis order (index = ACS axis)
+    bool        valid = false;       // a read has completed since connect
+    unsigned    seq   = 0;
+    std::string error;
+    // The DEFAULT profile: the first complete read after connect, before
+    // FireDog changed anything — what every ordinary move restores. Empty
+    // until captured, and a dynamic profile is refused until it is.
+    std::vector<AxisProfile> defaults;
+    bool dynamic = false;            // the controller holds a DYNAMIC profile now
+};
+
+// A profile derived from each axis's own VEL: ACC = accPerVel * VEL,
+// DEC = ACC, JERK = jerkPerAcc * ACC. KDEC (the kill deceleration) is never
+// touched — it is the stop the safety path relies on.
+struct DynamicProfile {
+    double accPerVel  = 10.0;   // 1/s
+    double jerkPerAcc = 10.0;   // 1/s
+};
+
 class IMotionController {
 public:
     virtual ~IMotionController() = default;
@@ -142,6 +171,33 @@ public:
         (void)z;
         return false;
     }
+
+    // Motion profile READ-BACK (ACS: acsc_GetVelocity / GetAcceleration /
+    // GetDeceleration / GetJerk / GetKillDeceleration per axis). Profile() is
+    // the CACHED value — read at connect, after every accepted SetVelocity, and
+    // on RequestProfileRead() by the poll thread — so a UI may call it every
+    // frame. Nothing here writes a profile.
+    virtual bool          SupportsProfile() const { return false; }
+    virtual MotionProfile Profile() const { return {}; }
+    virtual void          RequestProfileRead() {}
+
+    // DYNAMIC profile, opt-in per move (ACS). MoveAbsoluteDynamic sets every
+    // axis's ACC/DEC/JERK from its own current VEL, then makes the same
+    // coordinated move MoveAbsolute does. The contract that makes it safe to
+    // offer: EVERY ordinary MoveAbsolute (jog, path, recipe, every other page)
+    // first puts the DEFAULT profile back if a dynamic one is still on the
+    // controller, and so does Disconnect — so a dynamic profile lives exactly
+    // as long as the move that asked for it, and nothing inherits it.
+    // RestoreDefaultProfile is that restore on its own (a no-op when nothing
+    // is modified). A driver without the concept refuses and does not move.
+    virtual bool MoveAbsoluteDynamic(const std::vector<std::pair<std::string, double>>& targets,
+                                     const DynamicProfile& dyn)
+    {
+        (void)targets;
+        (void)dyn;
+        return false;
+    }
+    virtual bool RestoreDefaultProfile() { return true; }
 
     // Adaptive-polling demand signal. A consumer that needs realtime position
     // feedback (the PI/ACS page while open, an active-alignment procedure) calls
