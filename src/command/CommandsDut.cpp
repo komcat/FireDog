@@ -39,8 +39,14 @@ CommandResult ExecDutOpen(ExecutionContext& ctx, const ParamValues& p)
                 "no serial: set the 'serial' param or fill ctx key 'serial' "
                 "(e.g. with prompt_input)");
     }
+    // Only `replace` starts a fresh record. `new` once did, and an after-bake
+    // re-test that ticked it set aside every assembly entry of the part it
+    // probed (XCAN peaks, UV readings): a part's serial already having a record
+    // is exactly the case where the old data matters most. So `new` now opens
+    // the existing record like a re-test does (it is kept so saved recipes
+    // still load), and wiping the slate takes the one param that says so.
     std::string err;
-    return DutSession::Instance().Open(serial, p.GetBool("new"), &err)
+    return DutSession::Instance().Open(serial, p.GetBool("replace"), &err)
                ? CommandResult::Success()
                : CommandResult::Fail(err);
 }
@@ -178,13 +184,16 @@ void RegisterDutCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw
     using PT = ParamType;
 
     reg.Register({"dut_open", "DUT",
-                  "Open the DUT record for a serial (load-or-create; auto-closes the previous)",
+                  "Open the DUT record for a serial (load-or-create; only replace wipes; auto-closes the previous)",
                   {
                       {"serial", PT::String, false, "", 0, 0, {},
                        "part serial; empty = use ctx key 'serial'"},
                       {"new", PT::Bool, false, false, 0, 0, {},
-                       "true = start a FRESH record (the old one is kept as "
-                       "dut.replaced-<stamp>.json); a re-test of the same part wants false"},
+                       "a new part is expected; an EXISTING record for the serial "
+                       "is still kept and appended to (use 'replace' to start fresh)"},
+                      {"replace", PT::Bool, false, false, 0, 0, {},
+                       "true = start a FRESH record even when one exists (the old one "
+                       "is set aside as dut.replaced-<stamp>.json and no longer shown)"},
                   },
                   CommandSpec::Needs::None, ExecDutOpen});
 

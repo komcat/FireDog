@@ -10,7 +10,7 @@
 //
 // It is a VIEW of the step, not a second record: it edits the step the Recipe
 // Editor has selected (App::EditorSelectedStep), in place, and the editor's
-// Save writes it. The params it owns are the ones whose ParamSpec::group is
+// Save writes it - the Save button in this window's corner IS that Save. The params it owns are the ones whose ParamSpec::group is
 // kDispenseHelper; where the dispense point is (position / point / device) and
 // which script runs stay on the editor's form, where they are taught.
 #include "App.h"
@@ -184,8 +184,34 @@ void App::DrawDispenseHelperWindow()
             else                      path += std::to_string(c + 1);
         }
         const Recipe& r = session_.Recipes()[static_cast<std::size_t>(recipeSel_)];
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("%s  -  step %s%s%s", r.name.c_str(), path.c_str(),
                     s->nickname.empty() ? "" : "  ", s->nickname.c_str());
+
+        // Save / Close, top right. Save is the Recipe Editor's own Save - the
+        // whole recipe file, every recipe, not just this step: the helper
+        // edits the editor's document in place and has no record of its own.
+        // Gated on Busy like the editor's (a run holds a copy; the file is the
+        // editor's to write between runs). Close only hides the window - the
+        // edits stay in the document, dirty until somebody saves.
+        {
+            const bool  dirty = session_.RecipesDirty();
+            const float bw    = 110.0f;
+            const float sp    = ImGui::GetStyle().ItemSpacing.x;
+            ImGui::SameLine();
+            const float room = ImGui::GetContentRegionAvail().x - (bw * 2.0f + sp);
+            if (room > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + room);
+            ImGui::BeginDisabled(orch_.Busy() || !dirty);
+            if (IconButton(UiIcon("Save"), dirty ? "Save*" : "Save", ImVec2(bw, 0.0f)))
+                session_.SaveRecipes();
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip(dirty ? "Save the recipe file (every recipe) - the "
+                                          "Recipe Editor's Save"
+                                        : "No unsaved recipe changes");
+            ImGui::SameLine();
+            if (ImGui::Button("Close", ImVec2(bw, 0.0f))) showDispHelper_ = false;
+        }
 
         // The touch height is not a number in this step: it is the focused
         // camera Z plus the calibrated dZ, which is why gap and trim are offsets.
@@ -197,8 +223,9 @@ void App::DrawDispenseHelperWindow()
             ImGui::TextColored(cal.verified ? kGood : kWarn,
                                "touch height = focused camera Z %+.3f mm (needle dZ)%s",
                                cal.dz, cal.verified ? "" : " - calibration UNVERIFIED");
-        ImGui::TextDisabled("Edits go straight into the step; Save in the Recipe Editor. "
-                            "The point, device and script stay on the editor's form.");
+        ImGui::TextDisabled("Edits go straight into the step; Save writes the recipe file "
+                            "(same as the Recipe Editor's). The point, device and script "
+                            "stay on the editor's form.");
     }
     const bool busy = orch_.Busy();
     if (busy) ImGui::TextColored(kWarn, "A run is active - read-only until it ends.");

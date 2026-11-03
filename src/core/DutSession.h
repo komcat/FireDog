@@ -11,8 +11,8 @@
 // (+ images/ reserved for future capture commands). A loaded product is
 // REQUIRED — the product folder is the traceability container.
 //
-// Lifecycle: Open (load-or-create by default; destructiveNew starts a fresh
-// record) auto-closes any previous DUT, but only AFTER the new identity
+// Lifecycle: Open (load-or-create by default; destructiveNew — dut_open's
+// `replace`, never its `new` — starts a fresh record) auto-closes any previous DUT, but only AFTER the new identity
 // validates — a failed open never loses the current record. Close stamps an
 // end timestamp and an optional pass/fail status. Design: docs/dut-design.md.
 #pragma once

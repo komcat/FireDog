@@ -14,8 +14,10 @@
 // the only thing here that leaves the application, gated like the DUT block's.
 //
 // The scan is synchronous on the UI thread — a few KB per record, so a few
-// hundred parts is milliseconds — and runs on open, on product change and on
-// Reload, never per frame.
+// hundred parts is milliseconds — and runs on open, on product change, on
+// Reload and after a record closes (dataRescan_), never per frame. Which key
+// columns the table shows is the Columns popup's: a hidden-key set by NAME, so
+// a key first recorded tomorrow is a visible column tomorrow.
 #include "App.h"
 
 #include "imgui.h"
@@ -25,6 +27,7 @@
 #include "core/Log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -265,6 +268,7 @@ void App::LoadDataRows()
                    ? dataKeys_[static_cast<std::size_t>(i)] : std::string();
     };
     const std::string keepA = keyName(dataKeySel_), keepB = keyName(dataKeySel2_);
+    dataRescan_ = false;
     dataRows_.clear();
     dataKeys_.clear();
     dataKeySel_  = -1;
@@ -328,8 +332,9 @@ void App::LoadDataRows()
 
 void App::SortDataRows()
 {
-    const int  col = dataSortCol_;
-    const bool asc = dataSortAsc_;
+    const int         col = dataSortKey_.empty() ? dataSortCol_ : kFixedCols;
+    const std::string key = dataSortKey_;
+    const bool        asc = dataSortAsc_;
     std::stable_sort(dataRows_.begin(), dataRows_.end(),
                      [&](const DutDataRow& a, const DutDataRow& b) {
         int c = 0;
@@ -342,9 +347,10 @@ void App::SortDataRows()
                 c = a.runs.size() < b.runs.size() ? -1 : (a.runs.size() > b.runs.size() ? 1 : 0);
                 break;
             default: {
-                const int k = col - kFixedCols;
-                if (k < 0 || k >= static_cast<int>(dataKeys_.size())) break;
-                const std::string& key = dataKeys_[static_cast<std::size_t>(k)];
+                // A key column sorts by the key's NAME: its index in the union
+                // moves on a rescan, and its column index moves with every
+                // column the Columns popup hides.
+                if (key.empty()) break;
                 const auto ia = a.vals.find(key), ib = b.vals.find(key);
                 const nlohmann::json* va = ia == a.vals.end() ? nullptr : &ia->second;
                 const nlohmann::json* vb = ib == b.vals.end() ? nullptr : &ib->second;
@@ -374,7 +380,7 @@ void App::DrawViewDataWindow()
     // dataDir_ names what the rows came from, so no session callback is needed.
     const std::string want =
         session_.ProductLoaded() ? session_.Product().DataDir() : std::string();
-    if (want != dataDir_) LoadDataRows();
+    if (want != dataDir_ || dataRescan_) LoadDataRows();
 
     // ---- Toolbar ----
     if (ImGui::Button("Reload")) LoadDataRows();
@@ -401,6 +407,60 @@ void App::DrawViewDataWindow()
     ImGui::Combo("##datatime", &dataTimeSel_, kTimeSels, 4);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("By the record's opened_at stamp (UTC)");
+
+    // The key columns the table shows. Indices into dataKeys_, in union order.
+    std::vector<int> visKeys;
+    for (int k = 0; k < static_cast<int>(dataKeys_.size()); ++k)
+        if (!dataHiddenKeys_.count(dataKeys_[static_cast<std::size_t>(k)])) visKeys.push_back(k);
+    ImGui::SameLine();
+    char colBtn[48];
+    std::snprintf(colBtn, sizeof(colBtn), "Columns %zu/%zu###datacols", visKeys.size(),
+                  dataKeys_.size());
+    if (ImGui::Button(colBtn)) ImGui::OpenPopup("##datacolpop");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Choose which recorded keys are table columns");
+    if (ImGui::BeginPopup("##datacolpop")) {
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::InputTextWithHint("##datacolfilt", "filter keys", dataColFilter_,
+                                 sizeof(dataColFilter_));
+        // Case-insensitive substring, the one test the list and All/None share.
+        const std::string cf = dataColFilter_;
+        auto lower = [](std::string t) {
+            for (char& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return t;
+        };
+        const std::string cfl = lower(cf);
+        auto matches = [&](const std::string& k) {
+            return cfl.empty() || lower(k).find(cfl) != std::string::npos;
+        };
+        // All / None act on what the filter shows, so "filter uv, None" hides
+        // exactly the UV keys.
+        if (ImGui::SmallButton("All"))
+            for (const std::string& k : dataKeys_)
+                if (matches(k)) dataHiddenKeys_.erase(k);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("None"))
+            for (const std::string& k : dataKeys_)
+                if (matches(k)) dataHiddenKeys_.insert(k);
+        ImGui::Separator();
+        if (dataKeys_.empty()) ImGui::TextDisabled("No keys recorded yet.");
+        ImGui::BeginChild("##datacollist", ImVec2(320.0f, std::min(360.0f,
+                          ImGui::GetFrameHeightWithSpacing() * static_cast<float>(dataKeys_.size() + 1))));
+        for (const std::string& k : dataKeys_) {
+            if (!matches(k)) continue;
+            bool on = !dataHiddenKeys_.count(k);
+            if (ImGui::Checkbox(k.c_str(), &on)) {
+                if (on) dataHiddenKeys_.erase(k);
+                else    dataHiddenKeys_.insert(k);
+            }
+        }
+        ImGui::EndChild();
+        ImGui::EndPopup();
+        // Rebuilt for THIS frame's table, so a tick never draws a stale table.
+        visKeys.clear();
+        for (int k = 0; k < static_cast<int>(dataKeys_.size()); ++k)
+            if (!dataHiddenKeys_.count(dataKeys_[static_cast<std::size_t>(k)])) visKeys.push_back(k);
+    }
 
     // The row filter: serial substring AND the time preset. One lambda so the
     // table, the chart and the count can never disagree about who is shown.
@@ -441,7 +501,7 @@ void App::DrawViewDataWindow()
     const float chartH = 300.0f;   // controls row + plot + label strip
     const float tableH = std::max(120.0f, ImGui::GetContentRegionAvail().y - chartH -
                                               ImGui::GetStyle().ItemSpacing.y);
-    const int keyCols = std::min(static_cast<int>(dataKeys_.size()), kMaxKeyCols);
+    const int keyCols = std::min(static_cast<int>(visKeys.size()), kMaxKeyCols);
     const ImGuiTableFlags tflags =
         ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable |
@@ -463,12 +523,22 @@ void App::DrawViewDataWindow()
         ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 60.0f);
         ImGui::TableSetupColumn("Runs", ImGuiTableColumnFlags_None, 50.0f);
         for (int k = 0; k < keyCols; ++k)
-            ImGui::TableSetupColumn(dataKeys_[static_cast<std::size_t>(k)].c_str());
+            ImGui::TableSetupColumn(
+                dataKeys_[static_cast<std::size_t>(visKeys[static_cast<std::size_t>(k)])].c_str(),
+                ImGuiTableColumnFlags_NoHide);   // the Columns popup is the one way to hide a key
         ImGui::TableHeadersRow();
 
         if (ImGuiTableSortSpecs* ss = ImGui::TableGetSortSpecs()) {
             if (ss->SpecsDirty && ss->SpecsCount > 0) {
-                dataSortCol_ = ss->Specs[0].ColumnIndex;
+                const int c = ss->Specs[0].ColumnIndex;
+                if (c >= kFixedCols && c - kFixedCols < keyCols) {
+                    dataSortCol_ = kFixedCols;
+                    dataSortKey_ = dataKeys_[static_cast<std::size_t>(
+                        visKeys[static_cast<std::size_t>(c - kFixedCols)])];
+                } else {
+                    dataSortCol_ = c < kFixedCols ? c : kColSerial;
+                    dataSortKey_.clear();
+                }
                 dataSortAsc_ = ss->Specs[0].SortDirection != ImGuiSortDirection_Descending;
                 SortDataRows();
                 ss->SpecsDirty = false;
@@ -514,7 +584,8 @@ void App::DrawViewDataWindow()
                 }
                 for (int k = 0; k < keyCols; ++k) {
                     if (!ImGui::TableSetColumnIndex(kFixedCols + k)) continue;
-                    const auto it = r.vals.find(dataKeys_[static_cast<std::size_t>(k)]);
+                    const auto it = r.vals.find(
+                        dataKeys_[static_cast<std::size_t>(visKeys[static_cast<std::size_t>(k)])]);
                     if (it == r.vals.end()) { ImGui::TextDisabled("-"); continue; }
                     std::string shownText = CellText(it->second);
                     const bool  cut = shownText.size() > 40;
@@ -527,10 +598,10 @@ void App::DrawViewDataWindow()
         }
         ImGui::EndTable();
     }
-    if (static_cast<int>(dataKeys_.size()) > kMaxKeyCols)
+    if (static_cast<int>(visKeys.size()) > kMaxKeyCols)
         ImGui::TextColored(StateColor(ConnState::Failed),
-                           "Only the first %d of %zu keys are shown.", kMaxKeyCols,
-                           dataKeys_.size());
+                           "Only the first %d of %zu ticked keys are shown - untick some in Columns.",
+                           kMaxKeyCols, visKeys.size());
 
     // ---- Chart controls: two series (B optional), the plot mode ----
     auto keyCombo = [&](const char* id, int* sel, bool allowNone) {

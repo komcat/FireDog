@@ -15,6 +15,9 @@
 
 #include <cctype>
 #include <cstdint>
+#include <initializer_list>
+#include <string>
+#include <vector>
 
 namespace firedog {
 
@@ -98,8 +101,15 @@ CommandResult ExecWaitUntil(ExecutionContext& ctx, const ParamValues& p)
 CommandResult ExecPrompt(ExecutionContext& ctx, const ParamValues& p)
 {
     const std::string msg = ctx.Substitute(p.GetString("message"));
+    // The pictures go as NAMES; the UI resolves and draws them. An empty slot
+    // is skipped, so image2 alone is one picture, not a gap.
+    std::vector<std::string> images;
+    for (const char* key : {"image1", "image2"}) {
+        const std::string f = p.GetString(key);
+        if (!f.empty()) images.push_back(f);
+    }
     return ctx.AwaitPrompt(msg, p.GetInt("auto_ok_ms"),
-                           PromptLevelFromName(p.GetString("level")))
+                           PromptLevelFromName(p.GetString("level")), images)
                ? CommandResult::Success()
                : CommandResult::Fail("cancelled by operator");
 }
@@ -251,6 +261,11 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        {"info", "instruction", "warning", "error"},
                        "how the window looks: info (blue), instruction (green), "
                        "warning (amber), error (red) - it answers the same way"},
+                      {"image1", PT::ImageFile, false, "", 0, 0, {},
+                       "optional picture shown above the buttons as a visual aid (a "
+                       "file in the product's prompt_images folder)"},
+                      {"image2", PT::ImageFile, false, "", 0, 0, {},
+                       "optional second picture, shown beside the first"},
                   },
                   CommandSpec::Needs::None, ExecPrompt});
 

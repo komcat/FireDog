@@ -109,9 +109,10 @@ const std::vector<LuaFdBuiltin>& LuaFdBuiltins()
         {"log", "log(", "fd.log(msg) : a line into the log band and the daily log"},
         {"logf", "logf(", "fd.logf(fmt, ...) : printf-style fd.log"},
         {"prompt", "prompt(",
-         "fd.prompt(msg [, auto_ok_ms [, level]]) -> ok : block on the OK / Cancel prompt "
-         "window; with auto_ok_ms (0 = wait) it answers OK by itself when nobody does; "
-         "level = \"info\" | \"instruction\" | \"warning\" | \"error\""},
+         "fd.prompt(msg [, auto_ok_ms [, level [, {img1, img2}]]]) -> ok : block on the "
+         "OK / Cancel prompt window; with auto_ok_ms (0 = wait) it answers OK by itself "
+         "when nobody does; level = \"info\" | \"instruction\" | \"warning\" | "
+         "\"error\"; up to two picture file names from prompt_images/"},
         {"choose", "choose(",
          "fd.choose(msg, {\"A\", \"B\", ...} [, level]) -> n : the prompt window with "
          "these buttons instead of OK / Cancel; n = 1-based index pressed, 0 if stopped"},
@@ -426,12 +427,23 @@ std::string RunLuaFile(const std::string& requested, const CommandRegistry& reg,
         });
         // Optional second argument: answer OK by itself after that many ms
         // (0 = wait). Optional third: the level that dresses the window -
-        // "info" (default) / "instruction" / "warning" / "error".
+        // "info" (default) / "instruction" / "warning" / "error". Optional
+        // fourth: a table of up to two picture file names (prompt_images/).
         fd.set_function("prompt", [&ctx](const std::string& msg,
                                          sol::optional<double> autoOkMs,
-                                         sol::optional<std::string> level) {
+                                         sol::optional<std::string> level,
+                                         sol::optional<sol::table> pics) {
+            std::vector<std::string> images;
+            if (pics) {
+                for (std::size_t i = 1; i <= pics->size() && images.size() < 2; ++i) {
+                    const sol::optional<std::string> f =
+                        pics->get<sol::optional<std::string>>(i);
+                    if (f && !f->empty()) images.push_back(*f);
+                }
+            }
             return ctx.AwaitPrompt(msg, autoOkMs ? static_cast<int>(*autoOkMs) : 0,
-                                   PromptLevelFromName(level ? *level : std::string()));
+                                   PromptLevelFromName(level ? *level : std::string()),
+                                   images);
         });
         // Custom-button prompt: fd.choose(msg, {"A", "B", ...} [, level])
         // returns the 1-based index of the button pressed, or 0 when Stop
@@ -843,6 +855,7 @@ LuaEngine::Status LuaEngine::GetStatus() const
     s.pendingPromptInput = promptWantsInput_;
     s.pendingPromptLevel = promptLevel_;
     s.pendingPromptButtons = promptButtons_;
+    s.pendingPromptImages  = promptImages_;
     if (!prompt_.empty() && promptAutoOkAt_ != std::chrono::steady_clock::time_point{}) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
             promptAutoOkAt_ - std::chrono::steady_clock::now()).count();
@@ -859,13 +872,14 @@ LuaEngine::Status LuaEngine::GetStatus() const
 
 bool LuaEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
                                     std::string* textOut, int autoOkMs,
-                                    PromptLevel level)
+                                    PromptLevel level, const std::vector<std::string>& images)
 {
     using clock = std::chrono::steady_clock;
     std::unique_lock lock(mu_);
     prompt_           = message;
     promptWantsInput_ = wantsInput;
     promptLevel_      = level;
+    promptImages_     = images;
     promptText_.clear();
     promptAnswered_ = false;
     promptAnswer_   = false;
@@ -901,6 +915,7 @@ int LuaEngine::AwaitChoiceInternal(const std::string& message,
     promptWantsInput_ = false;
     promptLevel_      = level;
     promptButtons_    = buttons;
+    promptImages_.clear();   // a choice carries no pictures
     promptChoice_     = -1;
     promptAnswered_   = false;
     promptAnswer_     = false;
@@ -953,8 +968,9 @@ void LuaEngine::ThreadMain(std::string path, Env env)
         env.visionModels, env.grips, env.trays, env.visionDir, env.scriptsDir,
         ExecutionContext::Hooks{
             [this] { return HookShouldStop(); },
-            [this](const std::string& m, int autoOkMs, PromptLevel level) {
-                return AwaitPromptInternal(m, false, nullptr, autoOkMs, level);
+            [this](const std::string& m, int autoOkMs, PromptLevel level,
+                   const std::vector<std::string>& images) {
+                return AwaitPromptInternal(m, false, nullptr, autoOkMs, level, images);
             },
             [this](const std::string& m, std::string* out) {
                 return AwaitPromptInternal(m, true, out);

@@ -66,6 +66,10 @@ enum class ParamType {
     PinName,        // IO pin name (resolved against the step's "device")
     TopicName,      // DataBus topic (no validation — topics create on demand)
     ScriptFile,     // .lua path (editor: picker over the scripts dir; validated to exist)
+    ImageFile,      // a picture's FILE NAME in the prompt-images folder
+                    // (ProductSession::PromptImagesDir; editor: picker). NOT
+                    // validated: a missing picture is drawn as missing, never
+                    // a refused run - it is a visual aid, not an input
     Enum,           // one of `options`
 };
 

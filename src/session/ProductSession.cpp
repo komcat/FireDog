@@ -683,6 +683,12 @@ std::string ProductSession::VisionDir() const
     return product_.Loaded() ? product_.Dir() + "/vision" : MachinePath("config/vision");
 }
 
+std::string ProductSession::PromptImagesDir() const
+{
+    return product_.Loaded() ? product_.Dir() + "/prompt_images"
+                             : MachinePath("config/prompt_images");
+}
+
 void ProductSession::LoadVisionFromDisk()
 {
     if (product_.Loaded()) {

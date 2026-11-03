@@ -122,7 +122,7 @@ New **DUT** category:
 
 | Command | Params | Notes |
 |---|---|---|
-| `dut_open` | `serial` String (optional), `new` Bool (default false) | empty serial falls back to ctx key `serial` (set by `prompt_input` or a script); fails before touching the open DUT |
+| `dut_open` | `serial` String (optional), `new` Bool (default false), `replace` Bool (default false) | empty serial falls back to ctx key `serial` (set by `prompt_input` or a script); fails before touching the open DUT. **An existing record is always reopened and appended to** — `new` no longer wipes it (an after-bake re-test with `new=true` once set aside a part's XCAN and UV entries); only `replace=true` starts a fresh `dut.json`, and the old one is still copied aside as `dut.replaced-<stamp>.json` |
 | `dut_close` | `status` Enum `none\|pass\|fail` (default none) | |
 | `dut_set` | `key` String, `value` Value | typed literal entry |
 | `dut_record` | `key` String, `ctx` String | the ctx→DUT bridge: measure into ctx, record from ctx |

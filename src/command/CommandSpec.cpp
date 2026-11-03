@@ -42,6 +42,7 @@ const char* ParamTypeName(ParamType t)
     case ParamType::PinName:      return "pin name";
     case ParamType::TopicName:    return "topic";
     case ParamType::ScriptFile:   return "script file";
+    case ParamType::ImageFile:    return "image file";
     case ParamType::Enum:         return "enum";
     }
     return "?";
@@ -106,6 +107,7 @@ bool TypeMatches(ParamType t, const nlohmann::json& v)
     case ParamType::PinName:
     case ParamType::TopicName:
     case ParamType::ScriptFile:
+    case ParamType::ImageFile:
     case ParamType::Enum:
         return v.is_string();
     }

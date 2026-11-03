@@ -115,6 +115,9 @@ public:
         bool        pendingPromptInput = false;   // the prompt wants a text answer
         int         pendingPromptAutoOkMs = 0;  // >0: OK answers itself in this long
         PromptLevel pendingPromptLevel = PromptLevel::Info;   // how the window is dressed
+        // Picture FILE NAMES (0-2) the prompt shows as a visual aid; the UI
+        // resolves them against ProductSession::PromptImagesDir.
+        std::vector<std::string> pendingPromptImages;
         // Non-empty: the pending prompt is a CHOICE - draw these buttons
         // (left to right) instead of OK / Cancel and answer with AnswerChoice.
         std::vector<std::string> pendingPromptButtons;
@@ -159,7 +162,8 @@ private:
     // Prompt handshakes (worker blocks; UI answers). Guarded by mu_.
     bool AwaitPromptInternal(const std::string& message, bool wantsInput,
                              std::string* textOut, int autoOkMs = 0,
-                             PromptLevel level = PromptLevel::Info);
+                             PromptLevel level = PromptLevel::Info,
+                             const std::vector<std::string>& images = {});
     int  AwaitChoiceInternal(const std::string& message,
                              const std::vector<std::string>& buttons, PromptLevel level);
     bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
@@ -191,6 +195,7 @@ private:
     bool        promptWantsInput_ = false;
     PromptLevel promptLevel_      = PromptLevel::Info;
     std::vector<std::string> promptButtons_;   // non-empty = a choice is pending
+    std::vector<std::string> promptImages_;    // the pending prompt's pictures
     int         promptChoice_     = -1;
     // Auto-OK deadline of the pending prompt; epoch (zero) = none.
     std::chrono::steady_clock::time_point promptAutoOkAt_{};

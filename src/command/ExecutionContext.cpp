@@ -330,10 +330,10 @@ const WaffleTray* ExecutionContext::FindTray(const std::string& uidOrName) const
 }
 
 bool ExecutionContext::AwaitPrompt(const std::string& message, int autoOkMs,
-                                   PromptLevel level)
+                                   PromptLevel level, const std::vector<std::string>& images)
 {
     if (!hooks_.awaitPrompt) return false;
-    return hooks_.awaitPrompt(message, autoOkMs, level);
+    return hooks_.awaitPrompt(message, autoOkMs, level, images);
 }
 
 int ExecutionContext::AwaitChoice(const std::string& message,

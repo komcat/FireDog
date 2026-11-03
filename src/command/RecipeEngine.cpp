@@ -256,6 +256,7 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.pendingPromptInput = promptWantsInput_;
     s.pendingPromptLevel = promptLevel_;
     s.pendingPromptButtons = promptButtons_;
+    s.pendingPromptImages  = promptImages_;
     if (!prompt_.empty() && promptAutoOkAt_ != std::chrono::steady_clock::time_point{}) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
             promptAutoOkAt_ - std::chrono::steady_clock::now()).count();
@@ -283,13 +284,14 @@ bool RecipeEngine::SafetyAborted() const
 
 bool RecipeEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
                                        std::string* textOut, int autoOkMs,
-                                       PromptLevel level)
+                                       PromptLevel level, const std::vector<std::string>& images)
 {
     using clock = std::chrono::steady_clock;
     std::unique_lock lock(mu_);
     prompt_           = message;
     promptWantsInput_ = wantsInput;
     promptLevel_      = level;
+    promptImages_     = images;
     promptText_.clear();
     promptAnswered_ = false;
     promptAnswer_   = false;
@@ -326,6 +328,7 @@ int RecipeEngine::AwaitChoiceInternal(const std::string& message,
     promptWantsInput_ = false;
     promptLevel_      = level;
     promptButtons_    = buttons;
+    promptImages_.clear();   // a choice carries no pictures
     promptChoice_     = -1;
     promptAnswered_   = false;
     promptAnswer_     = false;
@@ -399,8 +402,9 @@ void RecipeEngine::ThreadMain(Recipe recipe, Recipe onFail, Env env)
         env.visionModels, env.grips, env.trays, env.visionDir, env.scriptsDir,
         ExecutionContext::Hooks{
             [this] { return stopReq_.load() || SafetyAborted(); },
-            [this](const std::string& m, int autoOkMs, PromptLevel level) {
-                return AwaitPromptInternal(m, false, nullptr, autoOkMs, level);
+            [this](const std::string& m, int autoOkMs, PromptLevel level,
+                   const std::vector<std::string>& images) {
+                return AwaitPromptInternal(m, false, nullptr, autoOkMs, level, images);
             },
             [this](const std::string& m, std::string* out) {
                 return AwaitPromptInternal(m, true, out);

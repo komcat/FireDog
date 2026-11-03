@@ -17,10 +17,14 @@
 #include "core/Log.h"
 #include "vision/VisionModel.h"   // FindVisionModel — the fallback's taught patch
 
+#include <algorithm>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <vector>
 
 namespace firedog {
 
@@ -48,12 +52,23 @@ void App::DrawRecipePromptWindow()
     // replace OK / Cancel, and the answer is the index pressed.
     const std::vector<std::string>& choices =
         fromScript ? lst.pendingPromptButtons : rst.pendingPromptButtons;
+    // Picture FILE NAMES (prompt `image1`/`image2`, fd.prompt's 4th argument).
+    const std::vector<std::string>& images =
+        fromScript ? lst.pendingPromptImages : rst.pendingPromptImages;
 
     // Edge-detect a NEW prompt (a back-to-back prompt can arrive while the
     // window is still visible, so IsWindowAppearing alone is not enough).
     const bool newPrompt = !pending.empty() && !promptWasPending_;
     promptWasPending_ = !pending.empty();
-    if (pending.empty()) return;   // nothing pending (or stop released it)
+    if (pending.empty()) {   // nothing pending (or stop released it)
+        // The pictures served the prompt that just ended: free them, so the
+        // next one re-reads the file (an edited picture shows) and nothing
+        // full-size sits on the GPU between prompts.
+        for (auto& [path, ic] : promptImageTex_)
+            if (ic.tex) host_.DeleteTexture(ic.tex);
+        promptImageTex_.clear();
+        return;
+    }
     if (newPrompt) promptInputBuf_[0] = '\0';
 
     // Operator-facing dialog: it defines its OWN high-contrast palette (opaque
@@ -157,6 +172,77 @@ void App::DrawRecipePromptWindow()
         if (textW < avail)
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - textW) * 0.5f);
         ImGui::TextColored(ImVec4(1.00f, 0.76f, 0.25f, 1.00f), "%s", line);
+    }
+    // ---- Visual aid: up to two pictures, side by side under the message ----
+    // Each is FITTED into one box - scaled up or down, aspect kept - so a
+    // thumbnail is not lost in the window and a 12 MP photo does not push the
+    // buttons off the screen. The box: an equal share of the row, at most
+    // 640 px wide, and 38 % of the viewport tall (220..520 px). Decoded on the
+    // first frame the prompt shows and kept until it ends (promptImageTex_). A
+    // file that will not load is drawn as a labelled empty frame, never a
+    // refusal: the prompt is still the instruction, the picture only helps.
+    if (!images.empty()) {
+        namespace fs = std::filesystem;
+        const std::size_t n = std::min<std::size_t>(images.size(), 2);
+        const float gap   = ImGui::GetStyle().ItemSpacing.x * 2.0f;
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float boxW  = fminf(640.0f, (avail - gap * static_cast<float>(n - 1)) /
+                                              static_cast<float>(n));
+        const float boxH  = fminf(fmaxf(pvp->Size.y * 0.38f, 220.0f), 520.0f);
+
+        struct Pic { const MarkIcon* ic; ImVec2 size; std::string name; };
+        std::vector<Pic> pics;
+        float rowW = 0.0f;
+        for (std::size_t i = 0; i < n; ++i) {
+            const fs::path rel(images[i]);
+            const std::string path = rel.is_absolute()
+                                         ? rel.string()
+                                         : (fs::path(session_.PromptImagesDir()) / rel).string();
+            auto it = promptImageTex_.find(path);
+            if (it == promptImageTex_.end()) {
+                MarkIcon ic;
+                std::vector<unsigned char> rgba;
+                int w = 0, h = 0;
+                if (LoadPngRGBA(path.c_str(), &rgba, &w, &h) && w > 0 && h > 0) {
+                    ic.tex = host_.MakeTextureRGBA(w, h, rgba.data());
+                    ic.w = w;
+                    ic.h = h;
+                } else {
+                    FD_WARN("prompt", "picture '%s' not loaded - shown as missing",
+                            path.c_str());
+                }
+                it = promptImageTex_.emplace(path, ic).first;   // cache the miss too
+            }
+            const MarkIcon& ic = it->second;
+            ImVec2 sz(boxW, boxH * 0.5f);   // a missing picture: a half-height frame
+            if (ic.tex) {
+                const float k = fminf(boxW / static_cast<float>(ic.w),
+                                      boxH / static_cast<float>(ic.h));
+                sz = ImVec2(static_cast<float>(ic.w) * k, static_cast<float>(ic.h) * k);
+            }
+            pics.push_back({&ic, sz, images[i]});
+            rowW += sz.x + (i > 0 ? gap : 0.0f);
+        }
+        ImGui::Spacing();
+        if (rowW < avail) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - rowW) * 0.5f);
+        for (std::size_t i = 0; i < pics.size(); ++i) {
+            if (i > 0) ImGui::SameLine(0.0f, gap);
+            const ImVec2 p0 = ImGui::GetCursorScreenPos();
+            const ImVec2 p1(p0.x + pics[i].size.x, p0.y + pics[i].size.y);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            if (pics[i].ic->tex) {
+                dl->AddImage((ImTextureID)(intptr_t)pics[i].ic->tex, p0, p1);
+                dl->AddRect(p0, p1, ImGui::GetColorU32(look.accent), 0.0f, 0, 1.0f);
+            } else {
+                dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_TextDisabled), 0.0f, 0, 1.0f);
+                const std::string msg = "picture not found: " + pics[i].name;
+                ImGui::PushClipRect(p0, p1, true);
+                dl->AddText(ImVec2(p0.x + 8.0f, p0.y + 8.0f),
+                            ImGui::GetColorU32(ImGuiCol_TextDisabled), msg.c_str());
+                ImGui::PopClipRect();
+            }
+            ImGui::Dummy(pics[i].size);
+        }
     }
     ImGui::Dummy(ImVec2(0.0f, promptFont * 2.0f));   // the breathing room
     const auto answer = [&](bool ok) {

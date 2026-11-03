@@ -163,6 +163,10 @@ struct UiSettings {
     std::vector<RunReadout> runReadouts;
     bool runValsUserOnly = false;   // Values panel: hide program-context keys
 
+    // View Data window: the DUT keys whose columns are hidden, by name. Hidden,
+    // not shown, so a newly recorded key is visible until somebody hides it.
+    std::vector<std::string> dataHiddenKeys;
+
     // Jog window "Pos" tab: the 3x3 quick-move pad, device name -> nine saved
     // position UIDs ("" = unassigned slot). Keyed by DEVICE NAME, not fleet
     // index, so reordering hardware.json does not shuffle an operator's pad.

@@ -187,6 +187,14 @@ public:
     // copied to another machine and still find its templates.
     std::string VisionDir() const;
 
+    // Where a prompt's pictures (ParamType::ImageFile) live: the loaded
+    // product's prompt_images/, else <machine root>/config/prompt_images. A
+    // picture of how to do a step on THIS product is product state, and a step
+    // stores only the file NAME, so a product folder copied to another machine
+    // still finds its pictures. Not created here - the editor's Open folder
+    // button creates it (OpenFolderInExplorer).
+    std::string PromptImagesDir() const;
+
     // Delete a model AND its taught template file. The .pgm is owned by the
     // model (it is named after its uid), and an orphan would sit in a directory
     // nobody ever looks at — the same reasoning that makes deleting an

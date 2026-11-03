@@ -15,9 +15,12 @@
 #include "core/Topics.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdio>
+#include <filesystem>
 #include <initializer_list>
+#include <system_error>
 #include <string>
 #include <vector>
 
@@ -1071,6 +1074,62 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             }
             ImGui::EndCombo();
         }
+        break;
+    }
+    case ParamType::ImageFile: {
+        // Picker over the prompt-images folder (ProductSession::PromptImagesDir),
+        // listed when the combo opens so a picture dropped in after the product
+        // loaded is pickable at once. Stores the file NAME only - the folder
+        // follows the product. A missing file is flagged here and drawn as
+        // missing at run time, never refused: it is a visual aid.
+        namespace fs = std::filesystem;
+        const std::string dir = session_.PromptImagesDir();
+        const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
+        const std::string preview = v.empty() ? std::string("(none)") : v;
+        const float folderW = ImGui::CalcTextSize("Folder").x +
+                              ImGui::GetStyle().FramePadding.x * 2.0f +
+                              ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SetNextItemWidth(fitW(preview, folderW));
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        previewTip(preview);
+        if (open) {
+            if (ImGui::IsWindowAppearing()) {
+                promptImageList_.clear();
+                std::error_code ec;
+                for (const fs::directory_entry& e : fs::directory_iterator(dir, ec)) {
+                    if (!e.is_regular_file(ec)) continue;
+                    std::string ext = e.path().extension().string();
+                    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp")
+                        promptImageList_.push_back(e.path().filename().string());
+                }
+                std::sort(promptImageList_.begin(), promptImageList_.end());
+            }
+            if (ImGui::Selectable("(none)", v.empty())) {
+                params.erase(p.name);
+                changed = true;
+            }
+            if (promptImageList_.empty())
+                ImGui::TextDisabled("(no .png/.jpg/.bmp in %s - use Folder)", dir.c_str());
+            for (const std::string& f : promptImageList_) {
+                if (ImGui::Selectable(f.c_str(), f == v)) {
+                    params[p.name] = f;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Folder")) OpenFolderInExplorer(dir);   // creates it if missing
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Open %s - put the pictures here", dir.c_str());
+            tipShown = true;
+        }
+        std::error_code ec;
+        if (!v.empty() && !fs::is_regular_file(fs::path(dir) / v, ec))
+            ImGui::TextColored(ImVec4(0.98f, 0.72f, 0.32f, 1.0f),
+                               "not found in %s - the prompt will show it as missing",
+                               dir.c_str());
         break;
     }
     }

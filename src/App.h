@@ -1723,6 +1723,15 @@ private:
     // Edge-detect a NEW pending prompt/adjust (the windows are non-modal, so a
     // back-to-back request may arrive while the window is still shown).
     bool promptWasPending_ = false;
+    // The pictures of the pending prompt (ParamType::ImageFile), decoded and
+    // uploaded when it appears, keyed by the resolved path; a failed load is
+    // cached as tex 0 so it is drawn as missing rather than retried per frame.
+    // Released the frame no prompt is pending, so an edited picture is
+    // reloaded by the next prompt and nothing outlives the prompt it served.
+    std::map<std::string, MarkIcon> promptImageTex_;
+    // The step form's ImageFile picker: the folder listing, taken when its
+    // combo opens.
+    std::vector<std::string> promptImageList_;
     bool adjustWasPending_ = false;
     bool pickWasPending_   = false;
     // The crosshair the align pick window places, in ABSOLUTE camera pixels
@@ -1935,8 +1944,19 @@ private:
     int                      dataTimeSel_  = 0;  // 0 all, 1 this month, 2 last month, 3 YTD
     std::string              dataSelSerial_;
     char                     dataFilter_[64] = "";
-    int                      dataSortCol_ = 0;     // table column the rows are ordered by
+    int                      dataSortCol_ = 0;     // fixed column the rows are ordered by...
+    std::string              dataSortKey_;         // ...or this key's column ("" = fixed)
     bool                     dataSortAsc_ = true;  // (kept so a Reload keeps the order)
+    // Key columns the table does NOT show, by NAME (UiSettings dataHiddenKeys):
+    // hidden rather than shown, so a key a recipe starts recording appears on
+    // its own instead of waiting for somebody to tick it. The chart's key
+    // pickers ignore it — a column out of the table is still a series.
+    std::set<std::string>    dataHiddenKeys_;
+    char                     dataColFilter_[64] = "";   // the Columns popup's search
+    // A record closed since the last scan (set by the closed-unit drain in
+    // UpdateOee): the window rescans on its next draw, so a part that just
+    // finished shows up without a Reload.
+    bool                     dataRescan_ = false;
     std::string              scriptStartErr_;   // last Start() rejection
 
     bool openLoadProduct_ = false;   // menu -> popup handoff (OpenPopup must

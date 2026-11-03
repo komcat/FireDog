@@ -107,6 +107,8 @@ int App::Run()
         posPad_          = ui.posPad;
         runReadouts_     = ui.runReadouts;
         runValsUserOnly_ = ui.runValsUserOnly;
+        dataHiddenKeys_  = std::set<std::string>(ui.dataHiddenKeys.begin(),
+                                                 ui.dataHiddenKeys.end());
         if (runReadouts_.size() > 4) runReadouts_.resize(4);
         quickIo_         = ui.quickIo;
         psuPresets_      = ui.psuPresets;
@@ -444,6 +446,7 @@ void App::UpdateOee()
                              : u.status == "fail" ? OeeVerdict::Fail
                                                   : OeeVerdict::Aborted;
         oee_.RecordUnit(u.serial, u.product, v);
+        dataRescan_ = true;   // the View Data table is one record behind now
     }
     oee_.Tick();
 
@@ -610,6 +613,7 @@ void App::SaveUiSettings()
     s.posPad      = posPad_;
     s.runReadouts = runReadouts_;
     s.runValsUserOnly = runValsUserOnly_;
+    s.dataHiddenKeys  = std::vector<std::string>(dataHiddenKeys_.begin(), dataHiddenKeys_.end());
     s.quickIo     = quickIo_;
     s.psuPresets  = psuPresets_;
     s.ndlClearMoves = ndlClearMoves_;

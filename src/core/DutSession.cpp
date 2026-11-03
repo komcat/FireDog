@@ -162,7 +162,7 @@ bool DutSession::Open(const std::string& serial, bool destructiveNew,
         } catch (const std::exception& e) {
             if (err) *err = "existing record for '" + serial +
                             "' is unreadable (" + e.what() +
-                            ") - use new=true to start fresh";
+                            ") - use replace=true to start fresh";
             return false;
         }
     }
@@ -173,8 +173,9 @@ bool DutSession::Open(const std::string& serial, bool destructiveNew,
         return false;
     }
 
-    // new=true starts a fresh dut.json but never destroys the old one: it is
-    // COPIED aside first. A post-bake re-test with new=true once wiped every
+    // A replace (dut_open replace=true; `new` no longer gets here) starts a
+    // fresh dut.json but never destroys the old one: it is COPIED aside first.
+    // A post-bake re-test with new=true once set aside every
     // assembly record it touched (XCAN peaks, UV readings), and a fresh record
     // is a statement about which entries are current, not licence to lose the
     // rest. A copy rather than a rename: an uploader holding the file open
