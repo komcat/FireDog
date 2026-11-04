@@ -63,6 +63,16 @@ Inside the page, the familiar three-panel split (shared splitter sizes):
   Add sibling, Add child (structural only), Move up/down (within siblings),
   Delete. **Add step** opens the palette: registry commands grouped by
   category (`CommandRegistry::List()`) plus the six structural types.
+- **Multi-row editing.** Ctrl-click adds a row, Shift-click takes a range. The
+  tree toolbar's moves (up / down / indent / outdent) and its on-off button act
+  on the WHOLE selection, and keys do the same: **Ctrl+Up/Down** move,
+  **Ctrl+Right/Left** indent/outdent, **Space** switches the rows off (or, when
+  all are off, on). Keys and buttons call the same two functions
+  (`App::MoveSelectedSteps`, `App::ToggleSelectedStepsEnabled`), so a key does
+  nothing exactly when its button is disabled. A move needs siblings in one list
+  (indent/outdent: a contiguous run of them) and keeps them selected; the
+  editing keys need the tree focused, so a Space meant for the inspector cannot
+  switch a step off.
 - **Row icons.** A small picture sits after the step number in the tree and
   before the name in the palette — the SAME picture in both, from one lookup
   (`StepIconFile`, `ui/Widgets`), because the glyph learned while picking a

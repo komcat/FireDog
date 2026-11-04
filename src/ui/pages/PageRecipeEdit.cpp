@@ -404,6 +404,10 @@ void App::DrawRecipeEditPanel()
         }
         ImGui::SameLine(0.0f, 0.0f);
         ImGui::BeginChild("edTree", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
+        // The EDITING keys (Space, Ctrl+arrows) need the tree itself focused
+        // (a row or the toolbar clicked last) — a Space meant for the
+        // inspector must not switch a step off behind the operator's back.
+        const bool treeFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
         DrawRecipeTreeToolbar(r, !busy);
         ImGui::Separator();
         // Rows scroll in their own child so the ^/v/Delete toolbar above
@@ -416,10 +420,30 @@ void App::DrawRecipeEditPanel()
                             st.stepPaused ? st.nextPath : st.stepPath, running);
         // Arrow keys walk the visible rows (Up/Down; Left jumps to the
         // parent). Skipped while a text field or popup owns the keyboard.
-        if (!ImGui::GetIO().WantTextInput &&
+        // With Ctrl they EDIT instead: Up/Down move the selection, Right/Left
+        // indent/outdent it; Space switches it on/off. The edits go through
+        // the toolbar's own functions, so a key does exactly what its button
+        // does, and nothing while the button would be disabled.
+        const bool keysFree =
+            !ImGui::GetIO().WantTextInput &&
             !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId |
-                                        ImGuiPopupFlags_AnyPopupLevel) &&
-            !edTreeRows_.empty()) {
+                                        ImGuiPopupFlags_AnyPopupLevel);
+        const bool ctrl = ImGui::GetIO().KeyCtrl;
+        if (keysFree && treeFocused && !busy && !edStepSel_.empty()) {
+            if (ctrl) {
+                if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+                    MoveSelectedSteps(r, StepMove::Up, true);
+                else if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+                    MoveSelectedSteps(r, StepMove::Down, true);
+                else if (ImGui::IsKeyPressed(ImGuiKey_RightArrow))
+                    MoveSelectedSteps(r, StepMove::In, true);
+                else if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
+                    MoveSelectedSteps(r, StepMove::Out, true);
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Space, false))
+                ToggleSelectedStepsEnabled(r);
+        }
+        if (keysFree && !ctrl && !edTreeRows_.empty()) {
             const int d = (ImGui::IsKeyPressed(ImGuiKey_DownArrow) ? 1 : 0) -
                           (ImGui::IsKeyPressed(ImGuiKey_UpArrow) ? 1 : 0);
             if (d != 0) {
@@ -1038,66 +1062,28 @@ void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
     std::size_t idx = 0;
     std::vector<RecipeStep>* parent =
         edStepSel_.empty() ? nullptr : FindStepParent(&r.steps, edStepSel_, &idx);
-
-    // Indent target: the previous sibling, when it can hold children (same
-    // rule as the palette's "into" mode).
-    const RecipeStep* prev = (parent && idx > 0) ? &(*parent)[idx - 1] : nullptr;
-    const bool canIndent =
-        prev && IsStructuralStep(prev->type) && prev->type != "stop_recipe";
-    const bool canOutdent = parent && edStepSel_.size() >= 2;
-    // The four moves are single-row operations addressed through the anchor;
-    // with more rows selected they would move one and leave the rest looking
-    // as if they had gone too.
     const bool multi = !edStepMulti_.empty();
 
     ImGui::BeginDisabled(!canEdit);
-    ImGui::BeginDisabled(multi);
-    // Square icon tool buttons (ui/Widgets IconToolButton), in three groups:
-    // move | delete | clipboard. A missing PNG falls back to the old glyph.
-    ImGui::BeginDisabled(!parent || idx == 0);
-    if (IconToolButton(UiIcon("tb_move_up"), "stepUp", "^", "Move up")) {
-        std::swap((*parent)[idx - 1], (*parent)[idx]);
-        edStepSel_.back() -= 1;   // else-marker offset survives the +-1
-    }
-    ImGui::EndDisabled();
+    // Square icon tool buttons (ui/Widgets IconToolButton), in four groups:
+    // move | delete | clipboard | on-off. A missing PNG falls back to the old
+    // glyph. The moves act on the whole selection (MoveSelectedSteps).
+    const auto moveButton = [&](StepMove m, const char* icon, const char* id,
+                                const char* glyph, const char* tip) {
+        ImGui::BeginDisabled(!MoveSelectedSteps(r, m, false));
+        if (IconToolButton(UiIcon(icon), id, glyph, tip)) MoveSelectedSteps(r, m, true);
+        ImGui::EndDisabled();
+    };
+    moveButton(StepMove::Up, "tb_move_up", "stepUp", "^", "Move up  (Ctrl+Up)");
     ImGui::SameLine();
-    ImGui::BeginDisabled(!parent || idx + 1 >= parent->size());
-    if (IconToolButton(UiIcon("tb_move_down"), "stepDown", "v", "Move down")) {
-        std::swap((*parent)[idx], (*parent)[idx + 1]);
-        edStepSel_.back() += 1;
-    }
-    ImGui::EndDisabled();
+    moveButton(StepMove::Down, "tb_move_down", "stepDown", "v", "Move down  (Ctrl+Down)");
     ImGui::SameLine();
-    ImGui::BeginDisabled(!canIndent);
-    if (IconToolButton(UiIcon("tb_indent"), "stepIn", ">",
-                       "Move into the loop/group/if directly above.\n"
-                       "(An if's else branch: palette 'else' mode.)")) {
-        // Append to the previous sibling's children. The target reference
-        // stays valid across the erase (it sits before the erased slot).
-        RecipeStep& tgt = (*parent)[idx - 1];
-        tgt.children.push_back(std::move((*parent)[idx]));
-        parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(idx));
-        edStepSel_.back() -= 1;   // now addresses the container
-        edStepSel_.push_back(tgt.children.size() - 1);
-    }
-    ImGui::EndDisabled();
+    moveButton(StepMove::In, "tb_indent", "stepIn", ">",
+               "Move into the loop/group/if directly above.  (Ctrl+Right)\n"
+               "(An if's else branch: palette 'else' mode.)");
     ImGui::SameLine();
-    ImGui::BeginDisabled(!canOutdent);
-    if (IconToolButton(UiIcon("tb_outdent"), "stepOut", "<",
-                       "Move out of the container, to just after it.")) {
-        RecipeStep moved = std::move((*parent)[idx]);
-        parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(idx));
-        edStepSel_.pop_back();    // now addresses the parent container
-        std::size_t pIdx = 0;
-        if (std::vector<RecipeStep>* gp =
-                FindStepParent(&r.steps, edStepSel_, &pIdx)) {
-            gp->insert(gp->begin() + static_cast<std::ptrdiff_t>(pIdx) + 1,
-                       std::move(moved));
-            edStepSel_.back() += 1;   // sibling AFTER the container
-        }
-    }
-    ImGui::EndDisabled();
-    ImGui::EndDisabled();   // multi
+    moveButton(StepMove::Out, "tb_outdent", "stepOut", "<",
+               "Move out of the container, to just after it.  (Ctrl+Left)");
     ToolGroupGap();
     ImGui::BeginDisabled(!parent && !multi);
     if (IconToolButton(UiIcon("tb_delete"), "stepDel", "Delete",
@@ -1130,7 +1116,135 @@ void App::DrawRecipeTreeToolbar(Recipe& r, bool canEdit)
                        "Paste steps from the clipboard at the palette's target\n"
                        "(after the selection / into it / its else branch)."))
         PasteSteps(r);
+    ToolGroupGap();
+    // Enable/disable: the icon says what a click WILL do — hide (switch off)
+    // while any selected row is on, show (switch on) once all are off.
+    bool anyOn = false;
+    if (const RecipeStep* a = edStepSel_.empty() ? nullptr : FindStepByPath(&r.steps, edStepSel_))
+        anyOn = a->enabled;
+    for (const auto& p : edStepMulti_) {
+        if (const RecipeStep* s = FindStepByPath(&r.steps, p); s && s->enabled) anyOn = true;
+    }
+    ImGui::BeginDisabled(!parent && !multi);
+    if (IconToolButton(UiIcon(anyOn ? "tb_hide" : "tb_show"), "stepOnOff",
+                       anyOn ? "Off" : "On",
+                       anyOn ? "Disable the selected step(s)  (Space)\n"
+                               "A disabled step is skipped at run time."
+                             : "Enable the selected step(s)  (Space)"))
+        ToggleSelectedStepsEnabled(r);
+    ImGui::EndDisabled();
     ImGui::EndDisabled();   // canEdit
+}
+
+// Siblings only: every selected row (descendants of another dropped) in ONE
+// list — same parent path, same branch of an if. Up/Down move each row one
+// place and need room at the end they move toward; In/Out move a contiguous
+// block, In into the structural step just above it (appended to its
+// children), Out to just after the container. Rows keep their order, and the
+// selection is re-addressed to where they went (anchor stays the anchor).
+bool App::MoveSelectedSteps(Recipe& r, StepMove m, bool apply)
+{
+    const std::vector<std::vector<std::size_t>> paths = SelectedStepPaths();
+    if (paths.empty()) return false;
+    const std::size_t depth = paths.front().size();
+    const bool elseBr = paths.front().back() >= kElsePathBase;
+    for (const auto& p : paths) {
+        if (p.size() != depth || (p.back() >= kElsePathBase) != elseBr ||
+            !std::equal(p.begin(), p.end() - 1, paths.front().begin()))
+            return false;
+    }
+    std::size_t first = 0;
+    std::vector<RecipeStep>* parent = FindStepParent(&r.steps, paths.front(), &first);
+    if (!parent) return false;
+    const std::size_t n    = paths.size();
+    const std::size_t last = first + (paths.back().back() - paths.front().back());
+    const bool contiguous  = last - first + 1 == n;
+
+    bool ok = false;
+    switch (m) {
+    case StepMove::Up:   ok = first > 0; break;
+    case StepMove::Down: ok = last + 1 < parent->size(); break;
+    case StepMove::In: {
+        const RecipeStep* prev = first > 0 ? &(*parent)[first - 1] : nullptr;
+        ok = contiguous && prev && IsStructuralStep(prev->type) &&
+             prev->type != "stop_recipe";
+        break;
+    }
+    case StepMove::Out:  ok = contiguous && depth >= 2; break;
+    }
+    if (!ok || !apply) return ok;
+
+    // Which of the rows is the anchor, so it stays the anchor afterwards.
+    std::size_t anchorK = 0;
+    for (std::size_t k = 0; k < n; ++k)
+        if (paths[k] == edStepSel_) anchorK = k;
+
+    std::vector<std::vector<std::size_t>> moved = paths;
+    if (m == StepMove::Up) {
+        for (std::size_t k = 0; k < n; ++k) {   // top first: each swaps past its
+            const std::size_t i = first + (paths[k].back() - paths.front().back());
+            std::swap((*parent)[i - 1], (*parent)[i]);   // unselected neighbour
+            moved[k].back() -= 1;   // else-marker offset survives the -1
+        }
+    } else if (m == StepMove::Down) {
+        for (std::size_t k = n; k-- > 0;) {
+            const std::size_t i = first + (paths[k].back() - paths.front().back());
+            std::swap((*parent)[i], (*parent)[i + 1]);
+            moved[k].back() += 1;
+        }
+    } else if (m == StepMove::In) {
+        // The target reference stays valid across the erase: it sits before
+        // the erased range.
+        RecipeStep& tgt = (*parent)[first - 1];
+        const std::size_t base = tgt.children.size();
+        for (std::size_t k = 0; k < n; ++k)
+            tgt.children.push_back(std::move((*parent)[first + k]));
+        parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(first),
+                      parent->begin() + static_cast<std::ptrdiff_t>(first + n));
+        std::vector<std::size_t> cont = paths.front();
+        cont.back() -= 1;   // the container's own path
+        for (std::size_t k = 0; k < n; ++k) {
+            moved[k] = cont;
+            moved[k].push_back(base + k);
+        }
+    } else {   // Out
+        std::vector<RecipeStep> block;
+        for (std::size_t k = 0; k < n; ++k) block.push_back(std::move((*parent)[first + k]));
+        parent->erase(parent->begin() + static_cast<std::ptrdiff_t>(first),
+                      parent->begin() + static_cast<std::ptrdiff_t>(first + n));
+        // The container's path; erasing inside it never moves the container.
+        const std::vector<std::size_t> cont(paths.front().begin(), paths.front().end() - 1);
+        std::size_t pIdx = 0;
+        std::vector<RecipeStep>* gp = FindStepParent(&r.steps, cont, &pIdx);
+        if (!gp) return false;   // unreachable: depth >= 2 has a container
+        gp->insert(gp->begin() + static_cast<std::ptrdiff_t>(pIdx) + 1,
+                   std::make_move_iterator(block.begin()),
+                   std::make_move_iterator(block.end()));
+        for (std::size_t k = 0; k < n; ++k) {
+            moved[k] = cont;
+            moved[k].back() += 1 + k;   // siblings AFTER the container
+        }
+    }
+
+    edStepSel_ = moved[anchorK];
+    edStepMulti_.clear();
+    for (std::size_t k = 0; k < n; ++k)
+        if (k != anchorK) edStepMulti_.push_back(moved[k]);
+    edScrollToSel_ = true;
+    return true;
+}
+
+void App::ToggleSelectedStepsEnabled(Recipe& r)
+{
+    std::vector<RecipeStep*> rows;
+    if (!edStepSel_.empty())
+        if (RecipeStep* s = FindStepByPathMut(&r.steps, edStepSel_)) rows.push_back(s);
+    for (const auto& p : edStepMulti_)
+        if (RecipeStep* s = FindStepByPathMut(&r.steps, p)) rows.push_back(s);
+    if (rows.empty()) return;
+    const bool anyOn = std::any_of(rows.begin(), rows.end(),
+                                   [](const RecipeStep* s) { return s->enabled; });
+    for (RecipeStep* s : rows) s->enabled = !anyOn;
 }
 
 RecipeStep* App::EditorSelectedStep()

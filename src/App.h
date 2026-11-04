@@ -1205,10 +1205,11 @@ private:
     bool showDispHelper_ = false;   // the Dispense helper window (follows edStepSel_)
     // Further selected rows beyond edStepSel_ (the ANCHOR: the inspector's
     // step, the palette's insert point). Ctrl-click toggles a row in and out,
-    // Shift-click takes the visible range from the anchor. Copy, Delete and
-    // Run Step act on anchor + these; the single-row moves (^ v > <) are
-    // disabled while any exist. Cleared by every plain click and every edit — a path is an
-    // index into the tree and means nothing once the tree changes under it.
+    // Shift-click takes the visible range from the anchor. Copy, Delete, Run
+    // Step, the moves (^ v > <) and the on/off toggle act on anchor + these.
+    // Cleared by every plain click and every edit that does not re-address it
+    // (the moves do) — a path is an index into the tree and means nothing once
+    // the tree changes under it.
     std::vector<std::vector<std::size_t>> edStepMulti_;
     // A Shift-click is resolved AFTER the tree has drawn (edTreeRows_ is
     // complete only then): the clicked row waits here for one frame.
@@ -1227,6 +1228,16 @@ private:
     // Remove the selection (subtrees included) and clear it; the Delete
     // modal's and Cut's one implementation. Returns how many rows went.
     std::size_t DeleteSelectedSteps(Recipe& r);
+    // The tree toolbar's four moves (^ v > <) over the WHOLE selection — the
+    // one implementation behind both the buttons and Ctrl+arrow keys, so a
+    // button is disabled exactly when its key would do nothing. The selection
+    // must be siblings in one list (> and < also need them contiguous); the
+    // rows keep their order and stay selected. `apply` false only asks.
+    enum class StepMove { Up, Down, In, Out };
+    bool MoveSelectedSteps(Recipe& r, StepMove m, bool apply);
+    // Space / the toolbar's on-off button: every selected row OFF if any is
+    // on, else all on. Acts on every highlighted row, children included.
+    void ToggleSelectedStepsEnabled(Recipe& r);
     // Visible tree rows in draw order (rebuilt every frame) — arrow-key
     // navigation walks this list; collapsed children never appear in it.
     std::vector<std::vector<std::size_t>> edTreeRows_;
