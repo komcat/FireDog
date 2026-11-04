@@ -1952,7 +1952,14 @@ private:
     int                      dataKeySel2_ = -1;  // series B overlay (-1 = none)
     int                      dataPlotMode_ = 0;  // 0 series, 1 daily / 2 weekly / 3 monthly box
     int                      dataTimeSel_  = 0;  // 0 all, 1 this month, 2 last month, 3 YTD
-    std::string              dataSelSerial_;
+    std::string              dataSelSerial_;   // the FOCUSED row: Details, the chart's marker
+    // The multi-selection (click / Ctrl+click / Shift+click / Ctrl+A), by
+    // serial like the focus. Copy and Export act on the selected rows that are
+    // also SHOWN — a row the filter hides is never exported behind its back.
+    std::set<std::string>    dataSelSet_;
+    std::string              dataSelAnchor_;   // Shift+click range start
+    std::string              dataMsg_;         // last copy / export result
+    std::string              dataExportDir_;   // where the last export went
     char                     dataFilter_[64] = "";
     int                      dataSortCol_ = 0;     // fixed column the rows are ordered by...
     std::string              dataSortKey_;         // ...or this key's column ("" = fixed)

@@ -9,9 +9,12 @@
 // as daily / weekly / monthly box plots.
 //
 // A window rather than a page so it can sit on a second monitor beside the Run
-// page while parts go through. It writes nothing: every mutation of a record
-// goes through DutSession via the dut_* commands, and the Explorer shortcut is
-// the only thing here that leaves the application, gated like the DUT block's.
+// page while parts go through. It never writes a RECORD: every mutation of a
+// record goes through DutSession via the dut_* commands. What it does write is
+// a copy OUT — the shown rows (all, or the multi-selection) as TSV on the
+// clipboard or a CSV under <product>/export/, with the table's own columns.
+// The Explorer shortcuts are the only things here that leave the application,
+// gated like the DUT block's.
 //
 // The scan is synchronous on the UI thread — a few KB per record, so a few
 // hundred parts is milliseconds — and runs on open, on product change, on
@@ -256,6 +259,65 @@ void DrawLabelStrip(const std::vector<float>& px, const std::vector<const char*>
     dl->PopClipRect();
 }
 
+// A value as it goes OUT of the window (clipboard, CSV): numbers at full
+// precision (json's shortest round-trip form, not the table's %.6g), text
+// raw, a missing or null value empty — "-" is a table glyph, not data.
+std::string ExportText(const nlohmann::json* v)
+{
+    if (!v || v->is_null()) return std::string();
+    if (v->is_string())     return v->get<std::string>();
+    return v->dump();
+}
+
+std::string CsvField(const std::string& s)
+{
+    if (s.find_first_of(",\"\r\n") == std::string::npos) return s;
+    std::string out = "\"";
+    for (char c : s) {
+        if (c == '"') out += '"';
+        out += c;
+    }
+    return out + '"';
+}
+
+// A tab-separated field: a tab or line break inside a value would split the
+// cell when pasted into a spreadsheet, so it becomes a space.
+std::string TsvField(std::string s)
+{
+    for (char& c : s)
+        if (c == '\t' || c == '\r' || c == '\n') c = ' ';
+    return s;
+}
+
+// The rows as text: a header, then one line per row, the identity columns and
+// then `keys` — the SAME columns the table shows, so what is copied is what
+// was on screen. `csv` picks CSV (file) or TSV (clipboard, pastes into Excel).
+std::string DataRowsText(const std::vector<const DutDataRow*>& rows,
+                         const std::vector<std::string>& keys, bool csv)
+{
+    const char* sep = csv ? "," : "\t";
+    const char* eol = csv ? "\r\n" : "\n";
+    auto field = [csv](const std::string& s) { return csv ? CsvField(s) : TsvField(s); };
+
+    std::string out = "serial";
+    for (const char* h : {"opened_utc", "closed_utc", "status", "runs"}) out += std::string(sep) + h;
+    for (const std::string& k : keys) out += sep + field(k);
+    out += eol;
+    for (const DutDataRow* r : rows) {
+        out += field(r->serial);
+        out += sep + field(r->opened);
+        out += sep + field(r->closed);
+        out += sep + field(r->status);
+        out += sep + std::to_string(r->runs.size());
+        for (const std::string& k : keys) {
+            const auto it = r->vals.find(k);
+            out += sep + field(ExportText(it == r->vals.end() ? nullptr : &it->second));
+        }
+        out += eol;
+    }
+    return out;
+}
+
 } // namespace
 
 void App::LoadDataRows()
@@ -487,6 +549,79 @@ void App::DrawViewDataWindow()
     };
     rebuildShown();
 
+    // ---- Copy / export: the shown rows (all, or the selected ones) ----
+    // Rows in table order, columns exactly the table's (the Columns popup's
+    // choice), so a paste or a file reads like the screen did.
+    auto selectedShown = [&]() {
+        std::vector<const DutDataRow*> out;
+        for (const int i : shown) {
+            const DutDataRow& r = dataRows_[static_cast<std::size_t>(i)];
+            if (dataSelSet_.count(r.serial)) out.push_back(&r);
+        }
+        return out;
+    };
+    auto allShown = [&]() {
+        std::vector<const DutDataRow*> out;
+        for (const int i : shown) out.push_back(&dataRows_[static_cast<std::size_t>(i)]);
+        return out;
+    };
+    auto visKeyNames = [&]() {
+        std::vector<std::string> out;
+        for (const int k : visKeys) out.push_back(dataKeys_[static_cast<std::size_t>(k)]);
+        return out;
+    };
+    auto copyRows = [&](const std::vector<const DutDataRow*>& rows) {
+        if (rows.empty()) return;
+        ImGui::SetClipboardText(DataRowsText(rows, visKeyNames(), false).c_str());
+        dataMsg_ = "Copied " + std::to_string(rows.size()) + " row(s) to the clipboard";
+        dataExportDir_.clear();
+    };
+    auto exportRows = [&](const std::vector<const DutDataRow*>& rows, bool selected) {
+        namespace fs = std::filesystem;
+        if (rows.empty() || dataDir_.empty()) return;
+        // Beside the product's data/ folder (never inside it: data/ holds one
+        // folder per serial), so an export stays with the product it came from.
+        const fs::path product = fs::path(dataDir_).parent_path();
+        const fs::path dir     = product / "export";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        const std::time_t now = std::time(nullptr);
+        std::tm t{};
+        localtime_s(&t, &now);
+        char stamp[32];
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &t);
+        const fs::path file = dir / ("view-data-" + product.filename().string() + "-" + stamp +
+                                     (selected ? "-selected" : "") + ".csv");
+        std::ofstream f(file, std::ios::binary);
+        if (f.is_open()) f << DataRowsText(rows, visKeyNames(), true);
+        if (!f.is_open() || !f.good()) {
+            dataMsg_ = "Export failed: cannot write " + file.generic_string();
+            dataExportDir_.clear();
+            FD_WARN("dut", "view data: %s", dataMsg_.c_str());
+            return;
+        }
+        dataMsg_       = "Exported " + std::to_string(rows.size()) + " row(s) to " + file.generic_string();
+        dataExportDir_ = dir.generic_string();
+        FD_INFO("dut", "view data: %s", dataMsg_.c_str());
+    };
+    const std::size_t nSel = selectedShown().size();
+
+    ImGui::SameLine();
+    ImGui::BeginDisabled(shown.empty());
+    if (ImGui::Button("Export CSV")) ImGui::OpenPopup("##dataexport");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Write the shown rows (all, or the selected ones) to a CSV beside the\n"
+                          "product's data folder. Columns are the table's (see Columns).");
+    if (ImGui::BeginPopup("##dataexport")) {
+        char all[48], sel[48];
+        std::snprintf(all, sizeof(all), "All shown rows (%zu)", shown.size());
+        std::snprintf(sel, sizeof(sel), "Selected rows (%zu)", nSel);
+        if (ImGui::MenuItem(all)) exportRows(allShown(), false);
+        if (ImGui::MenuItem(sel, nullptr, false, nSel > 0)) exportRows(selectedShown(), true);
+        ImGui::EndPopup();
+    }
+
     ImGui::SameLine();
     if (dataDir_.empty())
         ImGui::TextDisabled("Load a product first.");
@@ -496,6 +631,7 @@ void App::DrawViewDataWindow()
     ImGui::Separator();
 
     bool wantDetails = openDetails;
+    bool openRowMenu = false;   // set inside the row loop, opened at window level
 
     // ---- Table ----
     const float chartH = 300.0f;   // controls row + plot + label strip
@@ -554,11 +690,46 @@ void App::DrawViewDataWindow()
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(kColSerial);
                 ImGui::PushID(s);
-                if (ImGui::Selectable(r.serial.c_str(), dataSelSerial_ == r.serial,
+                const bool isSel = dataSelSet_.count(r.serial) != 0;
+                if (ImGui::Selectable(r.serial.c_str(), isSel,
                                       ImGuiSelectableFlags_SpanAllColumns |
                                           ImGuiSelectableFlags_AllowDoubleClick)) {
+                    const ImGuiIO& io = ImGui::GetIO();
+                    // Shift: the range from the anchor, in TABLE order (the
+                    // order on screen, after sort and filter). Ctrl+Shift adds
+                    // the range; Shift alone replaces the selection with it.
+                    int anchorAt = -1;
+                    if (io.KeyShift && !dataSelAnchor_.empty())
+                        for (int a = 0; a < static_cast<int>(shown.size()); ++a)
+                            if (dataRows_[static_cast<std::size_t>(shown[static_cast<std::size_t>(a)])]
+                                    .serial == dataSelAnchor_) { anchorAt = a; break; }
+                    if (anchorAt >= 0) {
+                        if (!io.KeyCtrl) dataSelSet_.clear();
+                        for (int a = std::min(anchorAt, s); a <= std::max(anchorAt, s); ++a)
+                            dataSelSet_.insert(
+                                dataRows_[static_cast<std::size_t>(shown[static_cast<std::size_t>(a)])].serial);
+                    } else if (io.KeyCtrl) {
+                        if (isSel) dataSelSet_.erase(r.serial);
+                        else       dataSelSet_.insert(r.serial);
+                        dataSelAnchor_ = r.serial;
+                    } else {
+                        dataSelSet_.clear();
+                        dataSelSet_.insert(r.serial);
+                        dataSelAnchor_ = r.serial;
+                    }
                     dataSelSerial_ = r.serial;
                     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) wantDetails = true;
+                }
+                // Right-click acts on the selection; on a row outside it, the
+                // row becomes the selection first (the Explorer convention).
+                if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                    if (!isSel) {
+                        dataSelSet_.clear();
+                        dataSelSet_.insert(r.serial);
+                        dataSelAnchor_ = r.serial;
+                    }
+                    dataSelSerial_ = r.serial;
+                    openRowMenu    = true;
                 }
                 ImGui::PopID();
                 if (ImGui::TableSetColumnIndex(kColOpened))
@@ -598,6 +769,48 @@ void App::DrawViewDataWindow()
         }
         ImGui::EndTable();
     }
+
+    // Ctrl+A / Ctrl+C while the window has focus — but never while a text box
+    // (the serial filter) is taking the keys, where they mean the text.
+    {
+        const ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !io.WantTextInput &&
+            io.KeyCtrl && !shown.empty()) {
+            if (ImGui::IsKeyPressed(ImGuiKey_A, false)) {
+                for (const int i : shown) dataSelSet_.insert(dataRows_[static_cast<std::size_t>(i)].serial);
+            } else if (ImGui::IsKeyPressed(ImGuiKey_C, false)) {
+                copyRows(selectedShown());
+            }
+        }
+    }
+
+    // The row menu. Opened here, outside the table and the row's PushID, so
+    // its ID is the window's and one popup serves every row.
+    if (openRowMenu) ImGui::OpenPopup("##datarowmenu");
+    if (ImGui::BeginPopup("##datarowmenu")) {
+        const std::vector<const DutDataRow*> sel = selectedShown();
+        char copySel[48], copyAll[48], expSel[48], expAll[48];
+        std::snprintf(copySel, sizeof(copySel), "Copy selected (%zu)", sel.size());
+        std::snprintf(copyAll, sizeof(copyAll), "Copy all shown (%zu)", shown.size());
+        std::snprintf(expSel,  sizeof(expSel),  "Export selected to CSV (%zu)", sel.size());
+        std::snprintf(expAll,  sizeof(expAll),  "Export all shown to CSV (%zu)", shown.size());
+        if (ImGui::MenuItem(copySel, "Ctrl+C", false, !sel.empty())) copyRows(sel);
+        if (ImGui::MenuItem(copyAll)) copyRows(allShown());
+        ImGui::Separator();
+        if (ImGui::MenuItem(expSel, nullptr, false, !sel.empty())) exportRows(sel, true);
+        if (ImGui::MenuItem(expAll)) exportRows(allShown(), false);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Select all shown", "Ctrl+A"))
+            for (const int i : shown) dataSelSet_.insert(dataRows_[static_cast<std::size_t>(i)].serial);
+        if (ImGui::MenuItem("Clear selection", nullptr, false, !dataSelSet_.empty())) {
+            dataSelSet_.clear();
+            dataSelAnchor_.clear();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Details", nullptr, false, CanAccess(Page::DutView))) wantDetails = true;
+        ImGui::EndPopup();
+    }
+
     if (static_cast<int>(visKeys.size()) > kMaxKeyCols)
         ImGui::TextColored(StateColor(ConnState::Failed),
                            "Only the first %d of %zu ticked keys are shown - untick some in Columns.",
@@ -632,6 +845,15 @@ void App::DrawViewDataWindow()
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Series: one point per part in table order.\n"
                           "Box: min / Q1 / median / Q3 / max per day, week (from Monday) or month.");
+    if (!dataMsg_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", dataMsg_.c_str());
+        if (!dataExportDir_.empty()) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Open##dataexp")) OpenFolderInExplorer(dataExportDir_);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open the export folder in Explorer");
+        }
+    }
 
     const bool haveA = dataKeySel_  >= 0 && dataKeySel_  < static_cast<int>(dataKeys_.size());
     const bool haveB = dataKeySel2_ >= 0 && dataKeySel2_ < static_cast<int>(dataKeys_.size());
@@ -820,7 +1042,9 @@ void App::DrawViewDataWindow()
     // Outside the window: SwitchPage may refuse, and the page's own list must
     // be the one the DUT Records page reads — a second scan there keeps the
     // two surfaces from ever disagreeing about which serials exist.
-    if (wantDetails && haveSel) {
+    // Re-checked here: a right-click inside the table can set the focus after
+    // the toolbar's haveSel was taken.
+    if (wantDetails && !dataSelSerial_.empty() && CanAccess(Page::DutView)) {
         LoadDutList();
         for (int i = 0; i < static_cast<int>(dutList_.size()); ++i)
             if (dutList_[static_cast<std::size_t>(i)] == dataSelSerial_) dutSel_ = i;
