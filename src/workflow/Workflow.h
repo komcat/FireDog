@@ -5,6 +5,7 @@
 
 #include "core/AlignFrame.h"           // AlignResult (taught-frame hand-back queue)
 #include "core/AlignLighting.h"        // ApplyLighting (a detection model's light)
+#include "core/CameraSetup.h"          // CameraSetup / ViewFilter (how a view is looked at)
 #include "core/DeviceReg.h"            // DeviceReg (a gripper tip in gantry space)
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
 #include "core/PivotDefaults.h"        // PivotDefault (restored after a controller restart)
@@ -186,6 +187,21 @@ public:
     bool ConnectCamera();
     bool DisconnectCamera();     // stop grabbing + close (quick, synchronous)
     bool SetCameraExposure(double us);   // requires Connected
+
+    // ---- Camera setup: exposure + light + the live view's filter ------------
+    // core/CameraSetup.h, docs/camera-setup-design.md. The WORKER-side apply,
+    // the one a recipe command calls: the exposure (0 = leave), then the light
+    // (ApplyLighting - BLOCKING, never call it from the UI thread; that one is
+    // App::ApplyCameraSetupNow), then the display filter is handed to the live
+    // view through the slot below. Fails, and hands nothing on, when the camera
+    // or the light refuses - a picture taken under the wrong setup looks
+    // exactly like one taken under the right one.
+    bool ApplyCameraSetup(const CameraSetup& s, std::string* why = nullptr);
+    // The filter a run asks the operator's LIVE camera view (the Aux window)
+    // to show. A SLOT, not a queue: only the newest matters. App::Update takes
+    // it; the view keeps it until the next one (an inactive ViewFilter clears).
+    void SetLiveViewFilter(const ViewFilter& f);
+    bool TakeLiveViewFilter(ViewFilter* out);   // false = nothing new
 
     // ---- Vision: focus measure (layer 2 owns the sampling) ------------------
     // The sharpness score the auto_focus command maximises, and the same number
@@ -768,6 +784,11 @@ private:
     std::mutex   shotMu_;
     CapturedView shot_;
     bool         shotPending_ = false;
+
+    // The live-view filter slot (SetLiveViewFilter / TakeLiveViewFilter).
+    std::mutex viewFilterMu_;
+    ViewFilter viewFilter_;
+    bool       viewFilterPending_ = false;
 
     // Live taught frames by alignment uid. Read by worker threads (move_local)
     // and by the UI (the "live" indicator), written by align_solve.

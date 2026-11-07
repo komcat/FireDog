@@ -10,6 +10,29 @@
 
 namespace firedog {
 
+namespace {
+
+// A view's live ROI filter (core ViewFilter) under its key prefix:
+// <prefix>_roi_mode, <prefix>_binary, <prefix>_thr. One pair for every
+// filtered view, so a new view adds a field and two calls, never a third
+// spelling of the keys.
+void LoadViewFilter(const nlohmann::json& j, const std::string& prefix, ViewFilter& s)
+{
+    if (j.contains(prefix + "_roi_mode")) s.roiMode = j[prefix + "_roi_mode"].get<int>();
+    if (j.contains(prefix + "_binary"))   s.binary  = j[prefix + "_binary"].get<bool>();
+    if (j.contains(prefix + "_thr"))      s.thr     = j[prefix + "_thr"].get<int>();
+    s.Sanitize();
+}
+
+void SaveViewFilter(nlohmann::json& j, const std::string& prefix, const ViewFilter& s)
+{
+    j[prefix + "_roi_mode"] = s.roiMode;
+    j[prefix + "_binary"]   = s.binary;
+    j[prefix + "_thr"]      = s.thr;
+}
+
+} // namespace
+
 UiSettings UiSettings::Load(const std::string& path)
 {
     UiSettings s;
@@ -38,9 +61,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("run_shot_h")) s.runShotH = j["run_shot_h"].get<float>();
         if (j.contains("org_lib_w"))  s.orgLibW  = j["org_lib_w"].get<float>();
         if (j.contains("reg_ctl_w"))  s.regCtlW  = j["reg_ctl_w"].get<float>();
-        if (j.contains("reg_roi_mode")) s.regRoiMode = j["reg_roi_mode"].get<int>();
-        if (j.contains("reg_binary"))   s.regBinary  = j["reg_binary"].get<bool>();
-        if (j.contains("reg_thr"))      s.regThr     = j["reg_thr"].get<int>();
+        LoadViewFilter(j, "reg", s.regFilter);
         if (j.contains("reg_exposure_us")) s.regExposureUs = j["reg_exposure_us"].get<double>();
         if (j.contains("reg_light_color")) s.regLightColor = j["reg_light_color"].get<std::string>();
         if (j.contains("reg_light_pct"))   s.regLightPct   = j["reg_light_pct"].get<double>();
@@ -174,9 +195,7 @@ bool UiSettings::Save(const std::string& path) const
     j["run_shot_h"]      = runShotH;
     j["org_lib_w"]       = orgLibW;
     j["reg_ctl_w"]       = regCtlW;
-    j["reg_roi_mode"]    = regRoiMode;
-    j["reg_binary"]      = regBinary;
-    j["reg_thr"]         = regThr;
+    SaveViewFilter(j, "reg", regFilter);
     j["reg_exposure_us"] = regExposureUs;
     j["reg_light_color"] = regLightColor;
     j["reg_light_pct"]   = regLightPct;

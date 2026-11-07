@@ -628,30 +628,8 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
         // and only the part of the box that IS image may sample the texture.
         DrawCameraViewImage(dl, mp.tex, view);
 
-        // The ROI: its processed picture drawn over the frame where it came
-        // from, clipped to the part of the box that is image, then its border.
-        if ((mp.roiOutline || mp.roiTex) && mp.roiX1 > mp.roiX0 && mp.roiY1 > mp.roiY0) {
-            const float vx0 = fmaxf(fmaxf(view.left, 0.0f), mp.roiX0);
-            const float vy0 = fmaxf(fmaxf(view.top, 0.0f), mp.roiY0);
-            const float vx1 = fminf(fminf(view.left + view.vw, static_cast<float>(mp.imgW)),
-                                    mp.roiX1);
-            const float vy1 = fminf(fminf(view.top + view.vh, static_cast<float>(mp.imgH)),
-                                    mp.roiY1);
-            if (mp.roiTex && vx1 > vx0 && vy1 > vy0) {
-                const float rw = mp.roiX1 - mp.roiX0, rh = mp.roiY1 - mp.roiY0;
-                dl->AddImage((ImTextureID)(intptr_t)mp.roiTex, view.ToScreen(vx0, vy0),
-                             view.ToScreen(vx1, vy1),
-                             ImVec2((vx0 - mp.roiX0) / rw, (vy0 - mp.roiY0) / rh),
-                             ImVec2((vx1 - mp.roiX0) / rw, (vy1 - mp.roiY0) / rh));
-            }
-            if (mp.roiOutline) {
-                dl->PushClipRect(origin, ImVec2(origin.x + img.x, origin.y + img.y), true);
-                dl->AddRect(view.ToScreen(mp.roiX0, mp.roiY0),
-                            view.ToScreen(mp.roiX1, mp.roiY1),
-                            IM_COL32(255, 200, 60, 230), 0.0f, 0, 1.5f);
-                dl->PopClipRect();
-            }
-        }
+        // The live ROI filter, if the page runs one (ui/RoiFilter).
+        DrawRoiOverlay(dl, view, mp.roi);
         ImGui::Dummy(img);
     } else {
         dl->AddRectFilled(origin, ImVec2(origin.x + img.x, origin.y + img.y),

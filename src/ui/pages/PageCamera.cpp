@@ -29,6 +29,26 @@ void App::UpdateCameraTexture()
     }
 }
 
+RoiFilterFrame App::MainCameraFrame()
+{
+    RoiFilterFrame f;
+    f.rgb   = frameBuf_.data();
+    f.bytes = frameBuf_.size();
+    f.w     = cameraW_;
+    f.h     = cameraH_;
+    f.seq   = hardware_.Camera().FrameSeq();
+    return f;
+}
+
+void App::ApplyCameraSetupNow(const CameraSetup& s)
+{
+    if (s.exposureUs > 0.0 && !workflow_.SetCameraExposure(s.exposureUs))
+        FD_WARN("camera", "setup: exposure %.0f us refused (camera connected?)", s.exposureUs);
+    ApplyLightingNow(s.lighting);
+    auxFilter_ = s.filter;
+    auxFilter_.Sanitize();
+}
+
 void App::DrawCameraListPanel()
 {
     ImGui::TextUnformatted("Camera");

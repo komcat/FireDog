@@ -87,9 +87,8 @@ int App::Run()
         if (ui.runShotH      > 0.0f) runShotPanelH_ = ui.runShotH;
         if (ui.orgLibW       > 0.0f) orgLibW_       = ui.orgLibW;
         if (ui.regCtlW       > 0.0f) regCtlW_       = ui.regCtlW;
-        regRoiMode_    = (ui.regRoiMode >= 0 && ui.regRoiMode <= 3) ? ui.regRoiMode : 0;
-        regBinary_     = ui.regBinary;
-        regThr_        = (ui.regThr >= 0 && ui.regThr <= 255) ? ui.regThr : 128;
+        regFilter_     = ui.regFilter;
+        regFilter_.Sanitize();
         regExposureUs_ = ui.regExposureUs > 0.0 ? ui.regExposureUs : 0.0;
         if (!ui.regLightColor.empty()) {
             regLight_.kind    = "light";
@@ -394,6 +393,11 @@ void App::Update(float dt)
     // delivered.
     DrainCapturedView();
 
+    // The live view's filter a run's roi_filter_view_setup step asked for (a
+    // slot: only the newest). Taken here, not in the Aux Draw, so a closed
+    // window still ends up showing what the run asked for when it is opened.
+    workflow_.TakeLiveViewFilter(&auxFilter_);
+
     // Age the last detection here rather than timing it in a Draw, so the value
     // and its age can never disagree within a frame. A new detection is one on
     // a DIFFERENT camera frame — the detector stamps the frame it used.
@@ -608,9 +612,7 @@ void App::SaveUiSettings()
     s.runShotH      = runShotPanelH_;
     s.orgLibW       = orgLibW_;
     s.regCtlW       = regCtlW_;
-    s.regRoiMode    = regRoiMode_;
-    s.regBinary     = regBinary_;
-    s.regThr        = regThr_;
+    s.regFilter     = regFilter_;
     s.regExposureUs = regExposureUs_;
     s.regLightColor = regLight_.kind == "light" ? regLight_.color : std::string();
     s.regLightPct   = regLight_.value;

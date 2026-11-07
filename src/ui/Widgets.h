@@ -18,6 +18,7 @@
 #include "core/AlignLighting.h"    // LightCalloutPicker
 #include "core/SavedPositions.h"   // SavedPos / SavedPosMap (TaughtPosePicker)
 #include "hardware/IDevice.h"      // ConnState
+#include "ui/RoiFilter.h"           // RoiOverlay (MarkPicker::roi)
 
 namespace firedog {
 
@@ -366,15 +367,11 @@ struct MarkPicker {
     };
     const WorldBox* boxes    = nullptr;
     int             boxCount = 0;
-    // A region of the frame in CAMERA px, [roiX0,roiX1) x [roiY0,roiY1).
-    // `roiOutline` draws its border; a non-zero `roiTex` draws that texture
-    // (a processed picture of exactly this rectangle - e.g. a binary
-    // threshold) over the frame in its place. DISPLAY ONLY: the marks and the
+    // The live ROI filter's overlay (ui/RoiFilter: UpdateRoiFilter's result),
+    // drawn over the frame by DrawRoiOverlay. DISPLAY ONLY: the marks and the
     // click are still on the camera frame, so the overlay is an aid to seeing
-    // an edge and never a second source of coordinates.
-    bool         roiOutline = false;
-    unsigned int roiTex     = 0;
-    float        roiX0 = 0.0f, roiY0 = 0.0f, roiX1 = 0.0f, roiY1 = 0.0f;
+    // an edge and never a second source of coordinates. Default draws nothing.
+    RoiOverlay roi;
     // Step diagrams, bottom-left. `activeMark` is the 0-based mark the operator
     // should place next; the other is dimmed.
     MarkIcon icons[2];

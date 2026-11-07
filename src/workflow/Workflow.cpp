@@ -1135,6 +1135,36 @@ bool Workflow::SetCameraExposure(double us)
     return ok;
 }
 
+bool Workflow::ApplyCameraSetup(const CameraSetup& s, std::string* why)
+{
+    if (s.exposureUs > 0.0 && !SetCameraExposure(s.exposureUs)) {
+        if (why) *why = "camera exposure change rejected (camera connected?)";
+        return false;
+    }
+    if (!ApplyLighting(s.lighting, why)) return false;
+    ViewFilter f = s.filter;
+    f.Sanitize();
+    SetLiveViewFilter(f);
+    FD_INFO("camera", "setup applied: %s", CameraSetupSummary(s).c_str());
+    return true;
+}
+
+void Workflow::SetLiveViewFilter(const ViewFilter& f)
+{
+    const std::lock_guard<std::mutex> lock(viewFilterMu_);
+    viewFilter_        = f;
+    viewFilterPending_ = true;
+}
+
+bool Workflow::TakeLiveViewFilter(ViewFilter* out)
+{
+    const std::lock_guard<std::mutex> lock(viewFilterMu_);
+    if (!viewFilterPending_) return false;
+    if (out) *out = viewFilter_;
+    viewFilterPending_ = false;
+    return true;
+}
+
 void Workflow::StartKeithley(const HardwareConfig& hw)
 {
     const KeithleyConfig* k = hw.FirstEnabledKeithley();

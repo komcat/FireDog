@@ -328,6 +328,11 @@ private:
     // A detection model's "light" call-out, set NOW for judging it on the
     // live image (a LightCalloutPicker click). Queued — no socket I/O here.
     void ApplyLightingNow(const AlignLighting& l);
+    // A CameraSetup applied NOW from the UI thread (the recipe editor's helper,
+    // later): exposure, the light QUEUED (ApplyLightingNow - no socket I/O),
+    // and the filter onto the live Aux view. The worker twin is
+    // Workflow::ApplyCameraSetup. docs/camera-setup-design.md.
+    void ApplyCameraSetupNow(const CameraSetup& s);
     // Motion page — all motion devices (PI + ACS) on one page. The middle
     // panel is tabbed: "Positions" (saved-position table) and "Mapped Path"
     // (node-edge graph editor + path execution).
@@ -479,10 +484,8 @@ private:
     // them. Machine state, handed to Workflow's queue and drained in Update.
     void StartDeviceRegTeachRun();
     void CompleteDeviceRegTip();
-    // The image toolbar (ROI + binary threshold) and the camera view section
-    // (main_camera exposure + main_camera_light) of the Capture tab.
-    void DrawDeviceRegToolbar();
-    void UpdateDeviceRegThreshold(int x, int y, int w, int h);
+    // The camera view section (main_camera exposure + main_camera_light) of
+    // the Capture tab. Its image toolbar is the shared ui/RoiFilter.
     void DrawDeviceRegCameraView();
 
     // Gripped Object page (View menu, full-page): where the object in a
@@ -850,6 +853,9 @@ private:
     unsigned int               cameraTex_ = 0;
     int                        cameraW_ = 0, cameraH_ = 0;
     std::vector<unsigned char> frameBuf_;
+    // frameBuf_ as a live ROI filter's input (ui/RoiFilter), with its FrameSeq.
+    // Every view filtering the main camera takes its frame from here.
+    RoiFilterFrame MainCameraFrame();
 
     // The Run page's image box: ONE still, captured by a recipe step and held
     // until the next one replaces it. Its own texture rather than a share of
@@ -1415,20 +1421,11 @@ private:
     // floats; the record is the double that matters.
     float regBoxW_ = 0.0f, regBoxH_ = 0.0f;
     bool  regBoxDragging_ = false;
-    // The image toolbar: an ROI square on the crosshair (0 off, 1 = 1/3,
-    // 2 = 1/2, 3 = 2/3 of the frame's short side) and a binary threshold view
-    // of it, to make the tool's edges visible while marking. DISPLAY ONLY -
-    // the marks are still taken on the camera frame. Persisted in UiSettings.
-    int    regRoiMode_ = 0;
-    bool   regBinary_  = false;
-    int    regThr_     = 128;
-    // The thresholded ROI as a texture, rebuilt only on a new frame or a
-    // changed setting, and the camera-px rectangle it shows.
-    unsigned int regThrTex_ = 0;
-    int    regThrX_ = 0, regThrY_ = 0, regThrW_ = 0, regThrH_ = 0, regThrAt_ = -1;  // asked
-    int    regThrGx_ = 0, regThrGy_ = 0, regThrGw_ = 0, regThrGh_ = 0;  // got (clamped)
-    unsigned long long regThrSeq_ = 0;
-    std::vector<unsigned char> regGray_, regThrRgb_;
+    // The image toolbar's live ROI filter (ui/RoiFilter): what the operator
+    // chose (persisted in UiSettings) and this view's own texture + scratch.
+    // DISPLAY ONLY - the marks are still taken on the camera frame.
+    ViewFilter        regFilter_;
+    RoiFilterState    regFilterSt_;
     // The camera view the tool is marked under, HARD-CODED to the one camera
     // (main_camera) and its light group, and kept for the next teach.
     // regExposureUs_ 0 = never set on this page (seeded from the camera).
@@ -1756,6 +1753,13 @@ private:
     bool       auxPanelOpen_ = true;       // Aux strip, persisted
     bool       auxImgFit_    = false;      // Aux image: false = cover, true = fit; persisted
     bool       auxChartCompact_ = false;   // Aux chart at half size, chart only; persisted
+    // The Aux view's live ROI filter (ui/RoiFilter), centred on the image
+    // centre (the fixed crosshair). It has NO control on the window: it is set
+    // by a run (Workflow::SetLiveViewFilter, drained in Update) or by
+    // ApplyCameraSetupNow. RUNTIME ONLY, never persisted - a binary picture
+    // left over from yesterday's run would hide the part an operator watches.
+    ViewFilter     auxFilter_;
+    RoiFilterState auxFilterSt_;
     // Taught-patch thumbnails, one slot per surface that shows one. Each is
     // keyed by what it was built from (VisionModelPatchKey), so a model switch,
     // a re-teach or an anchor drag reloads it and nothing else does.

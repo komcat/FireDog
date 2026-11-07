@@ -228,9 +228,10 @@ Things about it that are load-bearing:
 * **Seeing the tool: an image toolbar and a kept camera view.** Above the image,
   an **ROI** square on the crosshair (off, 1/3, 1/2 or 2/3 of the frame's short
   side) and a **binary** threshold view inside it (slider, or *Auto* = Otsu over
-  the ROI). Display only — plain C++ through `RgbToGray8`, drawn by
-  `DrawMarkPicker` as an overlay (`MarkPicker::roiTex`); the marks and the click
-  are still on the camera frame. Under step 4, the **camera view**: main_camera's
+  the ROI) — the shared live ROI filter, `ui/RoiFilter` (`docs/ui-file-layout.md`).
+  Display only — plain C++ through `RgbToGray8`, drawn by `DrawMarkPicker` as an
+  overlay (`MarkPicker::roi`); the marks and the click are still on the camera
+  frame. Under step 4, the **camera view**: main_camera's
   exposure and the `main_camera_light` call-out, HARD-CODED to that camera and
   light group, applied on an edit or by *Apply saved view* (never on page open),
   and kept with the toolbar settings in UiSettings for the next teach.

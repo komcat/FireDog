@@ -115,6 +115,31 @@ lifetime is state, so the decode is a leaf helper and the GL texture belongs to
 `App` (`EnsureMarkIcons`, `App.cpp`) — loaded once on first use, since a missing
 `assets/` must cost a diagram rather than a retry every frame.
 
+## `ui/RoiFilter.{h,cpp}` — the live ROI filter for an image view
+
+A square ROI on the crosshair (off, 1/3, 1/2, 2/3 of the short side) and a
+binary threshold of it (slider, or *Auto* = Otsu), drawn over the live picture
+in its place. **Display only** — no mark or click is ever taken on the filtered
+picture — and plain C++ through `RgbToGray8`, so a manual pick never needs a
+HALCON licence. It is NOT the detector's pre-process chain (`HalconDetector`):
+no detector reads it.
+
+It is split the way every shared image piece here is: the component keeps no
+state, the view's owner does. The settings are the core `ViewFilter`
+(`core/CameraSetup.h`) and the pixel maths is `vision/RoiFilterOps`, so a
+recipe command can carry and compute the same thing (`docs/camera-setup-design.md`).
+A view that wants it holds two `App` members — a `ViewFilter` (persisted: one
+UiSettings field, `LoadViewFilter` / `SaveViewFilter` under the view's own key
+prefix — or runtime only, for a view a run drives) and `RoiFilterState` (that
+view's texture and scratch; never shared, the texture IS its picture) — and
+makes up to three calls: `DrawRoiFilterToolbar` (true = save), `UpdateRoiFilter`
+(rebuilds on a new `FrameSeq` or a changed ROI/threshold only, never returns a
+stale texture), and `DrawRoiOverlay` into its `CameraView`. `MarkPicker` takes
+the overlay as `roi`, so a `DrawMarkPicker` page passes it and draws nothing
+itself. The main camera's frame comes from `App::MainCameraFrame()`. Users: the
+Device Registration page (`drRoi`, keys `reg_*`) and the Aux view (no toolbar,
+`auxFilter_`, set by a run's `roi_filter_view_setup` step, never persisted).
+
 The **recipe icons** (`assets/recipe_icons/`) follow the same split.
 `App::UiIcon` caches one texture per FILE stem — per file, not per caller,
 because several commands share a glyph — and caches the failures too.
@@ -189,9 +214,10 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 |---|---|---|
 | `src/App.cpp` | **composition root**: `Run()` (startup + frame loop), `Update()`, `SwitchPage`/`ToggleEditorPage`, the ProductSession UI wrappers | 237 |
 | `src/ui/Widgets.{h,cpp}` | shared leaf helpers + tables; sole `windows.h` user | 110 |
+| `src/ui/RoiFilter.{h,cpp}` | the live ROI filter (ROI square + binary) any camera view can carry: toolbar, cached texture, overlay | 290 |
 | `src/ui/pages/MainWindow.cpp` | menu bar, three-panel layout + splitters, page dispatch, safety-alert + exit modals, the watched-move banner (`StartWatchedMove` / `UpdateMoveWatch` / `DrawMoveStatusBar`) | 351 |
 | `src/ui/pages/PageOverview.cpp` | left panel (status + DUT block + Display), vision middle, right panel, product popups, shared `DrawLogPanel` | 245 |
-| `src/ui/pages/PageCamera.cpp` | Camera page + `UpdateCameraTexture` | 171 |
+| `src/ui/pages/PageCamera.cpp` | Camera page + `UpdateCameraTexture` + `MainCameraFrame` + `ApplyCameraSetupNow` | 171 |
 | `src/ui/pages/PageKeithley.cpp` | Keithley page + the whole chart pipeline (two consumers: page and Aux) | 364 |
 | `src/ui/pages/PageCld.cpp` / `PagePsu.cpp` | CLD101x / UDP3305S pages | 179 / 160 |
 | `src/ui/pages/PageLight.cpp` | CCS PD3 lighting page + `App::ApplyLightingNow` (what a `LightCalloutPicker` click lights) | ~250 |

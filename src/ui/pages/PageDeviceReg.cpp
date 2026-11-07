@@ -47,7 +47,7 @@
 #include "hardware/HardwareManager.h"
 #include "hardware/motion/IMotionController.h"
 #include "ui/Widgets.h"
-#include "vision/FocusMetric.h"         // RgbToGray8 — the binary view
+#include "ui/RoiFilter.h"               // the image toolbar's ROI + binary view
 
 #include <algorithm>
 #include <cmath>
@@ -79,50 +79,6 @@ int MotionIndexOf(const HardwareManager& hw, const std::string& name)
     for (std::size_t i = 0; i < hw.MotionCount(); ++i)
         if (hw.MotionName(i) == name) return static_cast<int>(i);
     return -1;
-}
-
-// The toolbar's ROI in camera px: a square of 1/3, 1/2 or 2/3 of the frame's
-// short side centred on the crosshair, slid back inside the frame rather than
-// shrunk at an edge. Mode 0 is the whole frame (the binary view with no ROI).
-void RegRoiRect(int mode, int imgW, int imgH, float cx, float cy,
-                int* x, int* y, int* w, int* h)
-{
-    if (mode <= 0 || mode > 3) { *x = 0; *y = 0; *w = imgW; *h = imgH; return; }
-    static const double kFrac[4] = {1.0, 1.0 / 3.0, 0.5, 2.0 / 3.0};
-    const int side = std::max(8, static_cast<int>((imgW < imgH ? imgW : imgH) * kFrac[mode]));
-    if (cx <= 0.0f && cy <= 0.0f) { cx = imgW * 0.5f; cy = imgH * 0.5f; }   // not placed yet
-    int x0 = static_cast<int>(cx) - side / 2;
-    int y0 = static_cast<int>(cy) - side / 2;
-    x0 = std::clamp(x0, 0, std::max(0, imgW - side));
-    y0 = std::clamp(y0, 0, std::max(0, imgH - side));
-    *x = x0; *y = y0;
-    *w = std::min(side, imgW);
-    *h = std::min(side, imgH);
-}
-
-// Otsu's threshold over an 8-bit grey plane: the level that maximises the
-// between-class variance of the two populations it splits.
-int OtsuThreshold(const std::vector<unsigned char>& g)
-{
-    if (g.empty()) return 128;
-    double hist[256] = {};
-    for (const unsigned char v : g) hist[v] += 1.0;
-    const double total = static_cast<double>(g.size());
-    double sumAll = 0.0;
-    for (int i = 0; i < 256; ++i) sumAll += i * hist[i];
-    double wB = 0.0, sumB = 0.0, best = -1.0;
-    int    thr = 128;
-    for (int t = 0; t < 256; ++t) {
-        wB += hist[t];
-        if (wB <= 0.0) continue;
-        const double wF = total - wB;
-        if (wF <= 0.0) break;
-        sumB += t * hist[t];
-        const double mB = sumB / wB, mF = (sumAll - sumB) / wF;
-        const double between = wB * wF * (mB - mF) * (mB - mF);
-        if (between > best) { best = between; thr = t + 1; }
-    }
-    return thr > 255 ? 255 : thr;
 }
 
 void DeviceCombo(const char* label, char* buf, std::size_t n,
@@ -306,84 +262,6 @@ void App::StartDeviceRegCheckRun()
         FD_WARN("devreg", "registration check rejected: %s", regStartErr_.c_str());
 }
 
-// ---- The image toolbar: ROI + binary threshold ------------------------------
-//
-// An aid to SEEING the tool's edges while marking it, nothing more: the
-// threshold is drawn over the frame inside the ROI, and the marks, the click
-// and the tip are all still taken on the camera frame. Plain C++ through
-// RgbToGray8 (the one luma conversion), so it needs no HALCON licence.
-
-void App::DrawDeviceRegToolbar()
-{
-    bool save = false;
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("ROI");
-    static const char* kRoiLbl[4] = {"off", "1/3", "1/2", "2/3"};
-    for (int i = 0; i < 4; ++i) {
-        ImGui::SameLine();
-        if (ImGui::RadioButton(kRoiLbl[i], &regRoiMode_, i)) save = true;
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("A square on the crosshair, this fraction of the frame's\n"
-                          "short side. The binary view is applied inside it.");
-    ImGui::SameLine(0.0f, 18.0f);
-    if (ImGui::Checkbox("binary", &regBinary_)) save = true;
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!regBinary_);
-    ImGui::SetNextItemWidth(160.0f);
-    ImGui::SliderInt("##regthr", &regThr_, 0, 255, "threshold %d");
-    if (ImGui::IsItemDeactivatedAfterEdit()) save = true;
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    // Otsu over what the ROI holds now: the level that best splits it into
-    // two populations - tool and background, when the ROI is on the tool.
-    if (ImGui::Button("Auto") && cameraW_ > 0 && cameraH_ > 0 &&
-        frameBuf_.size() >= static_cast<std::size_t>(cameraW_) * cameraH_ * 3) {
-        int rx, ry, rw, rh;
-        RegRoiRect(regRoiMode_, cameraW_, cameraH_, regPx_, regPy_, &rx, &ry, &rw, &rh);
-        const FocusRoi got = RgbToGray8(frameBuf_.data(), cameraW_, cameraH_,
-                                        FocusRoi{rx, ry, rw, rh}, regGray_);
-        if (got.w > 0 && got.h > 0) {
-            regThr_    = OtsuThreshold(regGray_);
-            regBinary_ = true;
-            save       = true;
-        }
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Pick the threshold that best splits the ROI into dark and\n"
-                          "bright (Otsu), and switch the binary view on.");
-    if (save) SaveUiSettings();
-}
-
-void App::UpdateDeviceRegThreshold(int x, int y, int w, int h)
-{
-    if (!regBinary_ || cameraW_ <= 0 || cameraH_ <= 0 ||
-        frameBuf_.size() < static_cast<std::size_t>(cameraW_) * cameraH_ * 3)
-        return;
-    // Rebuilt on a new frame or a changed ROI/threshold only - a 2/3 ROI on a
-    // 5 MP frame is ~2 MP, cheap once per frame but not worth doing at 0 change.
-    const unsigned long long seq = hardware_.Camera().FrameSeq();
-    if (regThrTex_ && seq == regThrSeq_ && regThrAt_ == regThr_ && x == regThrX_ &&
-        y == regThrY_ && w == regThrW_ && h == regThrH_)
-        return;
-    const FocusRoi got = RgbToGray8(frameBuf_.data(), cameraW_, cameraH_,
-                                    FocusRoi{x, y, w, h}, regGray_);
-    if (got.w <= 0 || got.h <= 0) return;
-    const std::size_t n = static_cast<std::size_t>(got.w) * static_cast<std::size_t>(got.h);
-    regThrRgb_.resize(n * 3);
-    const unsigned char t = static_cast<unsigned char>(regThr_);
-    for (std::size_t i = 0; i < n; ++i) {
-        const unsigned char v = regGray_[i] >= t ? 255 : 0;
-        regThrRgb_[i * 3] = regThrRgb_[i * 3 + 1] = regThrRgb_[i * 3 + 2] = v;
-    }
-    regThrTex_ = host_.EnsureTextureRGB(regThrTex_, got.w, got.h, regThrRgb_.data());
-    // The ASKED rect is the cache key; the overlay is placed on the one we GOT.
-    regThrX_ = x; regThrY_ = y; regThrW_ = w; regThrH_ = h;
-    regThrAt_  = regThr_;
-    regThrSeq_ = seq;
-    regThrGx_ = got.x; regThrGy_ = got.y; regThrGw_ = got.w; regThrGh_ = got.h;
-}
-
 // ---- The camera view the tool is marked under --------------------------------
 //
 // HARD-CODED to the one camera and its light group, by request: this page is
@@ -531,14 +409,13 @@ void App::DrawDeviceRegPanel()
     // ---- Left: the live image, and the corner marks on it --------------------
     ImGui::BeginChild("drImg", ImVec2(imgW, avail.y), ImGuiChildFlags_Borders);
     {
-        // The toolbar above the picture, then the ROI and its binary view.
-        DrawDeviceRegToolbar();
-        int roiX = 0, roiY = 0, roiW = 0, roiH = 0;
-        if (haveImg) {
-            RegRoiRect(regRoiMode_, cameraW_, cameraH_, regPx_, regPy_,
-                       &roiX, &roiY, &roiW, &roiH);
-            UpdateDeviceRegThreshold(roiX, roiY, roiW, roiH);
-        }
+        // The live ROI filter (ui/RoiFilter): its toolbar above the picture,
+        // then the overlay it draws over it. Display only.
+        const RoiFilterFrame frame = MainCameraFrame();
+        if (DrawRoiFilterToolbar("drRoi", regFilter_, regFilterSt_, frame, regPx_, regPy_))
+            SaveUiSettings();
+        const RoiOverlay roi = UpdateRoiFilter(host_, regFilter_, regFilterSt_, frame,
+                                               regPx_, regPy_);
 
         CameraMark marks[kRegMarkMax];
         static const char* kLbl[kRegMarkMax] = {"c1", "c2", "c3", "c4"};
@@ -574,23 +451,7 @@ void App::DrawDeviceRegPanel()
         mp.zoomMin    = 0.5f;
         mp.zoomMax    = 3.0f;
 
-        if (haveImg) {
-            mp.roiOutline = regRoiMode_ > 0;
-            mp.roiX0 = static_cast<float>(roiX);
-            mp.roiY0 = static_cast<float>(roiY);
-            mp.roiX1 = static_cast<float>(roiX + roiW);
-            mp.roiY1 = static_cast<float>(roiY + roiH);
-            // The overlay only where it was built for THIS rectangle - a stale
-            // texture from the previous ROI must not be stretched over a new one.
-            if (regBinary_ && regThrTex_ && regThrGw_ > 0 && regThrGh_ > 0 &&
-                regThrX_ == roiX && regThrY_ == roiY && regThrW_ == roiW && regThrH_ == roiH) {
-                mp.roiTex = regThrTex_;
-                mp.roiX0  = static_cast<float>(regThrGx_);
-                mp.roiY0  = static_cast<float>(regThrGy_);
-                mp.roiX1  = static_cast<float>(regThrGx_ + regThrGw_);
-                mp.roiY1  = static_cast<float>(regThrGy_ + regThrGh_);
-            }
-        }
+        mp.roi        = roi;
 
         // The registered tip, projected through the same pose as the marks,
         // with the tool's footprint drawn around it. The box is CENTRED on the

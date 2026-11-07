@@ -201,6 +201,27 @@ void App::DrawAuxWindow()
             ImGui::Dummy(avail);   // reserve the region so layout below is correct
         }
 
+        // ---- The live ROI filter a run's roi_filter_view_setup step asked for ----
+        // No control here on purpose (auxFilter_ is set by a run or by
+        // ApplyCameraSetupNow). Drawn on the picture, under every mark, through
+        // the same cover-fit CameraView the gripper marks use, centred on the
+        // fixed crosshair. Display only; the plate says the picture is filtered,
+        // so nobody reads a binary view as the raw frame.
+        if (haveImg && auxFilter_.Active()) {
+            const RoiOverlay ov = UpdateRoiFilter(host_, auxFilter_, auxFilterSt_,
+                                                  MainCameraFrame(), 0.0f, 0.0f);
+            const CameraView fv = MakeCameraView(imgO, imgS, cameraW_, cameraH_,
+                                                 static_cast<float>(cameraW_) * 0.5f,
+                                                 static_cast<float>(cameraH_) * 0.5f, 1.0f);
+            DrawRoiOverlay(dl, fv, ov);
+            const std::string tag = "view filter: " + ViewFilterSummary(auxFilter_);
+            const ImVec2 ts = ImGui::CalcTextSize(tag.c_str());
+            const ImVec2 p0(std::floor(imgO.x + (imgS.x - ts.x) * 0.5f) - 6.0f, imgO.y + 6.0f);
+            dl->AddRectFilled(p0, ImVec2(p0.x + ts.x + 12.0f, p0.y + ts.y + 6.0f),
+                              IM_COL32(0, 0, 0, 160), 4.0f);
+            dl->AddText(ImVec2(p0.x + 6.0f, p0.y + 3.0f), IM_COL32(255, 200, 60, 255), tag.c_str());
+        }
+
         // ---- Interaction layer: crosshair + world-distance + click-to-move ----
         // An invisible button over the image captures hover/click. It's emitted
         // BEFORE the chart overlay child, so the chart (drawn later, on top) grabs

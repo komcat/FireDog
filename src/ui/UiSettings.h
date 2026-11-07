@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "core/CameraSetup.h"   // ViewFilter - one per filtered image view
+
 namespace firedog {
 
 // One row of the Jog window's IO tab: an output the operator wants under a
@@ -101,9 +103,7 @@ struct UiSettings {
     // size (0 off, 1 = 1/3, 2 = 1/2, 3 = 2/3 of the frame's short side), the
     // binary threshold view, and the exposure + main_camera_light call-out the
     // tool was looked at under. regLightColor "" = leave the light alone.
-    int         regRoiMode    = 0;
-    bool        regBinary     = false;
-    int         regThr        = 128;
+    ViewFilter  regFilter;   // keys reg_roi_mode / reg_binary / reg_thr
     double      regExposureUs = 0.0;   // 0 = never set here
     std::string regLightColor;
     double      regLightPct   = 50.0;
