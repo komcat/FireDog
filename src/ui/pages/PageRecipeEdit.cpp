@@ -13,7 +13,8 @@
 
 #include "ui/Widgets.h"
 #include "ui/Theme.h"   // kTeachOrange
-#include "command/Commands.h"   // kDispenseHelper
+#include "command/Commands.h"   // kDispenseHelper, kRoiFilterViewHelper
+#include "command/RoiFilterView.h"   // the roi_filter_view_setup tree label
 #include "core/Log.h"
 #include "core/DutSession.h"
 
@@ -874,6 +875,12 @@ std::string App::AutoNickname(const RecipeStep& s) const
     const CommandSpec* spec = orch_.registry.Find(s.type);
     if (!spec) return s.type;
 
+    // Seven numbers that read as one thing: what the view will look like.
+    if (s.type == "roi_filter_view_setup")
+        return "view: " + CameraSetupSummary(RoiFilterViewSetupFromParams(
+                              ParamValues(EffectiveParams(*spec, s.params))));
+    if (s.type == "roi_filter_view_clear") return "view: clear the filter";
+
     const auto skip = [](const std::string& n) {
         return n == "timeout_ms" || n == "leg_timeout_ms" || n == "tol_mm" ||
                n == "start_tol_mm" || n == "poll_ms" || n == "max_iterations" ||
@@ -912,6 +919,8 @@ std::string App::AutoNickname(const RecipeStep& s) const
             piece = v.get<std::string>();
             if (const WaffleTray* t = FindWaffleTray(session_.Trays(), piece))
                 piece = t->name;
+        } else if (p.type == ParamType::DurationMs && v.is_number()) {
+            piece = FormatDurationMs(std::llround(v.get<double>()));   // "delay 5 s"
         } else if (p.type == ParamType::IntChoice && v.is_number()) {
             // The choice's name, for the same reason: "align_station 2" makes
             // the reader look the numbering up.
@@ -1259,6 +1268,7 @@ RecipeStep* App::EditorSelectedStep()
 void App::OpenCommandHelper(const std::string& helper)
 {
     if (helper == kDispenseHelper) showDispHelper_ = true;
+    else if (helper == kRoiFilterViewHelper) showRoiViewHelper_ = true;
     else FD_WARN("ui", "no helper window named '%s'", helper.c_str());
 }
 

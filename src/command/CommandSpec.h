@@ -31,6 +31,11 @@ enum class ParamType {
                     // integer is really an identity ("station 2" is E2, not two
                     // of anything) and a spinner makes the operator remember
                     // which number that was
+    DurationMs,     // a duration: an Int of MILLISECONDS on the wire, always -
+                    // saved recipes and the command (GetInt) never see a unit.
+                    // Only the editor differs: typed in ms or s (the operator's
+                    // choice) with an h/m/s readout, because 3600000 is an hour
+                    // nobody reads at a glance
     Double,
     String,
     Value,          // free-typed: bool, number, or string (ctx values)
@@ -174,6 +179,12 @@ std::string ValidateParams(const CommandSpec& spec, const nlohmann::json& params
 // "gantry-main". Works on an invalid step too, unlike ValidateParams' merge.
 std::string EffectiveString(const CommandSpec& spec, const nlohmann::json& params,
                             const std::string& name);
+
+// Every param a step will RUN with, as one object: the stored values, the
+// schema defaults for the rest. No type check - like EffectiveString it works
+// on an invalid step, and ParamValues' getters read a wrong type as zero. For a
+// UI that previews a whole step (a helper window, a tree label).
+nlohmann::json EffectiveParams(const CommandSpec& spec, const nlohmann::json& params);
 
 // Shared mechanical-settle delays, appended to every command that physically
 // moves something (motion, IO outputs, pneumatics). Both default 0 = off:

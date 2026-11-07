@@ -24,12 +24,15 @@
 #include "command/CommandRegistry.h"
 #include "command/ExecutionContext.h"
 #include "command/MotionWaits.h"
+#include "command/RoiFilterView.h"
+#include "core/LightCallout.h"  // LightColorNames (roi_filter_view_setup)
 #include "core/Log.h"
 #include "core/Product.h"   // NowStamp (reliability timestamp)
 #include "hardware/HardwareManager.h"
 #include "vision/HalconEngine.h"
 #include "workflow/Workflow.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -547,9 +550,117 @@ CommandResult ExecCaptureView(ExecutionContext& ctx, const ParamValues& p)
 
 } // namespace
 
+// ---- roi_filter_view_setup -------------------------------------------------
+// The step <-> CameraSetup mapping (command/RoiFilterView.h). The command runs
+// it, the helper window previews and writes back through it.
+
+CameraSetup RoiFilterViewSetupFromParams(const ParamValues& p)
+{
+    CameraSetup s;
+    s.exposureUs = p.GetDouble("exposure_us");
+    const std::string light = p.GetString("light");
+    if (!light.empty()) {
+        s.lighting.kind    = "light";
+        s.lighting.channel = light;
+        s.lighting.color   = p.GetString("color");
+        s.lighting.value   = p.GetDouble("percent");
+    }
+    s.filter.roiMode = p.GetInt("roi_mode");
+    s.filter.binary  = p.GetBool("binary");
+    s.filter.thr     = p.GetInt("threshold");
+    s.filter.Sanitize();
+    return s;
+}
+
+void RoiFilterViewSetupToParams(const CameraSetup& s, nlohmann::json& params)
+{
+    if (!params.is_object()) params = nlohmann::json::object();
+    params["exposure_us"] = s.exposureUs > 0.0 ? s.exposureUs : 0.0;
+    // light "" = leave the lighting. The call-out is still written when the
+    // setup carries one, so switching the light back on returns what the
+    // operator had chosen rather than a default.
+    params["light"] = s.lighting.kind == "light" ? s.lighting.channel : std::string();
+    if (!s.lighting.color.empty()) {
+        params["color"]   = s.lighting.color;
+        params["percent"] = std::clamp(s.lighting.value, 0.0, 100.0);
+    }
+    ViewFilter f = s.filter;
+    f.Sanitize();
+    params["roi_mode"]  = f.roiMode;
+    params["binary"]    = f.binary;
+    params["threshold"] = f.thr;
+}
+
+namespace {
+
+// Set the camera up for what follows: exposure, the light, and the live view's
+// ROI filter. Workflow::ApplyCameraSetup is the whole of it - never a second
+// exposure or light path. It fails rather than continue under a setup the
+// camera or the light refused.
+CommandResult ExecRoiFilterViewSetup(ExecutionContext& ctx, const ParamValues& p)
+{
+    const CameraSetup s = RoiFilterViewSetupFromParams(p);
+    std::string why;
+    if (!ctx.Wf().ApplyCameraSetup(s, &why))
+        return CommandResult::Fail("roi_filter_view_setup: " + why);
+    return CommandResult::Success();
+}
+
+} // namespace
+
 void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareManager& /*hw*/)
 {
     using PT = ParamType;
+
+    // ROI Filter view setup: how the camera view is looked at, as one step. All
+    // of its params are edited in the helper window, against a live picture.
+    reg.Register({"roi_filter_view_setup", "Vision",
+                  "Set the camera view up: exposure, light, and the live ROI filter "
+                  "(display only)",
+                  {
+                      {"exposure_us", PT::Double, false, 0.0, 0.0, 1.0e7, {},
+                       "camera exposure (us); 0 = leave it as it is",
+                       PinDir::Any, kRoiFilterViewHelper},
+                      {"light", PT::LightName, false, "", 0, 0, {},
+                       "light to set (a channel group or a channel's name); "
+                       "empty = leave the lighting as it is",
+                       PinDir::Any, kRoiFilterViewHelper},
+                      {"color", PT::Enum, false, "white", 0, 0, LightColorNames(),
+                       "the call-out on that light",
+                       PinDir::Any, kRoiFilterViewHelper},
+                      {"percent", PT::Double, false, 50.0, 0.0, 100.0, {},
+                       "intensity (%); 0 = hold the light dark",
+                       PinDir::Any, kRoiFilterViewHelper},
+                      {"roi_mode", PT::IntChoice, false, 0, 0, 3, {"off", "1/3", "1/2", "2/3"},
+                       "ROI square on the view's centre, this fraction of the frame's "
+                       "short side; off = the whole frame",
+                       PinDir::Any, kRoiFilterViewHelper},
+                      {"binary", PT::Bool, false, false, 0, 0, {},
+                       "draw the ROI as a binary threshold (display only - nothing "
+                       "measures on it)",
+                       PinDir::Any, kRoiFilterViewHelper},
+                      {"threshold", PT::Int, false, 128, 0, 255, {},
+                       "binary: grey at or above this is white",
+                       PinDir::Any, kRoiFilterViewHelper},
+                  },
+                  CommandSpec::Needs::Camera, ExecRoiFilterViewSetup,
+                  /*parallelBy*/ "", /*helper*/ kRoiFilterViewHelper});
+
+    // Its undo for the DISPLAY half only: the live view back on the raw frame.
+    // Exposure and light are left as they are - those are physical settings a
+    // later step may rely on, and a step that put them back would have to know
+    // what they were before. Needs nothing: clearing a picture aid touches no
+    // device.
+    reg.Register({"roi_filter_view_clear", "Vision",
+                  "Clear the live view's ROI filter (back to the raw picture; exposure "
+                  "and light unchanged)",
+                  {},
+                  CommandSpec::Needs::None,
+                  [](ExecutionContext& ctx, const ParamValues&) {
+                      ctx.Wf().SetLiveViewFilter(ViewFilter{});
+                      FD_INFO("camera", "live view filter cleared");
+                      return CommandResult::Success();
+                  }});
 
     reg.Register({"capture_view", "Vision",
                   "Show the current camera frame in the Run page's image box",

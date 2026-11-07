@@ -23,6 +23,9 @@ void RegisterNeedleCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
 // dispense_run's CommandSpec::helper - and the `group` of the params that
 // helper edits. Layer 3 opens its Dispense helper window by this name.
 inline constexpr const char* kDispenseHelper = "Dispense helper";
+// roi_filter_view_setup's helper (Vision) - the same shape: the window's name
+// and the `group` of the params it edits. docs/camera-setup-design.md.
+inline constexpr const char* kRoiFilterViewHelper = "ROI Filter view setup";
 void RegisterDeviceRegCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterTrayCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);

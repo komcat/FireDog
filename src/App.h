@@ -375,6 +375,10 @@ private:
     // step's motion, shot and inspect settings, laid out under the needle
     // motion drawing.
     void DrawDispenseHelperWindow();
+    // The ROI Filter view setup helper (WndRoiFilterView.cpp): the selected
+    // roi_filter_view_setup step's exposure, light and ROI filter, beside the
+    // live main camera with the step's filter drawn on it.
+    void DrawRoiFilterViewHelperWindow();
     std::string AutoNickname(const RecipeStep& s) const;   // live label from params
     void DrawRecipeTreeToolbar(Recipe& r, bool canEdit);   // move/delete row
     void DrawRecipePalette(Recipe& r, bool canEdit);       // searchable add-step column
@@ -1247,6 +1251,10 @@ private:
     // >= kElsePathBase (App.cpp) address an if-step's else branch.
     std::vector<std::size_t> edStepSel_;
     bool showDispHelper_ = false;   // the Dispense helper window (follows edStepSel_)
+    bool showRoiViewHelper_ = false;   // the ROI Filter view setup helper (follows edStepSel_)
+    // That helper's preview of the step's filter: its own texture, never the
+    // Aux view's (that one shows what a RUN asked for).
+    RoiFilterState rfvFilterSt_;
     // Further selected rows beyond edStepSel_ (the ANCHOR: the inspector's
     // step, the palette's insert point). Ctrl-click toggles a row in and out,
     // Shift-click takes the visible range from the anchor. Copy, Delete, Run
@@ -1316,6 +1324,9 @@ private:
     // that fails it still draws while SELECTED, dimmed: the editor beside the
     // list is showing it, and a list that cannot say which one would lie.
     bool        edShowHidden_ = false;
+    // How the editor TYPES a DurationMs param: false = ms, true = s. Display
+    // only - the step always stores ms. Persisted (ed_duration_sec).
+    bool        edDurationSec_ = false;
     std::string edTagFilter_;
     bool        edTagHide_    = false;
     bool RecipeListed(const Recipe& r) const;   // passes the filter above

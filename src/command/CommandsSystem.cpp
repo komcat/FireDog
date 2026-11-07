@@ -203,7 +203,8 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
 
     reg.Register({"delay", "System", "Wait a fixed duration",
                   {
-                      {"ms", PT::Int, true, {}, 1, 3600000, {}, "duration (ms)"},
+                      {"ms", PT::DurationMs, true, {}, 1, 3600000, {},
+                       "duration (stored in ms; typed in ms or s), up to 1 h"},
                   },
                   CommandSpec::Needs::None,
                   [](ExecutionContext& c, const ParamValues& p) {

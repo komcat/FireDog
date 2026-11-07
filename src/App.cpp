@@ -79,6 +79,7 @@ int App::Run()
         if (ui.edInspectW    > 0.0f) edInspectW_    = ui.edInspectW;
         if (ui.edPaletteW    > 0.0f) edPaletteW_    = ui.edPaletteW;
         edShowHidden_ = ui.edShowHidden;
+        edDurationSec_ = ui.edDurationSec;
         edTagFilter_  = ui.edTagFilter;
         edTagHide_    = ui.edTagHide;
         if (ui.runDeckW      > 0.0f) runDeckW_      = ui.runDeckW;
@@ -228,6 +229,7 @@ int App::Run()
             if (showTray_  && CanUse(kRoleTray)) DrawTrayWindow();
             if (showMotionInspect_ && CanUse(kRoleInspect)) DrawMotionInspectWindow();
             if (showDispHelper_ && CanAccess(Page::RecipeEdit)) DrawDispenseHelperWindow();
+            if (showRoiViewHelper_ && CanAccess(Page::RecipeEdit)) DrawRoiFilterViewHelperWindow();
             if (showMaint_ && CanAccess(Page::Oee)) DrawMaintenanceWindow();
             if (showUsers_) DrawEmployeeManager();   // checks Admin itself
         }
@@ -604,6 +606,7 @@ void App::SaveUiSettings()
     s.edInspectW    = edInspectW_;
     s.edPaletteW    = edPaletteW_;
     s.edShowHidden  = edShowHidden_;
+    s.edDurationSec = edDurationSec_;
     s.edTagFilter   = edTagFilter_;
     s.edTagHide     = edTagHide_;
     s.runDeckW      = runDeckW_;

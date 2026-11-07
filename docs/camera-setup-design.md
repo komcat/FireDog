@@ -4,9 +4,9 @@ How a camera view is LOOKED AT, as one record a recipe step can carry and an
 operator can tune against one picture. First filter: binary. First consumer
 that is not a page: the Aux window's live view.
 
-Status (2026-11-07): the **code layer is in** (sections 1–4). The recipe
-command `roi_filter_view_setup` and its editor helper (section 5) are the next step and are not
-written yet. Nothing on the Aux window edits the filter — by design.
+Status (2026-11-07): the code layer (sections 1–4), the recipe command
+`roi_filter_view_setup` and its editor helper (section 5) are in. Nothing on
+the Aux window edits the filter — by design; a run or the helper sets it.
 
 ## 1. The record — `core/CameraSetup.h`
 
@@ -69,25 +69,73 @@ clears it. While one is active the Aux view says so on the picture
 ("view filter: ROI 1/2 binary 94"), so a filtered view is never read as the raw
 frame.
 
-## 5. Next — the ROI Filter view setup command and its helper (planned)
+## 5. The `roi_filter_view_setup` command and its helper
 
-A recipe step that sets the camera up for what follows (a manual pick, a
-detection, a picture for the record):
+A recipe step that sets the camera view up for what follows (a manual pick, a
+detection, a picture for the record).
 
-* **Command `roi_filter_view_setup`** ("ROI Filter view setup") — named for
-  what the operator sets up: the view the next step is looked at through.
-  Params `exposure_us` (0 = leave), `light` (name; "" = leave), `color`,
-  `percent`, `roi_mode` (off / 1/3 / 1/2 / 2/3), `binary`, `threshold`. It builds a `CameraSetup` and calls
-  `Workflow::ApplyCameraSetup` — never a second exposure/light path. Needs the
-  camera (and the light when one is named). Not a mover: a teach-mode run
-  disables it, a dry-run folder skips it (not on `kDryRunCommands`).
-* **Helper window "ROI Filter view setup"** — `CommandSpec::helper` names it
-  (a `kRoiFilterViewHelper` constant beside `kDispenseHelper`), the params
-  share its `group`, so the step form shows one button + a summary line
-  (`CameraSetupSummary`). The helper edits the Recipe Editor's SELECTED step in
-  place (`EditorSelectedStep`, never a path of its own), over a live
-  main-camera view carrying the shared ROI filter toolbar, an exposure slider
-  and the `LightCalloutPicker`. *Try* applies it through `ApplyCameraSetupNow`;
-  the saved parameters are the step's — the recipe file is the persistence.
-* Open: whether a run's view filter is cleared when the run ends, or stays until
-  the next setup (today: it stays until the next setup or an app restart).
+**Command `roi_filter_view_setup`** ("ROI Filter view setup", Vision,
+`CommandsVision.cpp`) — named for what the operator sets up: the view the next
+step is looked at through.
+
+| Param | Type | Default | Meaning |
+|---|---|---|---|
+| `exposure_us` | double | 0 | main_camera exposure; 0 = leave it |
+| `light` | light name | "" | channel group / channel to set; "" = leave the lighting |
+| `color` | enum | white | the call-out on that light |
+| `percent` | double | 50 | intensity; 0 = hold the light dark |
+| `roi_mode` | int choice | off | ROI square: off / 1/3 / 1/2 / 2/3 of the short side, on the view's centre |
+| `binary` | bool | false | draw the ROI as a binary threshold (display only) |
+| `threshold` | int | 128 | binary: grey >= this is white |
+
+It builds a `CameraSetup` and calls `Workflow::ApplyCameraSetup` — nothing
+else, never a second exposure or light path — and fails when that refuses.
+`Needs::Camera`. Not a mover: a teach-mode run disables it, and a dry-run folder
+skips it (it is not on `kDryRunCommands`, and does not belong there - it is
+neither motion nor IO).
+
+**The mapping is ONE pair of functions** (`command/RoiFilterView.h`):
+`RoiFilterViewSetupFromParams` (the command runs it, the helper previews with
+it, the step tree's label `view: ...` is drawn from it) and
+`RoiFilterViewSetupToParams` (the helper writes an edit back through it). A
+step whose light is "" still keeps its colour / percent, so switching the light
+back on returns what the operator chose. The UI reads a whole step through
+`EffectiveParams` (stored values + schema defaults, `command/CommandSpec.h`).
+
+**Helper window "ROI Filter view setup"** (`ui/windows/WndRoiFilterView.cpp`).
+Every param carries `group = kRoiFilterViewHelper` and the command names it as
+its `helper`, so the step form shows one *Open ROI Filter view setup...* button
+and a summary line instead of seven rows. Like the Dispense helper it edits the
+Recipe Editor's SELECTED step in place (`EditorSelectedStep`) and its Save is
+the editor's Save; it writes the step only on an edit, never because it looked.
+
+* Left: the live main camera, the WHOLE frame letterboxed, with the step's ROI
+  filter drawn on it (the helper's own `rfvFilterSt_` — never the Aux view's,
+  which shows what a RUN asked for), centred on the image centre with the
+  centre crosshair, where the Aux view centres it too.
+* Right: exposure ("leave as it is", a log slider applied on release, *Read*
+  takes the camera's current value), the `LightCalloutPicker` (a click lights it
+  at once, QUEUED), the shared ROI filter toolbar, the step's summary, then
+  *Try on camera* (`ApplyCameraSetupNow` — exposure, light and the Aux view's
+  filter, as a run would) and *Clear the Aux view filter*.
+* Everything that edits or applies is disabled while `orch_.Busy()`: the run
+  owns the camera, and holds its own copy of the recipe.
+
+## 6. Clearing the live view's filter
+
+A filter a run set stays on the Aux view until something clears it. Four
+things do, and each clears the DISPLAY half only (exposure and light are
+physical settings a later step may rely on, and putting them back would need
+to know what they were):
+
+* **`roi_filter_view_clear`** — a recipe step, no params, `Needs::None`
+  (`SetLiveViewFilter(ViewFilter{})`). The undo a recipe writes after the steps
+  that wanted the filter.
+* **Right-click on the Aux picture** — the window's one control over the
+  filter; the plate says so ("... (right-click to clear)"). Right, because
+  left is click-to-move. No level and no arm: it only removes a display aid.
+* **The helper's *Clear the Aux view filter*.**
+* **An app restart** — `auxFilter_` is never persisted.
+
+A new `roi_filter_view_setup` replaces it. Open: whether the end of a run
+should clear it as well (today it does not).

@@ -202,8 +202,9 @@ void App::DrawAuxWindow()
         }
 
         // ---- The live ROI filter a run's roi_filter_view_setup step asked for ----
-        // No control here on purpose (auxFilter_ is set by a run or by
-        // ApplyCameraSetupNow). Drawn on the picture, under every mark, through
+        // Set by a run or by ApplyCameraSetupNow, never edited here; the one
+        // control the window has over it is a right-click on the picture,
+        // which CLEARS it (below). Drawn on the picture, under every mark, through
         // the same cover-fit CameraView the gripper marks use, centred on the
         // fixed crosshair. Display only; the plate says the picture is filtered,
         // so nobody reads a binary view as the raw frame.
@@ -214,7 +215,8 @@ void App::DrawAuxWindow()
                                                  static_cast<float>(cameraW_) * 0.5f,
                                                  static_cast<float>(cameraH_) * 0.5f, 1.0f);
             DrawRoiOverlay(dl, fv, ov);
-            const std::string tag = "view filter: " + ViewFilterSummary(auxFilter_);
+            const std::string tag = "view filter: " + ViewFilterSummary(auxFilter_) +
+                                    "   (right-click to clear)";
             const ImVec2 ts = ImGui::CalcTextSize(tag.c_str());
             const ImVec2 p0(std::floor(imgO.x + (imgS.x - ts.x) * 0.5f) - 6.0f, imgO.y + 6.0f);
             dl->AddRectFilled(p0, ImVec2(p0.x + ts.x + 12.0f, p0.y + ts.y + 6.0f),
@@ -233,6 +235,14 @@ void App::DrawAuxWindow()
         const bool   onImg = mouse.x >= imgO.x && mouse.x < imgO.x + imgS.x &&
                              mouse.y >= imgO.y && mouse.y < imgO.y + imgS.y;
         const bool imgHovered = ImGui::IsItemHovered() && onImg;
+        // Right-click on the picture puts it back on the raw frame. Right, not
+        // left: left is click-to-move. Clearing only ever REMOVES a display
+        // aid, so it needs no level and no arm; it changes no step and no
+        // setting, and the next roi_filter_view_setup sets a filter again.
+        if (imgHovered && auxFilter_.Active() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            auxFilter_ = ViewFilter{};
+            FD_INFO("camera", "Aux view filter cleared (right-click)");
+        }
         const ImVec2 center(imgO.x + imgS.x * 0.5f, imgO.y + imgS.y * 0.5f);
 
         // Fixed center crosshair (the optical/stage reference), across the picture.

@@ -532,6 +532,11 @@ void DrawFireDog(ImDrawList* dl, ImVec2 origin, float px, FireDogMood mood, doub
 // Format an amp value with an auto-scaled unit (mA / uA / nA / pA).
 std::string FormatCurrent(double a);
 
+// A millisecond duration the way a person reads it: "750 ms", "5 s",
+// "1 m 30.5 s", "1 h 2 m". Zero parts are left out. The editor's DurationMs
+// readout and the step tree's label both use it, so they read alike.
+std::string FormatDurationMs(long long ms);
+
 // Achieved sample rate from the samples in the last 1 s of a stream snapshot.
 float MeasuredHz(const std::vector<float>& t);
 

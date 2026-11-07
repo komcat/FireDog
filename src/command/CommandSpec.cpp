@@ -22,6 +22,7 @@ const char* ParamTypeName(ParamType t)
     case ParamType::Bool:         return "bool";
     case ParamType::Int:          return "int";
     case ParamType::IntChoice:    return "int";   // the wire type, not the widget
+    case ParamType::DurationMs:   return "int (ms)";
     case ParamType::Double:       return "double";
     case ParamType::String:       return "string";
     case ParamType::Value:        return "value";
@@ -84,7 +85,8 @@ bool TypeMatches(ParamType t, const nlohmann::json& v)
     switch (t) {
     case ParamType::Bool:   return v.is_boolean();
     case ParamType::Int:
-    case ParamType::IntChoice: return v.is_number_integer() || v.is_number_unsigned();
+    case ParamType::IntChoice:
+    case ParamType::DurationMs: return v.is_number_integer() || v.is_number_unsigned();
     case ParamType::Double: return v.is_number();
     case ParamType::Value:  return v.is_boolean() || v.is_number() || v.is_string();
     case ParamType::PointXyz:
@@ -181,6 +183,14 @@ std::string EffectiveString(const CommandSpec& spec, const nlohmann::json& param
             return p.defaultValue.is_string() ? p.defaultValue.get<std::string>()
                                               : std::string();
     return {};
+}
+
+nlohmann::json EffectiveParams(const CommandSpec& spec, const nlohmann::json& params)
+{
+    nlohmann::json out = params.is_object() ? params : nlohmann::json::object();
+    for (const ParamSpec& p : spec.params)
+        if (!out.contains(p.name) && !p.defaultValue.is_null()) out[p.name] = p.defaultValue;
+    return out;
 }
 
 } // namespace firedog

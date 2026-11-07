@@ -1417,6 +1417,30 @@ std::string FormatCurrent(double a) {
     return buf;
 }
 
+std::string FormatDurationMs(long long ms) {
+    if (ms < 0) ms = 0;
+    if (ms < 1000) return std::to_string(ms) + " ms";
+    const long long h   = ms / 3600000;
+    const long long m   = (ms / 60000) % 60;
+    const long long rem = ms % 60000;   // the seconds part, in ms
+    std::string out;
+    if (h > 0) out += std::to_string(h) + " h";
+    if (m > 0) out += (out.empty() ? "" : " ") + std::to_string(m) + " m";
+    if (rem > 0) {
+        std::string sec;
+        if (rem % 1000 == 0) {
+            sec = std::to_string(rem / 1000);
+        } else {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.3f", static_cast<double>(rem) / 1000.0);
+            sec = buf;   // 30.500 -> 30.5
+            while (!sec.empty() && sec.back() == '0') sec.pop_back();
+        }
+        out += (out.empty() ? "" : " ") + sec + " s";
+    }
+    return out;
+}
+
 float MeasuredHz(const std::vector<float>& t) {
     if (t.size() < 2) return 0.0f;
     const float last = t.back();

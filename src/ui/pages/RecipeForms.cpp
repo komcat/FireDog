@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
@@ -321,6 +322,55 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             params[p.name] = v;
             changed = true;
         }
+        break;
+    }
+    case ParamType::DurationMs: {
+        // Integer MILLISECONDS on the wire, always; the unit is only how it is
+        // typed. The choice is one editor-wide setting (edDurationSec_, kept in
+        // UiSettings), and the readout says the length in h / m / s whichever
+        // unit is typed.
+        const ImGuiStyle& st = ImGui::GetStyle();
+        long long ms = cur.is_number() ? std::llround(cur.get<double>()) : 0;
+        const float unitW = ImGui::CalcTextSize("ms").x + st.FramePadding.x * 2.0f +
+                            ImGui::GetFrameHeight();
+        bool edited = false;
+        ImGui::SetNextItemWidth(w - unitW - st.ItemInnerSpacing.x);
+        if (edDurationSec_) {
+            double sec = static_cast<double>(ms) / 1000.0;
+            if (ImGui::InputDouble("##dur", &sec, 1.0, 10.0, "%.3f")) {
+                ms     = std::llround(sec * 1000.0);
+                edited = true;
+            }
+        } else {
+            int v = static_cast<int>(ms);
+            if (ImGui::InputInt("##dur", &v, 100, 1000)) {
+                ms     = v;
+                edited = true;
+            }
+        }
+        if (edited) {
+            if (p.minVal < p.maxVal)
+                ms = std::clamp(ms, static_cast<long long>(p.minVal),
+                                static_cast<long long>(p.maxVal));
+            params[p.name] = ms;
+            changed = true;
+        }
+        ImGui::SameLine(0.0f, st.ItemInnerSpacing.x);
+        ImGui::SetNextItemWidth(unitW);
+        if (ImGui::BeginCombo("##unit", edDurationSec_ ? "s" : "ms")) {
+            if (ImGui::Selectable("ms", !edDurationSec_)) { edDurationSec_ = false; SaveUiSettings(); }
+            if (ImGui::Selectable("s", edDurationSec_))   { edDurationSec_ = true;  SaveUiSettings(); }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Type durations in ms or in s. The step always stores ms.");
+        // The param's name, unless it IS the unit ("ms") - the combo says that.
+        if (p.name != "ms") {
+            ImGui::SameLine();
+            ImGui::TextUnformatted(label);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("= %s", FormatDurationMs(ms).c_str());
         break;
     }
     case ParamType::IntChoice: {
