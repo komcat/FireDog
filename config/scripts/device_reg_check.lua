@@ -6,7 +6,7 @@
 --     residual = | measured tip - t - R * h_check |
 --
 -- THE CHECK POSE MUST NOT BE THE POSE THE TIP WAS TAUGHT AT. t is derived from
--- the imprint measured at that pose, so predicting there returns the measurement
+-- the tip measured at that pose, so predicting there returns the measurement
 -- by construction: the residual is about how well a pick repeats and says nothing
 -- whatever about the rotation. Hence the offsets below, and hence a check with
 -- all three left at zero refuses to call anything verified however small the
@@ -21,8 +21,8 @@
 -- Reading the residual is the whole point, so it is worth knowing what it means:
 --
 --   a CONSTANT shift, the same wherever you check    -> the TOOL moved.
---        Somebody changed the gripper. Re-teach the tip by imprint on the
---        Registration page: one touch, keeping the rotation.
+--        Somebody changed the gripper. Re-teach the tip on the Registration
+--        page (Teach pose at device zero, then mark): keeping the rotation.
 --   a residual that GROWS with distance from the taught pose -> the ROTATION is
 --        wrong, which here means the device is not square to the axes the
 --        transforms file claims. t alone cannot absorb an angle; either correct
@@ -172,7 +172,7 @@ end
 error(string.format(
     "'%s' is %.4f mm out at %.3f mm from where its tip was taught, outside the " ..
     "%.4f mm tolerance. A shift of the same size wherever you check is the TOOL - " ..
-    "re-teach the tip by imprint. A miss that grows with distance is the ROTATION, " ..
+    "re-teach the tip (Teach pose, then mark). A miss that grows with distance is the ROTATION, " ..
     "which came from the axis transforms and is only as square as the mount. " ..
     "Loosening the tolerance fixes neither.",
     DEV, residual, offset, TOL))

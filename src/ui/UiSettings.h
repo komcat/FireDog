@@ -97,6 +97,16 @@ struct UiSettings {
     // (0 = default). Same reasoning as the vision teach page — a takeover with
     // its own layout.
     float regCtlW = 0.0f;
+    // ...and its image toolbar + camera view, kept for the next teach: the ROI
+    // size (0 off, 1 = 1/3, 2 = 1/2, 3 = 2/3 of the frame's short side), the
+    // binary threshold view, and the exposure + main_camera_light call-out the
+    // tool was looked at under. regLightColor "" = leave the light alone.
+    int         regRoiMode    = 0;
+    bool        regBinary     = false;
+    int         regThr        = 128;
+    double      regExposureUs = 0.0;   // 0 = never set here
+    std::string regLightColor;
+    double      regLightPct   = 50.0;
 
     // Gripped Object page: width of its right-hand control column in px
     // (0 = default). Same reasoning as the Registration page beside it.

@@ -38,6 +38,12 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("run_shot_h")) s.runShotH = j["run_shot_h"].get<float>();
         if (j.contains("org_lib_w"))  s.orgLibW  = j["org_lib_w"].get<float>();
         if (j.contains("reg_ctl_w"))  s.regCtlW  = j["reg_ctl_w"].get<float>();
+        if (j.contains("reg_roi_mode")) s.regRoiMode = j["reg_roi_mode"].get<int>();
+        if (j.contains("reg_binary"))   s.regBinary  = j["reg_binary"].get<bool>();
+        if (j.contains("reg_thr"))      s.regThr     = j["reg_thr"].get<int>();
+        if (j.contains("reg_exposure_us")) s.regExposureUs = j["reg_exposure_us"].get<double>();
+        if (j.contains("reg_light_color")) s.regLightColor = j["reg_light_color"].get<std::string>();
+        if (j.contains("reg_light_pct"))   s.regLightPct   = j["reg_light_pct"].get<double>();
         if (j.contains("grip_ctl_w")) s.gripCtlW = j["grip_ctl_w"].get<float>();
         if (j.contains("tray_ctl_w")) s.trayCtlW = j["tray_ctl_w"].get<float>();
         if (j.contains("scripts_list_w")) s.scriptsListW = j["scripts_list_w"].get<float>();
@@ -168,6 +174,12 @@ bool UiSettings::Save(const std::string& path) const
     j["run_shot_h"]      = runShotH;
     j["org_lib_w"]       = orgLibW;
     j["reg_ctl_w"]       = regCtlW;
+    j["reg_roi_mode"]    = regRoiMode;
+    j["reg_binary"]      = regBinary;
+    j["reg_thr"]         = regThr;
+    j["reg_exposure_us"] = regExposureUs;
+    j["reg_light_color"] = regLightColor;
+    j["reg_light_pct"]   = regLightPct;
     j["grip_ctl_w"]      = gripCtlW;
     j["tray_ctl_w"]      = trayCtlW;
     j["scripts_list_w"]  = scriptsListW;

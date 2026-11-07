@@ -26,16 +26,16 @@
 //     predicts perfectly at the pose the tip was taught and drifts with distance
 //     from it. That is the deal, and it is a fair one for an APPROACH.
 //
-//   * t IS MEASURED, by imprint. Touch the tool onto a coupon, mark the corners
-//     of the mark it leaves, and the centre of that mark is the tip in XY while
-//     the focused camera Z over it is the tip in Z — because the tip was resting
-//     on the surface now in focus. A pick on a curved tool viewed from above
-//     lands on its SILHOUETTE, which is not where it touches; an imprint is the
-//     contact point by definition, and a flat mark on a flat surface is the best
-//     case there is for both the focus metric and the crosshair.
+//   * t IS MEASURED, at device ZERO. device_reg_teach.lua drives the device to
+//     X Y Z U V W = 0, the operator puts the camera over the tool and focuses,
+//     and the page's corner marks give the tip in XY while the focused camera Z
+//     is the tip in Z. t is by definition the tip at pose (0,0,0), so measured
+//     there it IS t - no R*h term carries the typed rotation's error into it.
+//     (Until 2026-11-07 it was taught by imprint on a coupon at any pose; the
+//     `imprintPose` field kept its name and now holds the zero pose.)
 //
 // R belongs to the MOUNT; t belongs to the mount AND the tool. Change a gripper
-// and the tip moves while the axis directions do not, so that costs one imprint
+// and the tip moves while the axis directions do not, so that costs one teach
 // and not a re-registration — `regAt` and `tipAt` are stamped separately so the
 // page can say which half is old.
 //
@@ -124,9 +124,9 @@ struct DeviceReg {
     // saved positions belong to a product document and this is machine state, so
     // a pose held there would vanish whenever a different product — or none —
     // was loaded. Same argument that keeps the employee roster out of `config/`.
-    RegVec3 imprintPose;                 // device axes: tool touching the coupon
+    RegVec3 imprintPose;                 // device axes: the pose the tip is taught at (zero)
     bool    hasImprintPose = false;
-    RegVec3 homePose;                    // device axes: clear of the coupon
+    RegVec3 homePose;                    // device axes: clear (old imprint teach only)
     bool    hasHomePose = false;
     RegVec3 tipView;                     // reference axes: camera over the mark
     bool    hasTipView = false;

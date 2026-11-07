@@ -3,9 +3,10 @@
 // Registering a device means relating ITS axis origin to the camera device's, so
 // a gripper tip has a known position at every moment instead of only just after
 // somebody looked at it. See core/DeviceReg.h for where the rotation comes from
-// and why the tip is measured by imprint.
+// and how the tip is measured.
 //
 //   device_reg             put the registration into ctx
+//   device_reg_teach_save  latch the teach pose (device at zero + camera view)
 //   device_reg_check_save  record what the check pass measured
 //   move_to_point          command a reference-space point to a registered device
 //   move_tool_to_camera    ...that point being wherever the camera is looking now
@@ -13,13 +14,14 @@
 //   tool_travel_to_camera  lift off, cross, then move_tool_to_camera
 //   device_reg_check_run   run the daily check as one recipe step
 //
-// TEACHING IS NOT HERE. Adopting the rotation and measuring the tip both live on
-// the Registration page (ui/pages/PageDeviceReg.cpp), because both need an
-// operator at the machine placing a coupon, jogging a tool into contact and
-// marking the corners of the mark it left — there is nothing for a recipe step
-// to automate, and a second way to create a registration is a second answer to
-// where the tool is. What a recipe needs from all this is the CONSUMING end:
-// read the record, move through it, and check it.
+// TEACHING IS NOT A RECIPE STEP. The teach pose is latched by
+// device_reg_teach.lua, launched only from the Registration page (device to
+// zero, the operator puts the camera over the tool, device_reg_teach_save);
+// adopting the rotation and computing the tip from the operator's corner marks
+// stay on the page (ui/pages/PageDeviceReg.cpp). A second way to create a
+// registration is a second answer to where the tool is. What a recipe needs
+// from all this is the CONSUMING end: read the record, move through it, and
+// check it.
 #include "command/Commands.h"
 
 #include "command/CommandRegistry.h"
@@ -141,10 +143,103 @@ CommandResult ExecDeviceRegCheckSave(ExecutionContext& ctx, const ParamValues& p
     else
         FD_WARN("devreg", "'%s' checked: tip landed %.4f mm from prediction - NOT "
                           "verified. A constant shift is a tool that moved (re-teach "
-                          "the tip by imprint); a residual that grows with distance "
+                          "the tip); a residual that grows with distance "
                           "from the taught pose is the rotation, which is only as "
                           "good as the axis transforms it came from.",
                 device.c_str(), r.checkResidualMm);
+    return CommandResult::Success();
+}
+
+// ---- device_reg_teach_save --------------------------------------------------
+//
+// The last step of device_reg_teach.lua: the registered device is standing at
+// its axis ZERO and the operator has just jogged the camera until the tool is
+// in the picture and in focus. Latch both into the record - the device pose as
+// the pose the tip is taught at, the camera pose as the view the corners are
+// marked from (its focused Z IS the tip's height).
+//
+// Why zero: `t` is by definition the tip at device pose (0,0,0), so teaching
+// it THERE makes t the measurement itself, with no R*h term carrying the typed
+// rotation's error into it. And it is a pose every station has - nobody has to
+// find, write down or re-find a coupon pose after a tool change.
+//
+// It READS both poses live rather than taking numbers from the script, so what
+// is stored is where the machine actually stood when the operator said OK - and
+// it refuses a device that is not at zero, because the page's marks and the
+// computed tip both assume it is.
+CommandResult ExecDeviceRegTeachSave(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    DeviceReg r = ctx.Wf().DeviceRegFor(device);
+    std::string ref = p.GetString("ref_device");
+    if (ref.empty()) ref = r.refDevice.empty() ? std::string("gantry-main") : r.refDevice;
+    if (ref == device)
+        return CommandResult::Fail("a device cannot be registered to itself");
+
+    std::map<std::string, double> dev, cam;
+    if (!ctx.Wf().DevicePose(device, dev))
+        return CommandResult::Fail("'" + device + "' is not connected");
+    if (!ctx.Wf().DevicePose(ref, cam))
+        return CommandResult::Fail("'" + ref + "' is not connected");
+
+    const auto get = [](const std::map<std::string, double>& m, const char* a,
+                        double& v) {
+        const auto it = m.find(a);
+        if (it == m.end()) return false;
+        v = it->second;
+        return true;
+    };
+
+    RegVec3 h, view, rot;
+    if (!get(dev, "X", h.x) || !get(dev, "Y", h.y) || !get(dev, "Z", h.z))
+        return CommandResult::Fail("'" + device + "' does not report X/Y/Z");
+    if (!get(cam, "X", view.x) || !get(cam, "Y", view.y) || !get(cam, "Z", view.z))
+        return CommandResult::Fail("'" + ref + "' does not report X/Y/Z");
+    const bool hasRot = get(dev, "U", rot.x) && get(dev, "V", rot.y) && get(dev, "W", rot.z);
+
+    // At zero, or the teach means nothing: the marks are taken against the tool
+    // as it stands, and the record will call this pose the one the tip was
+    // taught at. A device that drifted or was jogged after the move is refused
+    // here, not silently registered somewhere else.
+    const double tolMm = p.GetDouble("zero_tol_mm");
+    const double tolDeg = p.GetDouble("zero_tol_deg");
+    const double lin = std::sqrt(h.x * h.x + h.y * h.y + h.z * h.z);
+    if (lin > tolMm) {
+        char b[192];
+        std::snprintf(b, sizeof(b),
+                      "'%s' is not at zero: (%.4f, %.4f, %.4f), %.4f mm off. The teach "
+                      "is defined at device zero - move it there first.",
+                      device.c_str(), h.x, h.y, h.z, lin);
+        return CommandResult::Fail(b);
+    }
+    if (hasRot && (std::fabs(rot.x) > tolDeg || std::fabs(rot.y) > tolDeg ||
+                   std::fabs(rot.z) > tolDeg)) {
+        char b[192];
+        std::snprintf(b, sizeof(b),
+                      "'%s' rotations are not at zero: U %.4f  V %.4f  W %.4f deg",
+                      device.c_str(), rot.x, rot.y, rot.z);
+        return CommandResult::Fail(b);
+    }
+
+    r.device         = device;
+    r.refDevice      = ref;
+    r.imprintPose    = h;      // the pose the tip is taught at - device zero
+    r.hasImprintPose = true;
+    r.tipView        = view;   // the camera over the tool, focused
+    r.hasTipView     = true;
+    if (hasRot) {
+        r.taughtRot = rot;
+        r.hasRot    = true;
+    }
+    ctx.Wf().QueueDeviceReg(r);
+
+    const std::string prefix = p.GetString("ctx_prefix");
+    ctx.CtxSet(prefix + "_view_x", view.x);
+    ctx.CtxSet(prefix + "_view_y", view.y);
+    ctx.CtxSet(prefix + "_view_z", view.z);
+    FD_INFO("devreg", "'%s' teach pose: device at (%.4f, %.4f, %.4f), '%s' camera view "
+                      "(%.4f, %.4f, %.4f) - mark the tool on Capture tool points next",
+            device.c_str(), h.x, h.y, h.z, ref.c_str(), view.x, view.y, view.z);
     return CommandResult::Success();
 }
 
@@ -567,6 +662,27 @@ void RegisterDeviceRegCommands(CommandRegistry& reg, Workflow& wf, HardwareManag
                       {"pose_z_mm", PT::Double, false, 0.0, 0, 0, {}, "device pose Z at the check"},
                   },
                   CommandSpec::Needs::None, ExecDeviceRegCheckSave});
+
+    // The teach's one write, called by device_reg_teach.lua after the device has
+    // been driven to zero and the operator has put the camera over the tool. It
+    // creates no tip: that is still the page's Compute, from the corner marks.
+    reg.Register({"device_reg_teach_save", "Registration",
+                  "Latch the teach pose: the registered device at axis zero and the "
+                  "camera pose viewing its tool (device_reg_teach.lua)",
+                  {
+                      {"device", PT::DeviceMotion, true, {}, 0, 0, {},
+                       "the registered device - must be standing at axis zero"},
+                      {"ref_device", PT::DeviceMotion, false, "", 0, 0, {},
+                       "the camera's device; empty keeps the record's (gantry-main)"},
+                      {"zero_tol_mm", PT::Double, false, 0.02, 0.0001, 1.0, {},
+                       "how far X/Y/Z may sit from zero (vector length) - looser than "
+                       "the move's per-axis 0.01 mm arrival, so an arrived move passes"},
+                      {"zero_tol_deg", PT::Double, false, 0.01, 0.0001, 1.0, {},
+                       "how far U/V/W may sit from zero"},
+                      {"ctx_prefix", PT::String, false, "teach", 0, 0, {},
+                       "the camera pose goes to <prefix>_view_x/_y/_z"},
+                  },
+                  CommandSpec::Needs::None, ExecDeviceRegTeachSave});
 
     // The thing that is impossible without a registration: an absolute point,
     // measured through the camera, commanded to a device that has never shared

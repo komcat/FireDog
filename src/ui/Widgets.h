@@ -366,6 +366,15 @@ struct MarkPicker {
     };
     const WorldBox* boxes    = nullptr;
     int             boxCount = 0;
+    // A region of the frame in CAMERA px, [roiX0,roiX1) x [roiY0,roiY1).
+    // `roiOutline` draws its border; a non-zero `roiTex` draws that texture
+    // (a processed picture of exactly this rectangle - e.g. a binary
+    // threshold) over the frame in its place. DISPLAY ONLY: the marks and the
+    // click are still on the camera frame, so the overlay is an aid to seeing
+    // an edge and never a second source of coordinates.
+    bool         roiOutline = false;
+    unsigned int roiTex     = 0;
+    float        roiX0 = 0.0f, roiY0 = 0.0f, roiX1 = 0.0f, roiY1 = 0.0f;
     // Step diagrams, bottom-left. `activeMark` is the 0-based mark the operator
     // should place next; the other is dimmed.
     MarkIcon icons[2];
@@ -455,11 +464,11 @@ bool Splitter(const char* id, bool vertical, float thickness, float length);
 
 // The "or taught..." combo: a saved position of `device` to take a pose from.
 // Returns the picked one for this frame only — the caller resolves it to
-// COORDINATES on the spot (App::AdoptDeviceRegPose says why a record must not
-// hold a position uid). Hidden positions are withheld: they are the alignment
+// COORDINATES on the spot (a machine-state record must not hold a position
+// uid: it would go blank when another product is loaded). Hidden positions are withheld: they are the alignment
 // and grip systems' private poses and are noise to somebody teaching a pose.
 // Same rule the recipe picker follows — `hidden` governs what is OFFERED,
-// never what resolves. Shared by the Registration and Waffle Tray pages.
+// never what resolves. Used by the Waffle Tray page.
 const SavedPos* TaughtPosePicker(const char* id, const SavedPosMap& all,
                                  const std::string& device);
 

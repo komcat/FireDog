@@ -53,7 +53,7 @@ corner through a position command, and a record whose three corners were rows
 in another file would be two files to keep in step for no consumer. The
 `or taught...` picker (`TaughtPosePicker`, `ui/Widgets`) still lets an operator
 source a corner from a position the product has — it resolves to coordinates on
-the spot, the way `AdoptDeviceRegPose` does.
+the spot, the way the Registration page's pose pickers used to.
 
 ### Product state
 

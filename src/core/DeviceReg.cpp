@@ -1,6 +1,6 @@
 // DeviceReg.cpp — the prediction, the two setters, and the file.
 //
-// See DeviceReg.h for where R comes from, why t is measured by imprint instead,
+// See DeviceReg.h for where R comes from, how t is measured (at device zero),
 // and why the triad is never assumed right-handed.
 #include "core/DeviceReg.h"
 
@@ -144,8 +144,8 @@ std::string DeviceRegSetTip(DeviceReg& r, const RegVec3& h, const RegVec3& p,
 {
     if (r.rotSource.empty())
         return "there is no rotation to hold fixed - adopt one for '" + r.device +
-               "' first; an imprint measures where the tool touches, not how the "
-               "device is turned";
+               "' first; a tip measures where the tool is, not how the device is "
+               "turned";
 
     // t = p - R*h. Rotate through a copy with a zero offset rather than
     // open-coding the multiply a second time.

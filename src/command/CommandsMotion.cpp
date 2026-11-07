@@ -799,8 +799,14 @@ CommandResult ExecMoveAxisTo(ExecutionContext& ctx, const ParamValues& p)
         if (c == 'X')      val = p.GetDouble("x_mm");
         else if (c == 'Y') val = p.GetDouble("y_mm");
         else if (c == 'Z') val = p.GetDouble("z_mm");
+        // The rotations, for a device that has them (a hexapod). Same rule as
+        // the linears: only what `axes` names is commanded, so a step written
+        // before these existed - "XYZ" - still leaves U/V/W where they are.
+        else if (c == 'U') val = p.GetDouble("u_deg");
+        else if (c == 'V') val = p.GetDouble("v_deg");
+        else if (c == 'W') val = p.GetDouble("w_deg");
         else return CommandResult::Fail(std::string("axes: '") + c +
-                                        "' is not one of X, Y, Z");
+                                        "' is not one of X, Y, Z, U, V, W");
         bool known = false;
         for (const std::string& a : have)
             if (a == axis) { known = true; break; }
@@ -1080,11 +1086,14 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   {
                       {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
                       {"axes", PT::String, true, {}, 0, 0, {},
-                       "which axes to command, e.g. \"XYZ\", \"XY\", \"Z\" - required, "
-                       "so a Z-only move can never also command X and Y to zero"},
+                       "which axes to command, e.g. \"XYZ\", \"XY\", \"Z\", \"XYZUVW\" - "
+                       "required, so a Z-only move can never also command X and Y to zero"},
                       {"x_mm", PT::Double, false, 0.0, 0, 0, {}, "X target (used when axes names X)"},
                       {"y_mm", PT::Double, false, 0.0, 0, 0, {}, "Y target (used when axes names Y)"},
                       {"z_mm", PT::Double, false, 0.0, 0, 0, {}, "Z target (used when axes names Z)"},
+                      {"u_deg", PT::Double, false, 0.0, 0, 0, {}, "U target, deg (used when axes names U)"},
+                      {"v_deg", PT::Double, false, 0.0, 0, 0, {}, "V target, deg (used when axes names V)"},
+                      {"w_deg", PT::Double, false, 0.0, 0, 0, {}, "W target, deg (used when axes names W)"},
                       {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
                       {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
                       VelocityParam(),

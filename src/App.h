@@ -473,21 +473,17 @@ private:
     // procedures. It measures nothing itself.
     void DrawDeviceRegPanel();
     void StartDeviceRegCheckRun();   // launches device_reg_check.lua
-    // The teach steps. They mutate machine state, not the document, and they
-    // hand the result to Workflow's queue rather than writing the file — one
-    // write path, drained in App::Update.
-    //
-    // Which of the three teachable poses is being set. The imprint pose is the
-    // only one that also latches the rotations, because it is the pose the
-    // measurement actually happens at.
-    enum RegPoseSlot { kRegImprint = 0, kRegHome, kRegView };
-    // The ONE writer of the three poses. Both ways of naming a pose — stand the
-    // machine there and capture it, or adopt one the product already has taught
-    // — land here, so neither can drift from the other.
-    void StoreDeviceRegPose(RegPoseSlot slot, const RegVec3& p, const std::string& how);
-    void CaptureDeviceRegPose(RegPoseSlot slot);            // from the live pose
-    void AdoptDeviceRegPose(RegPoseSlot slot, const SavedPos& pos);
+    // The teach pose: device_reg_teach.lua drives the device to axis zero
+    // (after a confirm), has the operator put the camera over the tool, and
+    // latches both poses through device_reg_teach_save — the one writer of
+    // them. Machine state, handed to Workflow's queue and drained in Update.
+    void StartDeviceRegTeachRun();
     void CompleteDeviceRegTip();
+    // The image toolbar (ROI + binary threshold) and the camera view section
+    // (main_camera exposure + main_camera_light) of the Capture tab.
+    void DrawDeviceRegToolbar();
+    void UpdateDeviceRegThreshold(int x, int y, int w, int h);
+    void DrawDeviceRegCameraView();
 
     // Gripped Object page (View menu, full-page): where the object in a
     // gripper's jaws sits, relative to that gripper's registered tip. The
@@ -1419,11 +1415,34 @@ private:
     // floats; the record is the double that matters.
     float regBoxW_ = 0.0f, regBoxH_ = 0.0f;
     bool  regBoxDragging_ = false;
+    // The image toolbar: an ROI square on the crosshair (0 off, 1 = 1/3,
+    // 2 = 1/2, 3 = 2/3 of the frame's short side) and a binary threshold view
+    // of it, to make the tool's edges visible while marking. DISPLAY ONLY -
+    // the marks are still taken on the camera frame. Persisted in UiSettings.
+    int    regRoiMode_ = 0;
+    bool   regBinary_  = false;
+    int    regThr_     = 128;
+    // The thresholded ROI as a texture, rebuilt only on a new frame or a
+    // changed setting, and the camera-px rectangle it shows.
+    unsigned int regThrTex_ = 0;
+    int    regThrX_ = 0, regThrY_ = 0, regThrW_ = 0, regThrH_ = 0, regThrAt_ = -1;  // asked
+    int    regThrGx_ = 0, regThrGy_ = 0, regThrGw_ = 0, regThrGh_ = 0;  // got (clamped)
+    unsigned long long regThrSeq_ = 0;
+    std::vector<unsigned char> regGray_, regThrRgb_;
+    // The camera view the tool is marked under, HARD-CODED to the one camera
+    // (main_camera) and its light group, and kept for the next teach.
+    // regExposureUs_ 0 = never set on this page (seeded from the camera).
+    static constexpr const char* kRegLightName = "main_camera_light";
+    double        regExposureUs_ = 0.0;
+    AlignLighting regLight_;
     // Check parameters. The three offsets default non-zero on purpose: a check
     // at the pose the tip was taught at returns the measurement by construction
     // and can verify nothing, so the default has to be a check that tests it.
     double regCheckDx_  = 5.0, regCheckDy_ = 5.0, regCheckDz_ = 0.0;
     double regCheckTol_ = 0.05;
+    // The teach run's first camera jog step: the tool is somewhere in a field
+    // a few mm wide, so the search starts coarser than a placement nudge.
+    double regTeachStepUm_ = 50.0;
     double regVTravel_  = 0.0;
     double regVJog_     = 0.0;
     int    regSettleMs_ = 300;

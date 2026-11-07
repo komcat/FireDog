@@ -87,6 +87,16 @@ int App::Run()
         if (ui.runShotH      > 0.0f) runShotPanelH_ = ui.runShotH;
         if (ui.orgLibW       > 0.0f) orgLibW_       = ui.orgLibW;
         if (ui.regCtlW       > 0.0f) regCtlW_       = ui.regCtlW;
+        regRoiMode_    = (ui.regRoiMode >= 0 && ui.regRoiMode <= 3) ? ui.regRoiMode : 0;
+        regBinary_     = ui.regBinary;
+        regThr_        = (ui.regThr >= 0 && ui.regThr <= 255) ? ui.regThr : 128;
+        regExposureUs_ = ui.regExposureUs > 0.0 ? ui.regExposureUs : 0.0;
+        if (!ui.regLightColor.empty()) {
+            regLight_.kind    = "light";
+            regLight_.channel = kRegLightName;
+            regLight_.color   = ui.regLightColor;
+        }
+        regLight_.value = ui.regLightPct;
         if (ui.gripCtlW      > 0.0f) gripCtlW_      = ui.gripCtlW;
         if (ui.trayCtlW      > 0.0f) trayCtlW_      = ui.trayCtlW;
         if (ui.scriptsListW  > 0.0f) scListW_       = ui.scriptsListW;
@@ -598,6 +608,12 @@ void App::SaveUiSettings()
     s.runShotH      = runShotPanelH_;
     s.orgLibW       = orgLibW_;
     s.regCtlW       = regCtlW_;
+    s.regRoiMode    = regRoiMode_;
+    s.regBinary     = regBinary_;
+    s.regThr        = regThr_;
+    s.regExposureUs = regExposureUs_;
+    s.regLightColor = regLight_.kind == "light" ? regLight_.color : std::string();
+    s.regLightPct   = regLight_.value;
     s.gripCtlW      = gripCtlW_;
     s.trayCtlW      = trayCtlW_;
     s.scriptsListW  = scListW_;
