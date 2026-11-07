@@ -38,6 +38,18 @@
 namespace firedog {
 
 namespace {
+// Key-stroke feedback: 1 at the event, fading linearly to 0 after `dur` s.
+float KeyGlow(double since, double dur)
+{
+    if (since < 0.0 || since >= dur) return 0.0f;
+    return static_cast<float>(1.0 - since / dur);
+}
+ImVec4 LerpColor(const ImVec4& a, const ImVec4& b, float t)
+{
+    return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
+                  a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t);
+}
+
 // Jog velocities (mm/s) per controller type.
 constexpr double kVelPI[]  = {1.0, 2.0, 5.0, 10.0};
 constexpr double kVelACS[] = {1.0, 5.0, 10.0, 20.0, 40.0, 80.0};   // last = ceiling; keep = Workflow kMaxVelACSMMs
@@ -995,10 +1007,18 @@ void App::DrawJogPanel()
         DrawVelocityCombo(di);
         ImGui::EndChild();
         ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.30f, 0.76f, 0.32f, 1.0f));
+        // A step change (Q/E or a click) BLINKS the readout: three inverted
+        // flashes (yellow box, green text) over 0.6 s, so a size changed by a
+        // stray key is seen, not discovered by the next move.
+        const ImVec4 kStepGreen(0.30f, 0.76f, 0.32f, 1.0f), kStepYellow(1.0f, 0.92f, 0.12f, 1.0f);
+        const double sinceStep = ImGui::GetTime() - jogStepFlashAt_;
+        const bool   stepBlink = sinceStep >= 0.0 && sinceStep < 0.6 &&
+                                 (static_cast<int>(sinceStep / 0.1) % 2) == 0;
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, stepBlink ? kStepYellow : kStepGreen);
         ImGui::BeginChild("jogstepbig", ImVec2(bigW, boxH), ImGuiChildFlags_None,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        DrawBigLabel(kSteps[jogStepIndex_].label, ImVec2(bigW, boxH), ImVec4(1.0f, 0.92f, 0.12f, 1.0f));
+        DrawBigLabel(kSteps[jogStepIndex_].label, ImVec2(bigW, boxH),
+                     stepBlink ? kStepGreen : kStepYellow);
         ImGui::EndChild();
         ImGui::PopStyleColor();
     }
@@ -1011,11 +1031,18 @@ void App::DrawJogPanel()
     const float availw = ImGui::GetContentRegionAvail().x;
     int perRow = static_cast<int>(availw / (bw + 6.0f));
     if (perRow < 1) perRow = 1;
+    // The selected size glows white-blue and fades back over 0.5 s after a change.
+    const float stepGlow = KeyGlow(ImGui::GetTime() - jogStepFlashAt_, 0.5);
     for (int i = 0; i < kStepCount; ++i) {
         if (i % perRow != 0) ImGui::SameLine();
         const bool sel = (jogStepIndex_ == i);
-        if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.85f, 1.0f));
-        if (ImGui::Button(kSteps[i].label, ImVec2(bw, 0.0f))) jogStepIndex_ = i;
+        if (sel) ImGui::PushStyleColor(ImGuiCol_Button,
+                                       LerpColor(ImVec4(0.20f, 0.50f, 0.85f, 1.0f),
+                                                 ImVec4(0.75f, 0.90f, 1.00f, 1.0f), stepGlow));
+        if (ImGui::Button(kSteps[i].label, ImVec2(bw, 0.0f)) && i != jogStepIndex_) {
+            jogStepIndex_   = i;
+            jogStepFlashAt_ = ImGui::GetTime();
+        }
         if (sel) ImGui::PopStyleColor();
     }
 
@@ -1026,15 +1053,45 @@ void App::DrawJogPanel()
     // device transform (in Workflow) maps global direction -> local axis + sign.
     const double step = kSteps[jogStepIndex_].mm;
     const ImVec2 jb(58.0f, 0.0f);   // auto height -> fits the two-line "In\nW" labels
+    // Each button LIGHTS on its press (click or key) and fades over 0.35 s, and
+    // stays lit while its key is held with keys live — a key stroke shows on
+    // the button it stands for, so the operator sees which way the stage was
+    // told to go. Presses from the keyboard are stamped by the handler at the
+    // end of this function and show from the next frame.
+    const double nowT = ImGui::GetTime();
+    auto dirButton = [&](int k, const char* label, ImGuiKey key) -> bool {
+        float lit = KeyGlow(nowT - jogKeyFlashAt_[k], 0.35);
+        if (kbLive && ImGui::IsKeyDown(key)) lit = 1.0f;
+        if (lit > 0.0f) {
+            const ImVec4 base = ImGui::GetStyleColorVec4(ImGuiCol_Button);
+            const ImVec4 hot(1.00f, 0.82f, 0.35f, 1.0f);   // a lit key: warm, ARMED-family
+            ImGui::PushStyleColor(ImGuiCol_Button,        LerpColor(base, hot, lit));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, LerpColor(base, hot, lit));
+            ImGui::PushStyleColor(ImGuiCol_Text, LerpColor(ImGui::GetStyleColorVec4(ImGuiCol_Text),
+                                                           ImVec4(0.10f, 0.08f, 0.02f, 1.0f), lit));
+        }
+        const bool pressed = ImGui::Button(label, jb);
+        if (lit > 0.0f) {
+            ImGui::PopStyleColor(3);
+            // A soft halo around the lit key.
+            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRect(
+                ImVec2(a.x - 2.0f, a.y - 2.0f), ImVec2(b.x + 2.0f, b.y + 2.0f),
+                ImGui::GetColorU32(ImVec4(1.0f, 0.85f, 0.40f, 0.8f * lit)),
+                ImGui::GetStyle().FrameRounding + 2.0f, 0, 2.0f);
+        }
+        if (pressed) jogKeyFlashAt_[k] = nowT;
+        return pressed;
+    };
     ImGui::BeginDisabled(!jogArmed_);
     ImGui::BeginGroup();
     ImGui::Dummy(ImVec2(jb.x + 8.0f, 0.0f)); ImGui::SameLine();
-    if (ImGui::Button("In\nW", jb))    workflow_.JogGlobal(di, 0.0f, -1.0f, 0.0f, step);
-    if (ImGui::Button("Left\nA", jb))  workflow_.JogGlobal(di, -1.0f, 0.0f, 0.0f, step); ImGui::SameLine();
-    if (ImGui::Button("Out\nS", jb))   workflow_.JogGlobal(di, 0.0f,  1.0f, 0.0f, step); ImGui::SameLine();
-    if (ImGui::Button("Right\nD", jb)) workflow_.JogGlobal(di, 1.0f,  0.0f, 0.0f, step);
-    if (ImGui::Button("Up\nR", jb))    workflow_.JogGlobal(di, 0.0f,  0.0f, 1.0f, step); ImGui::SameLine();
-    if (ImGui::Button("Down\nF", jb))  workflow_.JogGlobal(di, 0.0f,  0.0f, -1.0f, step);
+    if (dirButton(0, "In\nW", ImGuiKey_W))    workflow_.JogGlobal(di, 0.0f, -1.0f, 0.0f, step);
+    if (dirButton(1, "Left\nA", ImGuiKey_A))  workflow_.JogGlobal(di, -1.0f, 0.0f, 0.0f, step); ImGui::SameLine();
+    if (dirButton(2, "Out\nS", ImGuiKey_S))   workflow_.JogGlobal(di, 0.0f,  1.0f, 0.0f, step); ImGui::SameLine();
+    if (dirButton(3, "Right\nD", ImGuiKey_D)) workflow_.JogGlobal(di, 1.0f,  0.0f, 0.0f, step);
+    if (dirButton(4, "Up\nR", ImGuiKey_R))    workflow_.JogGlobal(di, 0.0f,  0.0f, 1.0f, step); ImGui::SameLine();
+    if (dirButton(5, "Down\nF", ImGuiKey_F))  workflow_.JogGlobal(di, 0.0f,  0.0f, -1.0f, step);
     ImGui::EndGroup();
     ImGui::EndDisabled();
 
@@ -1144,16 +1201,18 @@ void App::DrawJogPanel()
     // a distance moves nothing, and reaching for the size before arming is the
     // normal order. Everything that actually moves stays armed-only.
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
-        if (ImGui::IsKeyPressed(ImGuiKey_Q, false) && jogStepIndex_ > 0)              --jogStepIndex_;
-        if (ImGui::IsKeyPressed(ImGuiKey_E, false) && jogStepIndex_ < kStepCount - 1) ++jogStepIndex_;
+        const double t = ImGui::GetTime();
+        if (ImGui::IsKeyPressed(ImGuiKey_Q, false) && jogStepIndex_ > 0)              { --jogStepIndex_; jogStepFlashAt_ = t; }
+        if (ImGui::IsKeyPressed(ImGuiKey_E, false) && jogStepIndex_ < kStepCount - 1) { ++jogStepIndex_; jogStepFlashAt_ = t; }
 
         if (jogArmed_) {
-            if (ImGui::IsKeyPressed(ImGuiKey_A, false)) workflow_.JogGlobal(di, -1.0f, 0.0f, 0.0f, step);  // Left  X-
-            if (ImGui::IsKeyPressed(ImGuiKey_D, false)) workflow_.JogGlobal(di,  1.0f, 0.0f, 0.0f, step);  // Right X+
-            if (ImGui::IsKeyPressed(ImGuiKey_W, false)) workflow_.JogGlobal(di, 0.0f, -1.0f, 0.0f, step);  // In    Y-
-            if (ImGui::IsKeyPressed(ImGuiKey_S, false)) workflow_.JogGlobal(di, 0.0f,  1.0f, 0.0f, step);  // Out   Y+
-            if (ImGui::IsKeyPressed(ImGuiKey_R, false)) workflow_.JogGlobal(di, 0.0f, 0.0f,  1.0f, step);  // Up    Z+
-            if (ImGui::IsKeyPressed(ImGuiKey_F, false)) workflow_.JogGlobal(di, 0.0f, 0.0f, -1.0f, step);  // Down  Z-
+            // [k] stamps the button's light (order W A S D R F, as jogKeyFlashAt_).
+            if (ImGui::IsKeyPressed(ImGuiKey_A, false)) { workflow_.JogGlobal(di, -1.0f, 0.0f, 0.0f, step); jogKeyFlashAt_[1] = t; }  // Left  X-
+            if (ImGui::IsKeyPressed(ImGuiKey_D, false)) { workflow_.JogGlobal(di,  1.0f, 0.0f, 0.0f, step); jogKeyFlashAt_[3] = t; }  // Right X+
+            if (ImGui::IsKeyPressed(ImGuiKey_W, false)) { workflow_.JogGlobal(di, 0.0f, -1.0f, 0.0f, step); jogKeyFlashAt_[0] = t; }  // In    Y-
+            if (ImGui::IsKeyPressed(ImGuiKey_S, false)) { workflow_.JogGlobal(di, 0.0f,  1.0f, 0.0f, step); jogKeyFlashAt_[2] = t; }  // Out   Y+
+            if (ImGui::IsKeyPressed(ImGuiKey_R, false)) { workflow_.JogGlobal(di, 0.0f, 0.0f,  1.0f, step); jogKeyFlashAt_[4] = t; }  // Up    Z+
+            if (ImGui::IsKeyPressed(ImGuiKey_F, false)) { workflow_.JogGlobal(di, 0.0f, 0.0f, -1.0f, step); jogKeyFlashAt_[5] = t; }  // Down  Z-
         }
     }
 }

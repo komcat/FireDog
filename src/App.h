@@ -1146,6 +1146,11 @@ private:
     // Jog panel (Overview right panel). Transforms + commands live in Workflow.
     // Its device is selectedMotion_ (shared with the Motion page).
     int jogStepIndex_ = 9;  // index into kSteps (default 100um)
+    // Key-stroke feedback (ImGui::GetTime() of the last event; display only):
+    // the step readout blinks after a step change, and each direction button
+    // lights and fades after its press (click or key). Order: W A S D R F.
+    double jogStepFlashAt_   = -1.0e9;
+    double jogKeyFlashAt_[6] = {-1.0e9, -1.0e9, -1.0e9, -1.0e9, -1.0e9, -1.0e9};
     int jogRotAxis_   = 0;   // selected rotational axis (0 = first beyond XYZ)
     // The Jog box's position row: the taught position the device is sitting
     // on, and a HOLD on it. Checking the box while at a position keeps its
