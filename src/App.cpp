@@ -100,6 +100,8 @@ int App::Run()
         posLabelsHidden_ = ui.posLabelsHidden;
         showGripperMarks_ = ui.showGripperMarks;
         auxPanelOpen_     = ui.auxPanelOpen;
+        auxImgFit_        = ui.auxImgFit;
+        auxChartCompact_  = ui.auxChartCompact;
         chartScope_      = ui.chartScope;
         runLastProgUid_  = ui.runProgUid;
         runLastSlot_     = ui.runSlot > 0 ? ui.runSlot : 0;
@@ -608,6 +610,8 @@ void App::SaveUiSettings()
     s.posLabelsHidden = posLabelsHidden_;
     s.showGripperMarks = showGripperMarks_;
     s.auxPanelOpen     = auxPanelOpen_;
+    s.auxImgFit        = auxImgFit_;
+    s.auxChartCompact  = auxChartCompact_;
     s.chartScope  = chartScope_;
     s.runProgUid  = runLastProgUid_;
     s.runSlot     = runLastSlot_;

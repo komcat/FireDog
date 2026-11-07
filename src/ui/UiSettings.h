@@ -144,6 +144,11 @@ struct UiSettings {
     // Aux window: is the control strip expanded? It covers part of the
     // picture, so which state the operator left it in is worth keeping.
     bool auxPanelOpen = true;
+    // Aux window image: false = cover (fill the window, crop the overflow),
+    // true = fit (the whole frame, letterboxed inside the window).
+    bool auxImgFit = false;
+    // Aux window chart: compact = half the size, chart only (no controls).
+    bool auxChartCompact = false;
 
     // Keithley chart style: true = scope look (bare canvas, overlay legend +
     // live value), false = classic axes/ticks plot.

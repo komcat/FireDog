@@ -762,8 +762,9 @@ private:
     void DrawAuxWindow();
     // Vision feedback drawn over the Aux window's live image: the detection the
     // detector just made (camera pixels) and the taught/captured E1-E2 marks
-    // (machine mm, projected back into the current view). `center`/`avail` are
-    // the image box; `scale` is screen px per camera px (the cover fit).
+    // (machine mm, projected back into the current view). `origin`/`avail` are
+    // the IMAGE rect (the window in cover mode, the letterboxed picture in fit
+    // mode); `scale` is screen px per camera px.
     void DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
                             const ImVec2& center, float scale);
     // Where each stage stands, named against the taught positions — the live
@@ -775,14 +776,21 @@ private:
     // tip is marked by its NAME and edge arrow only; its dZ and the "no tip:"
     // lines stack up from the bottom-right corner, `bottomInset` above it - the
     // grip readout's plate sits in that corner. Returns the height it used, so
-    // the cursor readout can stack above it.
+    // the cursor readout can stack above it. `origin`/`avail` = the window box
+    // (where the text stacks), `imgO`/`imgS` = the image rect (where tips land).
     float DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
-                              const ImVec2& center, float scale, float bottomInset);
+                              const ImVec2& imgO, const ImVec2& imgS, float bottomInset);
     // The last grip measurement (auxGrip_): the object's cross on the image
     // and a plate in the bottom-right corner. Returns the plate's height so
     // the "no tip:" lines can stack above it; 0 when there is nothing shown.
-    float DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail);
+    // Window box for the plate, image rect for the cross (as DrawAuxGripperMarks).
+    float DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
+                            const ImVec2& imgO, const ImVec2& imgS);
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
+    // The Aux window's COMPACT chart: drawn straight onto `dl` with no plot
+    // library and no child window - a trace over the picture that takes no
+    // input, so a click on it still reaches the image.
+    void DrawAuxCompactChart(ImDrawList* dl, const ImVec2& p0, const ImVec2& size);
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
     void SaveUiSettings();     // persist font choice + size to disk
 
@@ -1708,6 +1716,8 @@ private:
     // Whether the Aux control strip is expanded. It sits over the picture,
     // so the picture has to be able to win: collapsed it is one button.
     bool       auxPanelOpen_ = true;       // Aux strip, persisted
+    bool       auxImgFit_    = false;      // Aux image: false = cover, true = fit; persisted
+    bool       auxChartCompact_ = false;   // Aux chart at half size, chart only; persisted
     // Taught-patch thumbnails, one slot per surface that shows one. Each is
     // keyed by what it was built from (VisionModelPatchKey), so a model switch,
     // a re-teach or an anchor drag reloads it and nothing else does.

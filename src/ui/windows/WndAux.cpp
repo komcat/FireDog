@@ -30,6 +30,7 @@
 #include "core/Topics.h"
 #include "ui/UiSettings.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -156,7 +157,34 @@ void App::DrawAuxWindow()
         const ImVec2 avail  = ImGui::GetContentRegionAvail();
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const bool haveImg = cameraTex_ && cameraW_ > 0 && cameraH_ > 0;
-        if (haveImg) {
+
+        // The IMAGE rect (imgO, imgS): where the picture is, and so the box every
+        // overlay that lands ON the picture projects into (crosshair, cursor,
+        // vision marks, tips, the grip cross). The corner plates and the chart
+        // stay on the WINDOW box (origin, avail).
+        //   cover (default): the whole window; the overflow is cropped via UV.
+        //   fit:             the whole frame, letterboxed and centred. The rect
+        //                    then has the frame's own aspect, so the cover-fit
+        //                    arithmetic every overlay uses (fmaxf, MakeCameraView)
+        //                    gives the same scale as a contain fit - one formula,
+        //                    both modes.
+        ImVec2 imgO = origin, imgS = avail;
+        if (haveImg && auxImgFit_ && avail.x > 0.0f && avail.y > 0.0f) {
+            const float sc = fminf(avail.x / static_cast<float>(cameraW_),
+                                   avail.y / static_cast<float>(cameraH_));
+            imgS = ImVec2(std::floor(static_cast<float>(cameraW_) * sc),
+                          std::floor(static_cast<float>(cameraH_) * sc));
+            imgO = ImVec2(std::floor(origin.x + (avail.x - imgS.x) * 0.5f),
+                          std::floor(origin.y + (avail.y - imgS.y) * 0.5f));
+        }
+
+        if (haveImg && auxImgFit_) {
+            dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y),
+                              IM_COL32(12, 12, 15, 255));   // the letterbox bars
+            dl->AddImage((ImTextureID)(intptr_t)cameraTex_, imgO,
+                         ImVec2(imgO.x + imgS.x, imgO.y + imgS.y));
+            ImGui::Dummy(avail);   // reserve the region so layout below is correct
+        } else if (haveImg) {
             // "cover" fit: fill the box, preserve aspect, crop the overflow via UV.
             ImVec2 uv0(0.0f, 0.0f), uv1(1.0f, 1.0f);
             const float imgA = static_cast<float>(cameraW_) / static_cast<float>(cameraH_);
@@ -179,13 +207,17 @@ void App::DrawAuxWindow()
         // clicks in its corner and the stage won't move when you use the chart.
         ImGui::SetCursorScreenPos(origin);
         const bool imgClicked = ImGui::InvisibleButton("##imgInput", avail);
-        const bool imgHovered = ImGui::IsItemHovered();
-        const ImVec2 center(origin.x + avail.x * 0.5f, origin.y + avail.y * 0.5f);
+        // In fit mode the bars are not picture: a click there means nothing.
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const bool   onImg = mouse.x >= imgO.x && mouse.x < imgO.x + imgS.x &&
+                             mouse.y >= imgO.y && mouse.y < imgO.y + imgS.y;
+        const bool imgHovered = ImGui::IsItemHovered() && onImg;
+        const ImVec2 center(imgO.x + imgS.x * 0.5f, imgO.y + imgS.y * 0.5f);
 
-        // Fixed center crosshair (the optical/stage reference).
+        // Fixed center crosshair (the optical/stage reference), across the picture.
         const ImU32 chair = IM_COL32(80, 230, 120, 200);
-        dl->AddLine(ImVec2(origin.x, center.y), ImVec2(origin.x + avail.x, center.y), chair, 1.0f);
-        dl->AddLine(ImVec2(center.x, origin.y), ImVec2(center.x, origin.y + avail.y), chair, 1.0f);
+        dl->AddLine(ImVec2(imgO.x, center.y), ImVec2(imgO.x + imgS.x, center.y), chair, 1.0f);
+        dl->AddLine(ImVec2(center.x, imgO.y), ImVec2(center.x, imgO.y + imgS.y), chair, 1.0f);
 
         // The cursor marker + world-distance readout only appear while
         // click-to-move is armed: they annotate the move a click would command,
@@ -198,10 +230,10 @@ void App::DrawAuxWindow()
         std::string cursorLbl;   // drawn in the bottom-right stack, further down
         if (haveImg && imgHovered && enableClickMove_ && CanUse(kRoleJog)) {
             const ImVec2 m = ImGui::GetIO().MousePos;
-            // Screen -> camera pixels. The image is "cover"-fit with a single
+            // Screen -> camera pixels. The image is fitted with a single
             // uniform scale, so 1 camera px = `scale` screen px on both axes.
-            const float scale = fmaxf(avail.x / static_cast<float>(cameraW_),
-                                      avail.y / static_cast<float>(cameraH_));
+            const float scale = fmaxf(imgS.x / static_cast<float>(cameraW_),
+                                      imgS.y / static_cast<float>(cameraH_));
             const float dxPix = (m.x - center.x) / scale;         // camera px from center
             const float dyPix = (m.y - center.y) / scale;
             const float dxMM  = dxPix * pixelToMmX_;              // real-world offset
@@ -231,9 +263,9 @@ void App::DrawAuxWindow()
         // Drawn after the cursor annotations so a detection is never hidden
         // under them, and before the control plates so a checkbox stays clickable.
         if (haveImg && showVisionMarks_) {
-            const float scale = fmaxf(avail.x / static_cast<float>(cameraW_),
-                                      avail.y / static_cast<float>(cameraH_));
-            DrawAuxVisionMarks(dl, origin, avail, center, scale);
+            const float scale = fmaxf(imgS.x / static_cast<float>(cameraW_),
+                                      imgS.y / static_cast<float>(cameraH_));
+            DrawAuxVisionMarks(dl, imgO, imgS, center, scale);
         }
 
         // ---- Where the registered tools are ----
@@ -245,14 +277,11 @@ void App::DrawAuxWindow()
         // Drawn before the tips because it owns the bottom-right corner: the
         // tips' "no tip:" lines stack above its plate.
         float gripPlateH = 0.0f;
-        if (haveImg) gripPlateH = DrawAuxGripResult(dl, origin, avail);
+        if (haveImg) gripPlateH = DrawAuxGripResult(dl, origin, avail, imgO, imgS);
 
         float tipsH = 0.0f;
-        if (haveImg && showGripperMarks_) {
-            const float scale = fmaxf(avail.x / static_cast<float>(cameraW_),
-                                      avail.y / static_cast<float>(cameraH_));
-            tipsH = DrawAuxGripperMarks(dl, origin, avail, center, scale, gripPlateH);
-        }
+        if (haveImg && showGripperMarks_)
+            tipsH = DrawAuxGripperMarks(dl, origin, avail, imgO, imgS, gripPlateH);
 
         // ---- The cursor's world distance, parked bottom-right ----
         // TOP of the corner stack (grip plate, then the tools' dZ lines, then
@@ -317,6 +346,30 @@ void App::DrawAuxWindow()
 
         if (auxPanelOpen_) {
         if (ImGui::Checkbox("Chart", &showChart_)) SaveUiSettings();
+        ImGui::Indent(14.0f);
+        ImGui::BeginDisabled(!showChart_);
+        if (ImGui::Checkbox("Compact", &auxChartCompact_)) SaveUiSettings();
+        ImGui::EndDisabled();
+        ImGui::Unindent(14.0f);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Half-size chart drawn straight on the picture: the\n"
+                              "trace and the live value only, no box to click.\n"
+                              "Each channel is scaled to its own range; the channel\n"
+                              "choice comes from the full chart.");
+        // Image mode: Fill (cover - the default, crops the overflow) or Fit (the
+        // whole frame, letterboxed). Every overlay follows the picture.
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Image");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Fill", !auxImgFit_)) { auxImgFit_ = false; SaveUiSettings(); }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Fill the window with the picture; the edges of the\n"
+                              "frame that do not fit are cropped.");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Fit", auxImgFit_)) { auxImgFit_ = true; SaveUiSettings(); }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Shrink the whole frame into the window (width and\n"
+                              "height), with dark bars where the aspect differs.");
         // The Aux window is Operator-level because it MONITORS. Everything on
         // it that MOVES is Technician, the same level as the Jog window - this
         // strip would otherwise be a way around that gate, and it arms the very
@@ -460,16 +513,26 @@ void App::DrawAuxWindow()
 
         // ---- Overlay: signal chart, pinned to the top-right corner ----
         if (showChart_) {
+            // Grows with the window, but CAPPED: on a wide window a 45 % chart
+            // covered most of the picture the window exists to show.
+            constexpr float kChartMaxW = 560.0f, kChartMaxH = 300.0f;
             const float margin = 10.0f;
-            const float panelW = avail.x * 0.45f;
-            const float panelH = avail.y * 0.40f;
-            ImGui::SetCursorScreenPos(ImVec2(origin.x + avail.x - panelW - margin, origin.y + margin));
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.06f, 0.08f, 0.85f));
-            ImGui::BeginChild("SignalOverlay", ImVec2(panelW, panelH), ImGuiChildFlags_Borders,
-                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            DrawSignalOverlay();
-            ImGui::EndChild();
-            ImGui::PopStyleColor();
+            // Compact = half of that, both ways, and chart only.
+            const float shrink = auxChartCompact_ ? 0.5f : 1.0f;
+            const float panelW = fminf(avail.x * 0.45f, kChartMaxW) * shrink;
+            const float panelH = fminf(avail.y * 0.40f, kChartMaxH) * shrink;
+            const ImVec2 chartPos(origin.x + avail.x - panelW - margin, origin.y + margin);
+            if (auxChartCompact_) {
+                DrawAuxCompactChart(dl, chartPos, ImVec2(panelW, panelH));
+            } else {
+                ImGui::SetCursorScreenPos(chartPos);
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.06f, 0.08f, 0.85f));
+                ImGui::BeginChild("SignalOverlay", ImVec2(panelW, panelH), ImGuiChildFlags_Borders,
+                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                DrawSignalOverlay();
+                ImGui::EndChild();
+                ImGui::PopStyleColor();
+            }
         }
     }
     ImGui::End();
@@ -600,10 +663,10 @@ void App::DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2&
 // looking'. Same helper the pick window uses, so an edge arrow means the same
 // thing on both surfaces.
 float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
-                               const ImVec2& center, float scale, float bottomInset)
+                               const ImVec2& imgO, const ImVec2& imgS, float bottomInset)
 {
-    (void)center;   // the projection goes through the shared CameraView
-    (void)scale;    // ...which computes the same cover fit from the box
+    // The projection goes through the shared CameraView over the IMAGE rect;
+    // the dZ / "no tip:" lines below stack in the WINDOW's corner.
     if (pixelToMmX_ <= 0.0f || pixelToMmY_ <= 0.0f) return 0.0f;
     double gx = 0.0, gy = 0.0;
     if (!workflow_.GantryXY(gx, gy)) return 0.0f;
@@ -631,11 +694,11 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
     // helper rather than by hand: two copies of this arithmetic is how an
     // overlay starts disagreeing with the picture under it.
     WorldMarkView wv;
-    wv.view       = MakeCameraView(origin, avail, cameraW_, cameraH_,
+    wv.view       = MakeCameraView(imgO, imgS, cameraW_, cameraH_,
                                    static_cast<float>(cameraW_) * 0.5f,
                                    static_cast<float>(cameraH_) * 0.5f, 1.0f);
-    wv.boxMin     = origin;
-    wv.boxMax     = ImVec2(origin.x + avail.x, origin.y + avail.y);
+    wv.boxMin     = imgO;
+    wv.boxMax     = ImVec2(imgO.x + imgS.x, imgO.y + imgS.y);
     wv.gx         = gx;
     wv.gy         = gy;
     wv.pixelToMmX = pixelToMmX_;
@@ -769,7 +832,8 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
 // The cross is drawn only when the picture's pose belongs to the device the
 // measurement was made through, for the same reason as the tips: a point in
 // gantry-main's axis space means nothing on a picture posed by another device.
-float App::DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail)
+float App::DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
+                             const ImVec2& imgO, const ImVec2& imgS)
 {
     if (!auxGrip_.have) return 0.0f;
     const AuxGripReadout& g = auxGrip_;
@@ -815,11 +879,11 @@ float App::DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2&
     if (!reg.valid || reg.refDevice != refName) return plateH;
 
     WorldMarkView wv;
-    wv.view       = MakeCameraView(origin, avail, cameraW_, cameraH_,
+    wv.view       = MakeCameraView(imgO, imgS, cameraW_, cameraH_,
                                    static_cast<float>(cameraW_) * 0.5f,
                                    static_cast<float>(cameraH_) * 0.5f, 1.0f);
-    wv.boxMin     = origin;
-    wv.boxMax     = ImVec2(origin.x + avail.x, origin.y + avail.y);
+    wv.boxMin     = imgO;
+    wv.boxMax     = ImVec2(imgO.x + imgS.x, imgO.y + imgS.y);
     wv.gx         = gx;
     wv.gy         = gy;
     wv.pixelToMmX = pixelToMmX_;
@@ -911,6 +975,104 @@ void App::DrawAuxPositionLabels(ImDrawList* dl, const ImVec2& origin, const ImVe
 void App::DrawSignalOverlay()
 {
     DrawKeithleyChart(ImVec2(-1, -1));   // fill the overlay child
+}
+
+// The compact chart, by hand: the same buffers and clock the ImPlot chart
+// reads (kT*/kV*, chartClock_, kChartWindowSec, chartCh_), drawn as polylines
+// on a faint backdrop. No axes - this is for watching a trend and reading the
+// number, and the full chart is one checkbox away.
+//
+// EACH CHANNEL IS SCALED TO ITS OWN RANGE. Sharing one Y range (as the full
+// chart does) flattens a pA dark channel against a nA signal into a line on
+// the floor; here the printed values carry the magnitudes.
+//
+// Decimated to one min/max pair per pixel column, in time order, so a spike
+// narrower than a pixel still reaches the screen instead of being stepped over.
+void App::DrawAuxCompactChart(ImDrawList* dl, const ImVec2& p0, const ImVec2& size)
+{
+    if (size.x < 40.0f || size.y < 40.0f) return;
+    const ImVec2 p1(p0.x + size.x, p0.y + size.y);
+    const ImU32  kCh1 = IM_COL32(0, 217, 255, 255);    // the full chart's cyan
+    const ImU32  kCh2 = IM_COL32(255, 140, 26, 255);   // ...and orange
+
+    dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 80), 4.0f);   // just enough to read over a bright frame
+
+    const bool  show1 = chartCh_ != 1, show2 = chartCh_ != 0;
+    const int   nVals = (show1 ? 1 : 0) + (show2 ? 1 : 0);
+    const float fs    = ImGui::GetFontSize() * 1.15f;
+    const float pad   = 6.0f;
+    // The values own a band at the bottom; the trace gets the rest.
+    const ImVec2 t0(p0.x + pad, p0.y + pad);
+    const ImVec2 t1(p1.x - pad, p1.y - pad - (fs + 2.0f) * static_cast<float>(nVals));
+    if (t1.y - t0.y < 12.0f) return;
+    const float tw = t1.x - t0.x, th = t1.y - t0.y;
+
+    dl->PushClipRect(p0, p1, true);
+    std::vector<ImVec2> pts;
+    auto trace = [&](const std::vector<float>& t, const std::vector<float>& v, ImU32 col) {
+        const std::size_t n = (std::min)(t.size(), v.size());
+        if (n < 2) return;
+        // Visible window: [now - kChartWindowSec, now].
+        const double tLo = chartClock_ - kChartWindowSec;
+        std::size_t  i0  = 0;
+        while (i0 < n && t[i0] < tLo) ++i0;
+        if (n - i0 < 2) return;
+
+        float lo = v[i0], hi = v[i0];
+        for (std::size_t i = i0; i < n; ++i) { lo = (std::min)(lo, v[i]); hi = (std::max)(hi, v[i]); }
+        float span = hi - lo;
+        if (span <= 0.0f) span = (std::fabs(hi) > 0.0f ? std::fabs(hi) : 1e-12f) * 0.1f;   // flat: centre it
+        const float mid = 0.5f * (hi + lo);
+        lo = mid - span * 0.55f;   // 10 % headroom top and bottom
+        hi = mid + span * 0.55f;
+
+        auto X = [&](float ts) { return t0.x + static_cast<float>((ts - tLo) / kChartWindowSec) * tw; };
+        auto Y = [&](float vs) { return t1.y - (vs - lo) / (hi - lo) * th; };
+
+        // One pixel column at a time: its min and max, emitted in the order
+        // they occurred so the line runs forward in time.
+        pts.clear();
+        int         col0 = -1;
+        float       cX   = 0.0f;
+        std::size_t iMin = 0, iMax = 0;
+        auto flush = [&]() {
+            if (col0 < 0) return;
+            if (iMin == iMax) { pts.emplace_back(cX, Y(v[iMin])); return; }
+            const std::size_t a = (std::min)(iMin, iMax), b = (std::max)(iMin, iMax);
+            pts.emplace_back(cX, Y(v[a]));
+            pts.emplace_back(cX, Y(v[b]));
+        };
+        for (std::size_t i = i0; i < n; ++i) {
+            const float x = X(t[i]);
+            const int   c = static_cast<int>(x);
+            if (c != col0) {
+                flush();
+                col0 = c; cX = x; iMin = iMax = i;
+            } else {
+                if (v[i] < v[iMin]) iMin = i;
+                if (v[i] > v[iMax]) iMax = i;
+            }
+        }
+        flush();
+        if (pts.size() >= 2)
+            dl->AddPolyline(pts.data(), static_cast<int>(pts.size()), col, ImDrawFlags_None, 2.0f);
+    };
+    // Ch2 first so the main signal (Ch1) draws on top of it.
+    if (show2) trace(kT2_, kV2_, kCh2);
+    if (show1) trace(kT1_, kV1_, kCh1);
+
+    // Live values, bottom-left, Ch1 lowest (the scope chart's order).
+    float vy = p1.y - pad - fs;
+    auto value = [&](const std::vector<float>& v, ImU32 col) {
+        const std::string txt = v.empty() ? "--" : FormatCurrent(v.back());
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(p0.x + pad + 1.0f, vy + 1.0f),
+                    IM_COL32(0, 0, 0, 200), txt.c_str());   // shadow, for a bright frame
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(p0.x + pad, vy), col, txt.c_str());
+        vy -= fs + 2.0f;
+    };
+    if (show1) value(kV1_, kCh1);
+    if (show2) value(kV2_, kCh2);
+    dl->PopClipRect();
 }
 
 } // namespace firedog

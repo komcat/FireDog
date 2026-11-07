@@ -51,6 +51,8 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("pos_labels_hidden")) s.posLabelsHidden = j["pos_labels_hidden"].get<bool>();
         if (j.contains("show_gripper_marks")) s.showGripperMarks = j["show_gripper_marks"].get<bool>();
         if (j.contains("aux_panel_open")) s.auxPanelOpen = j["aux_panel_open"].get<bool>();
+        if (j.contains("aux_img_fit"))    s.auxImgFit    = j["aux_img_fit"].get<bool>();
+        if (j.contains("aux_chart_compact")) s.auxChartCompact = j["aux_chart_compact"].get<bool>();
         if (j.contains("chart_scope"))   s.chartScope  = j["chart_scope"].get<bool>();
         if (j.contains("run_prog_uid")) s.runProgUid = j["run_prog_uid"].get<std::string>();
         if (j.contains("run_slot"))     s.runSlot    = j["run_slot"].get<int>();
@@ -178,6 +180,8 @@ bool UiSettings::Save(const std::string& path) const
     j["pos_labels_hidden"]  = posLabelsHidden;
     j["show_gripper_marks"] = showGripperMarks;
     j["aux_panel_open"]     = auxPanelOpen;
+    j["aux_img_fit"]        = auxImgFit;
+    j["aux_chart_compact"]  = auxChartCompact;
     j["chart_scope"]   = chartScope;
     j["run_prog_uid"]  = runProgUid;
     j["run_slot"]      = runSlot;
