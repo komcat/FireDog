@@ -744,7 +744,7 @@ void App::DrawMainWindow()
             case Page::CLD:       DrawCldInfoPanel();       break;
             case Page::PSU:       DrawPsuInfoPanel();       break;
             case Page::Light:     DrawLightInfoPanel();     break;
-            case Page::Motion:    break;   // left panel carries the live axes
+            case Page::Motion:    DrawMotionPositionsPanel(); break;
             case Page::IO:        DrawIoInputPanel();       break;
             case Page::Pneumatic: DrawPneumaticInfoPanel(); break;
             default:              DrawRightPanel();         break;

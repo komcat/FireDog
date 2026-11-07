@@ -12,14 +12,20 @@
 
 #include "ui/Widgets.h"
 #include "core/DataBus.h"
+#include "core/Paths.h"
 #include "core/Log.h"
 #include "core/Topics.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
+#include <filesystem>
 #include <map>
 #include <optional>
+#include <string>
+#include <system_error>
+#include <vector>
 
 namespace firedog {
 
@@ -169,6 +175,85 @@ void App::DrawMotionListPanel()
     }
 }
 
+// A square box (250x250 when the panel allows) picturing the selected device,
+// at the top of the Motion page's right panel, so the operator recognises the
+// stage at a glance rather than by reading its name. Looked for in two places:
+//   <machine root>/config/device_images/<name>.png  - this machine's own photo
+//                                                     (wins; survives updates)
+//   assets/devices/<name>.png                       - the SHIPPED default, in the
+//                                                     repo, copied by every build
+// No file draws a labelled placeholder naming where to put one; a missing
+// picture costs nothing else.
+void App::DrawMotionDevicePicture(const std::string& devName)
+{
+    // 250 px, shrunk to the panel when the right panel is narrower; centred.
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float kBox  = (std::max)(64.0f, (std::min)(250.0f, avail));
+    if (avail > kBox) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - kBox) * 0.5f);
+    const std::string rootRel = "config/device_images/" + devName + ".png";
+    const std::string rootPic = MachinePath(rootRel);
+    const std::string exePic  = "assets/devices/" + devName + ".png";
+
+    auto it = motionDevPic_.find(devName);
+    if (it == motionDevPic_.end()) {
+        MarkIcon ic;
+        std::error_code ec;
+        for (const std::string& p : {rootPic, exePic}) {
+            if (!std::filesystem::exists(p, ec)) continue;
+            std::vector<unsigned char> rgba;
+            int w = 0, h = 0;
+            if (LoadPngRGBA(p.c_str(), &rgba, &w, &h)) {
+                ic.tex = host_.MakeTextureRGBA(w, h, rgba.data());
+                ic.w   = w;
+                ic.h   = h;
+                break;
+            }
+            FD_WARN("ui", "device picture '%s' could not be decoded", p.c_str());
+        }
+        it = motionDevPic_.emplace(devName, ic).first;   // cache the miss as well
+    }
+    const MarkIcon& pic = it->second;
+
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + kBox, p0.y + kBox);
+    ImGui::InvisibleButton("##devpic", ImVec2(kBox, kBox));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImGuiCol_FrameBg), 4.0f);
+
+    if (pic.tex && pic.w > 0 && pic.h > 0) {
+        // Fit inside the box, aspect kept, centred.
+        const float s  = (std::min)(kBox / static_cast<float>(pic.w),
+                                    kBox / static_cast<float>(pic.h));
+        const float iw = static_cast<float>(pic.w) * s, ih = static_cast<float>(pic.h) * s;
+        const ImVec2 a(p0.x + (kBox - iw) * 0.5f, p0.y + (kBox - ih) * 0.5f);
+        dl->AddImage((ImTextureID)(intptr_t)pic.tex, a, ImVec2(a.x + iw, a.y + ih));
+    } else {
+        const char* l1 = "no picture";
+        const ImVec2 t1 = ImGui::CalcTextSize(l1);
+        dl->AddText(ImVec2(p0.x + (kBox - t1.x) * 0.5f, p0.y + kBox * 0.5f - t1.y),
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled), l1);
+        const std::string l2 = devName + ".png";
+        const ImVec2 t2 = ImGui::CalcTextSize(l2.c_str());
+        dl->AddText(ImVec2(p0.x + (std::max)(4.0f, (kBox - t2.x) * 0.5f), p0.y + kBox * 0.5f + 2.0f),
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled), l2.c_str());
+    }
+    dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_Border), 4.0f);
+
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Device picture (square PNG, shown at up to 250x250)\n"
+                          "%s   <- this machine's own (wins)\n"
+                          "%s   <- shipped default\n"
+                          "Right-click: reload",
+                          rootPic.c_str(), exePic.c_str());
+    if (ImGui::BeginPopupContextItem("##devpicctx")) {
+        if (ImGui::MenuItem("Reload picture")) {
+            if (pic.tex) host_.DeleteTexture(pic.tex);
+            motionDevPic_.erase(it);
+        }
+        ImGui::EndPopup();
+    }
+}
+
 void App::DrawMotionDetailPanel()
 {
     const size_t n = hardware_.MotionCount();
@@ -185,11 +270,17 @@ void App::DrawMotionDetailPanel()
     const size_t    idx = static_cast<size_t>(selectedMotion_);
     const ConnState st  = hardware_.MotionState(idx);
 
-    ImGui::TextUnformatted(hardware_.MotionName(idx).c_str());
+    // The device name is the one fact to check before touching anything below
+    // it, so it is set large; the state rides the same line at the same size.
+    const std::string& devName = hardware_.MotionName(idx);
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.8f);
+    ImGui::TextUnformatted(devName.c_str());
     ImGui::SameLine();
     ImGui::TextColored(StateColor(st), "[%s]", StateText(st));
+    ImGui::PopFont();
     ImGui::Separator();
 
+    // The device's picture is at the top of the right panel (DrawMotionPositionsPanel).
     const std::vector<std::string> axes = m->Axes();
     std::string axesLine;
     for (size_t i = 0; i < axes.size(); ++i) { if (i) axesLine += ' '; axesLine += axes[i]; }
@@ -201,16 +292,17 @@ void App::DrawMotionDetailPanel()
 
     if (st == ConnState::Failed) {
         ImGui::Spacing();
+        ImGui::PushTextWrapPos(0.0f);
         ImGui::TextColored(StateColor(ConnState::Failed), "error: %s", m->LastError().c_str());
+        ImGui::PopTextWrapPos();
     }
 
-    // ---- Tabbed content: saved positions | node-edge motion maps ----
+    // ---- Tabbed content: node-edge motion maps | scanning | profile ----
+    // The saved-position table lives in the RIGHT panel (DrawMotionPositionsPanel)
+    // so it stays on screen beside whichever tab is open; Mapped Path is first
+    // and therefore the tab the page opens on.
     ImGui::Spacing();
     if (ImGui::BeginTabBar("motiontabs")) {
-        if (ImGui::BeginTabItem("Positions")) {
-            DrawMotionPositionsTab(idx, m);
-            ImGui::EndTabItem();
-        }
         if (ImGui::BeginTabItem("Mapped Path")) {
             DrawMotionMapTab(idx, m);
             ImGui::EndTabItem();
@@ -725,12 +817,31 @@ void App::DrawMotionScanTab(std::size_t devIdx, IMotionController* m)
 
 // Positions tab — the saved/taught position table (persisted; Move drives
 // through Workflow).
+// Right panel of the Motion page: the selected device's saved positions. The
+// selection is resolved by the left panel, which draws first.
+void App::DrawMotionPositionsPanel()
+{
+    const size_t n = hardware_.MotionCount();
+    IMotionController* m = (selectedMotion_ >= 0 && static_cast<size_t>(selectedMotion_) < n)
+                             ? hardware_.MotionDevice(static_cast<size_t>(selectedMotion_))
+                             : nullptr;
+    if (!m) {
+        ImGui::TextDisabled("Select a device from the list.");
+        return;
+    }
+    DrawMotionDevicePicture(hardware_.MotionName(static_cast<size_t>(selectedMotion_)));
+    ImGui::Spacing();
+    DrawMotionPositionsTab(static_cast<size_t>(selectedMotion_), m);
+}
+
 void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
 {
     const std::vector<std::string> axes = m->Axes();
 
+    // Laid out for the narrow right panel: a title, then one row of buttons,
+    // then the selection and its tools, then the table.
     ImGui::TextUnformatted("Saved positions");
-    ImGui::SameLine();
+    ImGui::Separator();
 
     // The starting "Home" row for a device with no positions is seeded by
     // App::Update via ProductSession::SeedHomePosition — drawing must not
@@ -791,23 +902,25 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
 
     if (selPos) ImGui::Text("Selected: %s", selPos->name);
     else        ImGui::TextDisabled("Selected: (click a row; double-click = Move)");
-    ImGui::SameLine();
     ImGui::BeginDisabled(!selPos);
     // Move and Update both hand off to a confirmation dialog below: one
     // drives the machine, the other overwrites a taught place, and neither
     // should happen on a single click.
-    if (ImGui::SmallButton("Move")) {
+    if (IconToolButton(UiIcon("mo_move_to"), "posMove", "Move",
+                       "Move the device to this position (asks first)")) {
         moveRow_     = sel;
         openMovePos_ = true;
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Update")) {
+    if (IconToolButton(UiIcon("tb_reload"), "posUpd", "Update",
+                       "Update: overwrite this position with where the device is now (asks first)")) {
         updRow_     = sel;
         updSecond_  = false;
         openUpdPos_ = true;
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Edit")) {   // type the axis values directly
+    if (IconToolButton(UiIcon("sy_variable"), "posEdit", "Edit",
+                       "Edit: type the axis values directly")) {
         editRow_ = sel;
         editVals_.clear();
         for (const auto& a : axes) {
@@ -817,19 +930,21 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
         openEditPos_ = true;
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Rename")) {
+    if (IconToolButton(UiIcon("tb_rename"), "posRen", "Rename", "Rename this position")) {
         renameRow_ = sel;
         std::snprintf(renameBuf_, sizeof(renameBuf_), "%s", selPos->name);
         openRenamePos_ = true;
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Hist")) {   // this row's change journal
+    if (IconToolButton(UiIcon("sy_log"), "posHist", "Hist",
+                       "History: this position's change journal")) {
         posHistDevice_ = devName;
         posHistUid_    = selPos->uid;
         showPosHist_   = true;
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Delete")) {   // confirmed via dialog before erasing
+    if (IconToolButton(UiIcon("tb_delete"), "posDel", "Delete",
+                       "Delete this position (asks first)", true)) {
         deleteRow_     = sel;
         openDeletePos_ = true;
     }

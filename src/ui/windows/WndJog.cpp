@@ -302,7 +302,7 @@ void App::DrawJogCameraTab()
 // edit a position — teaching stays on the Motion page, and a slot only ever
 // holds the uid of a position that page already owns.
 //
-// The device is jogDevice_, the SAME selection the Jog tab drives: one window,
+// The device is selectedMotion_, the SAME selection the Jog tab drives: one window,
 // one device under its hands. The pad is keyed per device name, so switching
 // device relays the nine buttons rather than re-pointing them.
 //
@@ -315,8 +315,8 @@ void App::DrawJogPosTab()
 {
     const std::size_t n = hardware_.MotionCount();
     if (n == 0) { ImGui::TextDisabled("no motion devices"); return; }
-    if (jogDevice_ < 0 || static_cast<std::size_t>(jogDevice_) >= n) jogDevice_ = 0;
-    const std::size_t di      = static_cast<std::size_t>(jogDevice_);
+    if (selectedMotion_ < 0 || static_cast<std::size_t>(selectedMotion_) >= n) selectedMotion_ = 0;
+    const std::size_t di      = static_cast<std::size_t>(selectedMotion_);
     const std::string devName = hardware_.MotionName(di);
     const ConnState   st      = hardware_.MotionState(di);
 
@@ -329,8 +329,8 @@ void App::DrawJogPosTab()
             ImGui::PushID(static_cast<int>(i));
             ImGui::TextColored(StateColor(s), "%s", StateGlyph(s));
             ImGui::SameLine();
-            if (ImGui::Selectable(hardware_.MotionName(i).c_str(), jogDevice_ == static_cast<int>(i)))
-                jogDevice_ = static_cast<int>(i);
+            if (ImGui::Selectable(hardware_.MotionName(i).c_str(), selectedMotion_ == static_cast<int>(i)))
+                selectedMotion_ = static_cast<int>(i);
             ImGui::PopID();
         }
         ImGui::EndCombo();
@@ -865,7 +865,7 @@ void App::DrawJogPanel()
 {
     const size_t n = hardware_.MotionCount();
     if (n == 0) { ImGui::TextDisabled("no motion devices"); return; }
-    if (jogDevice_ < 0 || static_cast<size_t>(jogDevice_) >= n) jogDevice_ = 0;
+    if (selectedMotion_ < 0 || static_cast<size_t>(selectedMotion_) >= n) selectedMotion_ = 0;
 
     // --- Active device list (left) + live axis readout of the selection (right) ---
     // The row is split in half: which device the keys drive, and where that
@@ -880,7 +880,28 @@ void App::DrawJogPanel()
                         + ImGui::GetStyle().FramePadding.y * 2.0f;
     const float halfW = ImGui::GetContentRegionAvail().x * 0.5f - ImGui::GetStyle().ItemSpacing.x * 0.5f;
 
+    // KEYBOARD-LIVE: the exact condition under which A/D W/S R/F move the
+    // device (the handler at the end of this function), plus Connected — a
+    // keypress against a disconnected stage moves nothing. While it holds, the
+    // device box and the selected row BREATHE in the ARMED amber: the one thing
+    // to know before touching a key is that a key will move THAT device. Not
+    // focused or not armed = still, so the pulse never claims keys it lacks.
+    const ConnState jogSt   = hardware_.MotionState(static_cast<size_t>(selectedMotion_));
+    const bool      kbFocus = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    const bool      kbLive  = jogArmed_ && kbFocus && jogSt == ConnState::Connected;
+    constexpr float kTwoPi  = 6.2831853f;
+    const float     breath  = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * kTwoPi / 1.6f);
+    const ImVec4    kArmed(1.0f, 0.75f, 0.20f, 1.0f);
+    auto armedA = [&](float lo, float hi) {   // the amber at a breathing alpha
+        return ImGui::GetColorU32(ImVec4(kArmed.x, kArmed.y, kArmed.z, lo + (hi - lo) * breath));
+    };
+
     ImGui::TextUnformatted("Device");
+    if (kbLive) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(kArmed.x, kArmed.y, kArmed.z, 0.45f + 0.55f * breath),
+                           "keys live");
+    }
     ImGui::BeginChild("jogdevs", ImVec2(halfW, rowH), ImGuiChildFlags_Borders);
     // The list runs a size up from the rest of the window: which device the
     // pad drives is the one fact to check before pressing anything on it. No
@@ -894,14 +915,26 @@ void App::DrawJogPanel()
         ImGui::PushID(static_cast<int>(i));
         ImGui::TextColored(StateColor(st), "%s", StateGlyph(st));
         ImGui::SameLine();
-        if (ImGui::Selectable(hardware_.MotionName(i).c_str(), jogDevice_ == static_cast<int>(i)))
-            jogDevice_ = static_cast<int>(i);
+        const bool isSel = selectedMotion_ == static_cast<int>(i);
+        if (ImGui::Selectable(hardware_.MotionName(i).c_str(), isSel))
+            selectedMotion_ = static_cast<int>(i);
+        if (isSel && kbLive) {
+            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+            ImDrawList*  dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(a, b, armedA(0.05f, 0.30f), 3.0f);
+            dl->AddRect(a, b, armedA(0.35f, 1.0f), 3.0f, 0, 2.0f);
+        }
         ImGui::PopID();
     }
     ImGui::PopFont();
     ImGui::EndChild();
+    if (kbLive) {   // the device box's own frame breathes with the row
+        const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddRect(a, b, armedA(0.25f, 0.9f),
+                                            ImGui::GetStyle().ChildRounding, 0, 2.0f);
+    }
 
-    IMotionController* dev = hardware_.MotionDevice(static_cast<size_t>(jogDevice_));
+    IMotionController* dev = hardware_.MotionDevice(static_cast<size_t>(selectedMotion_));
 
     // Live X/Y/Z/U/V/W of the selected device, straight off the poll cache — the
     // same numbers the Motion page shows, in the panel that is moving them.
@@ -922,14 +955,19 @@ void App::DrawJogPanel()
 
     if (!dev) { ImGui::TextDisabled("select a device"); return; }
     const std::vector<std::string> axes = dev->Axes();
-    const size_t                   di   = static_cast<size_t>(jogDevice_);
+    const size_t                   di   = static_cast<size_t>(selectedMotion_);
     dev->RequestFastPoll();   // keep positions fresh for accurate relative jogs
 
     // --- Arm toggle + STOP (always active; the software big-red-button) ---
     ImGui::Checkbox("Arm", &jogArmed_);
     ImGui::SameLine();
-    if (jogArmed_) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.20f, 1.0f), "ARMED");
-    else           ImGui::TextDisabled("disarmed");
+    // ARMED says what the keys will do right now, not only that the arm is on:
+    // armed in an unfocused window is the case that surprises an operator.
+    if (!jogArmed_)                         ImGui::TextDisabled("disarmed");
+    else if (jogSt != ConnState::Connected) ImGui::TextColored(kArmed, "ARMED - device not connected");
+    else if (!kbFocus)                      ImGui::TextColored(kArmed, "ARMED - click this window for keys");
+    else ImGui::TextColored(ImVec4(kArmed.x, kArmed.y, kArmed.z, 0.45f + 0.55f * breath),
+                            "ARMED - keys live: A/D  W/S  R/F");
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.88f, 0.26f, 0.26f, 1.0f));
     if (ImGui::Button("STOP", ImVec2(-FLT_MIN, 30.0f))) orch_.StopAll();

@@ -42,7 +42,8 @@ Much of the apparently page-local state is **not** local:
 |---|---|
 | `xcan*` knobs | Motion Scanning tab **and** the Run page's Scan band |
 | `vel*` maps | Jog window **and** Motion page |
-| `jogDevice_` / `jogArmed_` | the Jog window's Jog tab **and** its Pos tab (and the Aux window's Z arrows) |
+| `selectedMotion_` | the Motion page's device list **and** the Jog window's Jog + Pos tabs (one selection, both directions) |
+| `jogArmed_` | the Jog window's Jog tab **and** its Pos tab (and the Aux window's Z arrows) |
 | `ioArmed_` | the IO page's output toggles **and** the Jog window's IO tab |
 | Keithley chart buffers | Keithley page **and** the Aux window |
 | `leftW_` / `rightW_` / `lowerH_` | every page, plus UiSettings persistence |
@@ -194,7 +195,7 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/pages/PageKeithley.cpp` | Keithley page + the whole chart pipeline (two consumers: page and Aux) | 364 |
 | `src/ui/pages/PageCld.cpp` / `PagePsu.cpp` | CLD101x / UDP3305S pages | 179 / 160 |
 | `src/ui/pages/PageLight.cpp` | CCS PD3 lighting page + `App::ApplyLightingNow` (what a `LightCalloutPicker` click lights) | ~250 |
-| `src/ui/pages/PageMotion.cpp` | device list + live axes, tabbed detail, Positions tab (one selected row by uid, `posSelUid_`; Move / Update / Edit / Rename / Hist / Delete on a toolbar above the table, double-click = Move — every action still lands on its confirmation dialog), Scanning test bench | 489 |
+| `src/ui/pages/PageMotion.cpp` | device list + live axes, tabbed detail (Mapped Path default), RIGHT panel = device picture + saved positions (one selected row by uid, `posSelUid_`; Move / Update / Edit / Rename / Hist / Delete on a toolbar above the table, double-click = Move — every action still lands on its confirmation dialog), Scanning test bench | 489 |
 | `src/ui/pages/PageMotionMap.cpp` | the Mapped Path graph editor (was the single largest function in App.cpp) | 511 |
 | `src/ui/pages/PageIo.cpp` | IO page + Pneumatics page (slides are composed from IO pins) | 330 |
 | `src/ui/pages/PageRecipeEdit.cpp` | editor page, step tree, palette, toolbar, run strip, step-path helpers | 879 |

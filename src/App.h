@@ -333,6 +333,8 @@ private:
     // (node-edge graph editor + path execution).
     void DrawMotionListPanel();    // left:   device list + live axes + velocity
     void DrawMotionDetailPanel();  // middle: device header + tab bar
+    void DrawMotionDevicePicture(const std::string& devName);   // the 250x250 box
+    void DrawMotionPositionsPanel();  // right:  saved positions of the selected device
     void DrawMotionPivot(std::size_t devIdx, IMotionController* m);   // PI rotation pivot
     void DrawMotionBuffers(std::size_t devIdx, IMotionController* m); // ACS program buffers
     void DrawMotionProfileTab(std::size_t devIdx, IMotionController* m); // ACS VEL/ACC/DEC/JERK (read-only)
@@ -982,12 +984,20 @@ private:
     bool        usrArmRemove_ = false;   // the armed checkbox in front of Remove
     std::string usrErr_, usrNote_;
 
-    // Main-window page + which motion device is selected on the Motion page.
+    // Main-window page + which motion device is selected.
     // prevPage_ = the hardware page to return to when an editor page closes.
+    // selectedMotion_ is ONE selection shared by the Motion page's device list
+    // and the Jog window's Jog + Pos tabs: picking a device in either picks it
+    // in both, so the page and the pad never disagree about which device is
+    // under the operator's hands.
     Page currentPage_    = Page::Overview;
     Page prevPage_       = Page::Overview;
     int  selectedMotion_ = -1;   // absolute index into the HardwareManager motion fleet
     bool showHiddenPos_  = false;   // reveal hidden (system) positions in the table
+    // The Motion page's device pictures, by device NAME, loaded lazily once
+    // (a miss is cached too, as tex 0); the box's right-click "Reload picture"
+    // drops the entry so a newly dropped-in file shows without a restart.
+    std::map<std::string, MarkIcon> motionDevPic_;
 
     // Pivot point editor (Motion page, PI hexapods). The fields re-seed from
     // the controller's cached pivot whenever the device or its read changes
@@ -1134,8 +1144,8 @@ private:
     bool jogArmed_ = false;   // jog buttons + W/D·A/S·R/F keys active only when armed
 
     // Jog panel (Overview right panel). Transforms + commands live in Workflow.
-    int jogDevice_    = -1;  // index into the motion fleet
-    int jogStepIndex_ = 9;   // index into kSteps (default 100um)
+    // Its device is selectedMotion_ (shared with the Motion page).
+    int jogStepIndex_ = 9;  // index into kSteps (default 100um)
     int jogRotAxis_   = 0;   // selected rotational axis (0 = first beyond XYZ)
     // The Jog box's position row: the taught position the device is sitting
     // on, and a HOLD on it. Checking the box while at a position keeps its
