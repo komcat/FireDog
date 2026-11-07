@@ -22,6 +22,7 @@
 #include "core/Topics.h"
 #include "hardware/instruments/ISmu.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -37,7 +38,60 @@ void ShiftToRelative(const std::vector<float>& t, double now, std::vector<float>
     out.resize(t.size());
     for (size_t i = 0; i < t.size(); ++i) out[i] = static_cast<float>(t[i] - now);
 }
+
+// The chart's display low-pass presets: time constants (s) and their labels.
+// Index 0 is off. A longer constant is a quieter trace and a later peak - an
+// EMA delays a step by about tau, which is what the operator sees while jogging.
+constexpr float       kChartSmoothTau[]   = {0.0f, 0.05f, 0.2f, 1.0f};
+constexpr const char* kChartSmoothLabel[] = {"Off", "50 ms", "0.2 s", "1 s"};
+constexpr int         kChartSmoothCount   = 4;
+
+int ClampSmooth(int i) { return (i < 0 || i >= kChartSmoothCount) ? 0 : i; }
+
+// Time-aware exponential moving average: alpha = 1 - exp(-dt / tau) per
+// sample, so the corner frequency does not move with the poll rate (NPLC, the
+// 6482 vs the 2602B). Seeded with the first sample; a gap of many tau (polling
+// paused) simply lets the new sample through. tau <= 0 clears `out` (= off).
+void SmoothEma(const std::vector<float>& t, const std::vector<float>& v, float tau,
+               std::vector<float>& out)
+{
+    const size_t n = (std::min)(t.size(), v.size());
+    if (tau <= 0.0f || n == 0) { out.clear(); return; }
+    out.resize(n);
+    float y = v[0];
+    out[0] = y;
+    for (size_t i = 1; i < n; ++i) {
+        const float dt = t[i] - t[i - 1];
+        const float a  = dt > 0.0f ? 1.0f - std::exp(-dt / tau) : 0.0f;
+        y += a * (v[i] - y);
+        out[i] = y;
+    }
+}
 } // namespace
+
+// The LP preset picker - on the chart's control row and on the Aux window's
+// view strip (the compact chart has no controls). One setting, both places.
+void App::DrawChartSmoothCombo()
+{
+    int sm = ClampSmooth(chartSmooth_);
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("50 ms").x + ImGui::GetFrameHeight() * 1.6f);
+    if (ImGui::Combo("LP", &sm, kChartSmoothLabel, kChartSmoothCount)) {
+        chartSmooth_ = sm;
+        SaveUiSettings();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Chart low-pass: smooths the trace and the printed\n"
+                          "value (time constant shown). DISPLAY ONLY - recipes,\n"
+                          "scans and the Keithley page's Live readout get the\n"
+                          "raw samples. A longer constant lags a peak by about\n"
+                          "that much. The instrument's own averaging is NPLC.");
+}
+
+std::string App::ChartSmoothTag() const
+{
+    const int i = ClampSmooth(chartSmooth_);
+    return i == 0 ? std::string() : std::string("LP ") + kChartSmoothLabel[i];
+}
 
 // Model name of the configured SMU, for the headers and the chart legend. The
 // driver exists from Workflow::Start, so this is right before the first connect.
@@ -261,6 +315,13 @@ void App::UpdateKeithleyChartData(float dt)
     DataBus::Instance().Stream(topics::kKeithleyCh1).Snapshot(kT1_, kV1_);
     DataBus::Instance().Stream(topics::kKeithleyCh2).Snapshot(kT2_, kV2_);
 
+    // Display low-pass, recomputed over the whole snapshot each frame (O(n),
+    // and the buffer is seconds long): no filter state to go stale when the
+    // stream restarts or the preset changes.
+    const float tau = kChartSmoothTau[ClampSmooth(chartSmooth_)];
+    SmoothEma(kT1_, kV1_, tau, kF1_);
+    SmoothEma(kT2_, kV2_, tau, kF2_);
+
     // chartClock_ is the rolling "now" the data is rebased against; it advances
     // by real frame time and re-syncs to the newest sample.
     const std::vector<float>& tref = kT1_.empty() ? kT2_ : kT1_;
@@ -272,7 +333,9 @@ void App::UpdateKeithleyChartData(float dt)
 }
 
 // Readout + channel selector + rolling chart — shared by the Aux overlay and
-// the Keithley page (chartCh_/chartScope_ keep both views in sync). Two looks:
+// the Keithley page (chartCh_/chartScope_/chartSmooth_ keep both views in
+// sync). The trace AND the printed values are the smoothed series when the
+// low-pass is on (ChartV1/2), so the number matches the line. Two looks:
 // classic (axes + ticks) and scope (bare dark canvas, thick trace, legend
 // swatch top-left, big live value bottom-left — the bobcat scope style).
 void App::DrawKeithleyChart(const ImVec2& size)
@@ -280,12 +343,16 @@ void App::DrawKeithleyChart(const ImVec2& size)
     const ImVec4 kCh1Col(0.00f, 0.85f, 1.00f, 1.0f);   // cyan
     const ImVec4 kCh2Col(1.00f, 0.55f, 0.10f, 1.0f);   // orange
 
+    const std::vector<float>& v1 = ChartV1();
+    const std::vector<float>& v2 = ChartV2();
+    const std::string lpTag = ChartSmoothTag();
+
     if (!chartScope_) {
         // Live readout row — in scope mode the value lives on the canvas instead.
-        if (!kV1_.empty()) ImGui::TextColored(kCh1Col, "Ch1: %s", FormatCurrent(kV1_.back()).c_str());
-        else               ImGui::TextDisabled("Ch1: --");
+        if (!v1.empty()) ImGui::TextColored(kCh1Col, "Ch1: %s", FormatCurrent(v1.back()).c_str());
+        else             ImGui::TextDisabled("Ch1: --");
         ImGui::SameLine(0.0f, 16.0f);
-        if (!kV2_.empty()) ImGui::TextColored(kCh2Col, "Ch2: %s", FormatCurrent(kV2_.back()).c_str());
+        if (!v2.empty()) ImGui::TextColored(kCh2Col, "Ch2: %s", FormatCurrent(v2.back()).c_str());
         else               ImGui::TextDisabled("Ch2: --");
         ImGui::SameLine(0.0f, 16.0f);
         ImGui::Text("| %.0f Hz", MeasuredHz(kT1_.empty() ? kT2_ : kT1_));
@@ -295,6 +362,8 @@ void App::DrawKeithleyChart(const ImVec2& size)
     ImGui::RadioButton("Ch2", &chartCh_, 1); ImGui::SameLine();
     ImGui::RadioButton("Both", &chartCh_, 2); ImGui::SameLine(0.0f, 16.0f);
     if (ImGui::Checkbox("Scope", &chartScope_)) SaveUiSettings();
+    ImGui::SameLine(0.0f, 16.0f);
+    DrawChartSmoothCombo();
     if (chartScope_) {
         ImGui::SameLine(0.0f, 16.0f);
         ImGui::TextDisabled("%.0f Hz", MeasuredHz(kT1_.empty() ? kT2_ : kT1_));
@@ -325,15 +394,17 @@ void App::DrawKeithleyChart(const ImVec2& size)
         ImPlot::SetupAxisLimits(ImAxis_X1, -kChartWindowSec, 0.0, ImGuiCond_Always);
 
         const float weight = scope ? 3.0f : 2.0f;
-        if (chartCh_ != 1 && !kV1_.empty()) {
+        if (chartCh_ != 1 && !v1.empty()) {
             ShiftToRelative(kT1_, chartClock_, kX1_);
+            const int n = static_cast<int>((std::min)(kX1_.size(), v1.size()));
             ImPlotSpec s1; s1.LineColor = kCh1Col; s1.LineWeight = weight;
-            ImPlot::PlotLine("ch1", kX1_.data(), kV1_.data(), static_cast<int>(kV1_.size()), s1);
+            ImPlot::PlotLine("ch1", kX1_.data(), v1.data(), n, s1);
         }
-        if (chartCh_ != 0 && !kV2_.empty()) {
+        if (chartCh_ != 0 && !v2.empty()) {
             ShiftToRelative(kT2_, chartClock_, kX2_);
+            const int n = static_cast<int>((std::min)(kX2_.size(), v2.size()));
             ImPlotSpec s2; s2.LineColor = kCh2Col; s2.LineWeight = weight;
-            ImPlot::PlotLine("ch2", kX2_.data(), kV2_.data(), static_cast<int>(kV2_.size()), s2);
+            ImPlot::PlotLine("ch2", kX2_.data(), v2.data(), n, s2);
         }
 
         if (scope) {
@@ -357,8 +428,9 @@ void App::DrawKeithleyChart(const ImVec2& size)
             };
             const std::string model = KeithleyModelName();
             char l1[64], l2[64];
-            std::snprintf(l1, sizeof(l1), "%s Ch1", model.c_str());
-            std::snprintf(l2, sizeof(l2), "%s Ch2", model.c_str());
+            const char* sep = lpTag.empty() ? "" : "  ";
+            std::snprintf(l1, sizeof(l1), "%s Ch1%s%s", model.c_str(), sep, lpTag.c_str());
+            std::snprintf(l2, sizeof(l2), "%s Ch2%s%s", model.c_str(), sep, lpTag.c_str());
             if (chartCh_ != 1) LegendRow(kCh1Col, l1);
             if (chartCh_ != 0) LegendRow(kCh2Col, l2);
 
@@ -371,8 +443,8 @@ void App::DrawKeithleyChart(const ImVec2& size)
                 vy -= vfs + 2.0f;
             };
             // Bottom-up: ch1 sits at the very bottom, ch2 stacks above it.
-            if (chartCh_ != 1) ValueRow(kCh1Col, kV1_);
-            if (chartCh_ != 0) ValueRow(kCh2Col, kV2_);
+            if (chartCh_ != 1) ValueRow(kCh1Col, v1);
+            if (chartCh_ != 0) ValueRow(kCh2Col, v2);
             ImPlot::PopPlotClipRect();
         }
         ImPlot::EndPlot();

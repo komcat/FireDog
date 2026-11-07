@@ -791,6 +791,10 @@ private:
     // library and no child window - a trace over the picture that takes no
     // input, so a click on it still reaches the image.
     void DrawAuxCompactChart(ImDrawList* dl, const ImVec2& p0, const ImVec2& size);
+    // W/A/S/D at the picture's edge midpoints and R/F (with arrows, violet)
+    // bottom-right while jog is armed, lit by each
+    // key stroke (jogKeyFlashAt_) - display only, it moves nothing.
+    void DrawAuxJogKeys(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS);
     void DrawLogPanel();       // log viewer (Logger ringbuffer) — Main lower panel
     void SaveUiSettings();     // persist font choice + size to disk
 
@@ -927,6 +931,17 @@ private:
     bool                      chartScope_ = true;  // scope look vs classic axes
     std::vector<float>        kT1_, kV1_, kT2_, kV2_;
     std::vector<float>        kX1_, kX2_;      // X shifted to relative time (t - now)
+    // Display low-pass: an index into kChartSmooth* (PageKeithley.cpp), 0 = off;
+    // persisted. kF*_ are kV*_ through a time-aware EMA, rebuilt each frame by
+    // UpdateKeithleyChartData and EMPTY when off. DISPLAY ONLY - the DataBus
+    // stream every recipe and scan reads is untouched.
+    int                       chartSmooth_ = 0;
+    std::vector<float>        kF1_, kF2_;
+    // What a chart draws and prints: the smoothed series when on, else raw.
+    const std::vector<float>& ChartV1() const { return kF1_.empty() ? kV1_ : kF1_; }
+    const std::vector<float>& ChartV2() const { return kF2_.empty() ? kV2_ : kF2_; }
+    std::string               ChartSmoothTag() const;   // "LP 0.2 s", "" when off
+    void                      DrawChartSmoothCombo();   // the "LP" preset picker
     double                    chartClock_ = 0.0;   // smooth rolling X right-edge
     static constexpr double   kChartWindowSec = 10.0;
 
@@ -1159,6 +1174,10 @@ private:
     // lights and fades after its press (click or key). Order: W A S D R F.
     double jogStepFlashAt_   = -1.0e9;
     double jogKeyFlashAt_[6] = {-1.0e9, -1.0e9, -1.0e9, -1.0e9, -1.0e9, -1.0e9};
+    // The last ImGui frame on which the Jog tab's keys were LIVE (armed +
+    // focused + connected). A frame stamp, not a bool: a closed Jog window or
+    // another tab stops stamping, so nothing reads a stale "live".
+    int    jogKeysLiveFrame_ = -1;
     int jogRotAxis_   = 0;   // selected rotational axis (0 = first beyond XYZ)
     // The Jog box's position row: the taught position the device is sitting
     // on, and a HOLD on it. Checking the box while at a position keeps its

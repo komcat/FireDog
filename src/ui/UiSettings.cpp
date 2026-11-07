@@ -54,6 +54,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("aux_img_fit"))    s.auxImgFit    = j["aux_img_fit"].get<bool>();
         if (j.contains("aux_chart_compact")) s.auxChartCompact = j["aux_chart_compact"].get<bool>();
         if (j.contains("chart_scope"))   s.chartScope  = j["chart_scope"].get<bool>();
+        if (j.contains("chart_smooth"))  s.chartSmooth = j["chart_smooth"].get<int>();
         if (j.contains("run_prog_uid")) s.runProgUid = j["run_prog_uid"].get<std::string>();
         if (j.contains("run_slot"))     s.runSlot    = j["run_slot"].get<int>();
         if (j.contains("win_x")) s.winX = j["win_x"].get<int>();
@@ -183,6 +184,7 @@ bool UiSettings::Save(const std::string& path) const
     j["aux_img_fit"]        = auxImgFit;
     j["aux_chart_compact"]  = auxChartCompact;
     j["chart_scope"]   = chartScope;
+    j["chart_smooth"]  = chartSmooth;
     j["run_prog_uid"]  = runProgUid;
     j["run_slot"]      = runSlot;
     j["win_x"]   = winX;

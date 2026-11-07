@@ -529,6 +529,11 @@ std::string FormatCurrent(double a);
 // Achieved sample rate from the samples in the last 1 s of a stream snapshot.
 float MeasuredHz(const std::vector<float>& t);
 
+// Key-stroke feedback: 1 at the event, fading linearly to 0 after `dur` s
+// (`since` = now - event time). The Jog window's buttons and the Aux window's
+// on-image W/A/S/D both light by it, off App::jogKeyFlashAt_.
+float KeyGlow(double since, double dur);
+
 // Open a folder in Windows Explorer (best-effort). Paths from the session are
 // cwd-relative (products/ lives next to the exe), so resolve to absolute; the
 // folder may not exist yet (product data/ before the first DUT) — create it.

@@ -218,6 +218,7 @@ void App::DrawAuxWindow()
         const ImU32 chair = IM_COL32(80, 230, 120, 200);
         dl->AddLine(ImVec2(imgO.x, center.y), ImVec2(imgO.x + imgS.x, center.y), chair, 1.0f);
         dl->AddLine(ImVec2(center.x, imgO.y), ImVec2(center.x, imgO.y + imgS.y), chair, 1.0f);
+        if (jogArmed_) DrawAuxJogKeys(dl, imgO, imgS);
 
         // The cursor marker + world-distance readout only appear while
         // click-to-move is armed: they annotate the move a click would command,
@@ -349,13 +350,14 @@ void App::DrawAuxWindow()
         ImGui::Indent(14.0f);
         ImGui::BeginDisabled(!showChart_);
         if (ImGui::Checkbox("Compact", &auxChartCompact_)) SaveUiSettings();
-        ImGui::EndDisabled();
-        ImGui::Unindent(14.0f);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("Half-size chart drawn straight on the picture: the\n"
                               "trace and the live value only, no box to click.\n"
                               "Each channel is scaled to its own range; the channel\n"
                               "choice comes from the full chart.");
+        DrawChartSmoothCombo();   // here too: the compact chart has no controls
+        ImGui::EndDisabled();
+        ImGui::Unindent(14.0f);
         // Image mode: Fill (cover - the default, crops the overflow) or Fit (the
         // whole frame, letterboxed). Every overlay follows the picture.
         ImGui::AlignTextToFramePadding();
@@ -977,6 +979,96 @@ void App::DrawSignalOverlay()
     DrawKeithleyChart(ImVec2(-1, -1));   // fill the overlay child
 }
 
+// The jog keys on the picture: W top, S bottom, A left, D right, and the Z
+// pair R (up arrow) over F (down arrow) in the bottom-right corner - where the
+// operator's eyes are while jogging, rather than on the Jog window's pad.
+// Drawn only while jog is ARMED (the caller checks). Three looks:
+//   armed, keys not live: dim, with a hint - keys go to the Jog window only
+//                         while it is focused (and its device connected), so
+//                         a key pressed here would move nothing;
+//   keys live:            coloured - W/A/S/D in the Jog tab's "keys live"
+//                         amber, R/F in violet so the axis that changes the
+//                         FOCUS cannot be mistaken for a lateral one;
+//   a stroke:             the box flashes its group's hot colour and fades over
+//                         0.35 s (jogKeyFlashAt_, stamped by key AND by click),
+//                         and stays lit while the key is held.
+// Display only: it reads the stamps and moves nothing.
+void App::DrawAuxJogKeys(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
+{
+    const float fs = ImGui::GetFontSize();
+    const float L  = std::clamp((std::min)(imgS.x, imgS.y) * 0.06f, fs * 1.4f, fs * 2.6f);
+    const float B  = L * 1.35f;                    // box height (and W/A/S/D width)
+    const float BZ = B * 1.55f;                    // R/F box width: arrow + letter
+    const float m  = B * 0.5f + 8.0f;              // a box centre's distance from the edge
+    if (imgS.x < 4.0f * B || imgS.y < 5.0f * B) return;
+
+    const bool   live = jogKeysLiveFrame_ >= 0 &&
+                        jogKeysLiveFrame_ >= ImGui::GetFrameCount() - 1;   // Jog may draw after us
+    const double now  = ImGui::GetTime();
+    const float  cx   = imgO.x + imgS.x * 0.5f, cy = imgO.y + imgS.y * 0.5f;
+    const float  rx   = imgO.x + imgS.x - 8.0f - BZ * 0.5f;   // the R/F column, right-aligned
+    const float  by   = imgO.y + imgS.y - m;                  // F's row = S's row
+
+    struct Rgb { int r, g, b; };
+    const Rgb kAmber{255, 191, 51},  kAmberHot{255, 209, 89};    // the pad's lit colour
+    const Rgb kViolet{185, 150, 255}, kVioletHot{210, 185, 255};
+
+    struct K { int idx; const char* txt; ImGuiKey key; ImVec2 c; float w; int arrow; Rgb col, hot; };
+    const K keys[] = {   // idx: jogKeyFlashAt_ order W A S D R F; arrow +1 up, -1 down
+        {0, "W", ImGuiKey_W, ImVec2(cx, imgO.y + m),               B,  0, kAmber,  kAmberHot},
+        {1, "A", ImGuiKey_A, ImVec2(imgO.x + m, cy),               B,  0, kAmber,  kAmberHot},
+        {2, "S", ImGuiKey_S, ImVec2(cx, imgO.y + imgS.y - m),      B,  0, kAmber,  kAmberHot},
+        {3, "D", ImGuiKey_D, ImVec2(imgO.x + imgS.x - m, cy),      B,  0, kAmber,  kAmberHot},
+        {4, "R", ImGuiKey_R, ImVec2(rx, by - B - 8.0f),            BZ, +1, kViolet, kVioletHot},
+        {5, "F", ImGuiKey_F, ImVec2(rx, by),                       BZ, -1, kViolet, kVioletHot},
+    };
+    auto mix = [](int a, int b, float t) { return static_cast<int>(a + (b - a) * t); };
+    ImFont* font = ImGui::GetFont();
+    for (const K& k : keys) {
+        float lit = KeyGlow(now - jogKeyFlashAt_[k.idx], 0.35);
+        if (live && ImGui::IsKeyDown(k.key)) lit = 1.0f;
+
+        const float  sw = 1.0f + 0.12f * lit;              // a pressed key swells a little
+        const float  hw = k.w * 0.5f * sw, hh = B * 0.5f * sw;
+        const ImVec2 b0(k.c.x - hw, k.c.y - hh), b1(k.c.x + hw, k.c.y + hh);
+        // Box: dark glass, turning the group's hot colour on a stroke.
+        dl->AddRectFilled(b0, b1, IM_COL32(mix(0, k.hot.r, lit), mix(0, k.hot.g, lit), mix(0, k.hot.b, lit),
+                                           mix(live ? 120 : 80, 235, lit)), 6.0f);
+        dl->AddRect(b0, b1, live ? IM_COL32(k.col.r, k.col.g, k.col.b, mix(150, 255, lit))
+                                 : IM_COL32(220, 220, 220, 70), 6.0f, 0, 1.5f);
+        // Ink: the group colour when live, dim white when not, dark on a lit box.
+        const ImU32 ink = live ? IM_COL32(mix(k.col.r, 25, lit), mix(k.col.g, 20, lit), mix(k.col.b, 10, lit), 255)
+                               : IM_COL32(mix(230, 25, lit), mix(230, 20, lit), mix(230, 10, lit),
+                                          mix(110, 255, lit));
+        const ImVec2 ts = font->CalcTextSizeA(L, 1.0e9f, 0.0f, k.txt);
+        if (k.arrow == 0) {
+            dl->AddText(font, L, ImVec2(std::floor(k.c.x - ts.x * 0.5f), std::floor(k.c.y - ts.y * 0.5f)),
+                        ink, k.txt);
+            continue;
+        }
+        // Arrow in the left part, letter in the right. Drawn, not a glyph: the
+        // UI font is not guaranteed to carry the arrows.
+        const float ax = k.c.x - hw * 0.45f;
+        const float ah = hh * 0.62f;                         // half the arrow's length
+        const float hd = ah * 0.55f;                         // head size
+        const float tip  = k.c.y - ah * static_cast<float>(k.arrow);
+        const float tail = k.c.y + ah * static_cast<float>(k.arrow);
+        const float base = tip + hd * static_cast<float>(k.arrow);   // where the head meets the shaft
+        dl->AddLine(ImVec2(ax, tail), ImVec2(ax, base), ink, (std::max)(2.0f, L * 0.09f));
+        dl->AddTriangleFilled(ImVec2(ax, tip), ImVec2(ax - hd * 0.75f, base), ImVec2(ax + hd * 0.75f, base), ink);
+        dl->AddText(font, L, ImVec2(std::floor(k.c.x + hw * 0.30f - ts.x * 0.5f), std::floor(k.c.y - ts.y * 0.5f)),
+                    ink, k.txt);
+    }
+    if (!live) {
+        const char*  hint = "jog keys: click the Jog window";
+        const ImVec2 hs   = ImGui::CalcTextSize(hint);
+        const ImVec2 hp(std::floor(cx - hs.x * 0.5f), std::floor(imgO.y + m + B * 0.5f + 4.0f));
+        dl->AddRectFilled(ImVec2(hp.x - 4.0f, hp.y - 1.0f), ImVec2(hp.x + hs.x + 4.0f, hp.y + hs.y + 1.0f),
+                          IM_COL32(0, 0, 0, 140), 3.0f);
+        dl->AddText(hp, IM_COL32(230, 230, 230, 200), hint);
+    }
+}
+
 // The compact chart, by hand: the same buffers and clock the ImPlot chart
 // reads (kT*/kV*, chartClock_, kChartWindowSec, chartCh_), drawn as polylines
 // on a faint backdrop. No axes - this is for watching a trend and reading the
@@ -1058,8 +1150,10 @@ void App::DrawAuxCompactChart(ImDrawList* dl, const ImVec2& p0, const ImVec2& si
             dl->AddPolyline(pts.data(), static_cast<int>(pts.size()), col, ImDrawFlags_None, 2.0f);
     };
     // Ch2 first so the main signal (Ch1) draws on top of it.
-    if (show2) trace(kT2_, kV2_, kCh2);
-    if (show1) trace(kT1_, kV1_, kCh1);
+    // ChartV1/2: the display low-pass applies here too (one setting, chosen
+    // on the full chart), so the compact trace is as quiet as the big one.
+    if (show2) trace(kT2_, ChartV2(), kCh2);
+    if (show1) trace(kT1_, ChartV1(), kCh1);
 
     // Live values, bottom-left, Ch1 lowest (the scope chart's order).
     float vy = p1.y - pad - fs;
@@ -1070,8 +1164,13 @@ void App::DrawAuxCompactChart(ImDrawList* dl, const ImVec2& p0, const ImVec2& si
         dl->AddText(ImGui::GetFont(), fs, ImVec2(p0.x + pad, vy), col, txt.c_str());
         vy -= fs + 2.0f;
     };
-    if (show1) value(kV1_, kCh1);
-    if (show2) value(kV2_, kCh2);
+    if (show1) value(ChartV1(), kCh1);
+    if (show2) value(ChartV2(), kCh2);
+    // Say so when the line is filtered: a smoothed number read as raw is how a
+    // noisy channel passes for a clean one.
+    const std::string lp = ChartSmoothTag();
+    if (!lp.empty())
+        dl->AddText(ImVec2(p0.x + pad, p0.y + pad - 2.0f), IM_COL32(200, 200, 200, 170), lp.c_str());
     dl->PopClipRect();
 }
 

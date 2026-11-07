@@ -38,12 +38,7 @@
 namespace firedog {
 
 namespace {
-// Key-stroke feedback: 1 at the event, fading linearly to 0 after `dur` s.
-float KeyGlow(double since, double dur)
-{
-    if (since < 0.0 || since >= dur) return 0.0f;
-    return static_cast<float>(1.0 - since / dur);
-}
+// Key-stroke feedback colour blend (the fade itself is Widgets' KeyGlow).
 ImVec4 LerpColor(const ImVec4& a, const ImVec4& b, float t)
 {
     return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
@@ -901,6 +896,7 @@ void App::DrawJogPanel()
     const ConnState jogSt   = hardware_.MotionState(static_cast<size_t>(selectedMotion_));
     const bool      kbFocus = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     const bool      kbLive  = jogArmed_ && kbFocus && jogSt == ConnState::Connected;
+    if (kbLive) jogKeysLiveFrame_ = ImGui::GetFrameCount();   // for the Aux window's W/A/S/D
     constexpr float kTwoPi  = 6.2831853f;
     const float     breath  = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * kTwoPi / 1.6f);
     const ImVec4    kArmed(1.0f, 0.75f, 0.20f, 1.0f);

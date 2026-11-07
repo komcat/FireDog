@@ -1426,6 +1426,11 @@ float MeasuredHz(const std::vector<float>& t) {
     return static_cast<float>(count - 1) / span;
 }
 
+float KeyGlow(double since, double dur) {
+    if (since < 0.0 || since >= dur) return 0.0f;
+    return static_cast<float>(1.0 - since / dur);
+}
+
 const SavedPos* TaughtPosePicker(const char* id, const SavedPosMap& all,
                                  const std::string& device)
 {

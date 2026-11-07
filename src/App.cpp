@@ -103,6 +103,7 @@ int App::Run()
         auxImgFit_        = ui.auxImgFit;
         auxChartCompact_  = ui.auxChartCompact;
         chartScope_      = ui.chartScope;
+        chartSmooth_     = ui.chartSmooth;
         runLastProgUid_  = ui.runProgUid;
         runLastSlot_     = ui.runSlot > 0 ? ui.runSlot : 0;
         lastProduct      = ui.lastProduct;
@@ -613,6 +614,7 @@ void App::SaveUiSettings()
     s.auxImgFit        = auxImgFit_;
     s.auxChartCompact  = auxChartCompact_;
     s.chartScope  = chartScope_;
+    s.chartSmooth = chartSmooth_;
     s.runProgUid  = runLastProgUid_;
     s.runSlot     = runLastSlot_;
     s.lastProduct = session_.Product().name;

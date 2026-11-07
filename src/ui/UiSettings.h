@@ -153,6 +153,8 @@ struct UiSettings {
     // Keithley chart style: true = scope look (bare canvas, overlay legend +
     // live value), false = classic axes/ticks plot.
     bool chartScope  = true;
+    // Keithley chart display low-pass: index into the preset list, 0 = off.
+    int  chartSmooth = 0;
 
     // Run page deck: the last-used program (by UID, so a rename keeps it) and
     // which of its slots was showing. The deck shows exactly ONE slot, so this
