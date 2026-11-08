@@ -393,6 +393,7 @@ private:
     // Go: the same legs a run takes (safe Z, XY, Z - or one XYZ move), as an
     // ad-hoc recipe of move_axis_to steps, so Busy, Stop and the safety abort
     // come with it.
+    void DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool busy);
     void StartDetectViewGo(const nlohmann::json& merged);
     bool EnsureViewThumbTex(const VisionModel& m);   // visionViewTex_, reloaded on change
     std::string AutoNickname(const RecipeStep& s) const;   // live label from params

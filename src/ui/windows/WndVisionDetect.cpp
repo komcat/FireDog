@@ -163,50 +163,72 @@ void App::DrawVisionDetectHelperWindow()
     const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
     const std::string prefix = merged.value("ctx_prefix", std::string("det"));
 
-    ImGui::SeparatorText("Report");
-    {
-        bool tx = merged.value("take_x", true), ty = merged.value("take_y", true),
-             tp = merged.value("take_p", false);
-        ImGui::BeginDisabled(busy);
-        if (ImGui::Checkbox("X", &tx)) s->params["take_x"] = tx;
-        ImGui::SameLine();
-        if (ImGui::Checkbox("Y", &ty)) s->params["take_y"] = ty;
-        ImGui::SameLine();
-        if (ImGui::Checkbox("P (theta)", &tp)) s->params["take_p"] = tp;
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The object's rotation from the orientation the model was\n"
-                              "taught at, as the camera picture shows it: degrees,\n"
-                              "CLOCKWISE POSITIVE (+90 = a quarter turn clockwise,\n"
-                              "-90 = anticlockwise). Needs an ncc or corner model with\n"
-                              "an angle tolerance above 0.");
-        ImGui::SameLine();
-        std::string axes;
-        if (tx) axes += "X";
-        if (ty) axes += "Y";
-        if (tp) axes += "P";
-        if (axes.empty())
-            ImGui::TextColored(kBad, "nothing ticked - the step would report nothing");
-        else
-            ImGui::TextDisabled("-> object result '%s' (%s on %s)", prefix.c_str(),
-                                axes.c_str(), camDev.c_str());
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Named after ctx_prefix. Any later recipe of the program\n"
-                              "can move to it with move_to_result; it is cleared at\n"
-                              "program start, DUT open and product load. The same values\n"
-                              "are also in ctx (%s_x / _y / _p, %s_ok) for this recipe.",
-                              prefix.c_str(), prefix.c_str());
-        ImGui::TextDisabled("X / Y = '%s' axis position at the crosshair + the object's "
-                            "offset in the picture, mm", camDev.c_str());
-        if (tp && m) {
-            std::string why;
-            if (!DetectionImageRotation(*m, VisionDetection{}, nullptr, &why))
-                ImGui::TextColored(kWarn, "P is ticked but %s", why.c_str());
+    // ---- The top band: what it reports + how it runs | where the camera goes ----
+    // Two columns, because stacked they pushed the teach panels half way down
+    // the window. The right column only exists once the step owns a model:
+    // Teach here writes into it.
+    const bool canTeach = CanAccess(Page::VisionTeach);
+    const int  owners   = m ? CountStepOwners(session_.Recipes(), m->uid) : 0;
+    const bool modelOk  = m && owners <= 1;
+    if (ImGui::BeginTable("dvTop", modelOk ? 2 : 1, ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableSetupColumn("run", ImGuiTableColumnFlags_WidthStretch);
+        if (modelOk) ImGui::TableSetupColumn("view", ImGuiTableColumnFlags_WidthFixed, 280.0f);
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::SeparatorText("Report");
+        {
+            bool tx = merged.value("take_x", true), ty = merged.value("take_y", true),
+                 tp = merged.value("take_p", false);
+            ImGui::BeginDisabled(busy);
+            if (ImGui::Checkbox("X", &tx)) s->params["take_x"] = tx;
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Y", &ty)) s->params["take_y"] = ty;
+            ImGui::SameLine();
+            if (ImGui::Checkbox("P (theta)", &tp)) s->params["take_p"] = tp;
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The object's rotation from the orientation the model was\n"
+                                  "taught at, as the camera picture shows it: degrees,\n"
+                                  "CLOCKWISE POSITIVE (+90 = a quarter turn clockwise,\n"
+                                  "-90 = anticlockwise). Needs an ncc or corner model with\n"
+                                  "an angle tolerance above 0.");
+            ImGui::SameLine();
+            std::string axes;
+            if (tx) axes += "X";
+            if (ty) axes += "Y";
+            if (tp) axes += "P";
+            if (axes.empty())
+                ImGui::TextColored(kBad, "nothing ticked - the step would report nothing");
+            else
+                ImGui::TextDisabled("-> object result '%s' (%s on %s)", prefix.c_str(),
+                                    axes.c_str(), camDev.c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Named after ctx_prefix. Any later recipe of the program\n"
+                                  "can move to it with move_to_result; it is cleared at\n"
+                                  "program start, DUT open and product load. The same values\n"
+                                  "are also in ctx (%s_x / _y / _p, %s_ok) for this recipe.",
+                                  prefix.c_str(), prefix.c_str());
+            ImGui::TextDisabled("X / Y = '%s' axis position at the crosshair + the object's "
+                                "offset in the picture, mm", camDev.c_str());
+            if (tp && m) {
+                std::string why;
+                if (!DetectionImageRotation(*m, VisionDetection{}, nullptr, &why))
+                    ImGui::TextColored(kWarn, "P is ticked but %s", why.c_str());
+            }
         }
+        // The run options: anybody who may edit the recipe may set them.
+        if (modelOk) DrawDetectRunOptions(*s, merged, busy);
+        if (modelOk) {
+            ImGui::TableSetColumnIndex(1);
+            // Where the camera goes before it looks. Before the Admin gate below:
+            // Go is the editor's; Teach here writes the model, so it carries the
+            // gate itself.
+            DrawDetectViewSection(*s, merged, *m, busy, canTeach);
+        }
+        ImGui::EndTable();
     }
 
     // ---- The step's model ------------------------------------------------------
-    const bool canTeach = CanAccess(Page::VisionTeach);
     if (!m) {
         ImGui::SeparatorText("Detection model");
         if (uid.empty()) ImGui::TextUnformatted("This step has no detection model yet.");
@@ -230,7 +252,6 @@ void App::DrawVisionDetectHelperWindow()
         return;
     }
 
-    const int owners = CountStepOwners(session_.Recipes(), m->uid);
     if (owners > 1) {
         ImGui::SeparatorText("Detection model");
         ImGui::TextColored(kWarn, "This model is also used by %d other step(s) - this step is "
@@ -251,12 +272,6 @@ void App::DrawVisionDetectHelperWindow()
         ImGui::End();
         return;
     }
-    // Where the camera goes before it looks, and what happens around the look.
-    // Before the Admin gate: anybody who may edit the recipe may drive to the
-    // view and set the run options; Teach here writes the model too, so it
-    // carries the gate itself.
-    DrawDetectViewSection(*s, merged, *m, busy, canTeach);
-
     if (!canTeach) {
         ImGui::SeparatorText("Detection model");
         ImGui::Text("%s  (%s)", m->name.c_str(), m->method.c_str());
@@ -340,19 +355,24 @@ void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, Vis
 
     double vp[3] = {0.0, 0.0, 0.0};
     const bool taught = ViewPointOf(merged, vp);
-    if (taught)
-        ImGui::Text("X %.4f  Y %.4f  Z %.4f", vp[0], vp[1], vp[2]);
-    else
-        ImGui::TextDisabled("not taught - the step detects wherever the camera stands");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(%s axis)", camDev.c_str());
+    if (taught) {
+        ImGui::Text("X %.4f  Y %.4f", vp[0], vp[1]);
+        ImGui::Text("Z %.4f", vp[2]);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s axis)", camDev.c_str());
+    } else {
+        ImGui::TextWrapped("not taught - the step detects wherever the camera stands");
+    }
 
     // The guide: what the camera saw when the view was taught. The centre half
     // of the frame - where the object should sit for the next person teaching.
     if (EnsureViewThumbTex(m)) {
-        const float w = std::min(ImGui::GetContentRegionAvail().x, 360.0f);
-        const float h = w * static_cast<float>(visionViewTex_.h) /
-                        static_cast<float>(visionViewTex_.w);
+        // Fitted into 200 x 200, aspect kept: a guide, not a second viewer.
+        constexpr float kThumbBox = 200.0f;
+        const float sc = std::min(kThumbBox / static_cast<float>(visionViewTex_.w),
+                                  kThumbBox / static_cast<float>(visionViewTex_.h));
+        const float w = static_cast<float>(visionViewTex_.w) * sc;
+        const float h = static_cast<float>(visionViewTex_.h) * sc;
         ImGui::Image((ImTextureID)(intptr_t)visionViewTex_.tex, ImVec2(w, h));
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The taught view: the centre half of the frame, snapped by\n"
@@ -442,10 +462,16 @@ void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, Vis
     if (ImGui::Button("Clear")) s.params.erase("view_point");
     ImGui::EndDisabled();
 
-    ImGui::TextDisabled("exposure %.0f us, light %s - the model's, applied before the move",
-                        m.exposureUs, AlignLightingSummary(m.lighting).c_str());
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    ImGui::TextWrapped("exposure %.0f us, light %s - the model's, applied before the move",
+                       m.exposureUs, AlignLightingSummary(m.lighting).c_str());
+    ImGui::PopStyleColor();
+}
 
-    // ---- Run options ----------------------------------------------------------
+// The left column's lower half: how the step runs around the detection.
+void App::DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool busy)
+{
+    const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
     ImGui::SeparatorText("Run");
     ImGui::BeginDisabled(busy);
     bool zLift = merged.value("z_lift", true);
