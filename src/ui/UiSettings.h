@@ -84,6 +84,7 @@ struct UiSettings {
     // here and not in the recipes file — two operators filing the same
     // library differently must not fight over one saved filter.
     bool        edShowHidden  = false;   // list recipes marked hidden
+    bool        edLooseOnly   = false;   // list only recipes no program uses
     bool        edDurationSec = false;   // type DurationMs params in s (else ms)
     std::string edTagFilter;             // "" = every tag
     bool        edTagHide     = false;   // false = show only that tag, true = hide it
@@ -96,6 +97,7 @@ struct UiSettings {
     // Its own field again — the organizer is a WINDOW, so it does not share a
     // layout with any page.
     float orgLibW = 0.0f;
+    bool  orgLooseOnly = false;   // organizer library: only recipes no program uses
 
     // Device Registration page: width of its right-hand control column in px
     // (0 = default). Same reasoning as the vision teach page — a takeover with

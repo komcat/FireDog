@@ -29,13 +29,15 @@
 
 #include "imgui.h"
 
-#include "ui/Theme.h"     // kDryRunCyan
+#include "ui/Theme.h"     // kDryRunCyan, kWorking*
 #include "ui/Widgets.h"
 #include "core/Log.h"
 
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -778,46 +780,94 @@ void App::DrawProgramOrganizer()
     const char* addTo = (orgTwo_ && orgAddPanel_ == 1) ? "2nd" : "1st";
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint("##filt", "filter", orgFilter_, sizeof(orgFilter_));
+    if (ImGui::Checkbox("loose only", &orgLooseOnly_)) SaveUiSettings();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("List only the recipes no program uses");
     ImGui::Separator();
     // The row is sized to STOP where the add button starts, so a long recipe
-    // name is clipped by the Selectable rather than drawn across the button —
-    // the button was previously pinned at a fixed offset and the two overlapped.
-    // The hover tooltip is what gets the clipped name back.
+    // name is clipped rather than drawn across the button — the button was
+    // previously pinned at a fixed offset and the two overlapped. The hover
+    // tooltip is what gets the clipped name back.
     const float addW = ImGui::CalcTextSize("add").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-    for (const Recipe& r : session_.Recipes()) {
+    // WORKING (a program deck reaches it - command/Program.h WorkingRecipes)
+    // on top, LOOSE below, drawn like the Recipe Editor's list: the run icon
+    // and green text on a faint band. Rebuilt from the in-memory programs each
+    // frame, so a recipe moves groups the moment it is dropped into a slot.
+    const std::map<std::string, std::string> working =
+        WorkingRecipes(session_.Programs(), session_.Recipes());
+    const MarkIcon* workIcon = UiIcon("run_execute");
+    const ImVec4 workText = Theme::IsLight() ? kWorkingTextLt : kWorkingText;
+    const auto libListed = [&](const Recipe& r) {
         // Hidden means hidden from the pickers; a program that already names
         // the recipe still runs it (RecipeByUid above never looks at the flag).
         // The text filter matches a tag too, so "left" finds what was filed as
         // left and not only what was named that way.
-        if (r.hidden) continue;
-        if (!Contains(r.name, orgFilter_)) {
-            bool tagHit = false;
-            for (const std::string& t : r.tags)
-                if (Contains(t, orgFilter_)) { tagHit = true; break; }
-            if (!tagHit) continue;
-        }
-        ImGui::PushID(r.uid.c_str());
-        const float nameW = ImGui::GetContentRegionAvail().x - addW -
-                            ImGui::GetStyle().ItemSpacing.x;
-        // Double-click adds at the selection; drag drops it exactly where the
-        // operator wants it. Both exist because the first is faster for
-        // building a list and the second is the only way to aim into a folder.
-        if (ImGui::Selectable(r.name.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick,
-                              ImVec2(nameW > 0.0f ? nameW : 0.0f, 0.0f))) {
-            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) OrgAddRecipe(r.uid);
-        }
-        const bool nameHovered = ImGui::IsItemHovered();
-        if (ImGui::BeginDragDropSource()) {
-            ImGui::SetDragDropPayload(kPayloadRecipe, r.uid.c_str(), r.uid.size());
+        if (r.hidden) return false;
+        if (Contains(r.name, orgFilter_)) return true;
+        for (const std::string& t : r.tags)
+            if (Contains(t, orgFilter_)) return true;
+        return false;
+    };
+    for (int group = 0; group < 2; ++group) {
+        const bool groupWorking = group == 0;
+        if (groupWorking && orgLooseOnly_) continue;
+        int inGroup = 0;
+        for (const Recipe& r : session_.Recipes())
+            if ((working.count(r.uid) != 0) == groupWorking && libListed(r)) ++inGroup;
+        if (inGroup == 0) continue;
+        ImGui::SeparatorText(groupWorking ? "Working" : "Loose");
+        for (const Recipe& r : session_.Recipes()) {
+            const auto wit = working.find(r.uid);
+            if ((wit != working.end()) != groupWorking || !libListed(r)) continue;
+            ImGui::PushID(r.uid.c_str());
+            const float nameW = fmaxf(0.0f, ImGui::GetContentRegionAvail().x - addW -
+                                                ImGui::GetStyle().ItemSpacing.x);
+            const ImVec2 rowP = ImGui::GetCursorScreenPos();
+            const float  rowH = ImGui::GetTextLineHeight();
+            if (groupWorking)
+                ImGui::GetWindowDrawList()->AddRectFilled(
+                    rowP, ImVec2(rowP.x + nameW, rowP.y + rowH),
+                    ImGui::GetColorU32(kWorkingBand));
+            const float x0 = ImGui::GetCursorPosX();
+            // Double-click adds at the selection; drag drops it exactly where the
+            // operator wants it. Both exist because the first is faster for
+            // building a list and the second is the only way to aim into a folder.
+            if (ImGui::Selectable("##lib", false,
+                                  ImGuiSelectableFlags_AllowDoubleClick |
+                                      ImGuiSelectableFlags_AllowOverlap,
+                                  ImVec2(nameW, 0.0f))) {
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) OrgAddRecipe(r.uid);
+            }
+            const bool nameHovered = ImGui::IsItemHovered();
+            if (ImGui::BeginDragDropSource()) {
+                ImGui::SetDragDropPayload(kPayloadRecipe, r.uid.c_str(), r.uid.size());
+                ImGui::TextUnformatted(r.name.c_str());
+                ImGui::EndDragDropSource();
+            }
+            if (nameHovered) {
+                if (groupWorking)
+                    ImGui::SetTooltip("%s\nworking - %s\ndouble-click to add to the %s panel, "
+                                      "or drag",
+                                      r.name.c_str(), wit->second.c_str(), addTo);
+                else
+                    ImGui::SetTooltip("%s\ndouble-click to add to the %s panel, or drag",
+                                      r.name.c_str(), addTo);
+            }
+            // Icon + name laid back over the row, clipped to it so a long name
+            // stops short of the add button.
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::SetCursorPosX(x0);
+            ImGui::PushClipRect(rowP, ImVec2(rowP.x + nameW, rowP.y + rowH), true);
+            DrawStepIconInline(groupWorking ? workIcon : nullptr);
+            if (groupWorking) ImGui::PushStyleColor(ImGuiCol_Text, workText);
             ImGui::TextUnformatted(r.name.c_str());
-            ImGui::EndDragDropSource();
+            if (groupWorking) ImGui::PopStyleColor();
+            ImGui::PopClipRect();
+            ImGui::SameLine(x0 + nameW + ImGui::GetStyle().ItemSpacing.x);
+            if (ImGui::SmallButton("add")) OrgAddRecipe(r.uid);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add to the %s panel's selection", addTo);
+            ImGui::PopID();
         }
-        if (nameHovered) ImGui::SetTooltip("%s\ndouble-click to add to the %s panel, or drag",
-                                   r.name.c_str(), addTo);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("add")) OrgAddRecipe(r.uid);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add to the %s panel's selection", addTo);
-        ImGui::PopID();
     }
     if (session_.Recipes().empty())
         ImGui::TextWrapped("No recipes in this product yet.");

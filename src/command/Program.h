@@ -13,6 +13,7 @@
 
 #include "command/Recipe.h"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -132,5 +133,17 @@ Program        ProgramFromJson(const nlohmann::json& j);
 
 // Find a recipe by uid in the library; nullptr if missing.
 const Recipe* RecipeByUid(const std::vector<Recipe>& library, const std::string& uid);
+
+// The WORKING recipes: every recipe a program deck can reach, uid -> why (the
+// first reason found, for a tooltip). Reached means named by a node of any
+// slot of any program, or - transitively - called as a sub_recipe or named as
+// the on_fail of a recipe that is. Removing any of them breaks a program (a
+// dangling node, a sub_recipe that cannot inline, an on_fail that refuses the
+// run at Start). Lua's fd.run_recipe is NOT followed: a script names its
+// recipe at run time. Cheap enough to rebuild per frame from the document,
+// which is what the Recipe Editor list and the organizer library do - a cache
+// would be one more thing every organizer edit must invalidate.
+std::map<std::string, std::string> WorkingRecipes(const std::vector<Program>& programs,
+                                                  const std::vector<Recipe>& library);
 
 } // namespace firedog

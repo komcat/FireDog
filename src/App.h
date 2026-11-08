@@ -1355,6 +1355,9 @@ private:
     // that fails it still draws while SELECTED, dimmed: the editor beside the
     // list is showing it, and a list that cannot say which one would lie.
     bool        edShowHidden_ = false;
+    // "loose only": list just the recipes no program deck reaches
+    // (command/Program.h WorkingRecipes), for tidying the library.
+    bool        edLooseOnly_  = false;
     // How the editor TYPES a DurationMs param: false = ms, true = s. Display
     // only - the step always stores ms. Persisted (ed_duration_sec).
     bool        edDurationSec_ = false;
@@ -1992,6 +1995,7 @@ private:
     // it: an insert reallocates the very vector the recursion is walking, so
     // acting on the spot leaves the loop holding a dangling ProgramNode&.
     float       orgLibW_ = 240.0f;   // recipe-library column, dragged + persisted
+    bool        orgLooseOnly_ = false;   // library lists only recipes no program uses
     bool        orgSplitting_ = false;   // edge-detect the drag END
     std::string orgDropRecipe_;      // library payload (recipe uid)
     std::string orgDropNode_;        // tree payload (node uid being moved)

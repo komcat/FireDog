@@ -28,6 +28,13 @@ inline constexpr ImVec4 kDryRunCyan     = ImVec4(0.30f, 0.80f, 0.95f, 1.0f);
 inline constexpr ImVec4 kDangerHov      = ImVec4(0.75f, 0.20f, 0.20f, 1.0f);
 inline constexpr ImVec4 kDangerAct      = ImVec4(0.60f, 0.12f, 0.12f, 1.0f);
 
+// A WORKING recipe in the Recipe Editor's list (one a program deck reaches):
+// green text on a faint green band, so it reads apart from a loose one at a
+// glance. The band is translucent so it works on light and dark themes.
+inline constexpr ImVec4 kWorkingText    = ImVec4(0.45f, 0.85f, 0.50f, 1.0f);
+inline constexpr ImVec4 kWorkingTextLt  = ImVec4(0.10f, 0.45f, 0.15f, 1.0f);   // light theme
+inline constexpr ImVec4 kWorkingBand    = ImVec4(0.25f, 0.65f, 0.30f, 0.18f);
+
 struct Theme {
     static int         Count();              // number of selectable themes
     static const char* Name(int index);      // display name (out-of-range -> 0)

@@ -397,4 +397,59 @@ const Recipe* RecipeByUid(const std::vector<Recipe>& library, const std::string&
     return nullptr;
 }
 
+namespace {
+void CollectStepRecipeRefs(const std::vector<RecipeStep>& steps,
+                           std::vector<std::string>& out)
+{
+    for (const RecipeStep& s : steps) {
+        if (s.type == "sub_recipe") {
+            const std::string uid = s.params.value("uid", std::string());
+            if (!uid.empty()) out.push_back(uid);
+        }
+        CollectStepRecipeRefs(s.children, out);
+        CollectStepRecipeRefs(s.elseChildren, out);
+    }
+}
+
+void CollectNodeRecipes(const std::vector<ProgramNode>& items, const std::string& why,
+                        std::map<std::string, std::string>& used,
+                        std::vector<std::string>& frontier)
+{
+    for (const ProgramNode& n : items) {
+        if (n.IsFolder()) {
+            CollectNodeRecipes(n.children, why, used, frontier);
+        } else if (!n.recipeUid.empty() && used.emplace(n.recipeUid, why).second) {
+            frontier.push_back(n.recipeUid);
+        }
+    }
+}
+} // namespace
+
+std::map<std::string, std::string> WorkingRecipes(const std::vector<Program>& programs,
+                                                  const std::vector<Recipe>& library)
+{
+    std::map<std::string, std::string> used;
+    std::vector<std::string> frontier;
+    for (const Program& p : programs)
+        for (const ProgramSlot& s : p.slots)
+            CollectNodeRecipes(s.items, "in program '" + p.name + "' / " + s.name, used,
+                               frontier);
+    // Transitive: what a working recipe calls or falls back to is working too.
+    while (!frontier.empty()) {
+        const std::string uid = frontier.back();
+        frontier.pop_back();
+        const Recipe* r = RecipeByUid(library, uid);
+        if (!r) continue;
+        std::vector<std::string> refs;
+        CollectStepRecipeRefs(r->steps, refs);
+        for (const std::string& ref : refs)
+            if (used.emplace(ref, "called by '" + r->name + "' (sub_recipe)").second)
+                frontier.push_back(ref);
+        if (!r->onFailUid.empty() &&
+            used.emplace(r->onFailUid, "on-fail recipe of '" + r->name + "'").second)
+            frontier.push_back(r->onFailUid);
+    }
+    return used;
+}
+
 } // namespace firedog

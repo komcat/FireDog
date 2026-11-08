@@ -147,6 +147,14 @@ monitor and reshape a program while watching the deck it will drive).
   aims: onto a folder row it goes **inside**, onto a recipe row it lands
   **after**, onto the tail strip it appends at the top level. `> / <` are
   indent/outdent for anyone who would rather not drag.
+- **The library is grouped WORKING / LOOSE**, exactly like the Recipe
+  Editor's list: a recipe any program reaches (a node, or transitively a
+  `sub_recipe` / `on_fail` of one — `WorkingRecipes`, `command/Program.h`)
+  sits on top with the run icon, green text and a faint band; the rest below.
+  Derived each frame from the in-memory programs, so a recipe moves group the
+  moment it is dropped into (or removed from) a slot, saved or not. `loose
+  only` (`orgLooseOnly_`, UiSettings) is the organizer's own and independent
+  of the editor's.
 - **A folder always moves with its children.** Every edit goes through the
   `command/Program` tree helpers (`ExtractNode` / `InsertAfter` / `InsertInto` /
   `MoveNodeUp|Down` / `Indent` / `Outdent`) rather than being hand-rolled in the

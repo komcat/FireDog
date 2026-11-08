@@ -80,6 +80,7 @@ int App::Run()
         if (ui.edPaletteW    > 0.0f) edPaletteW_    = ui.edPaletteW;
         if (ui.edKeysH       > 0.0f) edKeysH_       = ui.edKeysH;
         edShowHidden_ = ui.edShowHidden;
+        edLooseOnly_  = ui.edLooseOnly;
         edDurationSec_ = ui.edDurationSec;
         edTagFilter_  = ui.edTagFilter;
         edTagHide_    = ui.edTagHide;
@@ -88,6 +89,7 @@ int App::Run()
         if (ui.runScanH      > 0.0f) runScanH_      = ui.runScanH;
         if (ui.runShotH      > 0.0f) runShotPanelH_ = ui.runShotH;
         if (ui.orgLibW       > 0.0f) orgLibW_       = ui.orgLibW;
+        orgLooseOnly_ = ui.orgLooseOnly;
         if (ui.regCtlW       > 0.0f) regCtlW_       = ui.regCtlW;
         regFilter_     = ui.regFilter;
         regFilter_.Sanitize();
@@ -610,6 +612,7 @@ void App::SaveUiSettings()
     s.edPaletteW    = edPaletteW_;
     s.edKeysH       = edKeysH_;
     s.edShowHidden  = edShowHidden_;
+    s.edLooseOnly   = edLooseOnly_;
     s.edDurationSec = edDurationSec_;
     s.edTagFilter   = edTagFilter_;
     s.edTagHide     = edTagHide_;
@@ -618,6 +621,7 @@ void App::SaveUiSettings()
     s.runScanH      = runScanH_;
     s.runShotH      = runShotPanelH_;
     s.orgLibW       = orgLibW_;
+    s.orgLooseOnly  = orgLooseOnly_;
     s.regCtlW       = regCtlW_;
     s.regFilter     = regFilter_;
     s.regExposureUs = regExposureUs_;

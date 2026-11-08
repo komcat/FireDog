@@ -54,6 +54,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("ed_palette_w")) s.edPaletteW = j["ed_palette_w"].get<float>();
         if (j.contains("ed_keys_h")) s.edKeysH = j["ed_keys_h"].get<float>();
         if (j.contains("ed_show_hidden")) s.edShowHidden = j["ed_show_hidden"].get<bool>();
+        if (j.contains("ed_loose_only")) s.edLooseOnly = j["ed_loose_only"].get<bool>();
         if (j.contains("ed_duration_sec")) s.edDurationSec = j["ed_duration_sec"].get<bool>();
         if (j.contains("ed_tag_filter"))  s.edTagFilter  = j["ed_tag_filter"].get<std::string>();
         if (j.contains("ed_tag_hide"))    s.edTagHide    = j["ed_tag_hide"].get<bool>();
@@ -62,6 +63,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("run_scan_h")) s.runScanH = j["run_scan_h"].get<float>();
         if (j.contains("run_shot_h")) s.runShotH = j["run_shot_h"].get<float>();
         if (j.contains("org_lib_w"))  s.orgLibW  = j["org_lib_w"].get<float>();
+        if (j.contains("org_loose_only")) s.orgLooseOnly = j["org_loose_only"].get<bool>();
         if (j.contains("reg_ctl_w"))  s.regCtlW  = j["reg_ctl_w"].get<float>();
         LoadViewFilter(j, "reg", s.regFilter);
         if (j.contains("reg_exposure_us")) s.regExposureUs = j["reg_exposure_us"].get<double>();
@@ -190,6 +192,7 @@ bool UiSettings::Save(const std::string& path) const
     j["ed_palette_w"]    = edPaletteW;
     j["ed_keys_h"]       = edKeysH;
     j["ed_show_hidden"]  = edShowHidden;
+    j["ed_loose_only"]   = edLooseOnly;
     j["ed_duration_sec"] = edDurationSec;
     j["ed_tag_filter"]   = edTagFilter;
     j["ed_tag_hide"]     = edTagHide;
@@ -198,6 +201,7 @@ bool UiSettings::Save(const std::string& path) const
     j["run_scan_h"]      = runScanH;
     j["run_shot_h"]      = runShotH;
     j["org_lib_w"]       = orgLibW;
+    j["org_loose_only"]  = orgLooseOnly;
     j["reg_ctl_w"]       = regCtlW;
     SaveViewFilter(j, "reg", regFilter);
     j["reg_exposure_us"] = regExposureUs;

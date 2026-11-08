@@ -138,6 +138,15 @@ void App::DrawRecipeEditPanel()
     // row means.
     const bool busy = orch_.Busy();
     const bool haveSel = recipeSel_ >= 0 && recipeSel_ < static_cast<int>(session_.Recipes().size());
+    // Recipes a program deck can reach (command/Program.h WorkingRecipes):
+    // grouped on top, and Delete refuses them.
+    const std::map<std::string, std::string> working =
+        WorkingRecipes(session_.Programs(), session_.Recipes());
+    const auto workingWhy = [&](const Recipe& r) -> const std::string* {
+        const auto it = working.find(r.uid);
+        return it == working.end() ? nullptr : &it->second;
+    };
+    const bool selWorking = haveSel && workingWhy(session_.Recipes()[recipeSel_]) != nullptr;
 
     // Live author-time validation of the selected recipe (WITHOUT the
     // devices-Connected requirement — that stays a run-start check, so
@@ -220,9 +229,16 @@ void App::DrawRecipeEditPanel()
         edOpenRenameRecipe_ = true;
     }
     ToolGroupGap();
+    // A working recipe cannot be deleted: a program node, a sub_recipe or an
+    // on_fail still names it. Take it out of the program first.
+    ImGui::BeginDisabled(selWorking);
     if (IconToolButton(UiIcon("tb_delete"), "recDel", "Del", "Delete the selected recipe",
                        true))
         edOpenDeleteRecipe_ = true;
+    ImGui::EndDisabled();
+    if (selWorking && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Used by a program - cannot be deleted\n%s",
+                          workingWhy(session_.Recipes()[recipeSel_])->c_str());
     ImGui::EndDisabled();
     // Clipboard round-trip: Copy puts the selected recipe's JSON on the OS
     // clipboard; Paste accepts a recipe object, a whole recipes file, or a
@@ -297,6 +313,11 @@ void App::DrawRecipeEditPanel()
     {
         bool filterChanged = false;
         if (ImGui::Checkbox("show hidden", &edShowHidden_)) filterChanged = true;
+        ImGui::SameLine();
+        if (ImGui::Checkbox("loose only", &edLooseOnly_)) filterChanged = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("List only the recipes no program uses (the ones a clean-up "
+                              "would look at)");
         std::vector<std::string> allTags;
         for (const Recipe& r : session_.Recipes())
             for (const std::string& t : r.tags)
@@ -340,36 +361,80 @@ void App::DrawRecipeEditPanel()
     ImGui::Separator();
     if (session_.Recipes().empty())
         ImGui::TextWrapped("No recipes yet - New creates one, or Reload from disk.");
+    // Two groups, WORKING (a program deck reaches it) on top, then LOOSE. The
+    // display order only: recipeSel_ stays an index into the library, which
+    // keeps its own order on disk.
     int listed = 0;
-    for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
-        const Recipe& r = session_.Recipes()[i];
-        const bool passes = RecipeListed(r);
-        if (!passes && recipeSel_ != i) continue;
-        ++listed;
-        ImGui::PushID(i);
-        // Hidden recipes read as hidden even when the filter lets them through;
-        // a selected recipe the filter would drop reads the same way.
-        const bool dim = r.hidden || !passes;
-        // Unsaved edits read YELLOW, so the Save* on the toolbar can be traced
-        // to the recipes it is about. Yellow wins over dim: an unsaved change
-        // to a hidden recipe is exactly the one nobody would otherwise notice.
-        const bool dirty = session_.RecipeDirty(r);
-        if (dirty)
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
-        else if (dim)
-            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
-        if (ImGui::Selectable(r.name.c_str(), recipeSel_ == i)) {
-            recipeSel_ = i;
-            ClearStepSel();
+    const MarkIcon* workIcon = UiIcon("run_execute");
+    const ImVec4 workText = Theme::IsLight() ? kWorkingTextLt : kWorkingText;
+    for (int group = 0; group < 2; ++group) {
+        const bool groupWorking = group == 0;
+        // "loose only" drops the working group like any other filter: a
+        // selected working recipe still shows, dimmed.
+        const bool groupPasses = !(groupWorking && edLooseOnly_);
+        // Count first so an empty group draws no header.
+        int inGroup = 0;
+        for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
+            const Recipe& r = session_.Recipes()[i];
+            if ((workingWhy(r) != nullptr) != groupWorking) continue;
+            if ((groupPasses && RecipeListed(r)) || recipeSel_ == i) ++inGroup;
         }
-        if (dirty || dim) ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered() && (dirty || r.hidden || !r.tags.empty())) {
-            std::string tip = dirty ? "unsaved changes" : "";
-            if (r.hidden) tip += (tip.empty() ? "" : "  ") + std::string("hidden");
-            for (const std::string& t : r.tags) tip += (tip.empty() ? "" : "  ") + ("#" + t);
-            ImGui::SetTooltip("%s", tip.c_str());
+        if (inGroup == 0) continue;
+        ImGui::SeparatorText(groupWorking ? "Working" : "Loose");
+        for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
+            const Recipe& r = session_.Recipes()[i];
+            const std::string* why = workingWhy(r);
+            if ((why != nullptr) != groupWorking) continue;
+            const bool passes = groupPasses && RecipeListed(r);
+            if (!passes && recipeSel_ != i) continue;
+            ++listed;
+            ImGui::PushID(i);
+            // Hidden recipes read as hidden even when the filter lets them through;
+            // a selected recipe the filter would drop reads the same way.
+            const bool dim = r.hidden || !passes;
+            // Unsaved edits read YELLOW, so the Save* on the toolbar can be traced
+            // to the recipes it is about. Yellow wins over dim: an unsaved change
+            // to a hidden recipe is exactly the one nobody would otherwise notice.
+            // A working recipe's own colour is the weakest of the three.
+            const bool dirty = session_.RecipeDirty(r);
+            // The working band, under the Selectable so its hover/selection
+            // highlight still draws on top.
+            const ImVec2 rowP = ImGui::GetCursorScreenPos();
+            if (groupWorking)
+                ImGui::GetWindowDrawList()->AddRectFilled(
+                    rowP,
+                    ImVec2(rowP.x + ImGui::GetContentRegionAvail().x,
+                           rowP.y + ImGui::GetTextLineHeight()),
+                    ImGui::GetColorU32(kWorkingBand));
+            const float x0 = ImGui::GetCursorPosX();
+            if (ImGui::Selectable("##rec", recipeSel_ == i, ImGuiSelectableFlags_AllowOverlap)) {
+                recipeSel_ = i;
+                ClearStepSel();
+            }
+            const bool hovered = ImGui::IsItemHovered();
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::SetCursorPosX(x0);
+            // The icon column is reserved on every row, so working and loose
+            // names start at the same x.
+            DrawStepIconInline(groupWorking ? workIcon : nullptr);
+            if (dirty)
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+            else if (dim)
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+            else if (groupWorking)
+                ImGui::PushStyleColor(ImGuiCol_Text, workText);
+            ImGui::TextUnformatted(r.name.c_str());
+            if (dirty || dim || groupWorking) ImGui::PopStyleColor();
+            if (hovered && (why || dirty || r.hidden || !r.tags.empty())) {
+                std::string tip = why ? "working - " + *why : "";
+                if (dirty) tip += (tip.empty() ? "" : "\n") + std::string("unsaved changes");
+                std::string marks = r.hidden ? "hidden" : "";
+                for (const std::string& t : r.tags) marks += (marks.empty() ? "" : "  ") + ("#" + t);
+                if (!marks.empty()) tip += (tip.empty() ? "" : "\n") + marks;
+                ImGui::SetTooltip("%s", tip.c_str());
+            }
+            ImGui::PopID();
         }
-        ImGui::PopID();
     }
     if (listed == 0 && !session_.Recipes().empty())
         ImGui::TextDisabled("(all %zu filtered out)", session_.Recipes().size());
@@ -680,7 +745,14 @@ void App::DrawRecipeEditPanel()
     if (ImGui::BeginPopupModal("Delete Recipe", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         if (haveSel)
             ImGui::Text("Delete recipe '%s'?", session_.Recipes()[recipeSel_].name.c_str());
-        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)) && haveSel) {
+        // The toolbar already refuses a working recipe; this is the backstop
+        // for one that became working while the modal was up.
+        if (selWorking)
+            ImGui::TextColored(kDangerHov, "Used by a program - cannot be deleted.");
+        ImGui::BeginDisabled(selWorking);
+        const bool doDelete = ImGui::Button("Delete", ImVec2(100.0f, 0.0f));
+        ImGui::EndDisabled();
+        if (doDelete && haveSel && !selWorking) {
             session_.Recipes().erase(session_.Recipes().begin() + recipeSel_);
             recipeSel_ = -1;
             ClearStepSel();

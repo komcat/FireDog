@@ -198,6 +198,23 @@ combo), op combo (the 10 ops), value field shown only for comparison ops.
   dimmed: the editor beside the list is showing it. `App::RecipeListed` is
   the one predicate; the organizer applies the hidden half and lets its text
   filter match a tag as well as the name.
+- **Working vs loose recipes — derived, never stored.** A WORKING recipe is
+  one a program deck can reach: named by a node in any slot of any program,
+  or transitively called as a `sub_recipe` / named as the `on_fail` of one
+  that is (`WorkingRecipes` in `command/Program.h`, rebuilt each frame from
+  the document, so an organizer edit shows at once). The Program Organizer's
+  library groups and colours them the same way, with its own `loose only`
+  (no Delete there, so nothing to refuse). The list draws them in a
+  *Working* group on top — the run icon, green text on a faint green band
+  (`kWorkingText`/`kWorkingBand`, `ui/Theme.h`) — and the rest under *Loose*.
+  The grouping is display order only; `recipeSel_` stays a library index.
+  Delete refuses a working recipe (button disabled, tooltip says which program
+  or caller, and the modal re-checks): removing it would leave a dangling
+  node, a `sub_recipe` that cannot inline, or an `on_fail` that refuses the
+  run at Start. `loose only` (persisted in UiSettings beside `show hidden`)
+  drops the working group like any other filter. Lua's `fd.run_recipe` is NOT
+  followed — a script names its recipe at run time — so a recipe reached only
+  from a script reads as loose.
 
 ## 6. Small core changes required (the complete list)
 
