@@ -7,7 +7,8 @@
 IconToolButton) of the Recipe Editor step toolbar, its recipe list, and the
 Program Organizer: tb_move_up, tb_move_down, tb_indent, tb_outdent, tb_delete,
 tb_copy, tb_cut, tb_paste, tb_new, tb_duplicate, tb_rename, tb_reload,
-tb_show, tb_hide, tb_tag.
+tb_show, tb_hide, tb_tag. Also the Run deck's two mode buttons: run_teach
+(teach mode) and run_inspect (the Inspect Motion window).
 
 Drawn from primitives (rects, polygons, rings) with NO anti-aliasing, then
 every glyph gets the same 1 px dark outline - that outline pass is what makes
@@ -374,6 +375,46 @@ def tag():
     return c
 
 
+def teach():
+    """Run strip: Teach mode - a crosshair on a spot, a pencil recording it.
+    Orange, the teach colour (ui/Theme.h kTeachOrange)."""
+    c = Canvas()
+    tgt = Canvas()
+    tgt.ring(13, 13, 10.5, 7.5, ORANGE)
+    tgt.rect(12, 1, 13, 25, ORANGE)              # cross hairs through the ring
+    tgt.rect(0, 12, 25, 13, ORANGE)
+    tgt.ring(13, 13, 2.6, 0, ORANGE_HI)          # the spot
+    tgt.arc(13, 13, 10, 8.5, 100, 170, ORANGE_HI)
+    tgt.outline()
+    pen = Canvas()                               # pencil, tip on the ring
+    s0, s1 = (19, 25), (28, 16)
+    pen.bar(s0[0], s0[1], s1[0], s1[1], 6, YELLOW)
+    pen.bar(s0[0] + 1, s0[1] - 2, s1[0] - 1, s1[1] - 3, 2, YELLOW_DK)
+    pen.bar(s1[0], s1[1], s1[0] + 2.5, s1[1] - 2.5, 6, PINK)            # eraser
+    pen.poly([(s0[0] - 2, s0[1] - 2), (s0[0] + 2, s0[1] + 2), (15, 29)], TAN_HI)
+    pen.poly([(16.2, 26.6), (17.4, 27.8), (15, 29)], GRAPHITE)            # lead
+    pen.outline()
+    c.stamp(tgt)
+    c.stamp(pen)
+    return c
+
+
+def inspect_motion():
+    """Run strip: Inspect Motion - a magnifier with a move arrow in the glass."""
+    c = Canvas()
+    c.bar(21, 21, 29, 29, 5, TAN)                # handle
+    c.bar(20, 20, 23, 23, 5, STEEL_D)            # ferrule
+    c.ring(13, 13, 11.5, 8.5, STEEL)             # rim
+    c.arc(13, 13, 11.5, 10, 110, 200, WHITE)
+    c.ring(13, 13, 8.5, 0, hexc("#bfe3ff"))      # glass
+    # the motion being inspected: a right-going arrow across the glass
+    c.rect(6, 12, 13, 14, BLUE)
+    c.poly([(12, 7.5), (19.5, 13.5), (12, 19.5)], BLUE)
+    c.rect(6, 12, 12, 12, BLUE_HI)
+    c.outline()
+    return c
+
+
 ICONS = {
     "tb_move_up":   arrow_up,
     "tb_move_down": arrow_down,
@@ -390,13 +431,25 @@ ICONS = {
     "tb_show":      show,
     "tb_hide":      hide,
     "tb_tag":       tag,
+    "run_teach":    teach,
+    "run_inspect":  inspect_motion,
 }
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
+    # Bare names restrict the run to those icons, so adding one never rewrites
+    # a PNG somebody has since touched up by hand:
+    #   python tools/icons/make_toolbar_icons.py run_teach run_inspect
+    args = sys.argv[1:]
+    if "--preview" in args:
+        i = args.index("--preview")
+        args = args[:i] + args[i + 2:]
+    only = [a for a in args if a in ICONS]
     made = {}
     for name, fn in ICONS.items():
+        if only and name not in only:
+            continue
         cv = fn()
         made[name] = cv
         write_rgba(os.path.join(OUT, name + ".png"), N, N, cv.px)

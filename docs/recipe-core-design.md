@@ -460,8 +460,10 @@ public:
 
 After a fixture shift every saved position a product's recipes visit has to be
 re-taught, and nothing but the recipes themselves says which positions those
-are, or in what order. **Teach mode** (the Run strip's toggle, `App::teachMode_`,
-never persisted, cleared at sign-out) makes a run walk exactly that list.
+are, or in what order. **Teach mode** (the Teach button under the Run deck's
+slot combo, `App::teachMode_`, never persisted, cleared at sign-out) makes a
+run walk exactly that list. While it is on, Execute turns teach-orange and
+reads *Teach run* - the press that follows teaches, it does not run the part.
 
 It is built from two small pieces, and the engine knows nothing about it:
 

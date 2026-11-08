@@ -1187,9 +1187,17 @@ void App::DrawRunPanel()
                  goAct(0.11f, 0.40f, 0.18f, 1.0f);
     const ImVec4 stCol(0.60f, 0.17f, 0.15f, 1.0f), stHov(0.78f, 0.24f, 0.21f, 1.0f),
                  stAct(0.45f, 0.12f, 0.11f, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_Button,        running ? stCol : goCol);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, running ? stHov : goHov);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  running ? stAct : goAct);
+    // Teach mode turns the go colour ORANGE (the teach colour, ui/Theme.h): the
+    // press that follows teaches positions instead of running the part, and
+    // that must read from across the bench too, not only on the label. Stop
+    // stays red either way - moving is moving.
+    const bool teachGo = teachMode_ && !running;
+    ImGui::PushStyleColor(ImGuiCol_Button,
+                          running ? stCol : (teachGo ? kTeachOrange : goCol));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                          running ? stHov : (teachGo ? kTeachOrangeHov : goHov));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                          running ? stAct : (teachGo ? kTeachOrangeAct : goAct));
     PushRunBigText();
     if (running) {
         if (IconButton(UiIcon("Stop"), "Stop", ImVec2(260.0f, stripBtnH)))
@@ -1198,7 +1206,8 @@ void App::DrawRunPanel()
         ImGui::BeginDisabled(!canRun);
         // In teach mode the go button says so itself: the press that follows
         // teaches positions instead of running the part.
-        if (IconButton(UiIcon("run_execute"), teachMode_ ? "Teach run" : "Execute",
+        if (IconButton(UiIcon(teachMode_ ? "run_teach" : "run_execute"),
+                       teachMode_ ? "Teach run" : "Execute",
                        ImVec2(260.0f, stripBtnH)))
             StartDeckRun(onNode ? RunScope::Node : RunScope::Slot);
         if (ImGui::IsItemHovered()) {
@@ -1246,54 +1255,12 @@ void App::DrawRunPanel()
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open the Program Organizer");
         ImGui::EndDisabled();
     }
-    // Teach mode toggle. Gated like re-teaching a position anywhere else (the
-    // Motion page's level): it writes positions, not programs. Disabled while
-    // anything runs, so a queue can never change mode between its items — the
-    // runner carries its own copy of the flag regardless.
-    // Same height as Execute, like Save/Load: one row of one size of target.
-    constexpr float kStripSideW = 110.0f;
-    if (CanAccess(Page::Motion)) {
-        ImGui::SameLine();
-        ImGui::BeginDisabled(orch_.Busy());
-        // The push/pop pair keys off the value BEFORE the click: the button
-        // flips the flag, and a pop decided on the new value pops colours that
-        // were never pushed (ImGui asserts, the process aborts).
-        const bool wasOn = teachMode_;
-        if (wasOn) {
-            ImGui::PushStyleColor(ImGuiCol_Button,        kTeachOrange);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kTeachOrangeHov);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kTeachOrangeAct);
-        }
-        if (ImGui::Button(wasOn ? "TEACH ON" : "Teach", ImVec2(kStripSideW, stripBtnH))) {
-            teachMode_ = !teachMode_;
-            FD_INFO("program", "teach mode %s", teachMode_ ? "ON" : "off");
-        }
-        if (wasOn) ImGui::PopStyleColor(3);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Teach mode: a run executes ONLY its moves to saved positions\n"
-                              "(move_to_position and variants, move_path); everything else is\n"
-                              "skipped. After each move, jog onto the exact spot and Save to\n"
-                              "write it into that position, or Skip to keep it. Loops run once,\n"
-                              "both branches of an if are walked. No deck marks, no DUT record.\n"
-                              "Applies to every Run/Execute while on; off again at sign-out.");
-        ImGui::EndDisabled();
-    } else if (teachMode_) {
-        // Cannot happen after LogOut clears it, but never show a hidden mode.
-        teachMode_ = false;
-    }
-    // Inspect Motion: a read-only window over what Execute would run, so it
-    // stays live during a run - it never drives anything.
-    if (CanUse(kRoleInspect)) {
-        ImGui::SameLine();
-        const bool wasOpen = showMotionInspect_;
-        if (wasOpen) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-        if (ImGui::Button("Inspect Motion", ImVec2(kStripSideW + 30.0f, stripBtnH)))
-            showMotionInspect_ = !showMotionInspect_;
-        if (wasOpen) ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("List every move in the selected item (or the slot):\n"
-                              "device, target, velocity, approach and camera exposure.");
-    }
+    // Teach / Inspect Motion live in the deck column, under the slot combo
+    // (see "Mode buttons" below): they qualify what Execute runs on THIS slot, so they
+    // sit with the slot, and the strip keeps only Execute and what is loaded.
+    // Never show a mode the signed-in level cannot see - LogOut already clears
+    // it; this covers a level change without one.
+    if (teachMode_ && !CanAccess(Page::Motion)) teachMode_ = false;
     if (teachMode_ || rs.teach) {
         ImGui::SameLine();
         centerNext(ImGui::GetTextLineHeight());
@@ -1403,6 +1370,76 @@ void App::DrawRunPanel()
         ImGui::EndDisabled();
     }
     ImGui::EndDisabled();
+
+    // ---- Mode buttons: Teach | Inspect Motion, under the slot they act on ----
+    // Body-size text (the big run text would not fit two labels in a column
+    // this narrow), 1.6 frames tall so a glove still finds them. Whichever is
+    // visible at this level shares the row; one alone takes all of it.
+    {
+        const bool showTeach   = CanAccess(Page::Motion);
+        const bool showInspect = CanUse(kRoleInspect);
+        if (showTeach || showInspect) {
+            ImGui::PopFont();   // the deck's big text, pushed above
+            const float gap  = style.ItemSpacing.x;
+            const float rowW = ImGui::GetContentRegionAvail().x;
+            const float btnH = ImGui::GetFrameHeight() * 1.6f;
+            const float btnW = (showTeach && showInspect) ? (rowW - gap) * 0.5f : rowW;
+            const auto fits = [&](const char* label) {
+                return ImGui::GetTextLineHeight() + style.ItemInnerSpacing.x +
+                           ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.0f <=
+                       btnW;
+            };
+            if (showTeach) {
+                // Gated like re-teaching a position anywhere else (the Motion
+                // page's level): it writes positions, not programs. Disabled
+                // while anything runs, so a queue can never change mode
+                // between its items - the runner carries its own copy of the
+                // flag regardless. The push/pop pair keys off the value BEFORE
+                // the click: the button flips the flag, and a pop decided on
+                // the new value pops colours that were never pushed.
+                ImGui::BeginDisabled(orch_.Busy());
+                const bool wasOn = teachMode_;
+                if (wasOn) {
+                    ImGui::PushStyleColor(ImGuiCol_Button,        kTeachOrange);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kTeachOrangeHov);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kTeachOrangeAct);
+                }
+                if (IconButton(UiIcon("run_teach"), wasOn ? "TEACH ON" : "Teach",
+                               ImVec2(btnW, btnH))) {
+                    teachMode_ = !teachMode_;
+                    FD_INFO("program", "teach mode %s", teachMode_ ? "ON" : "off");
+                }
+                if (wasOn) ImGui::PopStyleColor(3);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Teach mode: a run executes ONLY its moves to saved positions\n"
+                                      "(move_to_position and variants, move_path); everything else is\n"
+                                      "skipped. After each move, jog onto the exact spot and Save to\n"
+                                      "write it into that position, or Skip to keep it. Loops run once,\n"
+                                      "both branches of an if are walked. No deck marks, no DUT record.\n"
+                                      "Applies to every Run/Execute while on; off again at sign-out.");
+                ImGui::EndDisabled();
+                if (showInspect) ImGui::SameLine(0.0f, gap);
+            }
+            if (showInspect) {
+                // A read-only window over what Execute would run, so it stays
+                // live during a run - it never drives anything. Lit while open.
+                const bool wasOpen = showMotionInspect_;
+                if (wasOpen)
+                    ImGui::PushStyleColor(ImGuiCol_Button,
+                                          ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                if (IconButton(UiIcon("run_inspect"),
+                               fits("Inspect Motion") ? "Inspect Motion" : "Inspect",
+                               ImVec2(btnW, btnH)))
+                    showMotionInspect_ = !showMotionInspect_;
+                if (wasOpen) ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Inspect Motion: list every move in the selected item\n"
+                                      "(or the slot): device, target, velocity, approach and\n"
+                                      "camera exposure.");
+            }
+            PushRunBigText();
+        }
+    }
     ImGui::Separator();
 
     // The deck is READ-ONLY. Every edit — add, delete, move, folder, loop
