@@ -802,8 +802,10 @@ private:
     // drawn straight onto `dl` so it can never eat a click meant for the image.
     void DrawAuxPositionLabels(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail);
     // The registered devices' tool tips, projected onto the live image. Each
-    // tip is marked by its NAME and edge arrow only; its dZ and the "no tip:"
-    // lines stack up from the bottom-right corner, `bottomInset` above it - the
+    // tip is marked by its NAME and edge arrow only; its height against focus
+    // goes on the Z gauge (hex-left's pointer left of the tape, hex-right's
+    // right), which with the "no tip:" lines stacks up from the bottom-right
+    // corner, `bottomInset` above it - the
     // grip readout's plate sits in that corner. Returns the height it used, so
     // the cursor readout can stack above it. `origin`/`avail` = the window box
     // (where the text stacks), `imgO`/`imgS` = the image rect (where tips land).

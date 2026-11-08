@@ -690,6 +690,14 @@ public:
     // is exactly what GantryXY refuses to make callers do.
     std::string GantryName() const;
 
+    // Which way the gantry's AXIS Z counts when the camera goes UP: +1 or -1,
+    // 0 when there is no gantry or its transform does not map global Z onto
+    // its Z axis. "Up" is global Z+ (the Jog window's Up key), pushed through
+    // the gantry's transform - derived, never assumed, so a Z readout and the
+    // jog that moves it cannot disagree about which way is up. gantry-main:
+    // M33 = -1, raw Z 0 at the top, so this returns -1.
+    int GantryAxisZUpSign() const;
+
     // Live axis values of a motion device, looked up by its CONFIG name. Same
     // rule as GantryXY one line up: layer 2 owns the fleet lookup so a UI
     // readout never walks the device list itself. False when no device carries

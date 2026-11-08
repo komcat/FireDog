@@ -31,6 +31,8 @@
 #include "ui/UiSettings.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -73,6 +75,165 @@ constexpr double kTipAtFocusMM = 0.050;
 // alarm; present, because a cross that is simply absent is indistinguishable
 // from an overlay that is broken - which is exactly how it was read.
 constexpr ImU32 kTipGoneCol = IM_COL32(200, 170, 110, 220);
+
+// ---- The Z gauge: where each registered tip stands against the focus plane ----
+// One vertical tape, the camera's focused plane across its middle, one pointer
+// per hexapod (the LEFT one on the left of the tape, the RIGHT one on the
+// right). Read like an aircraft's vertical-speed tape: the scale is
+// LOGARITHMIC away from focus, so the last 0.1 mm of an approach gets as much
+// height as the 5 mm before it, and a tip 30 mm off still lands on the scale
+// (pinned at the end, in its own colour, with the true number beside it).
+// UP the tape is UP at the machine: the reading is the tip's HEIGHT above the
+// focused plane, dZ (gantry axis) times Workflow::GantryAxisZUpSign() - global
+// Z+ (the Jog window's Up) derived through the gantry's transform; on
+// gantry-main that is axis Z- (raw 0 is the top). Which way gantry Z counts is a fact about the machine (CLAUDE.md,
+// the needle rules); when it cannot be derived the tape falls back to the raw
+// axis dZ and says "+Z" / "-Z" at its ends instead of "above" / "below".
+constexpr double kGaugeD0MM    = 0.10;   // where the log scale bends (mm)
+constexpr double kGaugeRangeMM = 10.0;   // the tape's end (mm); beyond = pinned
+constexpr ImU32  kGaugeFocusCol  = IM_COL32(120, 230, 140, 230);
+constexpr ImU32  kGaugeTapeCol   = IM_COL32(200, 205, 215, 200);
+constexpr ImU32  kGaugePinnedCol = IM_COL32(245, 120, 90, 255);
+
+// dz -> -1..+1 along the tape (0 = focus), log-compressed and clamped.
+float GaugeFrac(double dz)
+{
+    const double f = std::log1p(std::fabs(dz) / kGaugeD0MM) /
+                     std::log1p(kGaugeRangeMM / kGaugeD0MM);
+    const double c = f > 1.0 ? 1.0 : f;
+    return static_cast<float>(dz < 0.0 ? -c : c);
+}
+
+struct GaugeTip {
+    std::string name;
+    double      dz      = 0.0;   // what the tape plots and prints: height when
+                                 // the up sign is known, else the axis dZ
+    bool        atFocus = false;
+};
+
+// Draws the gauge with its bottom at `bottom`, its right edge at `right`.
+// `left`/`rightTip` may be null (that side has no pointer). Returns the
+// height taken, plate included; 0 when the box is too short to hold it.
+//
+// FIXED SIZE: the tape is kGaugeTapeH tall whatever the window, and each side
+// reserves a label slot for its name plus a worst-case number, both sides
+// always - so the plate never breathes as a value changes length or a hexapod
+// connects, and a pointer's position is the only thing on it that moves.
+constexpr float kGaugeTapeH = 200.0f;
+float DrawZGauge(ImDrawList* dl, float right, float bottom, float maxH, bool upKnown,
+                 const GaugeTip* left, const GaugeTip* rightTip)
+{
+    const float fs = ImGui::GetFontSize();
+    const float ss = fs * 0.8f;          // tick numbers, title
+    ImFont*     font = ImGui::GetFont();
+    const float H = kGaugeTapeH;
+    if (H + ss + 22.0f > maxH) return 0.0f;
+
+    // In focus reads as ZERO on the number and on the tape: within
+    // kTipAtFocusMM the residual is below what the label means, and a pointer
+    // twitching about the line reads as motion that is not there.
+    const auto shown = [](const GaugeTip* t) { return t->atFocus ? 0.0 : t->dz; };
+    const auto label = [&](const GaugeTip* t) {
+        char b[128];
+        if (t->atFocus) std::snprintf(b, sizeof(b), "%s  0.000", t->name.c_str());
+        else            std::snprintf(b, sizeof(b), "%s  %+.3f", t->name.c_str(), shown(t));
+        return std::string(b);
+    };
+    const std::string lTxt = left ? label(left) : std::string();
+    const std::string rTxt = rightTip ? label(rightTip) : std::string();
+    // The slot: the widest of the names on screen and a stand-in, each with a
+    // worst-case number; the same width on both sides.
+    float slotW = ImGui::CalcTextSize("hex-right  -00.000").x;
+    for (const GaugeTip* t : {left, rightTip})
+        if (t) slotW = fmaxf(slotW, ImGui::CalcTextSize((t->name + "  -00.000").c_str()).x);
+    const float lW  = left ? ImGui::CalcTextSize(lTxt.c_str()).x : 0.0f;
+    const float rW  = rightTip ? ImGui::CalcTextSize(rTxt.c_str()).x : 0.0f;
+    const char* topEnd = upKnown ? "above" : "+Z";
+    const char* botEnd = upKnown ? "below" : "-Z";
+    const float tlW = font->CalcTextSizeA(ss, FLT_MAX, 0.0f, "10").x;
+    const float endW = fmaxf(font->CalcTextSizeA(ss, FLT_MAX, 0.0f, topEnd).x,
+                             font->CalcTextSizeA(ss, FLT_MAX, 0.0f, botEnd).x);
+
+    // Right to left: [left label][leader]|tape|[tick numbers + leader][right label]
+    const float xRL = right - slotW - 6.0f;                      // right leader's outer end
+    const float xT  = xRL - (tlW + 18.0f);                       // the tape
+    const float xLL = xT - 24.0f;                                // left leader's outer end
+    const char* title = upKnown ? "height to focus, mm (reg)" : "dZ to focus, mm (reg)";
+    const float tw    = font->CalcTextSizeA(ss, FLT_MAX, 0.0f, title).x;
+    const float plateL = fminf(fminf(xLL - 6.0f - slotW - 6.0f, xT - endW - 12.0f),
+                               right - tw - 4.0f);
+
+    const float yB = bottom - 8.0f;
+    const float yT = yB - H;
+    const float yC = (yT + yB) * 0.5f;
+    const float half = H * 0.5f;
+    const float plateT = yT - ss - 10.0f;
+    const auto yOf = [&](double dz) { return yC - GaugeFrac(dz) * half; };
+
+    dl->AddRectFilled(ImVec2(plateL, plateT), ImVec2(right + 6.0f, bottom),
+                      IM_COL32(0, 0, 0, 150), 4.0f);
+    // Title: what the numbers are, and that they are a BELIEF (reg), as the
+    // corner lines this replaced said.
+    dl->AddText(font, ss,
+                ImVec2(fmaxf(plateL + 4.0f, fminf(xT - tw * 0.5f, right - tw)), plateT + 4.0f),
+                kTipGoneCol, title);
+
+    // The tape, its ends, its ticks.
+    dl->AddLine(ImVec2(xT, yT), ImVec2(xT, yB), kGaugeTapeCol, 1.5f);
+    dl->AddText(font, ss, ImVec2(xT - endW - 6.0f, yT - ss * 0.5f), kGaugeTapeCol, topEnd);
+    dl->AddText(font, ss, ImVec2(xT - endW - 6.0f, yB - ss * 0.5f), kGaugeTapeCol, botEnd);
+    struct Tick { double v; const char* txt; };
+    static constexpr Tick kTicks[] = {
+        {0.1, nullptr}, {0.5, nullptr}, {1.0, "1"}, {2.0, nullptr}, {5.0, "5"}, {10.0, "10"}};
+    for (const Tick& t : kTicks) {
+        for (const double s : {1.0, -1.0}) {
+            const float y   = yOf(s * t.v);
+            const float len = t.txt ? 7.0f : 4.0f;
+            dl->AddLine(ImVec2(xT - len, y), ImVec2(xT + len, y), kGaugeTapeCol, 1.0f);
+            if (t.txt)
+                dl->AddText(font, ss, ImVec2(xT + 9.0f, y - ss * 0.5f), kGaugeTapeCol, t.txt);
+        }
+    }
+    // The focus plane: across the whole gauge, as on the sketch.
+    dl->AddLine(ImVec2(plateL + 4.0f, yC), ImVec2(right + 2.0f, yC), kGaugeFocusCol, 1.5f);
+    dl->AddText(font, ss, ImVec2(plateL + 4.0f, yC - ss - 1.0f), kGaugeFocusCol, "focus");
+
+    // A pointer: arrowhead on the tape, a leader out to its label. `dir` is -1
+    // for the left side, +1 for the right.
+    const auto pointer = [&](const GaugeTip& t, const std::string& txt, float labW, float dir) {
+        const bool  pinned = std::fabs(t.dz) > kGaugeRangeMM;
+        const ImU32 col = t.atFocus ? kGaugeFocusCol : (pinned ? kGaugePinnedCol : kTipCol);
+        const float y   = yOf(shown(&t));
+        const float tip = xT + dir * 1.0f;
+        const float base = xT + dir * 11.0f;
+        dl->AddTriangleFilled(ImVec2(tip, y), ImVec2(base, y - 6.0f), ImVec2(base, y + 6.0f), col);
+        const float outer = dir < 0.0f ? xLL : xRL;
+        dl->AddLine(ImVec2(base, y), ImVec2(outer, y), col, 2.0f);
+        const ImVec2 at(dir < 0.0f ? outer - 4.0f - labW : outer + 4.0f, y - fs * 0.5f);
+        dl->AddRectFilled(ImVec2(at.x - 3.0f, at.y - 1.0f), ImVec2(at.x + labW + 3.0f, at.y + fs + 1.0f),
+                          IM_COL32(0, 0, 0, 200), 3.0f);
+        dl->AddText(at, col, txt.c_str());
+    };
+    if (left)     pointer(*left, lTxt, lW, -1.0f);
+    if (rightTip) pointer(*rightTip, rTxt, rW, +1.0f);
+    return bottom - plateT;
+}
+
+// Which side of the gauge a registered device's pointer goes: by its NAME
+// (hex-left / hex-right), else whichever side is still free. -1 left, +1
+// right, 0 none left (it falls back to a text line).
+int GaugeSide(const std::string& name, bool leftTaken, bool rightTaken)
+{
+    std::string n = name;
+    for (char& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (n.find("left") != std::string::npos && !leftTaken) return -1;
+    if (n.find("right") != std::string::npos && !rightTaken) return +1;
+    if (n.find("left") == std::string::npos && n.find("right") == std::string::npos) {
+        if (!leftTaken) return -1;
+        if (!rightTaken) return +1;
+    }
+    return 0;
+}
 
 // The object a grip run MEASURED in the jaws. Its own hue - not the tip's
 // amber (a belief), not the detection's green (this frame): it is a point
@@ -745,10 +906,14 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
     // on screen cannot tell a refusal from a broken overlay, and the log says it
     // once per session.
     std::vector<std::string> gone;
-    // Each drawn tip's dZ line, for the bottom-right readout. On the mark it
-    // overlapped the next tip's plate whenever two tools sat near each other
-    // or both ran off the same edge; in the corner every line has its own row.
+    // Each drawn tip's Z against focus. Two of them go on the Z GAUGE in the
+    // bottom-right (DrawZGauge: hex-left's pointer left of the tape,
+    // hex-right's right of it); anything the gauge cannot place - no gantry Z,
+    // a third device - keeps a text line in the corner, as before.
     std::vector<std::string> dzLines;
+    const int upSign  = workflow_.GantryAxisZUpSign();
+    GaugeTip  gLeft, gRight;
+    bool      haveLeft = false, haveRight = false;
 
     for (const auto& [name, r] : workflow_.DeviceRegs()) {
         if (!r.valid || r.refDevice != refName) continue;
@@ -772,10 +937,17 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
         if (haveGz) dz = tip.z - gz;
 
         // The mark carries the device NAME only (with its edge arrow when off
-        // screen); the dZ goes to the corner readout, which says 'reg' so a
-        // number there cannot read as an observation of the tool.
+        // screen); the Z goes to the gauge (or a corner line), both of which
+        // say 'reg' so a number there cannot read as an observation of the tool.
         const std::string lbl = name;
-        {
+        const int side = haveGz ? GaugeSide(name, haveLeft, haveRight) : 0;
+        if (side != 0) {
+            GaugeTip& g = side < 0 ? gLeft : gRight;
+            g.name    = name;
+            g.dz      = upSign != 0 ? upSign * dz : dz;
+            g.atFocus = atFocus;
+            (side < 0 ? haveLeft : haveRight) = true;
+        } else {
             char line[128];
             if (!haveGz)
                 std::snprintf(line, sizeof(line), "%s reg", name.c_str());
@@ -825,15 +997,38 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
     }
 
     // Bottom-right, stacked upward: the opposite corner from the position plate,
-    // and out of the way of a mark that is on screen.
-    // The drawn tips' dZ first (nearest the corner - the lines read most
-    // often), then the ones that could not be drawn.
+    // and out of the way of a mark that is on screen. The Z gauge first
+    // (nearest the corner - it is read most often), then any tip it could not
+    // place, then the ones that could not be drawn.
     const float lineH = ImGui::GetTextLineHeightWithSpacing();
-    const float y0    = origin.y + avail.y - 8.0f - bottomInset - lineH;
-    float       y     = y0;
+    const float yBase = origin.y + avail.y - 8.0f - bottomInset;
+    float       y     = yBase;
+    if (haveLeft || haveRight) {
+        // Fixed size: drawn whole whenever it fits under the top control
+        // plate's band (~3 lines), else the plain lines below.
+        const float gh = DrawZGauge(dl, origin.x + avail.x - 12.0f, y,
+                                    y - origin.y - lineH * 3.0f, upSign != 0,
+                                    haveLeft ? &gLeft : nullptr,
+                                    haveRight ? &gRight : nullptr);
+        if (gh > 0.0f) {
+            y -= gh + 4.0f;
+        } else {
+            // Too short to read a tape: the plain lines, as before the gauge.
+            for (const GaugeTip* g : {haveLeft ? &gLeft : nullptr, haveRight ? &gRight : nullptr}) {
+                if (!g) continue;
+                char line[128];
+                if (g->atFocus)
+                    std::snprintf(line, sizeof(line), "%s reg  in focus", g->name.c_str());
+                else
+                    std::snprintf(line, sizeof(line), "%s reg  %s %+.3f mm", g->name.c_str(),
+                                  upSign != 0 ? "height" : "dZ", g->dz);
+                dzLines.insert(dzLines.begin(), line);
+            }
+        }
+    }
     const auto put = [&](const char* line, ImU32 col) {
         const ImVec2 ts = ImGui::CalcTextSize(line);
-        const ImVec2 at(origin.x + avail.x - ts.x - 12.0f, y);
+        const ImVec2 at(origin.x + avail.x - ts.x - 12.0f, y - lineH);
         if (at.x < origin.x + 4.0f) return;   // narrower than the text: say nothing
         dl->AddRectFilled(ImVec2(at.x - 4.0f, at.y - 2.0f),
                           ImVec2(at.x + ts.x + 4.0f, at.y + ts.y + 2.0f),
@@ -847,7 +1042,7 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
         std::snprintf(line, sizeof(line), "no tip: %s", g.c_str());
         put(line, kTipGoneCol);
     }
-    return y0 - y;   // the rows used, so the cursor readout stacks above them
+    return yBase - y;   // the height used, so the cursor readout stacks above it
 }
 
 // The last grip measurement, on the picture and in words.

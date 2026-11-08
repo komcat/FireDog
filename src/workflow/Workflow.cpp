@@ -2186,6 +2186,23 @@ bool Workflow::JogGantryZ(double deltaMM)
     return JogGlobal(gi, 0.0f, 0.0f, gz, std::fabs(deltaMM));
 }
 
+int Workflow::GantryAxisZUpSign() const
+{
+    // One unit of "up" through the gantry's transform, read off its Z axis.
+    // The GLOBAL frame is Z-up: the Jog window's Up key is global Z+. On this
+    // machine gantry-main has M33 = -1 and raw Z 0 is the top of travel, so
+    // up comes back as axis Z- (-1) - which is the answer, not an assumption.
+    std::vector<std::pair<std::string, double>> d;
+    if (!GlobalDeltaToAxes(GantryIndex(), 0.0, 0.0, +1.0, &d)) return 0;
+    for (const auto& [axis, v] : d) {
+        if (axis != "Z") continue;
+        if (v > 0.5)  return +1;
+        if (v < -0.5) return -1;
+        return 0;   // up lands on another axis: no Z reading means "height"
+    }
+    return 0;
+}
+
 bool Workflow::MoveGantryRelativeMM(double dxMM, double dyMM)
 {
     if (SafetyBlocked()) {
