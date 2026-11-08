@@ -211,6 +211,11 @@ inline std::string StepDetectorName(const std::string& uid)
 {
     return std::string(kStepDetectorPrefix) + uid;
 }
+// A detect_object step's view THUMBNAIL - the centre half of the frame, grey,
+// snapped by the helper's Teach here as a guide to where the camera should be
+// looking. Named after the model's uid and OWNED by it like its .pgm patch:
+// DeleteVisionModel drops it, CopyVisionModelAs and CopyVisionTemplates copy it.
+inline std::string ViewThumbFile(const std::string& uid) { return uid + "_view.pgm"; }
 
 // ---- the feature's rotation (detect_object's P) ----------------------------
 // How far the found feature is turned from the orientation it was taught at,

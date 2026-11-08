@@ -383,6 +383,18 @@ private:
     // X / Y / P ticks and its private detection model, taught with the
     // alignment teach panels (DrawVisionTeachBody). Edits the selected step.
     void DrawVisionDetectHelperWindow();
+    // Its "Camera position" section: the view taught into the step (Go / Teach
+    // here / Clear, the thumbnail) and the run options (safe-Z lift, centring,
+    // the manual fallback). Teach here records the pose into the step, the
+    // camera's exposure into the step's model and a centre-half thumbnail
+    // beside the model (ViewThumbFile).
+    void DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, VisionModel& m,
+                               bool busy, bool canTeach);
+    // Go: the same legs a run takes (safe Z, XY, Z - or one XYZ move), as an
+    // ad-hoc recipe of move_axis_to steps, so Busy, Stop and the safety abort
+    // come with it.
+    void StartDetectViewGo(const nlohmann::json& merged);
+    bool EnsureViewThumbTex(const VisionModel& m);   // visionViewTex_, reloaded on change
     std::string AutoNickname(const RecipeStep& s) const;   // live label from params
     void DrawRecipeTreeToolbar(Recipe& r, bool canEdit);   // move/delete row
     void DrawRecipePalette(Recipe& r, bool canEdit);
@@ -1787,6 +1799,7 @@ private:
     // keyed by what it was built from (VisionModelPatchKey), so a model switch,
     // a re-teach or an anchor drag reloads it and nothing else does.
     PatchTex visionTmpl_;       // vision teach page: the NCC patch + its anchor
+    PatchTex visionViewTex_;    // Vision detect helper: the step's view thumbnail
     PatchTex alignTmpl_[2];     // object point 1/2 (placement), grip page
     // Alignment page station cards: one thumbnail per station x detection tier,
     // index (station - 1) * kAlignDetectTiers + (tier - 1).

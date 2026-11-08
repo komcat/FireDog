@@ -25,15 +25,25 @@
 #include "command/CommandRegistry.h"
 #include "command/Commands.h"   // kVisionDetectHelper
 #include "command/Recipe.h"     // kElseBranchBase
+#include "core/AlignLighting.h" // AlignLightingSummary
+#include "core/Log.h"
 #include "core/Product.h"       // GenerateUid
+#include "hardware/HardwareManager.h"
+#include "hardware/motion/IMotionController.h"
+#include "vision/FocusMetric.h" // RgbToGray8 - the thumbnail crop
 #include "vision/VisionModel.h"
+#include "ui/RoiFilter.h"       // RoiFilterFrame (MainCameraFrame)
 #include "ui/Widgets.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <string>
+#include <system_error>
+#include <vector>
 
 namespace firedog {
 
@@ -62,6 +72,28 @@ int CountStepOwners(const std::vector<Recipe>& recipes, const std::string& uid)
         };
     for (const Recipe& r : recipes) walk(r.steps);
     return n;
+}
+
+// Fleet index for a configured motion device name, -1 when there is none.
+int MotionIndexOf(const HardwareManager& hw, const std::string& name)
+{
+    for (std::size_t i = 0; i < hw.MotionCount(); ++i)
+        if (hw.MotionName(i) == name) return static_cast<int>(i);
+    return -1;
+}
+
+// The step's taught view, from its effective params.
+bool ViewPointOf(const nlohmann::json& merged, double* xyz)
+{
+    if (!merged.contains("view_point")) return false;
+    const nlohmann::json& v = merged["view_point"];
+    if (!v.is_object()) return false;
+    static const char* kAx[3] = {"X", "Y", "Z"};
+    for (int a = 0; a < 3; ++a) {
+        if (!v.contains(kAx[a]) || !v[kAx[a]].is_number()) return false;
+        xyz[a] = v[kAx[a]].get<double>();
+    }
+    return true;
 }
 
 } // namespace
@@ -219,6 +251,12 @@ void App::DrawVisionDetectHelperWindow()
         ImGui::End();
         return;
     }
+    // Where the camera goes before it looks, and what happens around the look.
+    // Before the Admin gate: anybody who may edit the recipe may drive to the
+    // view and set the run options; Teach here writes the model too, so it
+    // carries the gate itself.
+    DrawDetectViewSection(*s, merged, *m, busy, canTeach);
+
     if (!canTeach) {
         ImGui::SeparatorText("Detection model");
         ImGui::Text("%s  (%s)", m->name.c_str(), m->method.c_str());
@@ -290,6 +328,230 @@ void App::DrawVisionDetectHelperWindow()
 
     DrawVisionTeachBody(*m);
     ImGui::End();
+}
+
+// ---- Camera position + run options --------------------------------------------
+
+void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, VisionModel& m,
+                                bool busy, bool canTeach)
+{
+    ImGui::SeparatorText("Camera position");
+    const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
+
+    double vp[3] = {0.0, 0.0, 0.0};
+    const bool taught = ViewPointOf(merged, vp);
+    if (taught)
+        ImGui::Text("X %.4f  Y %.4f  Z %.4f", vp[0], vp[1], vp[2]);
+    else
+        ImGui::TextDisabled("not taught - the step detects wherever the camera stands");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%s axis)", camDev.c_str());
+
+    // The guide: what the camera saw when the view was taught. The centre half
+    // of the frame - where the object should sit for the next person teaching.
+    if (EnsureViewThumbTex(m)) {
+        const float w = std::min(ImGui::GetContentRegionAvail().x, 360.0f);
+        const float h = w * static_cast<float>(visionViewTex_.h) /
+                        static_cast<float>(visionViewTex_.w);
+        ImGui::Image((ImTextureID)(intptr_t)visionViewTex_.tex, ImVec2(w, h));
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The taught view: the centre half of the frame, snapped by\n"
+                              "Teach here. Put the camera where this picture was taken.");
+    } else {
+        ImGui::TextDisabled("(no thumbnail - Teach here takes one)");
+    }
+
+    // The live pose, for Teach here (and a fast poll while the window is up, so
+    // it is fresh when the button is pressed - the PointXyz form's habit).
+    double live[3] = {0.0, 0.0, 0.0};
+    bool   hasLive = false;
+    const int devIdx = MotionIndexOf(hardware_, camDev);
+    IMotionController* mc =
+        devIdx >= 0 ? hardware_.MotionDevice(static_cast<std::size_t>(devIdx)) : nullptr;
+    if (mc && mc->IsConnected()) {
+        mc->RequestFastPoll();
+        const std::map<std::string, double> pos = mc->Positions();
+        static const char* kAx[3] = {"X", "Y", "Z"};
+        hasLive = true;
+        for (int a = 0; a < 3 && hasLive; ++a) {
+            const auto it = pos.find(kAx[a]);
+            hasLive = it != pos.end();
+            if (hasLive) live[a] = it->second;
+        }
+    }
+
+    // Go drives a device: the jog arm and the whole orchestration gate it.
+    ImGui::BeginDisabled(busy || !taught || !jogArmed_);
+    if (ImGui::Button("Go")) StartDetectViewGo(merged);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (!jogArmed_)
+            ImGui::SetTooltip("Arm jog first (Jog window) - this drives %s.", camDev.c_str());
+        else
+            ImGui::SetTooltip("Drive %s to the taught view, the way a run does\n"
+                              "(via the safe Z when Z safe lift is on).", camDev.c_str());
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(busy || !hasLive || !canTeach);
+    if (ImGui::Button("Teach here")) {
+        s.params["view_point"] = {{"X", live[0]}, {"Y", live[1]}, {"Z", live[2]}};
+        // The exposure the camera is at now goes into the step's model - the
+        // one place a run reads it from. The light is the model's already: it
+        // is set (and lit) in the camera strip under the image.
+        if (hardware_.CameraState() == ConnState::Connected) {
+            const double expo = hardware_.Camera().ExposureUs();
+            if (expo > 0.0) m.exposureUs = expo;
+        }
+        // The thumbnail: the centre half of the frame, grey, beside the model.
+        const RoiFilterFrame f = MainCameraFrame();
+        bool snapped = false;
+        if (f.Valid()) {
+            std::vector<unsigned char> gray;
+            const FocusRoi want{f.w / 4, f.h / 4, f.w / 2, f.h / 2};
+            const FocusRoi got = RgbToGray8(f.rgb, f.w, f.h, want, gray);
+            if (got.w > 0 && got.h > 0) {
+                std::error_code ec;
+                std::filesystem::create_directories(session_.VisionDir(), ec);
+                snapped = SaveGrayPgm(session_.VisionDir() + "/" + ViewThumbFile(m.uid),
+                                      gray.data(), got.w, got.h);
+                visionViewTex_.key.clear();   // reload the new picture
+            }
+        }
+        char buf[200];
+        std::snprintf(buf, sizeof(buf), "view taught at X %.4f Y %.4f Z %.4f, exposure %.0f us%s",
+                      live[0], live[1], live[2], m.exposureUs,
+                      snapped ? ", thumbnail saved" : " - NO thumbnail (no camera frame)");
+        visionStatus_ = buf;
+        FD_INFO("vision", "'%s': %s", m.name.c_str(), buf);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (!canTeach)
+            ImGui::SetTooltip("Teaching the view writes the detection model too - Admin.");
+        else if (!hasLive)
+            ImGui::SetTooltip("%s: not connected, or reports no X/Y/Z", camDev.c_str());
+        else
+            ImGui::SetTooltip("Record, in one go:\n"
+                              "  %s at X %.4f  Y %.4f  Z %.4f (into the step)\n"
+                              "  the camera's current exposure (into the model)\n"
+                              "  a thumbnail of the centre half of the frame",
+                              camDev.c_str(), live[0], live[1], live[2]);
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(busy || !taught);
+    if (ImGui::Button("Clear")) s.params.erase("view_point");
+    ImGui::EndDisabled();
+
+    ImGui::TextDisabled("exposure %.0f us, light %s - the model's, applied before the move",
+                        m.exposureUs, AlignLightingSummary(m.lighting).c_str());
+
+    // ---- Run options ----------------------------------------------------------
+    ImGui::SeparatorText("Run");
+    ImGui::BeginDisabled(busy);
+    bool zLift = merged.value("z_lift", true);
+    if (ImGui::Checkbox("Z safe lift", &zLift)) s.params["z_lift"] = zLift;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("On: Z goes to the safe Z first, then X/Y across, then Z down to\n"
+                          "the taught height. Off: one direct X/Y/Z move.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!zLift);
+    double safeZ = merged.value("safe_z_mm", 25.0);
+    ImGui::SetNextItemWidth(90.0f);
+    if (ImGui::InputDouble("safe Z (axis)", &safeZ, 0.0, 0.0, "%.3f"))
+        s.params["safe_z_mm"] = safeZ;
+    ImGui::EndDisabled();
+
+    bool center = merged.value("center_after", false);
+    if (ImGui::Checkbox("Center the camera on the result", &center))
+        s.params["center_after"] = center;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("After a result, move %s X/Y onto it (Z unchanged) - the\n"
+                          "same drive move_to_result uses.", camDev.c_str());
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!center);
+    double cmax = merged.value("center_max_mm", 5.0);
+    ImGui::SetNextItemWidth(90.0f);
+    if (ImGui::InputDouble("max mm", &cmax, 0.0, 0.0, "%.2f")) s.params["center_max_mm"] = cmax;
+    ImGui::EndDisabled();
+
+    bool manual = merged.value("manual_fallback", false);
+    if (ImGui::Checkbox("Nothing found: ask the operator (P = 0)", &manual))
+        s.params["manual_fallback"] = manual;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Off: a miss fails the step (or sets %s_ok = false when\n"
+                          "require is off).\n"
+                          "On: the crosshair window opens; the point the operator\n"
+                          "confirms is the result, marked manual, with P = 0.",
+                          merged.value("ctx_prefix", std::string("det")).c_str());
+    ImGui::EndDisabled();
+}
+
+void App::StartDetectViewGo(const nlohmann::json& merged)
+{
+    double vp[3] = {0.0, 0.0, 0.0};
+    if (!ViewPointOf(merged, vp)) return;
+    const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
+    const bool   zLift = merged.value("z_lift", true);
+    const double safeZ = merged.value("safe_z_mm", 25.0);
+    const double vel   = merged.value("velocity_mm_s", 0.0);
+
+    Recipe one;
+    one.uid  = "detect-view-go";
+    one.name = "Go to the detect view";
+    const auto leg = [&](const char* axes, const nlohmann::json& t) {
+        RecipeStep st;
+        st.type     = "move_axis_to";
+        st.nickname = std::string("detect view: ") + axes;
+        st.params   = {{"device", camDev}, {"axes", axes}};
+        for (const auto& el : t.items()) st.params[el.key()] = el.value();
+        if (vel > 0.0) st.params["velocity_mm_s"] = vel;
+        one.steps.push_back(std::move(st));
+    };
+    if (zLift) {
+        leg("Z", {{"z_mm", safeZ}});
+        leg("XY", {{"x_mm", vp[0]}, {"y_mm", vp[1]}});
+        leg("Z", {{"z_mm", vp[2]}});
+    } else {
+        leg("XYZ", {{"x_mm", vp[0]}, {"y_mm", vp[1]}, {"z_mm", vp[2]}});
+    }
+    std::string err;
+    if (!orch_.recipe.Start(one, session_.MakeRecipeEnv(), &err)) {
+        visionStatus_ = "Go refused: " + err;
+        FD_WARN("vision", "detect view Go refused: %s", err.c_str());
+    } else {
+        visionStatus_ = "driving to the taught view";
+    }
+}
+
+bool App::EnsureViewThumbTex(const VisionModel& m)
+{
+    namespace fs = std::filesystem;
+    const std::string path = session_.VisionDir() + "/" + ViewThumbFile(m.uid);
+    std::error_code ec;
+    const auto t = fs::last_write_time(path, ec);
+    if (ec) {
+        visionViewTex_.key.clear();
+        visionViewTex_.w = visionViewTex_.h = 0;
+        return false;
+    }
+    // Keyed on the file and its write time: a re-teach rewrites the same name.
+    const std::string key = path + "|" + std::to_string(t.time_since_epoch().count());
+    if (key != visionViewTex_.key) {
+        visionViewTex_.key = key;
+        std::vector<unsigned char> gray;
+        int w = 0, h = 0;
+        if (LoadGrayPgm(path, &gray, &w, &h) && w > 0 && h > 0) {
+            std::vector<unsigned char> rgb(static_cast<std::size_t>(w) * h * 3);
+            for (std::size_t i = 0; i < gray.size(); ++i)
+                rgb[i * 3 + 0] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = gray[i];
+            visionViewTex_.tex = host_.EnsureTextureRGB(visionViewTex_.tex, w, h, rgb.data());
+            visionViewTex_.w   = w;
+            visionViewTex_.h   = h;
+        } else {
+            visionViewTex_.w = visionViewTex_.h = 0;
+        }
+    }
+    return visionViewTex_.tex != 0 && visionViewTex_.w > 0 && visionViewTex_.h > 0;
 }
 
 } // namespace firedog

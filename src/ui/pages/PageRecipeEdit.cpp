@@ -1678,7 +1678,8 @@ void App::DrawRecipeCtxKeys(const Recipe& r)
         const auto room = [&] { return sizeof(buf) - static_cast<std::size_t>(n); };
         if (lr.hasX) n += std::snprintf(buf + n, room(), " X %.4f", lr.x);
         if (lr.hasY) n += std::snprintf(buf + n, room(), " Y %.4f", lr.y);
-        if (lr.hasP) std::snprintf(buf + n, room(), " P %+.3f", lr.p);
+        if (lr.hasP) n += std::snprintf(buf + n, room(), " P %+.3f", lr.p);
+        if (lr.manual) std::snprintf(buf + n, room(), "  (manual)");
         ImGui::TextColored(kLoc, "%s", lr.name.c_str());
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s  -  model %s, score %.3f\nmeasured %s",

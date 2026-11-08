@@ -15,6 +15,7 @@
 
 #include "command/CommandSpec.h"
 #include "command/ExecutionContext.h"
+#include "core/ObjectResult.h"     // ObjectResult (MoveToObjectResult)
 #include "core/SavedPositions.h"   // SavedPos (TargetsOf below)
 
 namespace firedog {
@@ -111,6 +112,18 @@ bool IssueMove(ExecutionContext& ctx, int idx,
 ParamSpec VelocityParam();
 ParamSpec ExposureParam();
 CommandResult ApplyPreMove(ExecutionContext& ctx, int idx, const ParamValues& p);
+
+// Drive `m` (fleet index `idx`, named `device`) onto a live object result:
+// the X and/or Y asked for (each must be one the result carries), plus the
+// offsets, refused when the record is on another device or the travel exceeds
+// `maxMm` (0 = no ceiling). Z and the rotations are never commanded. Through
+// ApplyPreMove + MoveWithApproach, so `p` supplies velocity_mm_s, tol_mm,
+// timeout_ms and the approach triple. The one implementation behind both
+// move_to_result and detect_object's center_after.
+CommandResult MoveToObjectResult(ExecutionContext& ctx, IMotionController* m, int idx,
+                                 const std::string& device, const ObjectResult& r,
+                                 bool wantX, bool wantY, double offX, double offY,
+                                 double maxMm, const ParamValues& p);
 
 // The same velocity param for the TOOL approaches (move_tool_to_camera,
 // move_camera_to_tool, move_to_point, tool_travel_to_camera, the two grip

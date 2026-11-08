@@ -364,6 +364,65 @@ CommandResult ApplyPreMove(ExecutionContext& ctx, int idx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// Declared in MotionWaits.h: the one drive onto a live object result, behind
+// move_to_result and detect_object's center_after.
+CommandResult MoveToObjectResult(ExecutionContext& ctx, IMotionController* m, int idx,
+                                 const std::string& device, const ObjectResult& r,
+                                 bool wantX, bool wantY, double offX, double offY,
+                                 double maxMm, const ParamValues& p)
+{
+    if (r.device != device)
+        return CommandResult::Fail("result '" + r.name + "' is a location on '" + r.device +
+                                   "', not on '" + device + "' - the same numbers are a "
+                                   "different place there");
+    if (wantX && !r.hasX)
+        return CommandResult::Fail("X asked for but result '" + r.name + "' carries none - "
+                                   "tick X on the step that produces it");
+    if (wantY && !r.hasY)
+        return CommandResult::Fail("Y asked for but result '" + r.name + "' carries none - "
+                                   "tick Y on the step that produces it");
+    if (!wantX && !wantY)
+        return CommandResult::Fail("nothing to move: neither X nor Y of result '" + r.name +
+                                   "' asked for");
+
+    std::vector<std::pair<std::string, double>> targets;
+    if (wantX) targets.emplace_back("X", r.x + offX);
+    if (wantY) targets.emplace_back("Y", r.y + offY);
+
+    const std::vector<std::string> have = m->Axes();
+    for (const auto& t : targets)
+        if (std::find(have.begin(), have.end(), t.first) == have.end())
+            return CommandResult::Fail("device '" + device + "' has no axis " + t.first);
+
+    double travel = 0.0;
+    {
+        const std::map<std::string, double> live = m->Positions();
+        double sq = 0.0;
+        for (const auto& t : targets) {
+            const auto it = live.find(t.first);
+            if (it == live.end())
+                return CommandResult::Fail("device '" + device + "' reports no " + t.first);
+            sq += (t.second - it->second) * (t.second - it->second);
+        }
+        travel = std::sqrt(sq);
+    }
+    if (maxMm > 0.0 && travel > maxMm) {
+        char b[200];
+        std::snprintf(b, sizeof(b),
+                      "result '%s' is %.3f mm away, more than the %.3f mm ceiling - refused "
+                      "(a wrong result turns a nudge into a lunge)",
+                      r.name.c_str(), travel, maxMm);
+        return CommandResult::Fail(b);
+    }
+
+    FD_INFO("motion", "'%s' to result '%s' (%s%s%s, %s, score %.3f, %s): %.3f mm",
+            device.c_str(), r.name.c_str(), wantX ? "X" : "", wantY ? "Y" : "",
+            r.manual ? ", MANUAL" : "", r.model.c_str(), r.score, r.at.c_str(), travel);
+    const CommandResult pre = ApplyPreMove(ctx, idx, p);
+    if (!pre.ok) return pre;
+    return MoveWithApproach(ctx, m, idx, targets, p, "result '" + r.name + "'");
+}
+
 // The two shared optional params, appended to every motion command's schema.
 ParamSpec VelocityParam()
 {
@@ -860,10 +919,6 @@ CommandResult ExecMoveToResult(ExecutionContext& ctx, const ParamValues& p)
         return CommandResult::Fail("no live result '" + name + "' - the step that finds it "
                                    "has not run since the program started (or the DUT was "
                                    "opened), or it found nothing");
-    if (r.device != device)
-        return CommandResult::Fail("result '" + name + "' is a location on '" + r.device +
-                                   "', not on '" + device + "' - the same numbers are a "
-                                   "different place there");
     if (!r.hasX && !r.hasY)
         return CommandResult::Fail("result '" + name + "' carries no X or Y - tick X and/or "
                                    "Y on the step that produces it");
@@ -872,52 +927,9 @@ CommandResult ExecMoveToResult(ExecutionContext& ctx, const ParamValues& p)
     const bool asResult = axes.empty() || axes == "as result";
     const bool wantX = asResult ? r.hasX : axes.find('X') != std::string::npos;
     const bool wantY = asResult ? r.hasY : axes.find('Y') != std::string::npos;
-    if (wantX && !r.hasX)
-        return CommandResult::Fail("axes asks for X but result '" + name + "' carries none - "
-                                   "tick X on the step that produces it");
-    if (wantY && !r.hasY)
-        return CommandResult::Fail("axes asks for Y but result '" + name + "' carries none - "
-                                   "tick Y on the step that produces it");
-    if (!wantX && !wantY)
-        return CommandResult::Fail("axes '" + axes + "' names neither X nor Y");
-
-    std::vector<std::pair<std::string, double>> targets;
-    if (wantX) targets.emplace_back("X", r.x + p.GetDouble("offset_x_mm"));
-    if (wantY) targets.emplace_back("Y", r.y + p.GetDouble("offset_y_mm"));
-
-    const std::vector<std::string> have = m->Axes();
-    for (const auto& t : targets)
-        if (std::find(have.begin(), have.end(), t.first) == have.end())
-            return CommandResult::Fail("device '" + device + "' has no axis " + t.first);
-
-    double travel = 0.0;
-    {
-        const std::map<std::string, double> live = m->Positions();
-        double sq = 0.0;
-        for (const auto& t : targets) {
-            const auto it = live.find(t.first);
-            if (it == live.end())
-                return CommandResult::Fail("device '" + device + "' reports no " + t.first);
-            sq += (t.second - it->second) * (t.second - it->second);
-        }
-        travel = std::sqrt(sq);
-    }
-    const double maxMm = p.GetDouble("max_mm");
-    if (maxMm > 0.0 && travel > maxMm) {
-        char b[200];
-        std::snprintf(b, sizeof(b),
-                      "result '%s' is %.3f mm away, more than max_mm %.3f - refused (a "
-                      "wrong pick turns a nudge into a lunge)",
-                      name.c_str(), travel, maxMm);
-        return CommandResult::Fail(b);
-    }
-
-    FD_INFO("motion", "move_to_result: '%s' to '%s' (%s%s, %s, score %.3f, %s): %.3f mm",
-            device.c_str(), name.c_str(), wantX ? "X" : "", wantY ? "Y" : "",
-            r.model.c_str(), r.score, r.at.c_str(), travel);
-    const CommandResult pre = ApplyPreMove(ctx, idx, p);
-    if (!pre.ok) return pre;
-    return MoveWithApproach(ctx, m, idx, targets, p, "result '" + name + "'");
+    return MoveToObjectResult(ctx, m, idx, device, r, wantX, wantY,
+                              p.GetDouble("offset_x_mm"), p.GetDouble("offset_y_mm"),
+                              p.GetDouble("max_mm"), p);
 }
 
 // Move to a saved position on the NAMED axes only ("XY", "Z", "UVW"...); the

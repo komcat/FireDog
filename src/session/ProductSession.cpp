@@ -771,6 +771,10 @@ bool ProductSession::DeleteVisionModel(const std::string& uid)
             std::error_code ec;
             std::filesystem::remove(VisionDir() + "/" + it->templateFile, ec);
         }
+        {
+            std::error_code ec;   // the view thumbnail, if a detect_object taught one
+            std::filesystem::remove(VisionDir() + "/" + ViewThumbFile(it->uid), ec);
+        }
         FD_INFO("vision", "deleted detection model '%s'", it->name.c_str());
         vision_.erase(it);
         return true;
@@ -793,6 +797,14 @@ std::string ProductSession::CopyVisionModelAs(const VisionModel& src,
         } else {
             copy.templateFile.clear();   // no patch is better than a dangling one
         }
+    }
+    {
+        // The view thumbnail travels with its model, never shared.
+        std::error_code ec;
+        const std::string from = VisionDir() + "/" + ViewThumbFile(src.uid);
+        if (std::filesystem::is_regular_file(from, ec))
+            std::filesystem::copy_file(from, VisionDir() + "/" + ViewThumbFile(copy.uid),
+                                       std::filesystem::copy_options::overwrite_existing, ec);
     }
     const std::string uid = copy.uid;
     vision_.push_back(std::move(copy));
@@ -851,6 +863,13 @@ void ProductSession::CopyVisionTemplates(const std::string& fromDir,
     std::error_code ec;
     std::filesystem::create_directories(toDir, ec);
     for (const VisionModel& m : vision_) {
+        {
+            const std::string thumb = fromDir + "/" + ViewThumbFile(m.uid);
+            if (std::filesystem::is_regular_file(thumb, ec))
+                std::filesystem::copy_file(thumb, toDir + "/" + ViewThumbFile(m.uid),
+                                           std::filesystem::copy_options::overwrite_existing, ec);
+            ec.clear();
+        }
         if (m.templateFile.empty()) continue;
         std::filesystem::copy_file(fromDir + "/" + m.templateFile,
                                    toDir + "/" + m.templateFile,

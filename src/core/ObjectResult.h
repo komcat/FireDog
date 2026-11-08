@@ -28,6 +28,10 @@ struct ObjectResult {
     bool   hasX = false, hasY = false, hasP = false;
     double x = 0.0, y = 0.0;   // device axis mm
     double p = 0.0;            // deg, clockwise positive as the camera picture shows it
+    // The operator put the crosshair on it after the detector missed
+    // (detect_object's manual_fallback). P is then 0 - a crosshair has no
+    // rotation - and the log and the editor say "manual".
+    bool   manual = false;
 
     // Evidence, for the log and the Recipe Editor's live list.
     std::string        model;        // detection model name

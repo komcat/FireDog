@@ -604,8 +604,40 @@ stands aside while the Vision teach page itself is open. Creating a model is a
 button, never a side effect of opening the window. Teaching is Admin
 (`CanAccess(Page::VisionTeach)`); the ticks are the editor's.
 
-**What it reports — and it only reports.** Nothing moves; a correction is a later
-step. The measurement goes to ONE place that outlives the recipe — a live
+**One comprehensive step, three phases.**
+
+1. **Pre-detection.** The light and the exposure the step's MODEL carries are
+   applied first (the model is private to the step, so it is the one place they
+   live), then the camera device drives to the **view taught into the step**
+   (`view_point`, `ParamType::PointXyz`, axis space). `z_lift` (default on) goes
+   Z → `safe_z_mm` (default 25, an axis value), X/Y across, Z down to the taught
+   height; off, one direct XYZ move. No view = detect where the camera stands.
+   The legs run with `DetectMoveParams` (the movers' 0.01 mm arrival, the step's
+   `velocity_mm_s`, no approach) through `ApplyPreMove` + `MoveWithApproach`.
+2. **Detection** with the step's own model. On a miss, `manual_fallback` opens
+   the alignment pick window (the model and the reason it missed shown, so the
+   operator knows which point the run wanted); the confirmed crosshair goes
+   through the same `CaptureWorldPoint` and IS the result — `manual = true`,
+   **P = 0** (agreed 2026-11-07: a crosshair has no rotation), score 0. Off,
+   `require` decides between a failed step and `<prefix>_ok = false`.
+3. **Post-detection** (`center_after`): the camera X/Y onto the result, Z
+   unchanged, refused past `center_max_mm`, through **`MoveToObjectResult`**
+   (`command/MotionWaits.h`) — the same drive `move_to_result` uses.
+
+**Teaching the view (the helper's Camera position section).** *Teach here*
+records, in one click: the camera device's X/Y/Z into the step, the camera's
+current exposure into the step's model, and a **thumbnail** — the centre half
+of the frame at full resolution, grey, `ViewThumbFile(uid)` = `<modelUid>_view.pgm`
+beside the model's patch and owned the same way (`DeleteVisionModel` drops it,
+`CopyVisionModelAs` and `CopyVisionTemplates` copy it). The thumbnail is the
+guide for the next person: where the camera should be looking. *Go* drives
+there the way a run does (the same legs), as an ad-hoc recipe of `move_axis_to`
+steps so Busy, Stop and the safety abort come with it; it is behind the jog arm.
+*Teach here* writes the model, so it is Admin; Go and the run options are the
+editor's.
+
+**What it reports — and it only reports a location.** A correction of the part
+is a later step. The measurement goes to ONE place that outlives the recipe — a live
 **object result** (below) named after `ctx_prefix` — plus ctx mirrors for this
 recipe's own branching (`<prefix>_ok`, the ticked `_x` / `_y` / `_p`, `_score`,
 `_x_px`, `_y_px`, `_error`), written in the same breath so they cannot disagree.

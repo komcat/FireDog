@@ -425,16 +425,56 @@ CommandResult ExecVisionDetect(ExecutionContext& ctx, const ParamValues& p)
 
 // ---- detect_object -----------------------------------------------------------
 //
-// Find an object with the STEP'S OWN detection model and report where it is:
-// X / Y in machine mm on the camera's device - its axis pose at the frame
-// centre (the crosshair) plus the feature's pixel offset, through the same
-// CaptureWorldPoint align_station uses - and P, the feature's rotation from
-// the orientation it was taught at as the camera picture shows it (degrees,
-// clockwise positive on screen). Which of the three the step reports
-// is ticked in its helper (take_x / take_y / take_p); an unticked one is not
-// written, so a later step cannot read a value nobody asked this one for.
+// One comprehensive step, in three phases:
 //
-// It REPORTS. Nothing moves: a correction is a later step reading the keys.
+//   1 PRE-DETECTION  the light and the exposure the step's model carries, THEN
+//     the move to the camera view taught into the step (`view_point`, the
+//     helper's Teach here): with `z_lift` (default) Z goes to `safe_z_mm`
+//     first, XY across, Z down to the taught height last; without it, one
+//     direct XYZ move. No view_point = detect where the camera stands.
+//   2 DETECTION  with the STEP'S OWN model. On a miss, `manual_fallback` asks the
+//     operator to put the crosshair on the object (the alignment pick window)
+//     and that point IS the result, P = 0, marked manual; otherwise `require`
+//     decides between a failed step and <prefix>_ok = false.
+//   3 POST-DETECTION  optionally (`center_after`) the camera XY onto the result,
+//     Z unchanged, through MoveToObjectResult - move_to_result's own drive.
+//
+// X / Y are machine mm on the camera's device - its axis pose at the frame
+// centre (the crosshair) plus the feature's pixel offset, through the
+// CaptureWorldPoint align_station uses - and P the feature's rotation from its
+// taught orientation as the camera picture shows it (degrees, clockwise
+// positive). The result goes to Workflow's live object store under the
+// prefix's name (any later recipe of the program can move to it) with ctx
+// mirrors for this recipe; only the ticked axes are in either.
+
+// The one parameter set the step's own moves run with: the arrival rule every
+// mover uses, the step's velocity, no approach (the moves are camera travel,
+// not a part closing on a part).
+ParamValues DetectMoveParams(const ParamValues& p)
+{
+    return ParamValues(nlohmann::json{{"tol_mm", kMoveTolMM},
+                                      {"timeout_ms", 60000},
+                                      {"velocity_mm_s", p.GetDouble("velocity_mm_s")}});
+}
+
+// Phase 1's move. Three legs with the lift, so the camera never travels across
+// the work at the height it focuses at; one coordinated leg without it.
+CommandResult MoveCameraToView(ExecutionContext& ctx, IMotionController* cam, int idx,
+                               double x, double y, double z, bool zLift, double safeZ,
+                               const ParamValues& mv)
+{
+    const CommandResult pre = ApplyPreMove(ctx, idx, mv);
+    if (!pre.ok) return pre;
+    if (!zLift)
+        return MoveWithApproach(ctx, cam, idx, {{"X", x}, {"Y", y}, {"Z", z}}, mv,
+                                "the taught camera view");
+    CommandResult r = MoveWithApproach(ctx, cam, idx, {{"Z", safeZ}}, mv, "the safe Z");
+    if (!r.ok) return r;
+    r = MoveWithApproach(ctx, cam, idx, {{"X", x}, {"Y", y}}, mv, "the view's X/Y");
+    if (!r.ok) return r;
+    return MoveWithApproach(ctx, cam, idx, {{"Z", z}}, mv, "the view's Z");
+}
+
 CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
 {
     const std::string prefix = p.GetString("ctx_prefix");
@@ -443,6 +483,7 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
     // Written FIRST, so a recipe branching on <prefix>_ok can read it on every
     // failing path below too.
     ctx.CtxSet(prefix + "_ok", false);
+    ctx.CtxSet(prefix + "_manual", false);
     // And the live result under this name goes FIRST too: from here on it is
     // this run's measurement or nothing. A miss, a refusal or a Stop that left
     // the previous part's result standing would hand a later move_to_result a
@@ -462,7 +503,9 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
                                    ") is not in this product - re-create it in the helper");
 
     // P is a property of the METHOD, so a P nobody can measure is refused
-    // before anything happens rather than reported as a 0 that looks real.
+    // before anything moves rather than reported as a 0 that looks real. (A
+    // MANUAL fallback reports 0 by agreement - but only after the detector,
+    // which could measure it, missed.)
     if (takeP) {
         std::string why;
         if (!DetectionImageRotation(*m, VisionDetection{}, nullptr, &why))
@@ -473,10 +516,12 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
     int idx = -1;
     IMotionController* cam = ResolveMotion(ctx, p.GetString("camera_device"), &idx, &err);
     if (!cam) return CommandResult::Fail(err);
+    const ParamValues mv = DetectMoveParams(p);
 
-    // Light, then exposure, then frames taken under both - the order
-    // align_station and vision_detect use. A model whose light cannot be set
-    // FAILS: a detection under the wrong light is a different picture.
+    // ---- 1 pre-detection: camera, light, then the view ------------------------
+    // Light, then exposure, BEFORE the move, so the picture is ready on arrival
+    // - the order align_station uses. A model whose light cannot be set FAILS:
+    // a detection under the wrong light is a different picture.
     if (p.GetBool("apply_lighting")) {
         std::string why;
         if (!ctx.Wf().ApplyLighting(m->lighting, &why))
@@ -485,47 +530,72 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
     if (m->exposureUs > 0.0 && !ctx.Wf().SetCameraExposure(m->exposureUs))
         return CommandResult::Fail("detect_object: camera exposure change rejected "
                                    "(camera connected?)");
+    if (p.Has("view_point")) {
+        const nlohmann::json& vp = p.Raw().at("view_point");
+        if (!vp.is_object() || !vp.contains("X") || !vp.contains("Y") || !vp.contains("Z"))
+            return CommandResult::Fail("detect_object: view_point is not an X/Y/Z pose - "
+                                       "Teach here again");
+        const double vx = vp.at("X").get<double>(), vy = vp.at("Y").get<double>(),
+                     vz = vp.at("Z").get<double>();
+        const CommandResult mvr =
+            MoveCameraToView(ctx, cam, idx, vx, vy, vz, p.GetBool("z_lift"),
+                             p.GetDouble("safe_z_mm"), mv);
+        if (!mvr.ok) return mvr;
+        FD_INFO("vision", "detect_object '%s': at the taught view (%.4f, %.4f, %.4f)%s",
+                prefix.c_str(), vx, vy, vz, p.GetBool("z_lift") ? " via the safe Z" : "");
+    }
 
+    // ---- 2 detection ------------------------------------------------------------
     VisionDetection d;
     bool warnedStale = false;
     if (!SampleDetect(ctx, *m, p.GetInt("fresh_frames"), p.GetInt("frame_timeout_ms"),
                       warnedStale, d))
         return CommandResult::Fail("stopped");
 
-    ctx.CtxSet(prefix + "_score", d.score);
-    ctx.CtxSet(prefix + "_x_px", d.xPx);
-    ctx.CtxSet(prefix + "_y_px", d.yPx);
-    ctx.CtxSet(prefix + "_error", d.error);
-    if (!d.ok) {
-        FD_WARN("vision", "detect_object: %s", d.error.c_str());
+    ExecutionContext::PickResult pick;
+    bool manual = false;
+    if (d.ok) {
+        pick.px   = d.xPx;
+        pick.py   = d.yPx;
+        pick.dxMM = d.dxMM;
+        pick.dyMM = d.dyMM;
+    } else if (p.GetBool("manual_fallback")) {
+        // The alignment pick window, with the model and the reason it missed,
+        // so the operator knows WHICH point the run wanted - never silently.
+        FD_WARN("vision", "detect_object '%s': %s - asking the operator", prefix.c_str(),
+                d.error.c_str());
+        ExecutionContext::PickRequest req;
+        req.alignName   = "detect_object";
+        req.label       = "locate '" + prefix + "'";
+        req.message     = "The detector found nothing (" + d.error + "). Put the "
+                          "crosshair on the object, then OK - that point is the result.";
+        req.autoError   = d.error;
+        req.detectorUid = m->uid;
+        if (!ctx.AwaitPick(req, &pick)) return CommandResult::Fail("cancelled by operator");
+        manual = true;
+    } else {
+        ctx.CtxSet(prefix + "_score", d.score);
+        ctx.CtxSet(prefix + "_error", d.error);
+        FD_WARN("vision", "detect_object '%s': %s", prefix.c_str(), d.error.c_str());
         if (p.GetBool("require"))
             return CommandResult::Fail("detect_object: nothing found - " + d.error);
         return CommandResult::Success();
     }
 
-    // The pose AFTER the frame: CaptureWorldPoint's load-bearing order.
-    ExecutionContext::PickResult pick;
-    pick.px   = d.xPx;
-    pick.py   = d.yPx;
-    pick.dxMM = d.dxMM;
-    pick.dyMM = d.dyMM;
+    // The pose AFTER the frame (or the pick): CaptureWorldPoint's order.
     AlignPoint e;
     const CommandResult cap = CaptureWorldPoint(ctx, cam, pick, &e);
     if (!cap.ok) return cap;
 
-    double pDeg = 0.0;
-    if (takeP) {
-        double img = 0.0;
+    double pDeg = 0.0;   // a manual pick reports P = 0: a crosshair has no rotation
+    if (takeP && !manual) {
         std::string why;
-        if (!DetectionImageRotation(*m, d, &img, &why))
+        if (!DetectionImageRotation(*m, d, &pDeg, &why))
             return CommandResult::Fail("detect_object: " + why);
-        pDeg = img;
     }
 
     // The result, into the live store: the one place a LOCATION crosses steps
-    // (and recipes - ctx is wiped between a program's queue items). Typed, with
-    // the device its X / Y are in as a field, so move_to_result can refuse any
-    // other device without trusting a naming convention.
+    // (and recipes). Typed, with the device as a field.
     ObjectResult res;
     res.name     = prefix;
     res.device   = cam->Name();
@@ -535,18 +605,22 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
     res.x        = e.wx;
     res.y        = e.wy;
     res.p        = pDeg;
+    res.manual   = manual;
     res.model    = m->name;
-    res.score    = d.score;
+    res.score    = manual ? 0.0 : d.score;
     res.frameSeq = d.frameSeq;
     res.at       = NowStamp();
     ctx.Wf().SetObjectResult(res);
 
-    // The same numbers in ctx, for THIS recipe: branching, {key} in a text
-    // field, Lua. Written in the same breath as the store, so the two cannot
-    // disagree; a move never reads these.
+    // The same numbers in ctx, for THIS recipe - written in the same breath.
+    ctx.CtxSet(prefix + "_score", res.score);
+    ctx.CtxSet(prefix + "_x_px", pick.px);
+    ctx.CtxSet(prefix + "_y_px", pick.py);
+    ctx.CtxSet(prefix + "_error", manual ? d.error : std::string());
     if (takeX) ctx.CtxSet(prefix + "_x", e.wx);
     if (takeY) ctx.CtxSet(prefix + "_y", e.wy);
     if (takeP) ctx.CtxSet(prefix + "_p", pDeg);
+    ctx.CtxSet(prefix + "_manual", manual);
     ctx.CtxSet(prefix + "_ok", true);
 
     char got[128] = "";
@@ -554,11 +628,18 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
     const auto room = [&] { return sizeof(got) - static_cast<std::size_t>(n); };
     if (takeX) n += std::snprintf(got + n, room(), " X %.4f", e.wx);
     if (takeY) n += std::snprintf(got + n, room(), " Y %.4f", e.wy);
-    if (takeP) std::snprintf(got + n, room(), " P %.3f deg", pDeg);
-    FD_INFO("vision", "detect_object '%s':%s  (%s at %.4f, %.4f + %.4f, %.4f mm; score "
-                      "%.3f, %.1f ms)",
-            m->name.c_str(), got, cam->Name().c_str(), e.gx, e.gy, d.dxMM, d.dyMM,
-            d.score, d.elapsedMs);
+    if (takeP) std::snprintf(got + n, room(), " P %+.3f deg", pDeg);
+    FD_INFO("vision", "detect_object '%s'%s:%s  (%s at %.4f, %.4f + %.4f, %.4f mm; %s)",
+            prefix.c_str(), manual ? " MANUAL" : "", got, cam->Name().c_str(), e.gx, e.gy,
+            pick.dxMM, pick.dyMM, manual ? "operator pick" : "detected");
+
+    // ---- 3 post-detection: the camera onto the result --------------------------
+    if (p.GetBool("center_after") && (takeX || takeY)) {
+        const CommandResult c = MoveToObjectResult(ctx, cam, idx, cam->Name(), res, takeX,
+                                                   takeY, 0.0, 0.0,
+                                                   p.GetDouble("center_max_mm"), mv);
+        if (!c.ok) return c;
+    }
     return CommandResult::Success();
 }
 
@@ -908,8 +989,30 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                        "deg, clockwise positive on the camera picture (ncc / corner "
                        "models with an angle tolerance)",
                        PinDir::Any, kVisionDetectHelper},
+                      {"view_point", PT::PointXyz, false, {}, 0, 0, {},
+                       "the camera pose to detect from, in the camera device's axis space - "
+                       "taught in the helper (Teach here); empty = detect where it stands",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"z_lift", PT::Bool, false, true, 0, 0, {},
+                       "travel to view_point via safe_z_mm (Z first, XY, then Z down); "
+                       "off = one direct XYZ move",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"safe_z_mm", PT::Double, false, 25.0, 0, 0, {},
+                       "the Z travelled at when z_lift is on - a camera-device AXIS value",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"manual_fallback", PT::Bool, false, false, 0, 0, {},
+                       "nothing found: ask the operator to put the crosshair on the object "
+                       "(that point is the result, P = 0) instead of failing",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"center_after", PT::Bool, false, false, 0, 0, {},
+                       "after a result: move the camera X / Y onto it (Z unchanged)",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"center_max_mm", PT::Double, false, 5.0, 0.0, 1000.0, {},
+                       "refuse a centring move longer than this (0 = no ceiling)",
+                       PinDir::Any, kVisionDetectHelper},
                       {"camera_device", PT::DeviceMotion, false, "gantry-main", 0, 0, {},
                        "the device the camera rides on: X / Y are ITS axis coordinates"},
+                      VelocityParam(),
                       {"apply_lighting", PT::Bool, false, true, 0, 0, {},
                        "set the light the model was taught under first (no-op if it has none)"},
                       {"fresh_frames", PT::Int, false, 2, 0, 10, {},
@@ -943,6 +1046,9 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
         if (!axes.empty())
             o.results.push_back({pre, dev, axes, "the detected object, '" + dev + "' axis mm"});
         o.keys.push_back({pre + "_ok", "bool", "the object was found"});
+        if (p.value("manual_fallback", false))
+            o.keys.push_back({pre + "_manual", "bool",
+                              "the operator located it (the detector missed); P = 0"});
         if (tx) o.keys.push_back({pre + "_x", "mm", "object X, '" + dev + "' axis mm"});
         if (ty) o.keys.push_back({pre + "_y", "mm", "object Y, '" + dev + "' axis mm"});
         if (tp) o.keys.push_back({pre + "_p", "deg",
