@@ -614,14 +614,17 @@ button, never a side effect of opening the window. Teaching is Admin
    height; off, one direct XYZ move. No view = detect where the camera stands.
    The legs run with `DetectMoveParams` (the movers' 0.01 mm arrival, the step's
    `velocity_mm_s`, no approach) through `ApplyPreMove` + `MoveWithApproach`.
+   On arrival the step waits `settle_ms` (default 100) before the fresh-frame
+   gate: the stage has settled by the two signals, but the part on it may still
+   be ringing — added after `det_sled` repeated to 21 µm against `det`'s 4 µm.
 2. **Detection** with the step's own model. On a miss, `manual_fallback` opens
    the alignment pick window (the model and the reason it missed shown, so the
    operator knows which point the run wanted); the confirmed crosshair goes
    through the same `CaptureWorldPoint` and IS the result — `manual = true`,
    **P = 0** (agreed 2026-11-07: a crosshair has no rotation), score 0. Off,
    `require` decides between a failed step and `<prefix>_ok = false`.
-3. **Post-detection** (`center_after`): the camera X/Y onto the result, Z
-   unchanged, refused past `center_max_mm`, through **`MoveToObjectResult`**
+3. **Post-detection** (`center_after`): after `pre_center_ms` (default 100),
+   the camera X/Y onto the result, Z unchanged, refused past `center_max_mm`, through **`MoveToObjectResult`**
    (`command/MotionWaits.h`) — the same drive `move_to_result` uses.
 
 **Teaching the view (the helper's Camera position section).** *Teach here*

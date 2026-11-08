@@ -8,6 +8,7 @@
 #include "command/TeachMode.h"
 #include "core/DutSession.h"
 #include "core/Log.h"
+#include "core/ProcessMemory.h"   // the memory probe at the end of every run
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
 
@@ -545,6 +546,8 @@ void RecipeEngine::ThreadMain(Recipe recipe, Recipe onFail, Env env)
         curPath_.clear();
         FD_INFO("recipe", "run '%s' finished: %s%s%s", recipeName_.c_str(),
                 StateName(state_), error_.empty() ? "" : " - ", error_.c_str());
+        FD_DEBUG("mem", "after run '%s': %s", recipeName_.c_str(),
+                ProcessMemorySummary().c_str());
         // Traceability: attribute this run to the open DUT (soft no-op if none).
         // A teach run drove the machine but proved nothing about a part; nor
         // did a dry run, which skipped every step that touches one.

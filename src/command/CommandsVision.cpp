@@ -28,6 +28,7 @@
 #include "command/WorldPoint.h"     // CaptureWorldPoint - align_station's own
 #include "core/LightCallout.h"  // LightColorNames (roi_filter_view_setup)
 #include "core/Log.h"
+#include "core/ProcessMemory.h"   // the memory probe on every detect_object
 #include "core/Product.h"   // NowStamp (reliability timestamp)
 #include "hardware/HardwareManager.h"
 #include "vision/HalconEngine.h"
@@ -543,6 +544,12 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
         if (!mvr.ok) return mvr;
         FD_INFO("vision", "detect_object '%s': at the taught view (%.4f, %.4f, %.4f)%s",
                 prefix.c_str(), vx, vy, vz, p.GetBool("z_lift") ? " via the safe Z" : "");
+        // The stage has arrived and settled (MoveWithApproach's two signals),
+        // but what sits on it may still be ringing: a fixed pause before the
+        // fresh-frame gate starts counting. Only after a move - a step that
+        // detects where the camera stands has nothing to settle from.
+        const int settle = p.GetInt("settle_ms");
+        if (settle > 0 && !ctx.Sleep(settle)) return CommandResult::Fail("stopped");
     }
 
     // ---- 2 detection ------------------------------------------------------------
@@ -632,9 +639,18 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
     FD_INFO("vision", "detect_object '%s'%s:%s  (%s at %.4f, %.4f + %.4f, %.4f mm; %s)",
             prefix.c_str(), manual ? " MANUAL" : "", got, cam->Name().c_str(), e.gx, e.gy,
             pick.dxMM, pick.dyMM, manual ? "operator pick" : "detected");
+    // The memory probe, one line per detection: chasing growth across a loop
+    // of detections needs a number per detection, not a Task Manager glance.
+    // DEBUG - silent at the default level; lower the log level to see it.
+    // (2026-11-07: 60 detections showed a cache plateau at ~1 GB private,
+    // working set flat at ~430 MB - no leak.)
+    FD_DEBUG("mem", "after detect_object '%s': %s", prefix.c_str(),
+            ProcessMemorySummary().c_str());
 
     // ---- 3 post-detection: the camera onto the result --------------------------
     if (p.GetBool("center_after") && (takeX || takeY)) {
+        const int pause = p.GetInt("pre_center_ms");
+        if (pause > 0 && !ctx.Sleep(pause)) return CommandResult::Fail("stopped");
         const CommandResult c = MoveToObjectResult(ctx, cam, idx, cam->Name(), res, takeX,
                                                    takeY, 0.0, 0.0,
                                                    p.GetDouble("center_max_mm"), mv);
@@ -992,6 +1008,14 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                       {"view_point", PT::PointXyz, false, {}, 0, 0, {},
                        "the camera pose to detect from, in the camera device's axis space - "
                        "taught in the helper (Teach here); empty = detect where it stands",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"settle_ms", PT::Int, false, 100, 0, 10000, {},
+                       "after arriving at view_point, wait this long before the frames "
+                       "are taken (ms; 0 = none)",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"pre_center_ms", PT::Int, false, 100, 0, 10000, {},
+                       "after the detection, wait this long before the centring move "
+                       "(ms; 0 = none; only with center_after)",
                        PinDir::Any, kVisionDetectHelper},
                       {"z_lift", PT::Bool, false, true, 0, 0, {},
                        "travel to view_point via safe_z_mm (Z first, XY, then Z down); "

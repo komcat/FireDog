@@ -473,42 +473,88 @@ void App::DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool
 {
     const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
     ImGui::SeparatorText("Run");
+
+    // A grid, one option per cell, so a new option is a new cell rather than
+    // a longer column: 3 across when the column is wide, 2 when it is not.
+    // Each cell is a small group - the switch or the heading on top, its
+    // number underneath.
+    const int   cols = ImGui::GetContentRegionAvail().x > 640.0f ? 3 : 2;
+    const float numW = 90.0f;
     ImGui::BeginDisabled(busy);
-    bool zLift = merged.value("z_lift", true);
-    if (ImGui::Checkbox("Z safe lift", &zLift)) s.params["z_lift"] = zLift;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("On: Z goes to the safe Z first, then X/Y across, then Z down to\n"
-                          "the taught height. Off: one direct X/Y/Z move.");
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!zLift);
-    double safeZ = merged.value("safe_z_mm", 25.0);
-    ImGui::SetNextItemWidth(90.0f);
-    if (ImGui::InputDouble("safe Z (axis)", &safeZ, 0.0, 0.0, "%.3f"))
-        s.params["safe_z_mm"] = safeZ;
-    ImGui::EndDisabled();
+    if (ImGui::BeginTable("dvRunOpts", cols, ImGuiTableFlags_SizingStretchSame)) {
+        // -- the travel to the taught view --
+        ImGui::TableNextColumn();
+        bool zLift = merged.value("z_lift", true);
+        if (ImGui::Checkbox("Z safe lift", &zLift)) s.params["z_lift"] = zLift;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("On: Z goes to the safe Z first, then X/Y across, then Z down\n"
+                              "to the taught height. Off: one direct X/Y/Z move.");
+        ImGui::BeginDisabled(!zLift);
+        double safeZ = merged.value("safe_z_mm", 25.0);
+        ImGui::SetNextItemWidth(numW);
+        if (ImGui::InputDouble("safe Z (axis)", &safeZ, 0.0, 0.0, "%.3f"))
+            s.params["safe_z_mm"] = safeZ;
+        ImGui::EndDisabled();
 
-    bool center = merged.value("center_after", false);
-    if (ImGui::Checkbox("Center the camera on the result", &center))
-        s.params["center_after"] = center;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("After a result, move %s X/Y onto it (Z unchanged) - the\n"
-                          "same drive move_to_result uses.", camDev.c_str());
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!center);
-    double cmax = merged.value("center_max_mm", 5.0);
-    ImGui::SetNextItemWidth(90.0f);
-    if (ImGui::InputDouble("max mm", &cmax, 0.0, 0.0, "%.2f")) s.params["center_max_mm"] = cmax;
-    ImGui::EndDisabled();
+        // -- settle on arrival, before the frames --
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Settle after move");
+        int settle = merged.value("settle_ms", 100);
+        ImGui::SetNextItemWidth(numW);
+        if (ImGui::InputInt("ms##settle", &settle, 0, 0)) {
+            settle = std::clamp(settle, 0, 10000);
+            s.params["settle_ms"] = settle;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("After arriving at the taught view, wait this long before\n"
+                              "the frames are taken - the stage has stopped moving, but\n"
+                              "the part on it may still be ringing. Then fresh_frames.\n"
+                              "0 = none. Only when the step moves to a taught view.");
 
-    bool manual = merged.value("manual_fallback", false);
-    if (ImGui::Checkbox("Nothing found: ask the operator (P = 0)", &manual))
-        s.params["manual_fallback"] = manual;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Off: a miss fails the step (or sets %s_ok = false when\n"
-                          "require is off).\n"
-                          "On: the crosshair window opens; the point the operator\n"
-                          "confirms is the result, marked manual, with P = 0.",
-                          merged.value("ctx_prefix", std::string("det")).c_str());
+        // -- the miss --
+        ImGui::TableNextColumn();
+        bool manual = merged.value("manual_fallback", false);
+        if (ImGui::Checkbox("Ask operator if not found", &manual))
+            s.params["manual_fallback"] = manual;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Off: a miss fails the step (or sets %s_ok = false when\n"
+                              "require is off).\n"
+                              "On: the crosshair window opens; the point the operator\n"
+                              "confirms is the result, marked manual, with P = 0.",
+                              merged.value("ctx_prefix", std::string("det")).c_str());
+        ImGui::TextDisabled("%s", manual ? "result = the crosshair, P = 0" : "a miss fails the step");
+
+        // -- the centring after the detection --
+        ImGui::TableNextColumn();
+        bool center = merged.value("center_after", false);
+        if (ImGui::Checkbox("Center on result", &center)) s.params["center_after"] = center;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("After a result, move %s X/Y onto it (Z unchanged) - the\n"
+                              "same drive move_to_result uses.", camDev.c_str());
+        ImGui::BeginDisabled(!center);
+        double cmax = merged.value("center_max_mm", 5.0);
+        ImGui::SetNextItemWidth(numW);
+        if (ImGui::InputDouble("max mm", &cmax, 0.0, 0.0, "%.2f"))
+            s.params["center_max_mm"] = cmax;
+        ImGui::EndDisabled();
+
+        // -- the pause between the detection and that move --
+        ImGui::TableNextColumn();
+        ImGui::BeginDisabled(!center);
+        ImGui::TextUnformatted("Pause before centring");
+        int pause = merged.value("pre_center_ms", 100);
+        ImGui::SetNextItemWidth(numW);
+        if (ImGui::InputInt("ms##precenter", &pause, 0, 0)) {
+            pause = std::clamp(pause, 0, 10000);
+            s.params["pre_center_ms"] = pause;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("After the detection, wait this long before the centring\n"
+                              "move. 0 = none. Only when Center on result is on.");
+        ImGui::EndDisabled();
+
+        ImGui::EndTable();
+    }
     ImGui::EndDisabled();
 }
 
