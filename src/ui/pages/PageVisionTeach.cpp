@@ -459,24 +459,11 @@ void App::CopyAlignStationDetectors(const AlignProc& src, AlignProc& dst)
 // uid, or "" if the copy could not be made. Factored out when the nominals'
 // object detectors needed the identical operation — a second copy of the .pgm
 // handling is how one of them ends up sharing a patch file with its original.
+// The copy itself is the session's (ProductSession::CopyVisionModelAs), which
+// SyncStepDetectors uses too - one copy of the .pgm handling.
 std::string App::CopyVisionModelAs(const VisionModel& src, const std::string& newName)
 {
-    VisionModel copy = src;   // copy BEFORE any push_back invalidates `src`
-    copy.uid  = GenerateUid();
-    copy.name = newName;
-    if (!copy.templateFile.empty()) {
-        std::vector<unsigned char> gray;
-        int tw = 0, th = 0;
-        if (LoadGrayPgm(session_.VisionDir() + "/" + src.templateFile, &gray, &tw, &th)) {
-            copy.templateFile = copy.uid + ".pgm";
-            SaveGrayPgm(session_.VisionDir() + "/" + copy.templateFile, gray.data(), tw, th);
-        } else {
-            copy.templateFile.clear();   // no patch is better than a dangling one
-        }
-    }
-    const std::string uid = copy.uid;
-    session_.VisionModels().push_back(std::move(copy));
-    return uid;
+    return session_.CopyVisionModelAs(src, newName);
 }
 
 // ---- The detection clipboard -------------------------------------------------
@@ -1903,6 +1890,16 @@ void App::DrawVisionTeachPanel()
                                : "drag a rectangle around the feature to cut the template");
     ImGui::Separator();
 
+    DrawVisionTeachBody(*m);
+}
+
+// The three-column body: image | chain + method | results, the anchor window,
+// the live re-detect and the filtered preview. The Vision teach page draws
+// it under its owner strip; the Vision detect helper (WndVisionDetect.cpp)
+// draws it for a detect_object step's private model. One body, so a step's
+// model is tuned with exactly the panels an alignment station's is.
+void App::DrawVisionTeachBody(VisionModel& m)
+{
     // ---- Body: image | chain + method | results, two draggable splitters ----
     // Both side columns are resizable because neither natural width is a
     // constant: a circle model's form is short, an NCC model's carries a
@@ -1959,7 +1956,7 @@ void App::DrawVisionTeachPanel()
 
         ImGui::BeginChild("visimgview", ImVec2(0.0f, viewH),
                           ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollWithMouse);
-        DrawVisionTeachImage(*m);
+        DrawVisionTeachImage(m);
         ImGui::EndChild();
 
         if (Splitter("##visfootsplit", false, kSplitH, ImGui::GetContentRegionAvail().x)) {
@@ -1972,7 +1969,7 @@ void App::DrawVisionTeachPanel()
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to trade picture for controls");
 
         ImGui::BeginChild("visfoot", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
-        DrawVisionCameraFoot(*m);
+        DrawVisionCameraFoot(m);
         ImGui::EndChild();
     }
     ImGui::EndChild();
@@ -1988,7 +1985,7 @@ void App::DrawVisionTeachPanel()
     ImGui::SameLine(0.0f, 0.0f);
 
     ImGui::BeginChild("visparams", ImVec2(visionParamW_, bodyH), ImGuiChildFlags_Borders);
-    DrawVisionTeachParams(*m);
+    DrawVisionTeachParams(m);
     ImGui::EndChild();
 
     ImGui::SameLine(0.0f, 0.0f);
@@ -2002,12 +1999,12 @@ void App::DrawVisionTeachPanel()
     ImGui::SameLine(0.0f, 0.0f);
 
     ImGui::BeginChild("visresults", ImVec2(visionResultW_, bodyH), ImGuiChildFlags_Borders);
-    DrawVisionResultPanel(*m);
+    DrawVisionResultPanel(m);
     ImGui::EndChild();
 
     // Floating, so it is drawn outside the body children — a window begun
     // inside a child would inherit its clip rect.
-    DrawVisionAnchorWindow(*m);
+    DrawVisionAnchorWindow(m);
 
     // Live re-detect, gated on a NEW frame so a still feed costs nothing. Done
     // after the draw so the overlay above and this detection stay one frame
@@ -2020,13 +2017,13 @@ void App::DrawVisionTeachPanel()
         const unsigned long long seq = workflow_.CameraFrameSeq();
         if (seq != visionSeqSeen_) {
             visionSeqSeen_ = seq;
-            workflow_.Detect(*m, session_.VisionDir(), &visionDet_);
+            workflow_.Detect(m, session_.VisionDir(), &visionDet_);
             visionHaveDet_ = true;
             if (visionDet_.elapsedMs > kSlowDetectMs && !visionSlowWarned_) {
                 visionSlowWarned_ = true;
                 FD_WARN("vision", "'%s': a detect takes %.0f ms - live tuning will feel "
                                   "slow; tighten the ROI or reduce the pyramid levels",
-                        m->name.c_str(), visionDet_.elapsedMs);
+                        m.name.c_str(), visionDet_.elapsedMs);
             }
         }
     }
@@ -2035,7 +2032,7 @@ void App::DrawVisionTeachPanel()
     // above: it decides for itself whether anything moved, so an edit made in
     // the form this frame is on screen the next one. Textures are not the
     // document, so this is not a Draw mutating one.
-    RefreshVisionPreview(*m, false);
+    RefreshVisionPreview(m, false);
 }
 
 } // namespace firedog

@@ -379,9 +379,17 @@ private:
     // roi_filter_view_setup step's exposure, light and ROI filter, beside the
     // live main camera with the step's filter drawn on it.
     void DrawRoiFilterViewHelperWindow();
+    // The Vision detect helper (WndVisionDetect.cpp): a detect_object step's
+    // X / Y / P ticks and its private detection model, taught with the
+    // alignment teach panels (DrawVisionTeachBody). Edits the selected step.
+    void DrawVisionDetectHelperWindow();
     std::string AutoNickname(const RecipeStep& s) const;   // live label from params
     void DrawRecipeTreeToolbar(Recipe& r, bool canEdit);   // move/delete row
-    void DrawRecipePalette(Recipe& r, bool canEdit);       // searchable add-step column
+    void DrawRecipePalette(Recipe& r, bool canEdit);
+    // Under the palette: every ctx key the recipe's steps declare they write
+    // (CommandSpec::outputs), in run order, locations marked with their device;
+    // keys the selected step cannot read yet are dimmed. Click copies {key}.
+    void DrawRecipeCtxKeys(const Recipe& r);       // searchable add-step column
     bool DrawParamWidget(const CommandSpec& spec, const ParamSpec& p,
                          nlohmann::json& params);   // schema form row
     void DrawTeachPositionModal();    // "Teach here" confirm, raised from a form row
@@ -588,6 +596,11 @@ private:
     // and nothing to name by hand. The model is named `vdet_<procUid>_<station>`
     // and that name IS the ownership record — hence the two maintenance calls.
     void DrawVisionTeachPanel();                         // page body (takeover frame)
+    // The page's three-column body (image | chain + method | results, the
+    // anchor window, the live re-detect, the filtered preview) for ONE model.
+    // The page draws it under its owner strip; the Vision detect helper draws
+    // it for a detect_object step's private model - one set of teach panels.
+    void DrawVisionTeachBody(VisionModel& m);
     // Creates the station's tier-`tier` model (1..kAlignDetectTiers), switches page.
     void OpenVisionTeach(AlignProc& a, int station, int tier = 1);
     void ResetVisionTeachState();                        // both openers start here
@@ -1252,6 +1265,7 @@ private:
     std::vector<std::size_t> edStepSel_;
     bool showDispHelper_ = false;   // the Dispense helper window (follows edStepSel_)
     bool showRoiViewHelper_ = false;   // the ROI Filter view setup helper (follows edStepSel_)
+    bool showVisionDetHelper_ = false; // the Vision detect helper (follows edStepSel_)
     // That helper's preview of the step's filter: its own texture, never the
     // Aux view's (that one shows what a RUN asked for).
     RoiFilterState rfvFilterSt_;
@@ -1313,6 +1327,10 @@ private:
     // long command name wants it wide, a long step list wants it narrow.
     float edPaletteW_ = 300.0f;
     bool  edPaletteSplitting_ = false;
+    // Height of the Context keys panel under the command list, dragged by the
+    // bar between them and persisted like the palette's width.
+    float edKeysH_ = 220.0f;
+    bool  edKeysSplitting_ = false;
     bool edOpenRenameRecipe_  = false;
     bool edOpenDeleteRecipe_  = false;
     bool edOpenDeleteStep_    = false;

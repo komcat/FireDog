@@ -698,6 +698,52 @@ std::size_t Workflow::LiveFrameCount() const
     return liveFrames_.size();
 }
 
+void Workflow::SetObjectResult(const ObjectResult& r)
+{
+    const std::lock_guard<std::mutex> lock(objectMu_);
+    objectResults_[r.name] = r;
+}
+
+bool Workflow::EraseObjectResult(const std::string& name)
+{
+    const std::lock_guard<std::mutex> lock(objectMu_);
+    return objectResults_.erase(name) > 0;
+}
+
+bool Workflow::ObjectResultFor(const std::string& name, ObjectResult* out) const
+{
+    const std::lock_guard<std::mutex> lock(objectMu_);
+    const auto it = objectResults_.find(name);
+    if (it == objectResults_.end()) return false;
+    if (out) *out = it->second;
+    return true;
+}
+
+std::vector<ObjectResult> Workflow::ObjectResults() const
+{
+    const std::lock_guard<std::mutex> lock(objectMu_);
+    std::vector<ObjectResult> v;
+    v.reserve(objectResults_.size());
+    for (const auto& [name, r] : objectResults_) v.push_back(r);
+    return v;
+}
+
+void Workflow::ClearObjectResults(const char* reason)
+{
+    std::size_t n = 0;
+    {
+        const std::lock_guard<std::mutex> lock(objectMu_);
+        n = objectResults_.size();
+        objectResults_.clear();
+    }
+    // Logged when it matters, like the frames: "why did move_to_result start
+    // failing" has to be answerable from the log.
+    if (n > 0)
+        FD_INFO("vision", "live object result(s) cleared: %s (%zu dropped) - detect "
+                          "again before any move_to_result",
+                reason ? reason : "reset", n);
+}
+
 // ---- Waffle tray cursors ---------------------------------------------------
 
 void Workflow::TrayConsume(const std::string& trayUid, int row, int col)

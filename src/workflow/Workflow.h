@@ -8,6 +8,7 @@
 #include "core/CameraSetup.h"          // CameraSetup / ViewFilter (how a view is looked at)
 #include "core/DeviceReg.h"            // DeviceReg (a gripper tip in gantry space)
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
+#include "core/ObjectResult.h"         // ObjectResult (detected objects, live)
 #include "core/PivotDefaults.h"        // PivotDefault (restored after a controller restart)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
 #include "core/WaffleTray.h"           // TrayCell (the consumed-cell cursors)
@@ -540,6 +541,21 @@ public:
     void CarryLiveFrames(const char* reason);
     std::size_t LiveFrameCount() const;
 
+    // ---- LIVE object results (detect_object -> move_to_result) ---------------
+    // Where a detected object was found, by name - a typed record any recipe of
+    // the program can read, where ctx would be wiped between queue items. Same
+    // footing as the live frames above, for the same reason: a result describes
+    // ONE part, so it is cleared at program start, DUT open and product load
+    // (ClearObjectResults beside every ClearLiveFrames / CarryLiveFrames), and
+    // a producer that MISSES erases its name - a later move must fail, not
+    // drive to the previous part. Written by engine workers, read by workers
+    // and the UI: mutex-guarded.
+    void SetObjectResult(const ObjectResult& r);
+    bool EraseObjectResult(const std::string& name);
+    bool ObjectResultFor(const std::string& name, ObjectResult* out) const;
+    std::vector<ObjectResult> ObjectResults() const;   // snapshot, by name
+    void ClearObjectResults(const char* reason);
+
     // ---- Waffle tray cursors (tray_next / tray_reset / the Waffle Tray page)
     // Which cells of a tray are USED (the cavity is empty), by tray uid. The
     // live, thread-safe mirror of WaffleTray::usedCells, which is the
@@ -799,6 +815,10 @@ private:
     };
     mutable std::mutex                       frameMu_;
     std::map<std::string, LiveFrameEntry>    liveFrames_;
+
+    // Live object results by name (SetObjectResult / ClearObjectResults).
+    mutable std::mutex                       objectMu_;
+    std::map<std::string, ObjectResult>      objectResults_;
 
     // Used waffle-tray cells by tray uid (see TrayNext), and the worker->UI
     // queue that carries a run's changes to the document.

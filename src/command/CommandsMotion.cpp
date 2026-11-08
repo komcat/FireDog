@@ -17,6 +17,10 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <map>
+#include <string>
+#include <variant>
+#include <vector>
 
 namespace firedog {
 
@@ -823,6 +827,99 @@ CommandResult ExecMoveAxisTo(ExecutionContext& ctx, const ParamValues& p)
     return MoveWithApproach(ctx, m, idx, targets, p, "the axis target");
 }
 
+// move_to_result: drive a device to where an earlier step FOUND something - a
+// live object result (core/ObjectResult.h, Workflow's store) picked by name,
+// such as detect_object's. The store, not ctx, because a result must reach a
+// later recipe of the program and ctx is wiped between queue items. Held to:
+//   * the record's DEVICE: its X / Y are axis coordinates of one device, and
+//     the same numbers are a different place on every other;
+//   * the record EXISTING: results are cleared at program start, DUT open and
+//     product load, and a producer that missed erased its name - so a missing
+//     one FAILS, never falls back to wherever the device already is (which
+//     looks exactly like an arrival);
+//   * a travel ceiling (max_mm): a wrong pick turns a nudge into a lunge.
+// `axes` picks which of the result's axes to drive: "as result" (the default)
+// moves exactly what it carries - a result taken for X alone drives X alone -
+// while "X" / "Y" / "XY" name them explicitly, and naming one the result does
+// not carry FAILS rather than quietly moving less. Through MoveWithApproach
+// like every point-to-point mover; Z and the rotations are never commanded.
+CommandResult ExecMoveToResult(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    const std::string name   = p.GetString("result");
+    if (name.empty())
+        return CommandResult::Fail("result is empty - pick an object result an earlier "
+                                   "step produces");
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    ObjectResult r;
+    if (!ctx.Wf().ObjectResultFor(name, &r))
+        return CommandResult::Fail("no live result '" + name + "' - the step that finds it "
+                                   "has not run since the program started (or the DUT was "
+                                   "opened), or it found nothing");
+    if (r.device != device)
+        return CommandResult::Fail("result '" + name + "' is a location on '" + r.device +
+                                   "', not on '" + device + "' - the same numbers are a "
+                                   "different place there");
+    if (!r.hasX && !r.hasY)
+        return CommandResult::Fail("result '" + name + "' carries no X or Y - tick X and/or "
+                                   "Y on the step that produces it");
+
+    const std::string axes = p.GetString("axes");
+    const bool asResult = axes.empty() || axes == "as result";
+    const bool wantX = asResult ? r.hasX : axes.find('X') != std::string::npos;
+    const bool wantY = asResult ? r.hasY : axes.find('Y') != std::string::npos;
+    if (wantX && !r.hasX)
+        return CommandResult::Fail("axes asks for X but result '" + name + "' carries none - "
+                                   "tick X on the step that produces it");
+    if (wantY && !r.hasY)
+        return CommandResult::Fail("axes asks for Y but result '" + name + "' carries none - "
+                                   "tick Y on the step that produces it");
+    if (!wantX && !wantY)
+        return CommandResult::Fail("axes '" + axes + "' names neither X nor Y");
+
+    std::vector<std::pair<std::string, double>> targets;
+    if (wantX) targets.emplace_back("X", r.x + p.GetDouble("offset_x_mm"));
+    if (wantY) targets.emplace_back("Y", r.y + p.GetDouble("offset_y_mm"));
+
+    const std::vector<std::string> have = m->Axes();
+    for (const auto& t : targets)
+        if (std::find(have.begin(), have.end(), t.first) == have.end())
+            return CommandResult::Fail("device '" + device + "' has no axis " + t.first);
+
+    double travel = 0.0;
+    {
+        const std::map<std::string, double> live = m->Positions();
+        double sq = 0.0;
+        for (const auto& t : targets) {
+            const auto it = live.find(t.first);
+            if (it == live.end())
+                return CommandResult::Fail("device '" + device + "' reports no " + t.first);
+            sq += (t.second - it->second) * (t.second - it->second);
+        }
+        travel = std::sqrt(sq);
+    }
+    const double maxMm = p.GetDouble("max_mm");
+    if (maxMm > 0.0 && travel > maxMm) {
+        char b[200];
+        std::snprintf(b, sizeof(b),
+                      "result '%s' is %.3f mm away, more than max_mm %.3f - refused (a "
+                      "wrong pick turns a nudge into a lunge)",
+                      name.c_str(), travel, maxMm);
+        return CommandResult::Fail(b);
+    }
+
+    FD_INFO("motion", "move_to_result: '%s' to '%s' (%s%s, %s, score %.3f, %s): %.3f mm",
+            device.c_str(), name.c_str(), wantX ? "X" : "", wantY ? "Y" : "",
+            r.model.c_str(), r.score, r.at.c_str(), travel);
+    const CommandResult pre = ApplyPreMove(ctx, idx, p);
+    if (!pre.ok) return pre;
+    return MoveWithApproach(ctx, m, idx, targets, p, "result '" + name + "'");
+}
+
 // Move to a saved position on the NAMED axes only ("XY", "Z", "UVW"...); the
 // others are left where they are. `axes` is required for the same reason as
 // move_axis_to: a step meant to drop Z must never be one typo away from also
@@ -1105,6 +1202,41 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveAxisTo, kParallelByDevice});
+
+    // Where an earlier step FOUND something: a live object result by name, held
+    // to its device and a travel ceiling. Not a teach mover (there is no
+    // position row to write) and not a parallel one.
+    reg.Register({"move_to_result", "Motion",
+                  "Move a device to a live OBJECT RESULT (e.g. detect_object's): the "
+                  "axes it carries, held to the result's device",
+                  {
+                      {"device", PT::DeviceMotion, false, "gantry-main", 0, 0, {},
+                       "the device to move - the result must be a location in ITS axis space"},
+                      {"result", PT::ResultName, true, {}, 0, 0, {},
+                       "the object result, by name (a detect_object step's ctx_prefix) - "
+                       "any earlier recipe of the program may have produced it"},
+                      {"axes", PT::Enum, false, "as result", 0, 0,
+                       {"as result", "XY", "X", "Y"},
+                       "which of the result's axes to move: 'as result' = every axis it "
+                       "carries; naming one it does not carry fails. Z is never moved"},
+                      {"offset_x_mm", PT::Double, false, 0.0, 0, 0, {},
+                       "added to the result's X (mm)"},
+                      {"offset_y_mm", PT::Double, false, 0.0, 0, 0, {},
+                       "added to the result's Y (mm)"},
+                      {"max_mm", PT::Double, false, 5.0, 0.0, 1000.0, {},
+                       "refuse a move longer than this (0 = no ceiling) - a wrong pick "
+                       "turns a nudge into a lunge"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
+                      VelocityParam(),
+                      ExposureParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                      PreDelayParam(),
+                      PostDelayParam(),
+                  },
+                  CommandSpec::Needs::None, ExecMoveToResult});
 
     reg.Register({"move_to_position", "Motion",
                   "Coordinated absolute move to a saved position, wait for arrival "

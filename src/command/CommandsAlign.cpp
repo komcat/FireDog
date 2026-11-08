@@ -20,6 +20,7 @@
 #include "command/ExecutionContext.h"
 #include "command/LuaEngine.h"      // RunLuaFile (align_run)
 #include "command/MotionWaits.h"    // WaitArrive / WaitSettle / ResolveMotion
+#include "command/WorldPoint.h"     // CaptureWorldPoint - declared for detect_object too
 #include "core/AlignFrame.h"
 #include "core/DutSession.h"         // ImagesDir / InsertImage — the attempt crops
 #include "core/Log.h"
@@ -225,9 +226,12 @@ void FillPickBand(ExecutionContext& ctx, const AlignProc& proc, int station,
 // the frame the feature was marked. Read the pose AFTER the capture — nothing
 // moved, but this is the pose the pixel offset is relative to.
 //
-// Shared by align_station and pick_point. One copy on purpose: a second one
-// that read the pose in a different order would be wrong in a way no test
-// would show, only a part placed 20 um out.
+// Shared by align_station, pick_point and (through command/WorldPoint.h)
+// detect_object. One copy on purpose: a second one that read the pose in a
+// different order would be wrong in a way no test would show, only a part
+// placed 20 um out. Outside the anonymous namespace for that header.
+} // namespace
+
 CommandResult CaptureWorldPoint(ExecutionContext& ctx, IMotionController* m,
                                 const ExecutionContext::PickResult& pick,
                                 AlignPoint* e)
@@ -252,6 +256,8 @@ CommandResult CaptureWorldPoint(ExecutionContext& ctx, IMotionController* m,
     e->wy = e->gy + pick.dyMM;
     return CommandResult::Success();
 }
+
+namespace {
 
 // ---- align_station -------------------------------------------------------
 

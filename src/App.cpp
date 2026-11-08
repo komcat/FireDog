@@ -78,6 +78,7 @@ int App::Run()
         if (ui.visionFootH   > 0.0f) visionFootH_   = ui.visionFootH;
         if (ui.edInspectW    > 0.0f) edInspectW_    = ui.edInspectW;
         if (ui.edPaletteW    > 0.0f) edPaletteW_    = ui.edPaletteW;
+        if (ui.edKeysH       > 0.0f) edKeysH_       = ui.edKeysH;
         edShowHidden_ = ui.edShowHidden;
         edDurationSec_ = ui.edDurationSec;
         edTagFilter_  = ui.edTagFilter;
@@ -230,6 +231,7 @@ int App::Run()
             if (showMotionInspect_ && CanUse(kRoleInspect)) DrawMotionInspectWindow();
             if (showDispHelper_ && CanAccess(Page::RecipeEdit)) DrawDispenseHelperWindow();
             if (showRoiViewHelper_ && CanAccess(Page::RecipeEdit)) DrawRoiFilterViewHelperWindow();
+            if (showVisionDetHelper_ && CanAccess(Page::RecipeEdit)) DrawVisionDetectHelperWindow();
             if (showMaint_ && CanAccess(Page::Oee)) DrawMaintenanceWindow();
             if (showUsers_) DrawEmployeeManager();   // checks Admin itself
         }
@@ -373,6 +375,7 @@ void App::Update(float dt)
             dutOpenKey_ = key;
             if (!key.empty()) {
                 workflow_.ClearLiveFrames("new DUT opened");
+                workflow_.ClearObjectResults("new DUT opened");
                 // And the picture, for the same reason: a still shows ONE
                 // physical part. Left up, last part's serial would sit over
                 // this part's run looking like a reading somebody just took.
@@ -605,6 +608,7 @@ void App::SaveUiSettings()
     s.visionFootH   = visionFootH_;
     s.edInspectW    = edInspectW_;
     s.edPaletteW    = edPaletteW_;
+    s.edKeysH       = edKeysH_;
     s.edShowHidden  = edShowHidden_;
     s.edDurationSec = edDurationSec_;
     s.edTagFilter   = edTagFilter_;
@@ -717,6 +721,7 @@ void App::ResetDocumentSelections()
     // A different product is a different part: no taught frame survives it.
     // This also covers app start, since Run() calls us before the first frame.
     workflow_.ClearLiveFrames("product loaded");
+    workflow_.ClearObjectResults("product loaded");
     // And a different product's trays are different trays: the cursor is
     // rebuilt from what THIS product's records say is used — the persisted
     // set is the truth, the cursor its live mirror.

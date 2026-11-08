@@ -75,6 +75,11 @@ enum class ParamType {
                     // (ProductSession::PromptImagesDir; editor: picker). NOT
                     // validated: a missing picture is drawn as missing, never
                     // a refused run - it is a visual aid, not an input
+    ResultName,     // a live OBJECT RESULT by name (Workflow's store, filled by
+                    // detect_object). The editor offers only results some step
+                    // DECLARES (CommandSpec::outputs) on the step's "device";
+                    // at run time the record must exist and carry that device.
+                    // A plain string on the wire
     Enum,           // one of `options`
 };
 
@@ -83,6 +88,35 @@ const char* ParamTypeName(ParamType t);
 // Direction hint for PinName params: which pin list the editor offers and
 // validation resolves against (Any = either).
 enum class PinDir { Any, Input, Output };
+
+// What a step of a command WRITES, declared so the editor can list it and a
+// picker can offer only what fits a param. Two kinds, kept apart on purpose:
+//
+//   * a ctx KEY - a value for this recipe run (branching, {key} in a text
+//     field, Lua). `kind` says what it is: "bool" | "number" | "deg" | "mm" |
+//     "text". Gone when the recipe ends.
+//   * an OBJECT RESULT - a named, typed record in Workflow's live store
+//     (core/ObjectResult.h): where a part was found, which device's axis space
+//     that is in, and which of X / Y / P it carries. It outlives the recipe
+//     (any recipe of the program can read it) and is cleared at the frame
+//     boundaries. A location only ever crosses steps this way: the device is a
+//     field of the record, so a number that merely sits in ctx can never drive
+//     a move.
+struct CtxOutput {
+    std::string key;
+    std::string kind;
+    std::string help;
+};
+struct ResultOutput {
+    std::string name;      // the result's name in the store
+    std::string device;    // the device whose axis space its X / Y are in
+    std::string axes;      // which it carries: letters of "XYP"
+    std::string help;
+};
+struct CommandOutputs {
+    std::vector<CtxOutput>    keys;
+    std::vector<ResultOutput> results;
+};
 
 struct ParamSpec {
     std::string    name;
@@ -164,6 +198,14 @@ struct CommandSpec {
     // view, so the step stays the one record. Layer 3 maps the name to the
     // window (App::OpenCommandHelper).
     std::string helper;
+
+    // What a step of this command writes - ctx keys and object results - from
+    // its EFFECTIVE params (stored + defaults: a prefix or a tick changes
+    // them). Null = the command declares nothing (it may still write ctx; it
+    // is just not offered). Read by the editor only - the Context keys panel
+    // and the ResultName picker - never by the engine. Set after construction:
+    //     CommandSpec s{...}; s.outputs = [](const nlohmann::json& p) {...};
+    std::function<CommandOutputs(const nlohmann::json&)> outputs;
 };
 
 // "" on success, else a human-readable error naming the parameter. Unknown

@@ -79,6 +79,7 @@ struct UiSettings {
     float edInspectW = 0.0f;
     // Recipe editor: width of its command palette column in px (0 = default).
     float edPaletteW = 0.0f;
+    float edKeysH    = 0.0f;   // Recipe Editor: the Context keys panel's height
     // Recipe editor: the recipe list's filter. A view preference, so it lives
     // here and not in the recipes file — two operators filing the same
     // library differently must not fight over one saved filter.

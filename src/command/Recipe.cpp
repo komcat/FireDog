@@ -264,6 +264,50 @@ bool InlineSubRecipes(Recipe& r, const std::vector<Recipe>& library, std::string
 
 // ---- Leaf counting ----------------------------------------------------------
 
+std::vector<StepOutputs> CollectStepOutputs(const std::vector<RecipeStep>& steps,
+                                            const CommandRegistry& reg,
+                                            const std::vector<std::size_t>* before)
+{
+    std::vector<StepOutputs> out;
+    std::vector<std::size_t> path;
+    bool stop = false;
+    // Recursive lambda through a std::function-free helper: `self` is passed in.
+    const auto walk = [&](auto& self, const std::vector<RecipeStep>& list,
+                          std::size_t base, bool parentOn) -> void {
+        for (std::size_t i = 0; i < list.size() && !stop; ++i) {
+            path.push_back(base + i);
+            if (before && path == *before) {
+                stop = true;
+                path.pop_back();
+                return;
+            }
+            const RecipeStep& s = list[i];
+            const bool on = parentOn && s.enabled;
+            if (const CommandSpec* spec = reg.Find(s.type); spec && spec->outputs) {
+                CommandOutputs o = spec->outputs(EffectiveParams(*spec, s.params));
+                if (!o.keys.empty() || !o.results.empty())
+                    out.push_back({path, s.type, s.nickname, on, std::move(o)});
+            }
+            self(self, s.children, 0, on);
+            if (!stop) self(self, s.elseChildren, kElseBranchBase, on);
+            path.pop_back();
+        }
+    };
+    walk(walk, steps, 0, true);
+    return out;
+}
+
+std::string StepPathLabel(const std::vector<std::size_t>& path)
+{
+    std::string s;
+    for (const std::size_t c : path) {
+        if (!s.empty()) s += ".";
+        if (c >= kElseBranchBase) s += "else." + std::to_string(c - kElseBranchBase + 1);
+        else                      s += std::to_string(c + 1);
+    }
+    return s;
+}
+
 std::size_t CountLeafSteps(const std::vector<RecipeStep>& steps)
 {
     std::size_t n = 0;

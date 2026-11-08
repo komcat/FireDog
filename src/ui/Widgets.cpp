@@ -430,6 +430,7 @@ const char* StepIconFile(const char* type)
         {"move_tool_to_camera",       "rg_tool_to_cam"},
         {"move_camera_to_tool",       "rg_cam_to_tool"},
         {"tool_travel_to_camera",     "rg_tool_to_cam"},
+        {"detect_object",             "vi_detect"},
         // IO. wait_input has its own glyph - the pin is the news there.
         {"set_output",                "io_output"},
         {"toggle_output",             "io_output"},

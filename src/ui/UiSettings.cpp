@@ -52,6 +52,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("vision_foot_h")) s.visionFootH = j["vision_foot_h"].get<float>();
         if (j.contains("ed_inspect_w")) s.edInspectW = j["ed_inspect_w"].get<float>();
         if (j.contains("ed_palette_w")) s.edPaletteW = j["ed_palette_w"].get<float>();
+        if (j.contains("ed_keys_h")) s.edKeysH = j["ed_keys_h"].get<float>();
         if (j.contains("ed_show_hidden")) s.edShowHidden = j["ed_show_hidden"].get<bool>();
         if (j.contains("ed_duration_sec")) s.edDurationSec = j["ed_duration_sec"].get<bool>();
         if (j.contains("ed_tag_filter"))  s.edTagFilter  = j["ed_tag_filter"].get<std::string>();
@@ -187,6 +188,7 @@ bool UiSettings::Save(const std::string& path) const
     j["vision_foot_h"]   = visionFootH;
     j["ed_inspect_w"]    = edInspectW;
     j["ed_palette_w"]    = edPaletteW;
+    j["ed_keys_h"]       = edKeysH;
     j["ed_show_hidden"]  = edShowHidden;
     j["ed_duration_sec"] = edDurationSec;
     j["ed_tag_filter"]   = edTagFilter;

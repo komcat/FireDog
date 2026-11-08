@@ -17,6 +17,7 @@
 #include "vision/VisionModel.h"
 #include "core/MotionMap.h"
 #include "core/SavedPositions.h"
+#include "command/CommandSpec.h"   // CommandOutputs (CollectStepOutputs)
 
 #include <string>
 #include <vector>
@@ -141,6 +142,27 @@ std::vector<RecipeIssue> ValidateRecipe(const Recipe& r, const CommandRegistry& 
 // unknown uid, a cycle, or depth overflow.
 bool InlineSubRecipes(Recipe& r, const std::vector<Recipe>& library,
                       std::string* err);
+
+// ---- Declared outputs ------------------------------------------------------
+// What the steps of a recipe declare they write (CommandSpec::outputs), in run
+// order: depth-first, children before the next sibling, a then-branch before
+// its else. Steps with no declaration are left out. With `before` set, the walk
+// stops at that step path and returns only the steps that run BEFORE it - what
+// a step there can rely on. A loop's later iterations are not modelled: a step
+// inside a loop sees only what precedes it in the written order.
+struct StepOutputs {
+    std::vector<std::size_t> path;   // the step-path convention above
+    std::string              type;
+    std::string              nickname;
+    bool                     enabled = true;   // false: the step (or a parent) is disabled
+    CommandOutputs           outs;
+};
+std::vector<StepOutputs> CollectStepOutputs(const std::vector<RecipeStep>& steps,
+                                            const CommandRegistry& reg,
+                                            const std::vector<std::size_t>* before = nullptr);
+
+// A step path as the editor numbers it: "3.2", "1.else.2" (1-based).
+std::string StepPathLabel(const std::vector<std::size_t>& path);
 
 // Count enabled leaf (command) steps for progress display. Fixed-count loops
 // multiply; while-form loops count their body once (iterations unknown).

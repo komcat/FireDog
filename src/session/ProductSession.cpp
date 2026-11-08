@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
+#include <set>
 #include <system_error>
 
 namespace firedog {
@@ -139,6 +141,10 @@ void ProductSession::NewProduct(const char* name)
 void ProductSession::SaveProduct()
 {
     if (!product_.Loaded()) return;
+    // Before the loop, so the recipes and vision entries below both write the
+    // synced state (each owns its own file; the order of the entries is not
+    // something to depend on).
+    SyncStepDetectors();
     // "Save runs through the manifest": each entry is dispatched by role.
     for (const ManifestFile& e : product_.files) {
         const std::string path = product_.Dir() + "/" + e.file;
@@ -307,6 +313,9 @@ void ProductSession::LoadRecipesFromDisk()
 // precedence LoadRecipesFromDisk reads with.
 void ProductSession::SaveRecipes()
 {
+    // Copied steps get their own model, orphaned ones go - BEFORE the write,
+    // so the file never names a model another step also owns.
+    const bool visionChanged = SyncStepDetectors();
     std::string path = MachinePath("config/recipes.local.json");
     std::string uid  = recipesUid_;
     if (product_.Loaded()) {
@@ -323,6 +332,9 @@ void ProductSession::SaveRecipes()
     } else {
         FD_WARN("recipe", "could not save recipes to %s", path.c_str());
     }
+    // The models the sync copied or dropped, or the file and the recipes
+    // disagree about which models exist.
+    if (visionChanged) SaveVision();
 }
 
 void ProductSession::SaveRecipesTo(const std::string& path, const std::string& uid)
@@ -764,6 +776,72 @@ bool ProductSession::DeleteVisionModel(const std::string& uid)
         return true;
     }
     return false;
+}
+
+std::string ProductSession::CopyVisionModelAs(const VisionModel& src,
+                                              const std::string& newName)
+{
+    VisionModel copy = src;   // copy BEFORE any push_back invalidates `src`
+    copy.uid  = GenerateUid();
+    copy.name = newName;
+    if (!copy.templateFile.empty()) {
+        std::vector<unsigned char> gray;
+        int tw = 0, th = 0;
+        if (LoadGrayPgm(VisionDir() + "/" + src.templateFile, &gray, &tw, &th)) {
+            copy.templateFile = copy.uid + ".pgm";
+            SaveGrayPgm(VisionDir() + "/" + copy.templateFile, gray.data(), tw, th);
+        } else {
+            copy.templateFile.clear();   // no patch is better than a dangling one
+        }
+    }
+    const std::string uid = copy.uid;
+    vision_.push_back(std::move(copy));
+    return uid;
+}
+
+bool ProductSession::SyncStepDetectors()
+{
+    bool changed = false;
+    std::set<std::string> owned;   // model uids some step already owns
+    std::function<void(std::vector<RecipeStep>&)> walk = [&](std::vector<RecipeStep>& steps) {
+        for (RecipeStep& s : steps) {
+            if (s.type == "detect_object" && s.params.is_object()) {
+                const auto it = s.params.find("model");
+                if (it != s.params.end() && it->is_string() && !it->get<std::string>().empty()) {
+                    const std::string uid = it->get<std::string>();
+                    if (!owned.insert(uid).second) {
+                        // A second owner: this step is a copy. Its own model,
+                        // under its own name, before anybody re-tunes "both".
+                        if (const VisionModel* src = FindVisionModel(vision_, uid)) {
+                            const VisionModel snapshot = *src;   // push_back moves vision_
+                            std::string nu = CopyVisionModelAs(snapshot, std::string());
+                            if (VisionModel* fresh = FindVisionModel(vision_, nu))
+                                fresh->name = StepDetectorName(nu);
+                            s.params["model"] = nu;
+                            owned.insert(nu);
+                            changed = true;
+                            FD_INFO("vision", "a copied detect_object step got its own "
+                                              "model (%s, copied from %s)",
+                                    nu.c_str(), uid.c_str());
+                        }
+                    }
+                }
+            }
+            walk(s.children);
+            walk(s.elseChildren);
+        }
+    };
+    for (Recipe& r : recipes_) walk(r.steps);
+
+    // A step-owned model no step references: its step was deleted, or the
+    // recipe it lived in. Nothing lists these, so an orphan would never be
+    // found by anybody.
+    std::vector<std::string> orphans;
+    for (const VisionModel& m : vision_)
+        if (m.name.rfind(kStepDetectorPrefix, 0) == 0 && !owned.count(m.uid))
+            orphans.push_back(m.uid);
+    for (const std::string& uid : orphans) changed = DeleteVisionModel(uid) || changed;
+    return changed;
 }
 
 void ProductSession::CopyVisionTemplates(const std::string& fromDir,

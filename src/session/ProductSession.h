@@ -201,6 +201,19 @@ public:
     // alignment procedure drop its private station positions.
     bool DeleteVisionModel(const std::string& uid);
 
+    // Copy one model under a new name, its taught patch copied too (never
+    // shared - the .pgm is owned by the model it is named after). Returns the
+    // new uid, or "" when nothing was copied. App::CopyVisionModelAs is this.
+    std::string CopyVisionModelAs(const VisionModel& src, const std::string& newName);
+
+    // detect_object steps each OWN a model (kStepDetectorPrefix). A step copied
+    // by Copy/Paste/Duplicate carries its original's uid, so the second step
+    // found referencing a model gets its own copy (named after the copy's uid),
+    // and a step-owned model no step references is deleted with its patch.
+    // Run by SaveRecipes and SaveProduct before anything is written; true when
+    // the recipes or the models changed (SaveRecipes then saves the models).
+    bool SyncStepDetectors();
+
     // Copy every current model's taught patch from `fromDir` into `toDir`.
     // Used when a new product inherits the in-memory models: a reference across
     // product folders would break the moment either one is moved.

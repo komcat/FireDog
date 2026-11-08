@@ -23,7 +23,10 @@
 #include <cmath>
 #include <cstdio>
 #include <iterator>
+#include <map>
+#include <set>
 #include <string>
+#include <vector>
 
 namespace firedog {
 
@@ -1269,6 +1272,7 @@ void App::OpenCommandHelper(const std::string& helper)
 {
     if (helper == kDispenseHelper) showDispHelper_ = true;
     else if (helper == kRoiFilterViewHelper) showRoiViewHelper_ = true;
+    else if (helper == kVisionDetectHelper) showVisionDetHelper_ = true;
     else FD_WARN("ui", "no helper window named '%s'", helper.c_str());
 }
 
@@ -1470,7 +1474,19 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
         InsertStepsAtSelection(r, std::move(one));
     };
 
-    ImGui::BeginChild("##palList");   // scrolls independently of the tree
+    // The command list over the Context keys panel, traded by a draggable bar.
+    // Clamped every frame: a height saved on a tall monitor must not push the
+    // list off a short one.
+    constexpr float kKeysSplitH = 6.0f;
+    constexpr float kMinListH   = 80.0f;
+    constexpr float kMinKeysH   = 60.0f;
+    const float palColH = ImGui::GetContentRegionAvail().y;
+    if (edKeysH_ < kMinKeysH) edKeysH_ = kMinKeysH;
+    if (edKeysH_ > palColH - kMinListH - kKeysSplitH)
+        edKeysH_ = std::max(kMinKeysH, palColH - kMinListH - kKeysSplitH);
+    const float listH = std::max(40.0f, palColH - edKeysH_ - kKeysSplitH);
+
+    ImGui::BeginChild("##palList", ImVec2(0.0f, listH));   // scrolls independently of the tree
     const bool searching = edSearchBuf_[0] != '\0';
 
     // Insert on DOUBLE-click only — a stray single click must not add steps
@@ -1547,6 +1563,129 @@ void App::DrawRecipePalette(Recipe& r, bool canEdit)
     }
     ImGui::EndChild();
     ImGui::EndDisabled();
+
+    // The keys are a read-out, live while a run is too - not under canEdit.
+    if (Splitter("##palkeysplit", false, kKeysSplitH, ImGui::GetContentRegionAvail().x)) {
+        edKeysH_ -= ImGui::GetIO().MouseDelta.y;
+        edKeysSplitting_ = true;
+    } else if (edKeysSplitting_) {
+        edKeysSplitting_ = false;
+        SaveUiSettings();
+    }
+    ImGui::BeginChild("##palKeys", ImVec2(0.0f, 0.0f));
+    DrawRecipeCtxKeys(r);
+    ImGui::EndChild();
+}
+
+// The Context keys panel, three parts:
+//   * OBJECT RESULTS this recipe's steps declare - the live store's names,
+//     with their device and axes. A name more than one step in the library
+//     produces is flagged: the last one to run wins, which may be intended (a
+//     re-detect) or a collision.
+//   * CTX KEYS they declare - values for this recipe run only. Keys from steps
+//     at or after the selected one are dimmed: in run order they do not exist
+//     yet when it runs. A click copies {key} for a text field.
+//   * LIVE - what the store holds right now (Workflow::ObjectResults).
+// Only DECLARED outputs are listed: a command that writes ctx without
+// declaring it is simply not offered.
+void App::DrawRecipeCtxKeys(const Recipe& r)
+{
+    const std::vector<StepOutputs> all = CollectStepOutputs(r.steps, orch_.registry);
+    std::set<std::vector<std::size_t>> readable;
+    if (!edStepSel_.empty())
+        for (const StepOutputs& so : CollectStepOutputs(r.steps, orch_.registry, &edStepSel_))
+            readable.insert(so.path);
+    const auto dimmed = [&](const StepOutputs& so) {
+        return !so.enabled || (!edStepSel_.empty() && !readable.count(so.path));
+    };
+
+    // How many steps in the whole library produce each result name.
+    std::map<std::string, int> producers;
+    for (const Recipe& rr : session_.Recipes())
+        for (const StepOutputs& so : CollectStepOutputs(rr.steps, orch_.registry))
+            for (const ResultOutput& ro : so.outs.results) ++producers[ro.name];
+
+    const ImVec4 kLoc(0.45f, 0.85f, 0.95f, 1.0f);
+    const ImVec4 kWarnC(0.98f, 0.72f, 0.32f, 1.0f);
+
+    // ---- Object results ------------------------------------------------------
+    ImGui::SeparatorText("Object results");
+    bool anyRes = false;
+    for (const StepOutputs& so : all) {
+        if (so.outs.results.empty()) continue;
+        anyRes = true;
+        const bool dim = dimmed(so);
+        if (dim) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.45f);
+        const std::string where = StepPathLabel(so.path);
+        ImGui::PushID(("r" + where).c_str());
+        for (const ResultOutput& ro : so.outs.results) {
+            ImGui::TextColored(kLoc, "%s", ro.name.c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s\nlive in the program's result store - any later recipe\n"
+                                  "can move to it (move_to_result)", ro.help.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s  %s  - step %s%s", ro.axes.c_str(), ro.device.c_str(),
+                                where.c_str(), so.enabled ? "" : " (disabled)");
+            const int n = producers[ro.name];
+            if (n > 1)
+                ImGui::TextColored(kWarnC, "  also produced by %d other step(s) - the last "
+                                           "to run wins", n - 1);
+        }
+        ImGui::PopID();
+        if (dim) ImGui::PopStyleVar();
+    }
+    if (!anyRes) ImGui::TextDisabled("No step here produces an object result.");
+
+    // ---- Context keys ----------------------------------------------------------
+    ImGui::SeparatorText("Context keys (this run)");
+    bool anyKey = false;
+    for (const StepOutputs& so : all) {
+        if (so.outs.keys.empty()) continue;
+        anyKey = true;
+        const bool dim = dimmed(so);
+        if (dim) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.45f);
+        const std::string label = StepPathLabel(so.path);
+        ImGui::PushID(("k" + label).c_str());
+        ImGui::TextDisabled("%s  %s%s%s%s", label.c_str(), so.type.c_str(),
+                            so.nickname.empty() ? "" : "  ", so.nickname.c_str(),
+                            so.enabled ? "" : "  (disabled)");
+        for (const CtxOutput& o : so.outs.keys) {
+            ImGui::Indent(10.0f);
+            if (ImGui::Selectable(o.key.c_str())) {
+                const std::string ref = "{" + o.key + "}";
+                ImGui::SetClipboardText(ref.c_str());
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s\n%s\n\nclick: copy {%s} (for a text field)",
+                                  o.help.c_str(), o.kind.c_str(), o.key.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", o.kind.c_str());
+            ImGui::Unindent(10.0f);
+        }
+        ImGui::PopID();
+        if (dim) ImGui::PopStyleVar();
+    }
+    if (!anyKey) ImGui::TextDisabled("No step here declares a ctx key.");
+
+    // ---- Live --------------------------------------------------------------------
+    ImGui::SeparatorText("Live results (now)");
+    const std::vector<ObjectResult> live = workflow_.ObjectResults();
+    if (live.empty())
+        ImGui::TextDisabled("None - cleared at program start, DUT open and product load.");
+    for (const ObjectResult& lr : live) {
+        char buf[160] = "";
+        int  n = 0;
+        const auto room = [&] { return sizeof(buf) - static_cast<std::size_t>(n); };
+        if (lr.hasX) n += std::snprintf(buf + n, room(), " X %.4f", lr.x);
+        if (lr.hasY) n += std::snprintf(buf + n, room(), " Y %.4f", lr.y);
+        if (lr.hasP) std::snprintf(buf + n, room(), " P %+.3f", lr.p);
+        ImGui::TextColored(kLoc, "%s", lr.name.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s  -  model %s, score %.3f\nmeasured %s",
+                              lr.device.c_str(), lr.model.c_str(), lr.score, lr.at.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", buf);
+    }
 }
 
 // Top strip: Run/Stop/Save + state + executing step + progress (the

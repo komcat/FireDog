@@ -21,6 +21,8 @@
 #include <cstdio>
 #include <filesystem>
 #include <initializer_list>
+#include <map>
+#include <set>
 #include <system_error>
 #include <string>
 #include <vector>
@@ -1124,6 +1126,78 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             }
             ImGui::EndCombo();
         }
+        break;
+    }
+    case ParamType::ResultName: {
+        // Only OBJECT RESULTS some step declares on THIS step's device. Across
+        // the whole library, not this recipe alone: a result lives in
+        // Workflow's store for the program, so the recipe that finds it is
+        // often not the one that moves to it - and a recipe does not know which
+        // program will run it. Each option says where it comes from; a name
+        // whose only producer runs LATER in this same recipe is flagged, and
+        // the run refuses a missing or wrong-device result again.
+        const std::string dev = EffectiveString(spec, params, "device");
+        const std::string v   = cur.is_string() ? cur.get<std::string>() : "";
+        struct ResOpt { std::string name, from; bool enabled; int where; };   // where: 0 earlier here, 1 later here, 2 other recipe
+        std::vector<ResOpt> opts;
+        const int selR = recipeSel_;
+        const auto& recipes = session_.Recipes();
+        for (std::size_t ri = 0; ri < recipes.size(); ++ri) {
+            const Recipe& r = recipes[ri];
+            const bool here = static_cast<int>(ri) == selR;
+            std::set<std::vector<std::size_t>> earlier;
+            if (here && !edStepSel_.empty())
+                for (const StepOutputs& so : CollectStepOutputs(r.steps, orch_.registry, &edStepSel_))
+                    earlier.insert(so.path);
+            for (const StepOutputs& so : CollectStepOutputs(r.steps, orch_.registry)) {
+                for (const ResultOutput& ro : so.outs.results) {
+                    if (ro.device != dev) continue;
+                    const int where = !here ? 2 : (earlier.count(so.path) ? 0 : 1);
+                    std::string from = where == 2 ? "recipe '" + r.name + "'"
+                                     : where == 0 ? std::string("earlier here")
+                                                  : std::string("LATER here");
+                    from += ", step " + StepPathLabel(so.path) + " " + so.type + ", " + ro.axes;
+                    if (!so.enabled) from += ", DISABLED";
+                    opts.push_back({ro.name, from, so.enabled, where});
+                }
+            }
+        }
+        bool produced = false, onlyLater = !v.empty();
+        for (const ResOpt& o : opts) {
+            if (o.name != v || !o.enabled) continue;
+            produced = true;
+            if (o.where != 1) onlyLater = false;
+        }
+        const bool resolved = v.empty() || produced;
+        const std::string preview = v.empty() ? std::string("(pick a result)") : v;
+        if (!resolved) pushStale();
+        ImGui::SetNextItemWidth(fitW(preview));
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        if (!resolved) ImGui::PopStyleColor(4);
+        previewTip(preview);
+        if (open) {
+            if (opts.empty())
+                ImGui::TextDisabled("(no step declares an object result on '%s')", dev.c_str());
+            for (std::size_t i = 0; i < opts.size(); ++i) {
+                const ResOpt& o = opts[i];
+                ImGui::PushID(static_cast<int>(i));
+                const std::string row = o.name + "   (" + o.from + ")";
+                if (ImGui::Selectable(row.c_str(), o.name == v)) {
+                    params[p.name] = o.name;
+                    changed = true;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+        if (!resolved)
+            ImGui::TextColored(kStaleRed, "no enabled step produces '%s' on '%s' - re-pick",
+                               v.c_str(), dev.c_str());
+        else if (produced && onlyLater)
+            ImGui::TextColored(ImVec4(0.98f, 0.72f, 0.32f, 1.0f),
+                               "'%s' is only produced LATER in this recipe - unless an earlier "
+                               "recipe of the program finds it, this step will fail",
+                               v.c_str());
         break;
     }
     case ParamType::ImageFile: {

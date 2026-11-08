@@ -25,11 +25,14 @@
 #include "command/ExecutionContext.h"
 #include "command/MotionWaits.h"
 #include "command/RoiFilterView.h"
+#include "command/WorldPoint.h"     // CaptureWorldPoint - align_station's own
 #include "core/LightCallout.h"  // LightColorNames (roi_filter_view_setup)
 #include "core/Log.h"
 #include "core/Product.h"   // NowStamp (reliability timestamp)
 #include "hardware/HardwareManager.h"
 #include "vision/HalconEngine.h"
+#include "vision/VisionModel.h"     // DetectionImageRotation (detect_object P)
+#include "hardware/motion/IMotionController.h"
 #include "workflow/Workflow.h"
 
 #include <algorithm>
@@ -420,6 +423,145 @@ CommandResult ExecVisionDetect(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// ---- detect_object -----------------------------------------------------------
+//
+// Find an object with the STEP'S OWN detection model and report where it is:
+// X / Y in machine mm on the camera's device - its axis pose at the frame
+// centre (the crosshair) plus the feature's pixel offset, through the same
+// CaptureWorldPoint align_station uses - and P, the feature's rotation from
+// the orientation it was taught at as the camera picture shows it (degrees,
+// clockwise positive on screen). Which of the three the step reports
+// is ticked in its helper (take_x / take_y / take_p); an unticked one is not
+// written, so a later step cannot read a value nobody asked this one for.
+//
+// It REPORTS. Nothing moves: a correction is a later step reading the keys.
+CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string prefix = p.GetString("ctx_prefix");
+    const bool takeX = p.GetBool("take_x"), takeY = p.GetBool("take_y"),
+               takeP = p.GetBool("take_p");
+    // Written FIRST, so a recipe branching on <prefix>_ok can read it on every
+    // failing path below too.
+    ctx.CtxSet(prefix + "_ok", false);
+    // And the live result under this name goes FIRST too: from here on it is
+    // this run's measurement or nothing. A miss, a refusal or a Stop that left
+    // the previous part's result standing would hand a later move_to_result a
+    // place this part has never been.
+    ctx.Wf().EraseObjectResult(prefix);
+
+    if (!takeX && !takeY && !takeP)
+        return CommandResult::Fail("detect_object reports nothing - tick X, Y and/or P "
+                                   "in the step's Vision detect helper");
+    const std::string uid = p.GetString("model");
+    if (uid.empty())
+        return CommandResult::Fail("detect_object has no detection model - create and "
+                                   "teach it in the step's Vision detect helper");
+    const VisionModel* m = ctx.FindVisionModel(uid);
+    if (!m)
+        return CommandResult::Fail("detect_object: its detection model (" + uid +
+                                   ") is not in this product - re-create it in the helper");
+
+    // P is a property of the METHOD, so a P nobody can measure is refused
+    // before anything happens rather than reported as a 0 that looks real.
+    if (takeP) {
+        std::string why;
+        if (!DetectionImageRotation(*m, VisionDetection{}, nullptr, &why))
+            return CommandResult::Fail("detect_object: P is ticked but " + why);
+    }
+
+    std::string err;
+    int idx = -1;
+    IMotionController* cam = ResolveMotion(ctx, p.GetString("camera_device"), &idx, &err);
+    if (!cam) return CommandResult::Fail(err);
+
+    // Light, then exposure, then frames taken under both - the order
+    // align_station and vision_detect use. A model whose light cannot be set
+    // FAILS: a detection under the wrong light is a different picture.
+    if (p.GetBool("apply_lighting")) {
+        std::string why;
+        if (!ctx.Wf().ApplyLighting(m->lighting, &why))
+            return CommandResult::Fail("detect_object: " + why);
+    }
+    if (m->exposureUs > 0.0 && !ctx.Wf().SetCameraExposure(m->exposureUs))
+        return CommandResult::Fail("detect_object: camera exposure change rejected "
+                                   "(camera connected?)");
+
+    VisionDetection d;
+    bool warnedStale = false;
+    if (!SampleDetect(ctx, *m, p.GetInt("fresh_frames"), p.GetInt("frame_timeout_ms"),
+                      warnedStale, d))
+        return CommandResult::Fail("stopped");
+
+    ctx.CtxSet(prefix + "_score", d.score);
+    ctx.CtxSet(prefix + "_x_px", d.xPx);
+    ctx.CtxSet(prefix + "_y_px", d.yPx);
+    ctx.CtxSet(prefix + "_error", d.error);
+    if (!d.ok) {
+        FD_WARN("vision", "detect_object: %s", d.error.c_str());
+        if (p.GetBool("require"))
+            return CommandResult::Fail("detect_object: nothing found - " + d.error);
+        return CommandResult::Success();
+    }
+
+    // The pose AFTER the frame: CaptureWorldPoint's load-bearing order.
+    ExecutionContext::PickResult pick;
+    pick.px   = d.xPx;
+    pick.py   = d.yPx;
+    pick.dxMM = d.dxMM;
+    pick.dyMM = d.dyMM;
+    AlignPoint e;
+    const CommandResult cap = CaptureWorldPoint(ctx, cam, pick, &e);
+    if (!cap.ok) return cap;
+
+    double pDeg = 0.0;
+    if (takeP) {
+        double img = 0.0;
+        std::string why;
+        if (!DetectionImageRotation(*m, d, &img, &why))
+            return CommandResult::Fail("detect_object: " + why);
+        pDeg = img;
+    }
+
+    // The result, into the live store: the one place a LOCATION crosses steps
+    // (and recipes - ctx is wiped between a program's queue items). Typed, with
+    // the device its X / Y are in as a field, so move_to_result can refuse any
+    // other device without trusting a naming convention.
+    ObjectResult res;
+    res.name     = prefix;
+    res.device   = cam->Name();
+    res.hasX     = takeX;
+    res.hasY     = takeY;
+    res.hasP     = takeP;
+    res.x        = e.wx;
+    res.y        = e.wy;
+    res.p        = pDeg;
+    res.model    = m->name;
+    res.score    = d.score;
+    res.frameSeq = d.frameSeq;
+    res.at       = NowStamp();
+    ctx.Wf().SetObjectResult(res);
+
+    // The same numbers in ctx, for THIS recipe: branching, {key} in a text
+    // field, Lua. Written in the same breath as the store, so the two cannot
+    // disagree; a move never reads these.
+    if (takeX) ctx.CtxSet(prefix + "_x", e.wx);
+    if (takeY) ctx.CtxSet(prefix + "_y", e.wy);
+    if (takeP) ctx.CtxSet(prefix + "_p", pDeg);
+    ctx.CtxSet(prefix + "_ok", true);
+
+    char got[128] = "";
+    int  n = 0;
+    const auto room = [&] { return sizeof(got) - static_cast<std::size_t>(n); };
+    if (takeX) n += std::snprintf(got + n, room(), " X %.4f", e.wx);
+    if (takeY) n += std::snprintf(got + n, room(), " Y %.4f", e.wy);
+    if (takeP) std::snprintf(got + n, room(), " P %.3f deg", pDeg);
+    FD_INFO("vision", "detect_object '%s':%s  (%s at %.4f, %.4f + %.4f, %.4f mm; score "
+                      "%.3f, %.1f ms)",
+            m->name.c_str(), got, cam->Name().c_str(), e.gx, e.gy, d.dxMM, d.dyMM,
+            d.score, d.elapsedMs);
+    return CommandResult::Success();
+}
+
 // Run a model N times and report the spread. This is the honest answer to "is
 // this detector trustworthy?": a single successful detect proves nothing, and
 // the number that matters is how far the reported point wanders when nothing
@@ -742,6 +884,77 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                       PostDelayParam(),
                   },
                   CommandSpec::Needs::Camera, ExecVisionDetect});
+
+    // Find an object with the step's PRIVATE model and report its X / Y / P.
+    // The model and the three ticks are the helper's: they mean something only
+    // against the picture the model was taught on.
+    CommandSpec detectSpec{"detect_object", "Vision",
+                  "Find an object with this step's own detection model; report its "
+                  "X / Y (machine mm) and/or P (deg) into ctx",
+                  {
+                      {"model", PT::String, false, "", 0, 0, {},
+                       "this step's private detection model (uid) - created and "
+                       "taught in the helper",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"take_x", PT::Bool, false, true, 0, 0, {},
+                       "report X: the camera device's X at the crosshair + the "
+                       "feature's offset, mm",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"take_y", PT::Bool, false, true, 0, 0, {},
+                       "report Y, the same way",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"take_p", PT::Bool, false, false, 0, 0, {},
+                       "report P: the feature's rotation from its taught orientation, "
+                       "deg, clockwise positive on the camera picture (ncc / corner "
+                       "models with an angle tolerance)",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"camera_device", PT::DeviceMotion, false, "gantry-main", 0, 0, {},
+                       "the device the camera rides on: X / Y are ITS axis coordinates"},
+                      {"apply_lighting", PT::Bool, false, true, 0, 0, {},
+                       "set the light the model was taught under first (no-op if it has none)"},
+                      {"fresh_frames", PT::Int, false, 2, 0, 10, {},
+                       "new frames required before detecting (0 = use the latest)"},
+                      {"frame_timeout_ms", PT::Int, false, 2000, 50, 30000, {},
+                       "ceiling on the fresh-frame wait; then the latest frame is used"},
+                      {"require", PT::Bool, false, true, 0, 0, {},
+                       "fail the step when nothing is found (off: branch on <prefix>_ok)"},
+                      {"ctx_prefix", PT::String, false, "det", 0, 0, {},
+                       "NAMES the object result (the live store move_to_result reads, "
+                       "any recipe of the program) and prefixes the ctx keys: _ok, "
+                       "the ticked _x / _y / _p, _score / _x_px / _y_px / _error"},
+                      PreDelayParam(),
+                      PostDelayParam(),
+                  },
+                  CommandSpec::Needs::Camera, ExecDetectObject,
+                  /*parallelBy*/ "", /*helper*/ kVisionDetectHelper};
+    // What it writes, from the ticks and the prefix: ONE object result named
+    // after the prefix, on the camera's device, carrying the ticked axes - and
+    // the ctx mirrors for this recipe.
+    detectSpec.outputs = [](const nlohmann::json& p) {
+        const std::string pre = p.value("ctx_prefix", std::string("det"));
+        const std::string dev = p.value("camera_device", std::string("gantry-main"));
+        const bool tx = p.value("take_x", true), ty = p.value("take_y", true),
+                   tp = p.value("take_p", false);
+        CommandOutputs o;
+        std::string axes;
+        if (tx) axes += "X";
+        if (ty) axes += "Y";
+        if (tp) axes += "P";
+        if (!axes.empty())
+            o.results.push_back({pre, dev, axes, "the detected object, '" + dev + "' axis mm"});
+        o.keys.push_back({pre + "_ok", "bool", "the object was found"});
+        if (tx) o.keys.push_back({pre + "_x", "mm", "object X, '" + dev + "' axis mm"});
+        if (ty) o.keys.push_back({pre + "_y", "mm", "object Y, '" + dev + "' axis mm"});
+        if (tp) o.keys.push_back({pre + "_p", "deg",
+                                  "object rotation from the taught orientation, deg, "
+                                  "clockwise positive on the picture"});
+        o.keys.push_back({pre + "_score", "number", "detection score 0..1"});
+        o.keys.push_back({pre + "_x_px", "number", "object X in the picture, px"});
+        o.keys.push_back({pre + "_y_px", "number", "object Y in the picture, px"});
+        o.keys.push_back({pre + "_error", "text", "why nothing was found"});
+        return o;
+    };
+    reg.Register(std::move(detectSpec));
 
     reg.Register({"vision_test", "Vision",
                   "Run a detection model N times and report the hit rate and spread",

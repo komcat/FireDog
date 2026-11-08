@@ -6,6 +6,7 @@
 #include "core/Product.h"   // GenerateUid
 
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <fstream>
@@ -351,6 +352,52 @@ std::vector<unsigned char> MakeCornerTemplate(const CornerParams& c, int* nOut)
 }
 
 // ---- the pre-process chain, as one line ------------------------------------
+
+bool DetectionImageRotation(const VisionModel& m, const VisionDetection& d,
+                            double* deg, std::string* why)
+{
+    const auto refuse = [&](const char* r) {
+        if (why) *why = r;
+        return false;
+    };
+    // Where an UNTURNED corner's material direction points, screen convention
+    // (y down, clockwise positive) - the table HalconDetector's mode 1 uses,
+    // indexed by the quadrant OPPOSITE the reported corner (TL TR BR BL).
+    static const double kBisector[4] = {-135.0, -45.0, 45.0, 135.0};
+
+    double a = 0.0;
+    if (m.method == "ncc") {
+        if (m.ncc.angleToleranceDeg <= 0.0)
+            return refuse("the NCC model searches no rotation - set its angle tolerance "
+                          "above 0 to measure P");
+        a = d.angleDeg;   // HALCON: counter-clockwise as displayed
+    } else if (m.method == "corner") {
+        if (m.corner.mode == 1 && m.corner.angleToleranceDeg <= 0.0)
+            return refuse("the corner model searches no rotation - set its angle "
+                          "tolerance above 0 to measure P");
+        const int c = (m.corner.corner >= 0 && m.corner.corner < 4) ? m.corner.corner : 0;
+        // Both modes report the material direction clockwise on screen; the
+        // rotation is how far it has swung back from the unturned one, which
+        // is counter-clockwise positive like the NCC angle.
+        a = kBisector[(c + 2) % 4] - d.angleDeg;
+        // That direction is the DIAGONAL towards the far corner, which sits 45
+        // deg off an edge only for a square. Mode 0 fits a rectangle and
+        // reports its two edges (width on the -45 side), so the edge's own
+        // direction is the diagonal less atan2(height, width): add the
+        // difference back. Exactly 0 for a square and for mode 1 (equal halves).
+        if (d.widthPx > 0.0 && d.heightPx > 0.0)
+            a += std::atan2(d.heightPx, d.widthPx) * 180.0 / 3.14159265358979323846 - 45.0;
+    } else {
+        return refuse("a circle has no orientation - P needs an ncc or corner model");
+    }
+    // `a` is counter-clockwise as displayed; P is clockwise positive.
+    a = -a;
+    // (-180, 180]
+    while (a > 180.0)   a -= 360.0;
+    while (a <= -180.0) a += 360.0;
+    if (deg) *deg = a;
+    return true;
+}
 
 std::string VisionFilterSummary(const VisionModel& m)
 {

@@ -26,6 +26,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/AlignLighting.h"
+#include "vision/VisionResult.h"
 
 namespace firedog {
 
@@ -198,6 +199,37 @@ struct VisionModel {
 
     VisionReliability rel;
 };
+
+// ---- a recipe step's private model ------------------------------------------
+// A detect_object step owns ONE model, named this prefix + the model's uid and
+// referenced by uid from the step's `model` param. Steps have no uid of their
+// own, so the prefix is the ownership record: it is what lets
+// ProductSession::SyncStepDetectors give a copied step its own model and sweep
+// the ones no step references any more (the vdet_<procUid>_<station> idea).
+inline constexpr const char* kStepDetectorPrefix = "vdet_step_";
+inline std::string StepDetectorName(const std::string& uid)
+{
+    return std::string(kStepDetectorPrefix) + uid;
+}
+
+// ---- the feature's rotation (detect_object's P) ----------------------------
+// How far the found feature is turned from the orientation it was taught at,
+// AS THE CAMERA PICTURE SHOWS IT: degrees, CLOCKWISE POSITIVE on screen
+// (agreed 2026-11-07: 0 = as taught, +90 = a quarter turn clockwise, -90 = a
+// quarter turn anticlockwise), in (-180, 180]. Read off the picture, so it does
+// not depend on how the pixel->mm calibration is signed - what the operator
+// sees turn is what the number says.
+//   * ncc            the match angle;
+//   * corner (both)  the direction into the material, less where it points for
+//                    an unturned corner of that kind - which is the match angle
+//                    in mode 1 and the fitted rectangle's turn in mode 0 (a
+//                    square's turn is only known modulo 90 deg);
+//   * circle         none - a circle has no orientation.
+// A method searching no rotation (an NCC or two-edge corner with an angle
+// tolerance of 0) also returns false: it would report 0 deg whatever the part
+// did, and a P that cannot move is not a measurement. `why` says which.
+bool DetectionImageRotation(const VisionModel& m, const VisionDetection& d,
+                            double* deg, std::string* why);
 
 // The active chain as one short line: "gauss[3] > canny[20/80 a1.0]", or "" when
 // no slot is enabled. One formatter, three consumers — the log, the Alignment

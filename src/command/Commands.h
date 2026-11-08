@@ -26,6 +26,9 @@ inline constexpr const char* kDispenseHelper = "Dispense helper";
 // roi_filter_view_setup's helper (Vision) - the same shape: the window's name
 // and the `group` of the params it edits. docs/camera-setup-design.md.
 inline constexpr const char* kRoiFilterViewHelper = "ROI Filter view setup";
+// detect_object's helper (Vision): the step's private detection model taught
+// with the alignment teach panels, plus which of X / Y / P the step reports.
+inline constexpr const char* kVisionDetectHelper = "Vision detect helper";
 void RegisterDeviceRegCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterTrayCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);

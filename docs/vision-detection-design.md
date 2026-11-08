@@ -557,6 +557,7 @@ same points the queue delivered.
 |---|---|
 | `vision_detect` | locate the feature once; `<prefix>.ok/.x_px/.y_px/.dx_mm/.dy_mm/.angle_deg/.score/.radius_px/.count/.elapsed_ms/.error` |
 | `vision_test` | run N times; `<prefix>.runs/.ok/.ok_pct/.mean_score/.mean_x_px/.mean_y_px/.std_x_px/.std_y_px/.max_dev_px` |
+| `detect_object` | find an object with the STEP'S OWN model and report the ticked X / Y (machine mm) and/or P (deg) — §7a |
 
 `require = false` by default on `vision_detect`, so a recipe branches on
 `vision.ok` instead of dying halfway — the `halcon_status` pattern.
@@ -571,6 +572,108 @@ even open a recipe that mentions vision.
 Freshness reuses the auto-focus gate (`fresh_frames = 2`): frame #1 may have
 been integrating while the stage travelled, frame #2 is wholly from the station.
 On a stalled feed it degrades to "detect on the latest frame" and warns once.
+
+## 7a. `detect_object`: a recipe step that owns its detector
+
+`vision_detect` picks a model off a list, which is how a step ends up running an
+alignment station's private detector. `detect_object` is the recipe-step owner
+the ownership rule (§2) always anticipated: **the step owns one model**, taught
+with the same panels as a station's.
+
+**Ownership without a step uid.** A `RecipeStep` has no uid, so the model is
+named **`vdet_step_<modelUid>`** (`kStepDetectorPrefix`, `vision/VisionModel.h`)
+and the step holds the uid in its `model` param. The prefix is the ownership
+record. Copy / Paste / Duplicate copy a step's params verbatim, so a pasted step
+references its original's model; **`ProductSession::SyncStepDetectors`** — run by
+`SaveRecipes` and `SaveProduct` before anything is written — gives the second
+step found referencing a model its own copy (patch included, through the one
+`ProductSession::CopyVisionModelAs`) and deletes step-owned models no step
+references. Until that save the helper shows a shared model but will not tune it
+(*Make it this step's own* does the same copy for one step), because tuning it
+would re-tune the other step.
+
+**The helper is the teach page's body.** `App::DrawVisionTeachBody(VisionModel&)`
+is the page's three columns (image, chain + method, results), its anchor window,
+live re-detect and filtered preview, split out of `DrawVisionTeachPanel`
+unchanged. The page draws it under its owner strip; the **Vision detect helper**
+(`ui/windows/WndVisionDetect.cpp`, `CommandSpec::helper`) draws it under the
+step's X / Y / P ticks. A floating window rather than the takeover page because
+leaving the Recipe Editor for a takeover raises the unsaved-recipe guard; it
+points the page's shared state (`visionSelUid_` …) at the step's model and
+stands aside while the Vision teach page itself is open. Creating a model is a
+button, never a side effect of opening the window. Teaching is Admin
+(`CanAccess(Page::VisionTeach)`); the ticks are the editor's.
+
+**What it reports — and it only reports.** Nothing moves; a correction is a later
+step. The measurement goes to ONE place that outlives the recipe — a live
+**object result** (below) named after `ctx_prefix` — plus ctx mirrors for this
+recipe's own branching (`<prefix>_ok`, the ticked `_x` / `_y` / `_p`, `_score`,
+`_x_px`, `_y_px`, `_error`), written in the same breath so they cannot disagree.
+
+* **X / Y** — the camera device's axis pose (`camera_device`, default
+  `gantry-main`) at the frame centre — the crosshair — plus the feature's pixel
+  offset in mm, through **`CaptureWorldPoint`**, the function `align_station`
+  and `pick_point` use, now declared in `command/WorldPoint.h`. The pose is read
+  AFTER the frame, the order that function exists to keep.
+* **P** — the feature's rotation from the orientation it was taught at, **as the
+  camera picture shows it: degrees, clockwise positive on screen** (agreed
+  2026-11-07: 0 = as taught, +90 = a quarter turn clockwise, −90 = anticlockwise;
+  reported in (−180, 180]). Read off the picture rather than converted into the
+  machine frame, so it does not depend on how the pixel→mm calibration is signed
+  — what the operator sees turn is what the number says. A consumer that drives
+  a rotation axis maps it to that axis's own sign. `DetectionImageRotation`
+  (`vision/VisionModel`) defines it per method — the NCC match angle; for a
+  corner, the material direction less where it points for an unturned corner
+  (the match angle in mode 1, the fitted rectangle's turn, modulo 90°, in mode
+  0, corrected by `atan2(h, w) − 45°` for a rectangle) — and negates HALCON's
+  counter-clockwise sense. A circle has no orientation, and an NCC or two-edge
+  corner model with an angle tolerance of 0 searches none: P is **refused**
+  there before anything happens, never reported as a 0 that looks measured.
+
+`require` defaults **on** (unlike `vision_detect`): the step exists to feed a
+later step a coordinate, and a miss that left the keys unwritten would have that
+step read nothing — or a value from an earlier part.
+
+### The live object-result store
+
+A first cut passed the location to the next step as ctx keys (`<prefix>_x`,
+`_y` and a `<prefix>_device` tag). Two things were wrong with that: ctx is wiped
+between a program's queue items, so the recipe that detects could never feed
+the recipe that moves; and the safety rested on a naming convention. So a
+detected object is now a **typed record in `Workflow`'s store** —
+`ObjectResult` (`core/ObjectResult.h`): name, the device whose axis space X / Y
+are in, which of X / Y / P it carries, and the evidence (model, score, frame,
+time). It is the live taught frame's pattern exactly:
+
+* **Lifetime = one part.** `ClearObjectResults` sits beside every
+  `ClearLiveFrames` / `CarryLiveFrames`: program start, DUT open, product load
+  (app start is a product load). There is no "keep" — nothing says the next part
+  sits where this one did.
+* **A miss leaves nothing.** `detect_object` erases its name BEFORE it measures,
+  so a miss, a refusal or a Stop cannot leave the previous part's result for a
+  later move.
+* **The device is a field.** `move_to_result{device, result}` refuses a record
+  on another device; the same numbers are a different place there. Its `axes`
+  picks what to drive: `as result` (default) moves exactly the axes the result
+  carries (a result ticked for X alone drives X alone); `X` / `Y` / `XY` name
+  them, and naming one the result lacks fails rather than moving less. Z and the
+  rotations are never commanded, so the camera keeps the Z it detected at. It
+  refuses past `max_mm` (default 5 mm), and goes through
+  `MoveWithApproach`. With `device = gantry-main` the camera centre lands on the
+  object — X / Y already are "the camera pose that would centre it".
+* **ctx is for this recipe.** The mirrors serve `if` steps, `{key}` text and Lua;
+  a move never reads them.
+
+**Declarations.** `CommandSpec::outputs` returns `CommandOutputs` — ctx `keys`
+and object `results` (name, device, axes) — from a step's effective params.
+The editor reads nothing else. The `ResultName` picker offers results declared
+**anywhere in the library** on the step's device (a recipe does not know which
+program will run it), each labelled with where it comes from, and flags a name
+whose only producer runs LATER in the same recipe. The Recipe Editor's
+**Context keys** panel, under the palette, shows the recipe's results (a name
+produced by more than one step is flagged: the last to run wins), its ctx keys
+in run order (dimmed past the selected step; a click copies `{key}`), and the
+store's live contents.
 
 ## 8. `align_station` in auto mode
 
