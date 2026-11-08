@@ -427,9 +427,9 @@ const char* StepIconFile(const char* type)
         {"move_to_cell",              "tr_tray"},
         {"move_to_active_cell",       "tr_tray"},
         {"move_to_point",             "rg_device_reg"},
-        {"move_tool_to_camera",       "rg_device_reg"},
-        {"move_camera_to_tool",       "rg_device_reg"},
-        {"tool_travel_to_camera",     "rg_device_reg"},
+        {"move_tool_to_camera",       "rg_tool_to_cam"},
+        {"move_camera_to_tool",       "rg_cam_to_tool"},
+        {"tool_travel_to_camera",     "rg_tool_to_cam"},
         // IO. wait_input has its own glyph - the pin is the news there.
         {"set_output",                "io_output"},
         {"toggle_output",             "io_output"},
@@ -646,6 +646,66 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
     const bool clicked = ImGui::InvisibleButton(id, img);
     const bool hovered = ImGui::IsItemHovered();
 
+    // A latched mark's screen position, through the pose the marks are drawn
+    // with. Shared by the drag below and the reference lines in the draw pass.
+    const bool canProject = haveImg && mp.havePose && mp.marks &&
+                            mp.pixelToMmX > 0.0f && mp.pixelToMmY > 0.0f;
+    const auto markScreen = [&](int i) {
+        const float px = static_cast<float>((mp.marks[i].wx - mp.gx) /
+                                            static_cast<double>(mp.pixelToMmX)) +
+                         static_cast<float>(mp.imgW) * 0.5f;
+        const float py = static_cast<float>((mp.marks[i].wy - mp.gy) /
+                                            static_cast<double>(mp.pixelToMmY)) +
+                         static_cast<float>(mp.imgH) * 0.5f;
+        return view.ToScreen(px, py);
+    };
+
+    // ---- Dragging a latched mark ----------------------------------------------
+    // First of the grabs: a mark is a point target, so it wins over a box body
+    // or corner under it. Moved by the mouse's DELTA from where it is drawn, so
+    // grabbing a few px off its centre does not make it jump. The widget only
+    // reports the new place; the caller owns the mark and writes it back.
+    bool markTook = false;
+    if (mp.markDrag && canProject) {
+        const ImVec2 m0 = ImGui::GetIO().MousePos;
+        int over = -1;
+        float best = kBoxGrabPx * kBoxGrabPx;
+        for (int i = 0; i < mp.markCount; ++i) {
+            if (!mp.marks[i].have) continue;
+            const ImVec2 s = markScreen(i);
+            const float d2 = (m0.x - s.x) * (m0.x - s.x) + (m0.y - s.y) * (m0.y - s.y);
+            if (d2 <= best) { best = d2; over = i; }
+        }
+        if (*mp.markDrag >= 0) {
+            markTook = true;   // the release is the click ImGui reports
+            const int i = *mp.markDrag;
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && i < mp.markCount &&
+                mp.marks[i].have) {
+                const ImVec2 d = ImGui::GetIO().MouseDelta;
+                if (d.x != 0.0f || d.y != 0.0f) {
+                    const ImVec2 s = markScreen(i);
+                    float cx = 0.0f, cy = 0.0f;
+                    view.ToCamera(ImVec2(s.x + d.x, s.y + d.y), &cx, &cy);
+                    cx = fminf(fmaxf(cx, 0.0f), static_cast<float>(mp.imgW));
+                    cy = fminf(fmaxf(cy, 0.0f), static_cast<float>(mp.imgH));
+                    out.markMoved = i;
+                    out.markPx    = cx;
+                    out.markPy    = cy;
+                    out.markWx = mp.gx + static_cast<double>(cx - static_cast<float>(mp.imgW) * 0.5f) *
+                                             static_cast<double>(mp.pixelToMmX);
+                    out.markWy = mp.gy + static_cast<double>(cy - static_cast<float>(mp.imgH) * 0.5f) *
+                                             static_cast<double>(mp.pixelToMmY);
+                }
+            } else {
+                *mp.markDrag = -1;
+            }
+        } else if (hovered && over >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            *mp.markDrag = over;
+            markTook     = true;
+        }
+        if (over >= 0 || *mp.markDrag >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+
     // ---- The tool's footprint box, and its corner handles -------------------
     // Resolved BEFORE the crosshair click below, because a press that grabbed a
     // corner must not also place a mark: the box is dragged with the same button
@@ -702,7 +762,7 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
                 } else {
                     *mp.boxDragging = false;
                 }
-            } else if (hovered && onCorner &&
+            } else if (hovered && onCorner && !markTook &&
                        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 *mp.boxDragging = true;
                 boxGrabbed      = true;
@@ -786,7 +846,8 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
                 } else {
                     *b.drag = -1;
                 }
-            } else if (hovered && over >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            } else if (hovered && over >= 0 && !markTook &&
+                       ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 *b.drag    = over;
                 boxGrabbed = true;
             }
@@ -798,7 +859,8 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
 
     // A click that belonged to the box is not a mark. `wasDragging` covers the
     // RELEASE, which is the edge ImGui reports as the click.
-    if (haveImg && clicked && !boxGrabbed) view.ToCamera(ImGui::GetIO().MousePos, mp.px, mp.py);
+    if (haveImg && clicked && !boxGrabbed && !markTook)
+        view.ToCamera(ImGui::GetIO().MousePos, mp.px, mp.py);
 
     // RIGHT click = drive there. The offset from the image centre in mm is the
     // move that brings the clicked feature under the centre — the same
@@ -871,6 +933,23 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
             *py = static_cast<float>((wy - mp.gy) / static_cast<double>(mp.pixelToMmY)) +
                   static_cast<float>(mp.imgH) * 0.5f;
         };
+
+        // Reference lines through every latched mark, under the crosses: they
+        // are for lining a corner up against the others and against an edge,
+        // so they run the whole width and height of the picture. The mark
+        // being dragged gets a brighter pair.
+        if (mp.markLines && canProject) {
+            for (int i = 0; i < mp.markCount; ++i) {
+                if (!mp.marks[i].have) continue;
+                const ImVec2 s   = markScreen(i);
+                const ImU32  col = mp.marks[i].col ? mp.marks[i].col : kPtCol;
+                const bool   hot = mp.markDrag && *mp.markDrag == i;
+                const ImU32  lc  = (col & ~IM_COL32_A_MASK) |
+                                  (static_cast<ImU32>(hot ? 200 : 110) << IM_COL32_A_SHIFT);
+                dl->AddLine(ImVec2(origin.x, s.y), ImVec2(origin.x + img.x, s.y), lc, 1.0f);
+                dl->AddLine(ImVec2(s.x, origin.y), ImVec2(s.x, origin.y + img.y), lc, 1.0f);
+            }
+        }
 
         if (mp.havePose && mp.pixelToMmX > 0.0f && mp.pixelToMmY > 0.0f) {
             // Marks that have left the field of view become edge arrows rather
@@ -997,7 +1076,13 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
                          b.col ? b.col : kObjBox, editable ? 5.0f : 0.0f);
         }
 
-        DrawCross(dl, view.ToScreen(*mp.px, *mp.py), kCurCol, 22.0f, nullptr, false);
+        const ImVec2 cur = view.ToScreen(*mp.px, *mp.py);
+        if (mp.markLines) {
+            const ImU32 lc = (kCurCol & ~IM_COL32_A_MASK) | (110u << IM_COL32_A_SHIFT);
+            dl->AddLine(ImVec2(origin.x, cur.y), ImVec2(origin.x + img.x, cur.y), lc, 1.0f);
+            dl->AddLine(ImVec2(cur.x, origin.y), ImVec2(cur.x, origin.y + img.y), lc, 1.0f);
+        }
+        DrawCross(dl, cur, kCurCol, 22.0f, nullptr, false);
         dl->PopClipRect();
         // Last, so nothing paints over it: the one overlay allowed on the
         // picture, because it says what scale the picture is at.
@@ -1008,8 +1093,12 @@ MarkPickerResult DrawMarkPicker(const char* id, const ImVec2& box, const MarkPic
     // sit here rather than over the image because over the image they cover the
     // feature being marked.
     DrawMarkIconsInline(mp.icons, mp.activeMark, ImGui::GetFrameHeight() * 2.0f);
-    ImGui::TextDisabled("left click places, RIGHT click drives there, arrows nudge "
-                        "1 px (Shift = 10), wheel zooms");
+    if (mp.markDrag)
+        ImGui::TextDisabled("left click places, drag a mark to move it, RIGHT click drives "
+                            "there, arrows nudge 1 px (Shift = 10), wheel zooms");
+    else
+        ImGui::TextDisabled("left click places, RIGHT click drives there, arrows nudge "
+                            "1 px (Shift = 10), wheel zooms");
     ImGui::SameLine();
     ImGui::PushID(id);
     ImGui::SetNextItemWidth(110.0f);

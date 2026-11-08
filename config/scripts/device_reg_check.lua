@@ -22,7 +22,7 @@
 --
 --   a CONSTANT shift, the same wherever you check    -> the TOOL moved.
 --        Somebody changed the gripper. Re-teach the tip on the Registration
---        page (Teach pose at device zero, then mark): keeping the rotation.
+--        page (Capture tool points: camera on the tool, mark, compute): keeping the rotation.
 --   a residual that GROWS with distance from the taught pose -> the ROTATION is
 --        wrong, which here means the device is not square to the axes the
 --        transforms file claims. t alone cannot absorb an angle; either correct
@@ -172,7 +172,7 @@ end
 error(string.format(
     "'%s' is %.4f mm out at %.3f mm from where its tip was taught, outside the " ..
     "%.4f mm tolerance. A shift of the same size wherever you check is the TOOL - " ..
-    "re-teach the tip (Teach pose, then mark). A miss that grows with distance is the ROTATION, " ..
+    "re-teach the tip (Capture tool points). A miss that grows with distance is the ROTATION, " ..
     "which came from the axis transforms and is only as square as the mount. " ..
     "Loosening the tolerance fixes neither.",
     DEV, residual, offset, TOL))

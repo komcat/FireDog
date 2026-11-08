@@ -59,7 +59,7 @@ bool IsSystemScript(const std::string& pathOrFile)
     return file == "alignment_procedure.lua" ||
            file == "needle_calibration.lua" || file == "dispense_procedure.lua" ||
            file == "alignment_repeat.lua" ||
-           file == "device_reg_check.lua" || file == "device_reg_teach.lua" ||
+           file == "device_reg_check.lua" ||
            file == "grip_measure.lua" ||
            file == "xcan_to_target.lua" || file == "xcan_two_lens.lua";
 }

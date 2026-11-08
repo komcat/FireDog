@@ -301,6 +301,17 @@ struct MarkPicker {
     double gx = 0.0, gy = 0.0;           // the pose marks are projected through
     const CameraMark* marks = nullptr;
     int    markCount = 0;
+    // Reference lines: a full-width and full-height line through every latched
+    // mark and through the live crosshair, so corners can be lined up against
+    // each other and against an edge across the whole picture. Display only.
+    bool   markLines = false;
+    // Non-null makes the latched marks DRAGGABLE. A press on a mark grabs it
+    // (the caller's latch: -1 none, else the mark's index) and each frame of the
+    // drag reports where it now is in MarkPickerResult; the widget holds no
+    // mark storage, so the CALLER writes it back. A press that grabs a mark does
+    // not also place the crosshair, and wins over a box under it - a mark is a
+    // point target and a box body is not.
+    int*   markDrag = nullptr;
     // Non-null draws the CENTRE of every latched mark under this label — the
     // point those marks exist to define — plus the envelope box they bound.
     // Two marks make it a midpoint; four make it the centre of the ring. It
@@ -392,6 +403,12 @@ struct MarkPicker {
 struct MarkPickerResult {
     bool   moveRequested = false;
     double dxMM = 0.0, dyMM = 0.0;   // relative, machine frame
+    // A mark dragged this frame (MarkPicker::markDrag): its index, its new
+    // position in machine mm, and the camera pixel that is under the pose it
+    // was projected through (gx/gy). -1 = nothing moved.
+    int    markMoved = -1;
+    double markWx = 0.0, markWy = 0.0;
+    float  markPx = 0.0f, markPy = 0.0f;
 };
 
 // Fill `box` with the image, the overlay and the input handling, then a footer

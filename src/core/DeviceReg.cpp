@@ -1,6 +1,6 @@
 // DeviceReg.cpp — the prediction, the two setters, and the file.
 //
-// See DeviceReg.h for where R comes from, how t is measured (at device zero),
+// See DeviceReg.h for where R comes from, how t is measured (wherever the device stands),
 // and why the triad is never assumed right-handed.
 #include "core/DeviceReg.h"
 

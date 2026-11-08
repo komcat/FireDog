@@ -476,17 +476,17 @@ private:
     void StartNeedleCalRun();   // launches needle_calibration.lua
 
     // Registration page (View menu, full-page): where each device's tool tip is
-    // in the camera device's space. Same shape as the Needle page above and for
-    // the same reason — the record is machine state on Workflow, and this page
-    // only shows it, injects the run parameters and launches the two STANDARD
-    // procedures. It measures nothing itself.
+    // in the camera device's space. The record is machine state on Workflow;
+    // this page teaches the tip from the operator's corner marks, shows the
+    // record, and drives through it (tool to camera, camera to tool). The check
+    // (device_reg_check.lua) is reached from a recipe's device_reg_check_run.
     void DrawDeviceRegPanel();
-    void StartDeviceRegCheckRun();   // launches device_reg_check.lua
-    // The teach pose: device_reg_teach.lua drives the device to axis zero
-    // (after a confirm), has the operator put the camera over the tool, and
-    // latches both poses through device_reg_teach_save — the one writer of
-    // them. Machine state, handed to Workflow's queue and drained in Update.
-    void StartDeviceRegTeachRun();
+    // The teach: the operator's corner marks (each with the camera pose it was
+    // taken at) and the registered device's pose latched at the first of them
+    // become the tip, wherever the device stands. The one writer of the taught
+    // pose. Machine state, handed to Workflow's queue and drained in Update.
+    void CaptureDeviceRegCorner(double gx, double gy, double gz, bool haveZ);
+    void ClearDeviceRegMarks();
     void CompleteDeviceRegTip();
     // The camera view section (main_camera exposure + main_camera_light) of
     // the Capture tab. Its image toolbar is the shared ui/RoiFilter.
@@ -1398,31 +1398,41 @@ private:
     double ndlSeedDx_ = 0.0, ndlSeedDy_ = 0.0, ndlSeedDz_ = 0.0;
 
     // Registration page state. The registrations themselves live on Workflow
-    // (machine state, not a document) — these are the selection, the four-step
-    // teach in progress, and the check's parameters.
+    // (machine state, not a document) — these are the selection, the teach in
+    // progress, and the check's parameters.
     //
-    // The teach is a PAGE flow rather than a procedure script: every step needs
-    // an operator at the machine placing a coupon, jogging a tool into contact,
-    // and marking the corners of the mark it left. There is nothing for a recipe
-    // to automate, and a second way to create a registration would be a second
+    // The teach is a PAGE flow rather than a procedure script: the operator
+    // jogs the camera onto the tool where it stands and marks its corners.
+    // Nothing moves the registered device, there is nothing for a recipe to
+    // automate, and a second way to create a registration would be a second
     // answer to where the tool is.
     char   regDevice_[32]   = "hex-left";
     char   regRef_[32]      = "gantry-main";
-    double regFocusRangeMm_ = 0.5;
-    // The four corner marks of the imprint, in MACHINE mm, each latched with the
-    // pose it was taken at — so the operator may jog between them and a mark
-    // still means the same place. Session state, never persisted: they describe
-    // one mark on one coupon, and the answer they produce is what is kept.
+    // The corner marks of the tool, in MACHINE mm, each latched with the camera
+    // pose it was taken at (gx/gy and the focused gz) — so the operator may jog
+    // between them and a mark still means the same place. Session state, never
+    // persisted: the answer they produce is what is kept.
     static constexpr int kRegMarkMax = 4;
     AlignPoint regMark_[kRegMarkMax];
     bool       regMarkHave_[kRegMarkMax] = {false, false, false, false};
     int        regMarkCount_  = 4;    // 2 must be a true diameter; 4 is forgiving
     int        regMarkActive_ = 0;    // which corner the next click lands on
+    int        regMarkDrag_   = -1;   // the corner being dragged on the image (MarkPicker)
+    // The REGISTERED device's pose, read live at the first mark of a set: the
+    // tip is computed at wherever the device stood (t = tip - R*h), so the
+    // operator never moves it and never has to know where it is. Latched with
+    // both device names, because a mark set taken against one pair means
+    // nothing for another. Compute refuses a device that has moved since.
+    bool        regMarkPoseHave_ = false;
+    RegVec3     regMarkPose_;              // X Y Z, device axes
+    RegVec3     regMarkRot_;               // U V W, kept as the taught rotation
+    bool        regMarkHasRot_ = false;    // false for a device with no U/V/W
+    std::string regMarkDev_, regMarkRef_;
     float      regPx_ = 0.0f, regPy_ = 0.0f, regZoom_ = 1.0f;   // MarkPicker state
     // Width of the right-hand control column, dragged by the splitter and
     // persisted in UiSettings. Its own field rather than the main window's
     // rightW_: this page is a takeover that replaces the five-region layout.
-    // The four steps carry long explanatory text and the operator's font size
+    // The steps carry long explanatory text and the operator's font size
     // moves all of it, so no constant width is right on every station.
     float      regCtlW_ = 430.0f;
     bool       regCtlSplitting_ = false;   // edge-detect the drag END
@@ -1443,41 +1453,25 @@ private:
     static constexpr const char* kRegLightName = "main_camera_light";
     double        regExposureUs_ = 0.0;
     AlignLighting regLight_;
-    // Check parameters. The three offsets default non-zero on purpose: a check
-    // at the pose the tip was taught at returns the measurement by construction
-    // and can verify nothing, so the default has to be a check that tests it.
-    double regCheckDx_  = 5.0, regCheckDy_ = 5.0, regCheckDz_ = 0.0;
-    double regCheckTol_ = 0.05;
-    // The teach run's first camera jog step: the tool is somewhere in a field
-    // a few mm wide, so the search starts coarser than a placement nudge.
-    double regTeachStepUm_ = 50.0;
-    double regVTravel_  = 0.0;
-    double regVJog_     = 0.0;
-    int    regSettleMs_ = 300;
-    // Off by default. The check measures Z as "the gantry Z that focuses on the
-    // tip", and the taught tip Z came from an operator focusing by hand: run the
-    // two halves through different focus methods and the residual reports the
-    // disagreement between the METHODS, which is not what is being checked.
-    // Off, the pick window shows the live dZ and the operator closes it by hand.
-    bool   regAutofocus_ = false;
-    // "Send the tool here": the consuming end of the registration, tried from
-    // the page that taught it. The Z offset is signed and in the REFERENCE
-    // device's axis Z, because which way that counts is a property of the
-    // machine (gantry-main's transform inverts Z) and this page must not
-    // pretend to know it. maxMm refuses the lunge a stale record turns a short
-    // approach into; allowUnverified is the same opt-in move_to_point demands.
+    // "Move tool to camera": the registered device driven so its TIP lands
+    // where the reference device stands. The Z offset is signed and in the
+    // REFERENCE device's axis Z, because which way that counts is a property of
+    // the machine (gantry-main's transform inverts Z) and this page must not
+    // pretend to know it.
     double regSendZOff_    = 0.0;
-    double regSendMaxMm_   = 25.0;
-    bool   regSendUnver_   = false;
-    // "Look at the tool": the same record read backwards - the camera driven to
-    // where the tip is predicted to be. Its own ceiling because it is a
-    // different trip (across the workspace to a parked tool, not the last few mm
-    // onto a point), and Z opt-in because the tip's reference Z is the height
-    // that FOCUSES on it, which is the camera descending toward a tool whose
-    // height nothing here knows.
+    // "Move camera to tool": the same record read backwards. Z opt-in because
+    // the tip's reference Z is the height that FOCUSES on it, which is the
+    // camera descending toward a tool whose height nothing here knows.
     bool   regLookZ_       = false;
-    double regLookMaxMm_   = 60.0;
-    std::string regStartErr_;   // why the last Check refused to start
+    // A move longer than kRegConfirmMm asks first, in a popup holding the move
+    // exactly as it was computed at the click - Confirm issues THAT, so the
+    // operator approves the numbers they read. Cleared by Cancel, Confirm, or a
+    // run starting (the popup closes itself while orch_.Busy()).
+    static constexpr double kRegConfirmMm = 3.0;
+    bool        regConfirmOpen_ = false;
+    std::string regConfirmDev_;
+    std::vector<std::pair<std::string, double>> regConfirmTargets_;
+    std::string regConfirmText_;
     std::string regTeachMsg_;   // what the last teach step did, or would not do
 
     // ---- Gripped Object page ------------------------------------------------

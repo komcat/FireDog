@@ -462,13 +462,43 @@ def _(g):
     g.poly([(20, 6), (25.5, 11.5), (20, 17), (14.5, 11.5)], Y)
 
 # Registration ---------------------------------------------------------------
-@icon("Registration", "rg_device_reg", "device_reg*, move_tool_to_camera, move_camera_to_tool, "
-                                       "move_to_point, tool_travel_to_camera")
+@icon("Registration", "rg_device_reg", "device_reg*, move_to_point")
 def _(g):
     g.rect(3, 5, 14, 14, W); g.rect(5, 3, 9, 5, W)
     g.disc(8.5, 9.5, 2.8, D)
     g.poly([(17, 18), (29, 18), (23, 29.5)], W)
     g.disc(16.5, 16.5, 1.8, Y); g.disc(20.5, 12.5, 1.5, Y); g.disc(12.5, 20.5, 1.5, Y)
+
+
+# The two drives through a registration, as a PAIR: the same camera and the
+# same tool tip, read left to right like the button labels - the thing that
+# MOVES on the left, the yellow arrow, the thing it moves to on the right.
+def reg_camera(g, x0):
+    """A 9-px-wide camera, body centred on y = 15.5."""
+    g.rect(x0, 11, x0 + 8, 19, W)
+    g.rect(x0 + 2, 9, x0 + 5, 10, W)
+    g.disc(x0 + 4.5, 15.5, 2.3, D)
+
+
+def reg_tool(g, x0):
+    """A 9-px-wide tool: shaft, jaw block, and the tip the record predicts."""
+    g.rect(x0 + 3, 5, x0 + 5, 9, L)
+    g.rect(x0, 10, x0 + 8, 13, W)
+    g.poly([(x0, 14), (x0 + 9, 14), (x0 + 4.5, 24)], W)
+
+
+@icon("Registration", "rg_tool_to_cam", "move_tool_to_camera, tool_travel_to_camera")
+def _(g):
+    reg_tool(g, 2)
+    g.arrow(12, 15.5, 20, 15.5, Y, w=2.4, head=5, half=3.5)
+    reg_camera(g, 21)
+
+
+@icon("Registration", "rg_cam_to_tool", "move_camera_to_tool")
+def _(g):
+    reg_camera(g, 2)
+    g.arrow(12, 15.5, 20, 15.5, Y, w=2.4, head=5, half=3.5)
+    reg_tool(g, 21)
 
 # Grip -----------------------------------------------------------------------
 @icon("Grip", "gr_grip", "grip_*")

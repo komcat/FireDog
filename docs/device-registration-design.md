@@ -6,9 +6,8 @@ Companion to `docs/needle-dispense-design.md` (the same idea inside one device)
 and `docs/alignment-procedure-design.md` (the same idea about a part).*
 
 **Status: built.** Core `src/core/DeviceReg.{h,cpp}`, commands
-`src/command/CommandsDeviceReg.cpp`, the teach-pose run
-`config/scripts/device_reg_teach.lua` and the check procedure
-`config/scripts/device_reg_check.lua` (both STANDARD), the teach and the page
+`src/command/CommandsDeviceReg.cpp`, the check procedure
+`config/scripts/device_reg_check.lua` (STANDARD), the teach and the page
 `src/ui/pages/PageDeviceReg.cpp` (View > Registration, F8), record
 `config/device_reg.local.json`.
 
@@ -77,7 +76,7 @@ Two properties of that file it would be easy to get wrong:
   true inverse either way. Forcing a proper rotation would invert one axis of
   every answer.
 
-**`t` is measured, at device zero** — §4.
+**`t` is measured, wherever the device stands** — §4.
 
 ## 3. What is stored
 
@@ -88,10 +87,10 @@ runtime-writable pair `config/device_reg.local.json` → `config/device_reg.json
 |---|---|
 | `R`, `rotSource` | the rotation and where it came from; `"axis-transforms"` today |
 | `t` | the tip at device pose (0,0,0) |
-| `imprintPose`, `homePose`, `tipView` | **the three teachable poses**, §5 |
+| `imprintPose`, `homePose`, `tipView` | the pose the tip was taught at (read, never set), an old imprint-teach pose, and where the camera looked from — §5 |
 | `tipMeas`, `tipPoints` | the measurement behind `t` |
 | `toolWmm`, `toolLmm` | the jaws' footprint, typed, drawn around the tip and never acted on |
-| `taughtRot`, `hasRot` | the rotations `t` is pinned to; refused past 0.05° |
+| `taughtRot`, `hasRot` | the rotations `t` is pinned to (whatever U/V/W the device stood at); refused past 0.05° unless `pivotAtTip` |
 | `checkResidualMm`, `checkPose`, `checkedAt` | the last check |
 | `regAt`, `tipAt` | **two dates, not one** — §7 |
 | `valid`, `verified` | both halves present; and a check agreed |
@@ -108,28 +107,32 @@ worth knowing — the file holds the **whole fleet**, so `App::Update` updates t
 live map first and writes it as a unit. Writing only the record that changed
 would drop every other device's registration on the first save.
 
-## 4. Teaching the tip: at device zero
+## 4. Teaching the tip: wherever the device stands
 
-*(Changed 2026-11-07. The tip used to be taught by IMPRINT — the tool touched a
-coupon at an arbitrary pose and the mark was measured; see the end of this
-section for what that bought and why it went.)*
+*(Changed twice on 2026-11-07. The tip used to be taught by IMPRINT — the tool
+touched a coupon and the mark was measured. It was then taught at device ZERO,
+behind a run that drove the device there; that was dropped the same day, for the
+reason in point 2 below.)*
 
-Drive the registered device to its axis **zero** — X Y Z = 0 and U V W = 0 — put
-the camera over the tool and focus on it, then mark the tool's corners on the
-live image. The centre of the marks is the tip in XY; the **focused reference Z**
-is the tip in Z.
+Leave the registered device where it is, put the camera over the tool and focus
+on it, then mark the tool's corners on the live image. The centre of the marks is
+the tip in XY; the **focused reference Z** is the tip in Z; the device's pose `h`
+(X Y Z, and U V W) is **read** at the first mark. Then `t = tip − R·h`
+(`DeviceRegSetTip`).
 
-Why zero:
-
-1. **`t` is defined as the tip at device pose (0,0,0).** A tip measured there IS
-   `t`, with no `R·h` term — so nothing of the typed rotation's error is folded
-   into the one measured half. (At any other pose `t = p − R·h`, and an
-   approximate `R` puts its error straight into `t`.)
-2. **Every station has the same pose to come back to.** Nobody has to find,
-   record and re-find a coupon pose after a tool change; the re-teach is the same
-   button and the same geometry every time.
-3. **The rotations are pinned at zero too**, so `taughtRot` is (0,0,0) and the
-   pivot question does not arise at the teach.
+1. **The operator never moves the device and never has to know where it is.**
+   The pose is half of the measurement, so the page reads it rather than asking
+   anybody to set it. The teach moves nothing at all — there is no confirm,
+   because there is nothing to confirm.
+2. **Where it is taught buys no accuracy by itself.** A prediction at pose `q`
+   is `tip + R·(q − h)`: the typed rotation's error is zero at `h` and grows with
+   `|q − h|`, wherever `h` is. Teaching at zero only helped a device that works
+   near zero (the argument that "no `R·h` term carries the error into `t`" was
+   about the stored number, not about a single prediction). **The best place to
+   teach is where the device works.**
+3. **The rotations are whatever the device stood at.** `taughtRot` takes the live
+   U/V/W at the first mark; with `pivotAtTip` off, predicting past
+   `kDeviceRegRotTolDeg` from them is refused, exactly as before.
 
 What the imprint bought, and what this gives up: an imprint is the contact point
 by definition, where a pick on a curved tool viewed from above lands on its
@@ -172,51 +175,33 @@ gripper standing on the part?*
 The centre is computed on the page, where the picks are. A second copy in C++
 would be a second opinion about where the tool touches.
 
-## 5. The teach: one run for the pose, the page for the marks
+## 5. The teach: the page, one tab
 
-The **pose** half is a script, `config/scripts/device_reg_teach.lua` (STANDARD),
-launched by the one *Teach pose* button on the page's Teach Pose tab:
-
-1. a **warning prompt** shows where the device is now and asks before it moves;
-2. `move_axis_to{axes = "XYZUVW"}` drives the device to zero (`u_deg`/`v_deg`/
-   `w_deg` were added to `move_axis_to` for this; a device without rotations
-   moves XYZ only);
-3. `manual_adjust` on the reference device: the operator jogs the camera until
-   the tool is in the picture and focuses on it — OK continues, Cancel ends the
-   run with nothing saved;
-4. `device_reg_teach_save` latches both poses into the record, READ LIVE: the
-   device pose as `imprintPose` (the pose the tip is taught at — the field kept
-   its name so existing records and the check need no migration), its U/V/W as
-   `taughtRot`, the camera pose as `tipView`. It refuses a device more than
-   `zero_tol_mm` (0.02, vector length) / `zero_tol_deg` (0.01) from zero.
-
-It is a script because it moves a device behind a confirm and waits on an
-operator's jog — exactly the prompt-driven shape the check already has. It is not
-a recipe step: there is no `device_reg_teach_run`, because a second launcher is a
-second way to create a registration.
-
-The **marks** stay on the page (*Capture tool points*): that is where the picks
-exist on the image, and the centre is computed where they are.
+All of it is on the page's *Capture tool points* tab — that is where the picks
+exist on the image, and the centre is computed where they are. It is not a
+recipe step and not a script: a second launcher is a second way to create a
+registration.
 
 | | Step | What it captures |
 |---|---|---|
-| 1 | **Device to zero** | the script's move; `imprintPose` ≈ (0,0,0), `taughtRot` ≈ (0,0,0) |
-| 2 | **Camera view** | the reference pose over the tool, **focused**; its Z is the tip's height |
-| 3 | **Corners** | 2–4 marks on the live image, in machine mm, through `DrawMarkPicker` — with the device STILL at zero |
-| 4 | **Complete** | centre + focused Z → `t`, via `DeviceRegSetRotation` (once) and `DeviceRegSetTip` |
+| 1 | **Camera on the tool** | the operator jogs the reference device over the tool and **focuses**; its Z is the tip's height |
+| 2 | **Corners** | 2–4 marks on the live image, in machine mm, through `DrawMarkPicker`, each with the camera pose it was taken at (`gx`, `gy`, `gz`). The FIRST also latches the registered device's live pose (X Y Z U V W) and both device names |
+| 3 | **Compute** | centre + mean focused Z → the tip at the latched pose → `t`, via `DeviceRegSetRotation` (once) and `DeviceRegSetTip`; `imprintPose` = the latched pose, `taughtRot` = its U/V/W, `tipView` = the first mark's camera pose with the mean Z |
 
 Things about it that are load-bearing:
 
-* **Compute refuses a device that has left its taught pose** (0.01 mm, 0.01°).
-  The marks were taken against the tool where it stands now and the tip is
-  computed as if it stands at `imprintPose`; a device moved in between registers
-  the tool somewhere it was never measured. Step 3 warns before the picks.
-* **Step 1 is green only for a pose taught at zero; steps 3–4 only for a tip
-  computed FROM the current pose** (`predict(imprintPose) == tipMeas` and
-  `tipMeas.z == tipView.z`). A record from the old imprint teach keeps
-  predicting — nothing about it is invalidated — but the page shows it as a
-  teach to redo, and re-running the pose turns 3–4 back to undone while the old
-  tip keeps working until Compute replaces it.
+* **Compute refuses a device that has moved since the first mark** (0.01 mm,
+  0.01°). The marks were taken against the tool where it stood and the tip is
+  computed as if it still stands there. The tab warns as soon as it moves.
+* **Compute refuses a set whose camera Z spread is over 0.05 mm.** One focus for
+  the whole set: a small refocus between corners is the same surface and is
+  averaged, a large one means a corner was marked on something else.
+* **A mark set belongs to one device pair.** Capturing a corner after the device
+  or reference combo changed starts a new set; Compute refuses a set latched for
+  another pair.
+* **The steps are green when the record answers them**: a tip computed by the
+  teach predicts, at `imprintPose`, exactly `tipMeas`. Steps 1–2 also go green
+  from marks taken this session.
 * **The poses live in the record, not in saved positions.** Saved positions
   belong to the product document; a registration is machine state. The old
   "or taught..." pickers and the home pose are gone from the page with the
@@ -231,13 +216,19 @@ Things about it that are load-bearing:
   the ROI) — the shared live ROI filter, `ui/RoiFilter` (`docs/ui-file-layout.md`).
   Display only — plain C++ through `RgbToGray8`, drawn by `DrawMarkPicker` as an
   overlay (`MarkPicker::roi`); the marks and the click are still on the camera
-  frame. Under step 4, the **camera view**: main_camera's
+  frame. Under step 3, the **camera view**: main_camera's
   exposure and the `main_camera_light` call-out, HARD-CODED to that camera and
   light group, applied on an edit or by *Apply saved view* (never on page open),
   and kept with the toolbar settings in UiSettings for the next teach.
-* **"Back to taught pose" is gated on `jogArmed_`.** Driving to a pose the
-  operator taught is still driving, and layer 2 issues it
-  (`Workflow::MoveToPosition`).
+* **Corners can be dragged after they are captured, and every mark has
+  reference lines.** The picker draws a full-width and full-height line through
+  each latched corner and through the live crosshair (`MarkPicker::markLines`),
+  so corners line up against each other and against an edge. A press on a corner
+  grabs it (`MarkPicker::markDrag`); the widget reports the new place and the
+  page re-latches the corner against the pose it is seen through NOW, focused Z
+  included — exactly a fresh capture. The device pose latched at the first corner
+  stays: a drag adjusts a pick, it does not start a set. Both are opt-in on the
+  shared widget; only this page turns them on.
 
 ## 6. The check
 
@@ -257,7 +248,7 @@ only thing on the machine that ever measures what the typed permutation costs.**
 Reading the residual is the point:
 
 * a **constant** shift, the same wherever you check → the **tool** moved. Re-teach
-  the tip: one teach at zero, keeping the rotation.
+  the tip: one teach (camera on the tool, mark, compute), keeping the rotation.
 * a residual that **grows with distance** from the taught pose → the **rotation**.
   The device is not square to the axes the transforms file claims. `t` cannot
   absorb an angle; correct the mount, or keep every approach short.
@@ -410,36 +401,39 @@ belongs to *that* plane, and the cross never had a size to be wrong about.
 
 ### Trying it from the page
 
-The Registration page's **Send tool here** drives the registered device so its tip
-lands where the reference device is standing *now* — the point under the camera —
-through the same solve `move_to_point` performs, with the same three refusals in
-the same order: no registration, unverified (unless *allow unverified* is ticked,
-which logs the move as such), rotations outside `kDeviceRegRotTolDeg`. It adds a
-travel ceiling, because a stale record turns a short approach into a lunge, and a
-signed **Z offset** in the reference device's *axis* Z — signed and typed rather
-than derived, because which way that counts is a property of the machine and 0
-sends the tip to the focused surface itself, which is a touch. On this machine
+The page's *Verify and test* tab is two buttons, each the record read one way —
+and on the page, nothing else: the check runs from a recipe step
+(`device_reg_check_run`), so a record taught on the page stays UNVERIFIED until
+one does.
+
+**Move tool to camera** drives the registered device so its tip lands where the
+reference device is looking *now*, through the same solve `move_to_point`
+performs and the same rotation guard (`kDeviceRegRotTolDeg`, unless
+`pivotAtTip`). There is no verified gate on the button — the operator watching
+the tool arrive under the cross IS the check it would have asked for — and the
+popup says when the record is unverified. A signed **Z offset** in the reference
+device's *axis* Z stands the tip off: typed rather than derived, because which
+way that counts is a property of the machine, and 0 sends the tip to the focused
+surface itself — a touch, which the tab says in orange. On this machine
 **negative lifts the tool away from the focused surface** (measured 2026-09-01 on
 `gantry-main`, whose transform inverts Z); the tooltip says so and dates it,
 because it is a measurement and not a rule — re-check it after any edit to the
 transforms file.
 
-It exists because a registration that has never been driven through has never been
-*seen* to work; reading a residual off a log is not the same as watching the tool
-arrive. It is still an APPROACH, and the button says so — nothing here closes a
-loop.
-
-Beside it, **Look at the tool** is the same record read backwards: leave the tool
-where it is and drive the *camera* until its centre lands on the predicted tip —
-`move_camera_to_tool` from a button. The tip comes from `Workflow::DeviceRegTip`,
-the same predictor the overlay and the tip topics use, so there is no second
-prediction on this page. It is how a registration is *read*: the overlay draws a
-cross where the record says the tip is, and this puts the camera there, so the
-operator sees the tool next to the cross claiming to be on it. Half a millimetre
-of error is invisible in a residual and obvious in that picture — which is why
-this one button has **no verified gate**, exactly like the command; the rotation
-guard, the jog arm and its own (wider) ceiling still apply. **Z is opt-in**
+**Move camera to tool** leaves the tool where it is and drives the *camera* until
+its centre lands on the predicted tip — `move_camera_to_tool` from a button. The
+tip comes from `Workflow::DeviceRegTip`, the same predictor the overlay and the tip
+topics use, so there is no second prediction on this page. **Z is opt-in**
 (*focus Z too*), for the reason the command's `axes` defaults to `XY`.
+
+**A move longer than 3 mm (`App::kRegConfirmMm`) asks first**, in a popup that
+holds the move exactly as it was computed at the click — device, targets and
+travel — and *Move* issues that, so the operator approves the numbers they read.
+It replaces the old per-button travel ceilings. The popup is raised only by a
+click while nothing runs (both buttons gate on `orch_.Busy()`) and closes itself
+if a run starts anyway: a modal must never sit over a prompt window a worker is
+blocked on. Both buttons are behind the jog arm. They are still an APPROACH —
+nothing here closes a loop.
 
 ## 9. Composing with a placement: nominal → gripper
 
@@ -532,7 +526,7 @@ every move command agree about it by construction.
 |---|---|
 | record, predict/solve, the two setters, the pivot switch, JSON, load/save | `src/core/DeviceReg.{h,cpp}` |
 | live records, queue, seed columns, tip publish | `src/workflow/Workflow.{h,cpp}` |
-| `device_reg`, `device_reg_teach_save`, `device_reg_check_save`, `move_to_point`, `move_tool_to_camera`, `move_camera_to_tool`, `tool_travel_to_camera`, `device_reg_check_run` | `src/command/CommandsDeviceReg.cpp` (`PrepareRegMove` is the one shared refusal; `ApproachAxisPoint` the one approach, whichever device is moving, with `ApproachRefPoint` the solve in front of it — all three declared in `command/RegApproach.h` so `grip_move_to_camera` can use them rather than copy them) |
+| `device_reg`, `device_reg_check_save`, `move_to_point`, `move_tool_to_camera`, `move_camera_to_tool`, `tool_travel_to_camera`, `device_reg_check_run` | `src/command/CommandsDeviceReg.cpp` (`PrepareRegMove` is the one shared refusal; `ApproachAxisPoint` the one approach, whichever device is moving, with `ApproachRefPoint` the solve in front of it — all three declared in `command/RegApproach.h` so `grip_move_to_camera` can use them rather than copy them) |
 | the four-step teach and the page | `src/ui/pages/PageDeviceReg.cpp` (F8) |
 | the check (STANDARD) | `config/scripts/device_reg_check.lua` |
 | `nominal_point` | `src/command/CommandsAlign.cpp` |

@@ -1,46 +1,46 @@
 // PageDeviceReg.cpp : the Registration page (View menu, F8) — where a device's
-// tool tip is in the camera device's space, taught in four steps.
+// tool tip is in the camera device's space, taught in three steps.
 // Definitions of App members — see App.h.
 //
-// The teach POSE is a script (device_reg_teach.lua, one button): it moves the
-// device, which needs a confirm, and waits on the operator jogging the camera,
-// which is exactly the shape a prompt-driven script is for. The MARKS and the
-// tip computed from them stay here — the corner picks live on this page's
-// image, and a second way to create a registration is a second answer to where
-// the tool is.
+// The teach is the PAGE: the corner picks live on this page's image, and a
+// second way to create a registration is a second answer to where the tool is.
+// Nothing in it moves the registered device - the operator jogs the CAMERA
+// onto the tool wherever it stands, and the device's pose is read, not set.
 //
 // What a recipe gets is the CONSUMING end: `device_reg` to read the record,
 // `move_to_point` to move through it, `device_reg_check_run` to check it.
 // Those are in command/CommandsDeviceReg.cpp.
 //
-// The four steps, and why they are in this order:
-//   1  DEVICE TO ZERO  the operator confirms, and the device is driven to axis
-//                      zero, X Y Z U V W. `t` IS the tip at device zero, so a
-//                      tip measured there is t itself, with nothing carried
-//                      through the typed rotation.
-//   2  CAMERA VIEW     the operator jogs the camera over the tool and focuses;
-//                      OK latches both poses. The focused Z IS the tip's height.
-//   3  CORNERS         marks on the live image, in machine mm, with the device
-//                      still at zero.
-//   4  COMPLETE        centre of the marks + the focused Z = the tip = t.
+// The three steps:
+//   1  CAMERA ON THE TOOL  the operator jogs the camera over the tool and
+//                          focuses. The focused Z IS the tip's height.
+//   2  CORNERS             marks on the live image, in machine mm, each with
+//                          the camera pose it was taken at. The first one also
+//                          latches the registered device's pose (X Y Z U V W),
+//                          whatever it is: the operator never has to know it.
+//   3  COMPUTE             centre of the marks + the focused Z = the tip at the
+//                          latched pose, and t = tip - R*h. Refused if the
+//                          device moved after the first mark.
 //
-// The right-hand column is the device pair over four tabs: Registration (the
-// record, the footprint, the fleet), Teach Pose (steps 1-2, one button),
-// Capture tool points (steps 3-4), Verify and test (the check, Send tool here,
-// Look at the tool). Each step is headed "Step n ..." and turns green when the
-// RECORD answers it, so a registration taught months ago opens as four green
-// steps - this is a one-time setup, and the page must say so rather than look
-// untaught. A tab goes green when everything on it is done; Verify only on a
-// PASSED check.
+// Where it is taught buys no accuracy by itself: the typed rotation's error is
+// zero at the taught pose and grows with distance from it, so the best place to
+// teach is where the device works.
+//
+// The right-hand column is the device pair over three tabs: Registration (the
+// record, the footprint, the fleet), Capture tool points (the three steps),
+// Verify and test (Move tool to camera, Move camera to tool). Each step is
+// headed "Step n ..." and turns green when the RECORD answers it, so a
+// registration taught months ago opens as green steps - this is a one-time
+// setup, and the page must say so rather than look untaught. A tab goes green
+// when everything on it is done; Verify only on a PASSED check.
 //
 // Nothing on this page actuates on its own. Every move is the operator's own
-// jog, an explicit "drive to the pose you taught" button, or the teach run
-// behind its confirm.
+// jog or one of the two Verify buttons - behind the jog arm, and behind a
+// confirm popup for anything over kRegConfirmMm.
 #include "App.h"
 
 #include "imgui.h"
 
-#include "command/ExecutionContext.h"   // SystemScriptPath — the check procedure
 #include "core/AlignLighting.h"         // AlignLightingSummary — the camera view
 #include "core/DeviceReg.h"
 #include "core/Log.h"
@@ -100,29 +100,79 @@ void DeviceCombo(const char* label, char* buf, std::size_t n,
 
 // ---- The teach steps --------------------------------------------------------
 
-// Steps 1-2 as one run. The script confirms, moves the device to zero, waits on
-// the operator's camera jog and latches both poses (device_reg_teach_save) -
-// the page only names the pair and launches it.
-void App::StartDeviceRegTeachRun()
+// Step 2, one corner. The first mark of a set also latches the registered
+// device's live pose: the tip is computed at wherever the device stood, so it
+// is read here rather than set by anybody. A corner taken without that pose is
+// refused - a centre with no pose to hang it on is a point, not a tip.
+void App::CaptureDeviceRegCorner(double gx, double gy, double gz, bool haveZ)
 {
-    const std::string script = SystemScriptPath("device_reg_teach.lua");
-    LuaEngine::Env env = session_.MakeLuaEnv();
-    env.initialCtx = {
-        {"reg_device", std::string(regDevice_)},
-        {"reg_ref", std::string(regRef_)},
-        {"reg_v_jog", regVJog_},
-        {"reg_step_um", regTeachStepUm_},
-        {"reg_settle_ms", static_cast<double>(regSettleMs_)},
-    };
-    regStartErr_.clear();
     regTeachMsg_.clear();
-    if (!orch_.lua.Start(script, std::move(env), &regStartErr_))
-        FD_WARN("devreg", "registration teach rejected: %s", regStartErr_.c_str());
+    if (!haveZ) {
+        regTeachMsg_ = std::string("'") + regRef_ + "' reports no Z - the focused Z is "
+                       "the tip's height";
+        return;
+    }
+
+    bool anyHeld = false;
+    for (int i = 0; i < kRegMarkMax; ++i) anyHeld = anyHeld || regMarkHave_[i];
+    // A set started against another pair is not this pair's set.
+    if (anyHeld && (regMarkDev_ != regDevice_ || regMarkRef_ != regRef_)) {
+        ClearDeviceRegMarks();
+        anyHeld = false;
+    }
+    if (!anyHeld || !regMarkPoseHave_) {
+        std::map<std::string, double> live;
+        if (!workflow_.DevicePose(regDevice_, live)) {
+            regTeachMsg_ = std::string("'") + regDevice_ + "' is not connected - its "
+                           "pose is half of the measurement";
+            return;
+        }
+        const auto ix = live.find("X"), iy = live.find("Y"), iz = live.find("Z");
+        if (ix == live.end() || iy == live.end() || iz == live.end()) {
+            regTeachMsg_ = std::string("'") + regDevice_ + "' does not report X/Y/Z";
+            return;
+        }
+        regMarkPose_ = RegVec3{ix->second, iy->second, iz->second};
+        const auto iu = live.find("U"), iv = live.find("V"), iw = live.find("W");
+        regMarkHasRot_ = iu != live.end() && iv != live.end() && iw != live.end();
+        regMarkRot_    = regMarkHasRot_ ? RegVec3{iu->second, iv->second, iw->second}
+                                        : RegVec3{};
+        regMarkPoseHave_ = true;
+        regMarkDev_      = regDevice_;
+        regMarkRef_      = regRef_;
+    }
+
+    AlignPoint p;
+    p.gx   = gx;
+    p.gy   = gy;
+    p.gz   = gz;
+    p.hasZ = true;
+    p.px   = regPx_;
+    p.py   = regPy_;
+    // The crosshair's offset from the image centre, in mm, added to the pose it
+    // was taken at — so a mark keeps meaning the same place when the operator
+    // jogs between corners.
+    p.wx = gx + static_cast<double>(regPx_ - static_cast<float>(cameraW_) * 0.5f) *
+                    static_cast<double>(pixelToMmX_);
+    p.wy = gy + static_cast<double>(regPy_ - static_cast<float>(cameraH_) * 0.5f) *
+                    static_cast<double>(pixelToMmY_);
+    regMark_[regMarkActive_]     = p;
+    regMarkHave_[regMarkActive_] = true;
+    if (regMarkActive_ + 1 < regMarkCount_) ++regMarkActive_;
 }
 
-// Step 4. The centre of the marks is the tip in XY; the view's focused Z is the
-// tip in Z. Everything before this was capture; this is the only step that
-// computes, and the only one that can refuse.
+void App::ClearDeviceRegMarks()
+{
+    for (int i = 0; i < kRegMarkMax; ++i) regMarkHave_[i] = false;
+    regMarkActive_   = 0;
+    regMarkDrag_     = -1;
+    regMarkPoseHave_ = false;
+}
+
+// Step 3. The centre of the marks is the tip in XY; the camera's focused Z is
+// the tip in Z; the device pose latched at the first mark is where it stood.
+// Everything before this was capture; this is the only step that computes, and
+// the only one that can refuse.
 void App::CompleteDeviceRegTip()
 {
     regTeachMsg_.clear();
@@ -130,14 +180,48 @@ void App::CompleteDeviceRegTip()
     r.device    = regDevice_;
     r.refDevice = regRef_;
 
-    if (!r.hasImprintPose || !r.hasTipView) {
-        regTeachMsg_ = "teach the pose first (Teach Pose tab)";
+    int    n = 0;
+    double cx = 0.0, cy = 0.0, zLo = 0.0, zHi = 0.0, zSum = 0.0;
+    for (int i = 0; i < regMarkCount_; ++i) {
+        if (!regMarkHave_[i]) continue;
+        const AlignPoint& m = regMark_[i];
+        cx   += m.wx;
+        cy   += m.wy;
+        zSum += m.gz;
+        zLo   = n ? std::min(zLo, m.gz) : m.gz;
+        zHi   = n ? std::max(zHi, m.gz) : m.gz;
+        ++n;
+    }
+    if (n < 2) {
+        regTeachMsg_ = "mark at least two corners of the tool (step 2)";
+        return;
+    }
+    if (n < regMarkCount_) {
+        regTeachMsg_ = "mark every corner, or set the count to what you actually took";
+        return;
+    }
+    if (!regMarkPoseHave_ || regMarkDev_ != regDevice_ || regMarkRef_ != regRef_) {
+        regTeachMsg_ = "these marks were taken for another device pair - Clear and mark "
+                       "again";
+        return;
+    }
+    // One focus for the whole set. A small refocus between corners is the same
+    // surface and averages out; a large one means a corner was marked on
+    // something else, and its Z would be averaged into the tip's height.
+    constexpr double kZSpreadMm = 0.05;
+    if (zHi - zLo > kZSpreadMm) {
+        char b[200];
+        std::snprintf(b, sizeof(b),
+                      "the camera Z changed by %.3f mm between corners (over %.2f) - "
+                      "focus once on the tip, then Clear and mark every corner",
+                      zHi - zLo, kZSpreadMm);
+        regTeachMsg_ = b;
         return;
     }
 
-    // The marks were taken against the tool as it stands NOW, and the tip is
-    // computed as if it stands at the taught pose. A device moved in between
-    // would register the tool somewhere it was never measured.
+    // The marks were taken against the tool as it stood at the first mark, and
+    // the tip is computed as if it still stands there. A device moved in
+    // between would register the tool somewhere it was never measured.
     {
         std::map<std::string, double> live;
         if (!workflow_.DevicePose(regDevice_, live)) {
@@ -149,46 +233,31 @@ void App::CompleteDeviceRegTip()
             regTeachMsg_ = std::string("'") + regDevice_ + "' does not report X/Y/Z";
             return;
         }
-        const double dx = ix->second - r.imprintPose.x, dy = iy->second - r.imprintPose.y,
-                     dz = iz->second - r.imprintPose.z;
+        const double dx = ix->second - regMarkPose_.x, dy = iy->second - regMarkPose_.y,
+                     dz = iz->second - regMarkPose_.z;
         const double off = std::sqrt(dx * dx + dy * dy + dz * dz);
         bool rotOff = false;
-        if (r.hasRot) {
+        if (regMarkHasRot_) {
             const auto iu = live.find("U"), iv = live.find("V"), iw = live.find("W");
             if (iu != live.end() && iv != live.end() && iw != live.end())
-                rotOff = std::fabs(iu->second - r.taughtRot.x) > 0.01 ||
-                         std::fabs(iv->second - r.taughtRot.y) > 0.01 ||
-                         std::fabs(iw->second - r.taughtRot.z) > 0.01;
+                rotOff = std::fabs(iu->second - regMarkRot_.x) > 0.01 ||
+                         std::fabs(iv->second - regMarkRot_.y) > 0.01 ||
+                         std::fabs(iw->second - regMarkRot_.z) > 0.01;
         }
         if (off > 0.01 || rotOff) {
             char b[200];
             std::snprintf(b, sizeof(b),
-                          "'%s' has moved off its taught pose (%.4f mm%s) - run Teach "
-                          "pose again, then mark",
+                          "'%s' has moved since the first mark (%.4f mm%s) - Clear and "
+                          "mark again with it standing still",
                           regDevice_, off, rotOff ? ", rotations changed" : "");
             regTeachMsg_ = b;
             return;
         }
     }
 
-    int n = 0;
-    double cx = 0.0, cy = 0.0;
-    for (int i = 0; i < regMarkCount_; ++i) {
-        if (!regMarkHave_[i]) continue;
-        cx += regMark_[i].wx;
-        cy += regMark_[i].wy;
-        ++n;
-    }
-    if (n < 2) {
-        regTeachMsg_ = "mark at least two corners of the tool (step 3)";
-        return;
-    }
-    if (n < regMarkCount_) {
-        regTeachMsg_ = "mark every corner, or set the count to what you actually took";
-        return;
-    }
     cx /= static_cast<double>(n);
     cy /= static_cast<double>(n);
+    const double cz = zSum / static_cast<double>(n);
     // No width check. An earlier version measured the mark's width and refused
     // the teach when it disagreed with a typed tool width; it refused good
     // picks. The picks are the operator's judgement, and the footprint box on
@@ -212,54 +281,50 @@ void App::CompleteDeviceRegTip()
         }
     }
 
-    const RegVec3 before = DeviceRegPredict(r, r.imprintPose);
-    const RegVec3 tip{cx, cy, r.tipView.z};
-    if (const std::string why =
-            DeviceRegSetTip(r, r.imprintPose, tip, n); !why.empty()) {
+    const RegVec3 h       = regMarkPose_;
+    const bool    hadTip  = r.valid;
+    const RegVec3 before  = DeviceRegPredict(r, h);
+    const RegVec3 tip{cx, cy, cz};
+    if (const std::string why = DeviceRegSetTip(r, h, tip, n); !why.empty()) {
         regTeachMsg_ = why;
         return;
     }
-
-    const double moved = std::sqrt((tip.x - before.x) * (tip.x - before.x) +
-                                   (tip.y - before.y) * (tip.y - before.y) +
-                                   (tip.z - before.z) * (tip.z - before.z));
+    // Whatever U/V/W the device stood at is the rotation this record describes
+    // (refused past kDeviceRegRotTolDeg unless the pivot is at the tip).
+    r.taughtRot = regMarkRot_;
+    r.hasRot    = regMarkHasRot_;
+    // Where the camera looked from, kept as evidence: the first mark's pose
+    // with the set's focused Z.
+    r.tipView    = RegVec3{regMark_[0].gx, regMark_[0].gy, cz};
+    r.hasTipView = true;
     workflow_.QueueDeviceReg(r);
 
-    char buf[224];
+    char buf[256];
     std::snprintf(buf, sizeof(buf),
-                  "tip taught: (%.4f, %.4f, %.4f) from %d picks. UNVERIFIED until "
-                  "the check runs.",
-                  r.t.x, r.t.y, r.t.z, n);
+                  "tip taught from %d picks with '%s' at X %.3f Y %.3f Z %.3f. "
+                  "UNVERIFIED until the check runs.",
+                  n, regDevice_, h.x, h.y, h.z);
     regTeachMsg_ = buf;
-    FD_INFO("devreg", "'%s' tip taught at its taught pose: t=(%.4f, %.4f, %.4f), %.4f mm from "
-                      "where the old record put it; %d picks",
-            regDevice_, r.t.x, r.t.y, r.t.z, moved, n);
+    if (hadTip) {
+        const double moved = std::sqrt((tip.x - before.x) * (tip.x - before.x) +
+                                       (tip.y - before.y) * (tip.y - before.y) +
+                                       (tip.z - before.z) * (tip.z - before.z));
+        FD_INFO("devreg", "'%s' tip taught at pose (%.4f, %.4f, %.4f) U %.4f V %.4f "
+                          "W %.4f: tip (%.4f, %.4f, %.4f), t=(%.4f, %.4f, %.4f), %d "
+                          "picks, Z spread %.4f mm; %.4f mm from where the old record "
+                          "put it",
+                regDevice_, h.x, h.y, h.z, regMarkRot_.x, regMarkRot_.y,
+                regMarkRot_.z, tip.x, tip.y, tip.z, r.t.x, r.t.y, r.t.z, n, zHi - zLo,
+                moved);
+    } else {
+        FD_INFO("devreg", "'%s' tip taught at pose (%.4f, %.4f, %.4f) U %.4f V %.4f "
+                          "W %.4f: tip (%.4f, %.4f, %.4f), t=(%.4f, %.4f, %.4f), %d "
+                          "picks, Z spread %.4f mm",
+                regDevice_, h.x, h.y, h.z, regMarkRot_.x, regMarkRot_.y, regMarkRot_.z,
+                tip.x, tip.y, tip.z, r.t.x, r.t.y, r.t.z, n, zHi - zLo);
+    }
 
-    for (int i = 0; i < kRegMarkMax; ++i) regMarkHave_[i] = false;
-    regMarkActive_ = 0;
-}
-
-// The check is still a procedure: it drives two devices to a computed pose and
-// waits on an operator pick, which is exactly the shape a script is for.
-void App::StartDeviceRegCheckRun()
-{
-    const std::string script = SystemScriptPath("device_reg_check.lua");
-    LuaEngine::Env env = session_.MakeLuaEnv();
-    env.initialCtx = {
-        {"reg_device", std::string(regDevice_)},
-        {"reg_check_dx_mm", regCheckDx_},
-        {"reg_check_dy_mm", regCheckDy_},
-        {"reg_check_dz_mm", regCheckDz_},
-        {"reg_tol_mm", regCheckTol_},
-        {"reg_autofocus", regAutofocus_},
-        {"reg_focus_range_mm", regFocusRangeMm_},
-        {"reg_v_travel", regVTravel_},
-        {"reg_v_jog", regVJog_},
-        {"reg_settle_ms", static_cast<double>(regSettleMs_)},
-    };
-    regStartErr_.clear();
-    if (!orch_.lua.Start(script, std::move(env), &regStartErr_))
-        FD_WARN("devreg", "registration check rejected: %s", regStartErr_.c_str());
+    ClearDeviceRegMarks();
 }
 
 // ---- The camera view the tool is marked under --------------------------------
@@ -340,17 +405,21 @@ void App::DrawDeviceRegPanel()
     const bool sameDev  = std::string(regDevice_) == std::string(regRef_);
 
     // The reference device's live pose — what a mark is projected through, and
-    // what the two capture buttons latch.
-    double gx = 0.0, gy = 0.0;
-    bool   havePose = false;
+    // what a captured corner latches (its Z is the focused height).
+    double gx = 0.0, gy = 0.0, gz = 0.0;
+    bool   havePose = false, haveGz = false;
     {
         std::map<std::string, double> pose;
         if (workflow_.DevicePose(regRef_, pose)) {
-            const auto ix = pose.find("X"), iy = pose.find("Y");
+            const auto ix = pose.find("X"), iy = pose.find("Y"), iz = pose.find("Z");
             if (ix != pose.end() && iy != pose.end()) {
                 gx = ix->second;
                 gy = iy->second;
                 havePose = true;
+            }
+            if (iz != pose.end()) {
+                gz     = iz->second;
+                haveGz = true;
             }
         }
     }
@@ -383,11 +452,8 @@ void App::DrawDeviceRegPanel()
             FD_WARN("devreg", "%s", regTeachMsg_.c_str());
         }
     };
-    const auto driveTo = [&](const char* devName, const RegVec3& p) {
-        driveAxes(devName, {{"X", p.x}, {"Y", p.y}, {"Z", p.z}});
-    };
 
-    // The control column is draggable: its four steps carry long explanatory
+    // The control column is draggable: its steps carry long explanatory
     // text and the operator's font size moves all of it, so no constant width
     // reads the same on every station. Clamped every frame, not just on the
     // drag: the window is resizable too, and a width saved on a wide monitor
@@ -418,7 +484,8 @@ void App::DrawDeviceRegPanel()
                                                regPx_, regPy_);
 
         CameraMark marks[kRegMarkMax];
-        static const char* kLbl[kRegMarkMax] = {"c1", "c2", "c3", "c4"};
+        // Numbered like the corner buttons, so "3" on the image is the "3" below.
+        static const char* kLbl[kRegMarkMax] = {"1", "2", "3", "4"};
         for (int i = 0; i < regMarkCount_; ++i) {
             marks[i].wx    = regMark_[i].wx;
             marks[i].wy    = regMark_[i].wy;
@@ -436,6 +503,10 @@ void App::DrawDeviceRegPanel()
         mp.gy         = gy;
         mp.marks      = marks;
         mp.markCount  = regMarkCount_;
+        // Reference lines across the picture through every corner, and corners
+        // that can be dragged into place after they were captured.
+        mp.markLines  = true;
+        mp.markDrag   = &regMarkDrag_;
         // No midpoint label: that draws the point between marks 0 and 1, which
         // means something for a two-mark nominal and nothing for four corners.
         // The centre this page computes is the average of all of them.
@@ -486,6 +557,24 @@ void App::DrawDeviceRegPanel()
         const MarkPickerResult r =
             DrawMarkPicker("##drInput", ImGui::GetContentRegionAvail(), mp);
 
+        // A dragged corner is re-latched against the pose it is seen through
+        // NOW, exactly as a fresh capture would be - including the focused Z,
+        // which Compute's one-focus check reads. The device pose latched at the
+        // first corner stays: a drag adjusts a pick, it does not start a set.
+        if (r.markMoved >= 0 && r.markMoved < kRegMarkMax && regMarkHave_[r.markMoved]) {
+            AlignPoint& p = regMark_[r.markMoved];
+            p.gx = gx;
+            p.gy = gy;
+            p.px = r.markPx;
+            p.py = r.markPy;
+            p.wx = r.markWx;
+            p.wy = r.markWy;
+            if (haveGz) {
+                p.gz   = gz;
+                p.hasZ = true;
+            }
+        }
+
         // A drag that just ended is an edit of the record, by the one route
         // every edit of it takes.
         if (boxWasDragging && !regBoxDragging_ &&
@@ -517,9 +606,9 @@ void App::DrawDeviceRegPanel()
     }
     ImGui::SameLine(0.0f, 0.0f);
 
-    // ---- Right: the device, then four tabs -----------------------------------
-    // Registration (the record) | Teach Pose (steps 1-2) | Capture tool points
-    // (steps 3-4) | Verify and test (the check and the two drives). Stacked,
+    // ---- Right: the device, then three tabs ----------------------------------
+    // Registration (the record) | Capture tool points (the teach, steps 1-3) |
+    // Verify and test (the two drives). Stacked,
     // the whole thing was three screens tall and the record - the one part an
     // operator comes back to - sat above a teach they do once per gripper.
     ImGui::BeginChild("drCtl", ImVec2(rightW, avail.y), ImGuiChildFlags_Borders);
@@ -542,42 +631,32 @@ void App::DrawDeviceRegPanel()
     if (!haveImg)
         ImGui::TextColored(kBad, "no camera feed");
     // The last thing a button said, above the tabs so it is read whichever tab
-    // the button was on: a capture on Teach Pose and a refused drive on Verify
-    // both report here.
+    // the button was on: a refused capture and a refused drive on Verify both
+    // report here.
     if (!regTeachMsg_.empty())
         ImGui::TextWrapped("%s", regTeachMsg_.c_str());
 
-    // Which of the four steps the record already answers. Done is read off the
+    // Which of the three steps the record already answers. Done is read off the
     // RECORD, not the session: a tip taught last month is still taught, and an
-    // operator opening this page to look at it should find four green steps,
-    // not four empty ones. The corner marks are the one exception - they are
-    // consumed into the tip and cleared - so step 3 reads done from the tip
-    // they produced, or from a full set marked this session.
+    // operator opening this page to look at it should find green steps,
+    // not empty ones. The corner marks are the one exception - they are
+    // consumed into the tip and cleared - so steps 1-2 read done from the tip
+    // they produced, or from marks taken this session.
     int regMarked = 0;
     for (int i = 0; i < regMarkCount_; ++i) regMarked += regMarkHave_[i] ? 1 : 0;
-    // Step 1 is done only by a pose taught at ZERO: a record from the old
-    // imprint teach still predicts, but its pose is not this teach's.
-    const bool taughtAtZero =
-        reg.hasImprintPose &&
-        std::sqrt(reg.imprintPose.x * reg.imprintPose.x +
-                  reg.imprintPose.y * reg.imprintPose.y +
-                  reg.imprintPose.z * reg.imprintPose.z) <= 0.02;   // = zero_tol_mm
-    const bool step1Done = taughtAtZero;
-    const bool step2Done = reg.hasTipView;
-    // A tip computed FROM the current teach pose predicts, at that pose,
-    // exactly the point it was measured at (t = tipMeas - R*h), with the view's
-    // Z. A tip left over from an earlier pose does not - so re-teaching the
-    // pose turns steps 3-4 back to undone while the old tip keeps predicting.
-    const bool tipFromPose = [&] {
-        if (!reg.valid || !reg.hasImprintPose || !reg.hasTipView) return false;
+    // A tip computed by the teach predicts, at the pose it was taught at,
+    // exactly the point it measured (t = tipMeas - R*h). A record whose rotation
+    // was re-adopted after its tip does not - and is not a taught tip.
+    const bool tipTaught = [&] {
+        if (!reg.valid || !reg.hasImprintPose) return false;
         const RegVec3 at = DeviceRegPredict(reg, reg.imprintPose);
         return std::fabs(at.x - reg.tipMeas.x) < 1e-6 &&
                std::fabs(at.y - reg.tipMeas.y) < 1e-6 &&
-               std::fabs(at.z - reg.tipMeas.z) < 1e-6 &&
-               std::fabs(reg.tipMeas.z - reg.tipView.z) < 1e-6;
+               std::fabs(at.z - reg.tipMeas.z) < 1e-6;
     }();
-    const bool step3Done = tipFromPose || regMarked == regMarkCount_;
-    const bool step4Done = tipFromPose;
+    const bool step1Done = tipTaught || regMarked > 0;
+    const bool step2Done = tipTaught || regMarked == regMarkCount_;
+    const bool step3Done = tipTaught;
 
     // A tab's label goes green once everything on it is done, so the row of
     // tabs reads as the progress bar for a one-time setup. The push wraps only
@@ -607,7 +686,7 @@ void App::DrawDeviceRegPanel()
     if (!reg.valid) {
         ImGui::TextColored(kBad, "NOT REGISTERED");
         ImGui::TextDisabled("move_to_point refuses and a placement measures from");
-        ImGui::TextDisabled("scratch every time. Teach the tip on the next two tabs.");
+        ImGui::TextDisabled("scratch every time. Teach the tip on Capture tool points.");
     } else {
         ImGui::TextColored(kGood, "tip at device zero  %+.4f  %+.4f  %+.4f mm",
                            reg.t.x, reg.t.y, reg.t.z);
@@ -617,6 +696,11 @@ void App::DrawDeviceRegPanel()
             ImGui::Text("tip now             %+.4f  %+.4f  %+.4f mm", tip.x, tip.y, tip.z);
         else
             ImGui::TextColored(kWarn, "tip now: unavailable - %s", why.c_str());
+        // Where it was taught matters: the typed rotation's error is zero there
+        // and grows with distance from it.
+        if (reg.hasImprintPose)
+            ImGui::TextDisabled("taught with '%s' at X %.3f  Y %.3f  Z %.3f", regDevice_,
+                                reg.imprintPose.x, reg.imprintPose.y, reg.imprintPose.z);
 
         // The rotation's provenance, stated plainly. Nothing measured it, and a
         // reader who assumes otherwise will trust an approach further than it
@@ -760,111 +844,59 @@ void App::DrawDeviceRegPanel()
     ImGui::EndTabItem();
     }
 
-    // ==== Tab: Teach Pose - steps 1 and 2, one run ===========================
-    // One button: device_reg_teach.lua confirms, drives the device to axis
-    // zero, waits on the operator's camera jog and latches both poses. The two
-    // steps below are its READOUT, green when the record answers them.
-    if (tabBegin("Teach Pose", step1Done && step2Done)) {
+    // ==== Tab: Capture tool points - the whole teach ==========================
+    // Nothing here moves the registered device. The operator jogs the CAMERA
+    // onto the tool wherever it stands; the device's pose is READ at the first
+    // mark and the tip is computed there, so nobody has to know or set it.
+    if (tabBegin("Capture tool points", step1Done && step2Done && step3Done)) {
     ImGui::Spacing();
-    ImGui::TextWrapped("The tool's device at ZERO, the camera over the tool. One run "
-                       "does both - it asks before anything moves.");
-    {
-        ImGui::SetNextItemWidth(80.0f);
-        ImGui::InputDouble("device v##teach", &regVJog_, 0.0, 0.0, "%.2f");
-        if (regVJog_ < 0.0) regVJog_ = 0.0;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Velocity for '%s's move to zero; 0 = leave as set.\n"
-                              "The same value the check uses.", regDevice_);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80.0f);
-        ImGui::InputDouble("camera step um", &regTeachStepUm_, 0.0, 0.0, "%.1f");
-        if (regTeachStepUm_ < 0.01) regTeachStepUm_ = 0.01;
-        if (regTeachStepUm_ > 1000.0) regTeachStepUm_ = 1000.0;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The first jog step in the camera window; its presets\n"
-                              "change it while you jog.");
+    ImGui::TextWrapped("Leave '%s' where it stands - ideally where it works. Put the "
+                       "camera on its tool, mark the corners, compute. Nothing moves "
+                       "the tool.", regDevice_);
 
-        const bool running = orch_.lua.Running();
-        // Gated on the WHOLE orchestration, like every Run surface: the
-        // program runner goes idle between queue items, and a check on the
-        // engines alone lets a second run slip in.
-        ImGui::BeginDisabled(busy || sameDev);
-        if (ImGui::Button("Teach pose", ImVec2(180.0f, 0.0f)))
-            StartDeviceRegTeachRun();
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("1  confirm, then '%s' moves to X Y Z U V W = 0\n"
-                              "2  jog '%s' until the tool is in the picture, focus, OK\n"
-                              "3  both poses are saved to the record",
-                              regDevice_, regRef_);
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!running);
-        if (ImGui::Button("Stop##teach", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
-        ImGui::EndDisabled();
-        if (!regStartErr_.empty())
-            ImGui::TextColored(kBad, "%s", regStartErr_.c_str());
-        if (running) {
-            const LuaEngine::Status lst = orch_.lua.GetStatus();
-            ImGui::TextDisabled("%s  %s", LuaEngine::StateName(lst.state),
-                                lst.error.empty() ? "" : lst.error.c_str());
+    // The registered device's live pose, and whether it has moved since the
+    // first mark of the set. Read, never set.
+    {
+        std::map<std::string, double> live;
+        const bool haveLive = workflow_.DevicePose(regDevice_, live);
+        const auto get = [&](const char* a) {
+            const auto it = live.find(a);
+            return it == live.end() ? 0.0 : it->second;
+        };
+        if (!haveLive) {
+            ImGui::TextColored(kBad, "'%s' not connected - its pose is half of the "
+                                     "measurement", regDevice_);
+        } else {
+            ImGui::TextDisabled("'%s' at X %.4f  Y %.4f  Z %.4f", regDevice_, get("X"),
+                                get("Y"), get("Z"));
+            if (live.count("U") && live.count("V") && live.count("W"))
+                ImGui::TextDisabled("    U %.4f  V %.4f  W %.4f", get("U"), get("V"),
+                                    get("W"));
+        }
+        if (haveLive && regMarked > 0 && regMarkPoseHave_ && regMarkDev_ == regDevice_) {
+            const double dx = get("X") - regMarkPose_.x, dy = get("Y") - regMarkPose_.y,
+                         dz = get("Z") - regMarkPose_.z;
+            const bool rotOff =
+                regMarkHasRot_ && (std::fabs(get("U") - regMarkRot_.x) > 0.01 ||
+                                   std::fabs(get("V") - regMarkRot_.y) > 0.01 ||
+                                   std::fabs(get("W") - regMarkRot_.z) > 0.01);
+            if (std::sqrt(dx * dx + dy * dy + dz * dz) > 0.01 || rotOff)
+                ImGui::TextColored(kWarn, "'%s' has moved since the first mark - Clear "
+                                          "and mark again", regDevice_);
         }
     }
 
-    // ---- Step 1: the device at zero ------------------------------------------
-    stepHeader("Step 1  Device to zero", step1Done);
-    ImGui::TextWrapped("'%s' goes to X Y Z = 0 and U V W = 0. The record's tip "
-                       "offset IS the tip at device zero, so it is measured there.",
-                       regDevice_);
-    if (reg.hasImprintPose) {
-        ImGui::TextDisabled("taught at X %.4f  Y %.4f  Z %.4f", reg.imprintPose.x,
-                            reg.imprintPose.y, reg.imprintPose.z);
-        if (!taughtAtZero)
-            ImGui::TextColored(kWarn, "not zero - taught the old way (imprint pose).\n"
-                                      "Run Teach pose to re-teach at zero.");
-    } else {
-        ImGui::TextColored(kWarn, "not taught");
-    }
-
-    // ---- Step 2: the camera view ---------------------------------------------
-    stepHeader("Step 2  Camera view over the tool", step2Done);
+    // ---- Step 1: the camera on the tool --------------------------------------
+    stepHeader("Step 1  Camera on the tool", step1Done);
     ImGui::TextWrapped("Jog '%s' until the gripper tip is in the picture and FOCUS on "
-                       "it, then OK. The focused Z is the tip's height.", regRef_);
-    if (reg.hasTipView)
-        ImGui::TextDisabled("X %.4f  Y %.4f  Z %.4f", reg.tipView.x, reg.tipView.y,
-                            reg.tipView.z);
-    else
-        ImGui::TextColored(kWarn, "not taught");
+                       "it. The focused Z is the tip's height - focus once, then mark "
+                       "every corner.", regRef_);
+    if (havePose && haveGz)
+        ImGui::TextDisabled("camera at X %.4f  Y %.4f  Z %.4f", gx, gy, gz);
 
-    ImGui::Spacing();
-    ImGui::TextDisabled("Next: Capture tool points - mark the tool with '%s'", regDevice_);
-    ImGui::TextDisabled("still at zero, then compute the tip.");
-    ImGui::EndTabItem();
-    }
-
-    // ==== Tab: Capture tool points - steps 3 and 4 ============================
-    if (tabBegin("Capture tool points", step3Done && step4Done)) {
-    ImGui::Spacing();
-    ImGui::TextDisabled("Mark the tool on the live image, then compute the tip.");
-
-    // ---- Step 3: the corners -------------------------------------------------
-    stepHeader("Step 3  Mark the tool", step3Done);
+    // ---- Step 2: the corners -------------------------------------------------
+    stepHeader("Step 2  Mark the tool", step2Done);
     {
-        // The marks only mean the tip if the tool is still where it was taught.
-        // Compute refuses otherwise; this says so before the picks are made.
-        {
-            std::map<std::string, double> live;
-            if (reg.hasImprintPose && workflow_.DevicePose(regDevice_, live)) {
-                const auto ix = live.find("X"), iy = live.find("Y"), iz = live.find("Z");
-                if (ix != live.end() && iy != live.end() && iz != live.end()) {
-                    const double dx = ix->second - reg.imprintPose.x,
-                                 dy = iy->second - reg.imprintPose.y,
-                                 dz = iz->second - reg.imprintPose.z;
-                    if (std::sqrt(dx * dx + dy * dy + dz * dz) > 0.01)
-                        ImGui::TextColored(kWarn, "'%s' is not at its taught pose - run "
-                                                  "Teach pose first", regDevice_);
-                }
-            }
-        }
         ImGui::TextWrapped("Put the crosshair on the corners of the gripper tip, "
                            "spaced evenly around it, and capture each.");
         ImGui::SetNextItemWidth(90.0f);
@@ -894,48 +926,40 @@ void App::DrawDeviceRegPanel()
             ImGui::PopID();
         }
 
-        ImGui::BeginDisabled(!haveImg || !havePose);
-        if (ImGui::Button("Capture corner", ImVec2(180.0f, 0.0f))) {
-            AlignPoint p;
-            p.gx = gx;
-            p.gy = gy;
-            p.px = regPx_;
-            p.py = regPy_;
-            // The crosshair's offset from the image centre, in mm, added to the
-            // pose it was taken at — so a mark keeps meaning the same place when
-            // the operator jogs between corners.
-            p.wx = gx + static_cast<double>(regPx_ - static_cast<float>(cameraW_) * 0.5f) *
-                            static_cast<double>(pixelToMmX_);
-            p.wy = gy + static_cast<double>(regPy_ - static_cast<float>(cameraH_) * 0.5f) *
-                            static_cast<double>(pixelToMmY_);
-            regMark_[regMarkActive_]     = p;
-            regMarkHave_[regMarkActive_] = true;
-            if (regMarkActive_ + 1 < regMarkCount_) ++regMarkActive_;
-            regTeachMsg_.clear();
-        }
+        ImGui::BeginDisabled(!haveImg || !havePose || sameDev);
+        if (ImGui::Button("Capture corner", ImVec2(180.0f, 0.0f)))
+            CaptureDeviceRegCorner(gx, gy, gz, haveGz);
         ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Latches the crosshair with '%s's pose. The first corner\n"
+                              "also reads where '%s' stands - that pose is the one the\n"
+                              "tip is taught at, rotations included.",
+                              regRef_, regDevice_);
         ImGui::SameLine();
-        if (ImGui::Button("Clear", ImVec2(80.0f, 0.0f))) {
-            for (int i = 0; i < kRegMarkMax; ++i) regMarkHave_[i] = false;
-            regMarkActive_ = 0;
-        }
+        if (ImGui::Button("Clear", ImVec2(80.0f, 0.0f))) ClearDeviceRegMarks();
 
         ImGui::TextDisabled("%d of %d marked", regMarked, regMarkCount_);
+        if (regMarked > 0 && regMarkPoseHave_)
+            ImGui::TextDisabled("pinned to '%s' at X %.4f  Y %.4f  Z %.4f",
+                                regMarkDev_.c_str(), regMarkPose_.x, regMarkPose_.y,
+                                regMarkPose_.z);
     }
 
-    // ---- Step 4: complete ----------------------------------------------------
-    stepHeader("Step 4  Compute the tip", step4Done);
+    // ---- Step 3: compute -----------------------------------------------------
+    stepHeader("Step 3  Compute the tip", step3Done);
     {
-        ImGui::TextDisabled("The centre of the corners is the tip in XY; the view's");
-        ImGui::TextDisabled("focused Z is the tip in Z. At device zero, that IS t.");
+        ImGui::TextWrapped("The centre of the corners is the tip in XY and the focused "
+                           "Z its height, at the pose '%s' stood in.", regDevice_);
         ImGui::BeginDisabled(busy || sameDev);
         if (ImGui::Button("Compute and save tip", ImVec2(180.0f, 0.0f)))
             CompleteDeviceRegTip();
         ImGui::EndDisabled();
-        if (reg.valid)
-            ImGui::TextDisabled("tip taught %s from %d picks - computing again replaces it",
+        if (reg.valid && reg.hasImprintPose)
+            ImGui::TextDisabled("tip taught %s from %d picks at X %.3f  Y %.3f  Z %.3f - "
+                                "computing again replaces it",
                                 reg.tipAt.empty() ? "(undated)" : reg.tipAt.c_str(),
-                                reg.tipPoints);
+                                reg.tipPoints, reg.imprintPose.x, reg.imprintPose.y,
+                                reg.imprintPose.z);
     }
 
     // ---- The picture the tool is marked under --------------------------------
@@ -943,124 +967,66 @@ void App::DrawDeviceRegPanel()
     ImGui::EndTabItem();
     }
 
-    // ==== Tab: Verify and test - the check and the two drives =================
-    // Green once the check has PASSED, never on a teach alone: this is the one
-    // tab whose "done" is a measurement rather than a capture.
+    // ==== Tab: Verify and test - drive through the registration ==============
+    // Two buttons, each the registration read one way: the TOOL to where the
+    // camera looks, the CAMERA to where the tool is. Watching the tool arrive
+    // under the cross is how an operator sees what a record is worth. Green
+    // once a check has passed (the check itself runs from a recipe step,
+    // device_reg_check_run).
+    //
+    // A move longer than kRegConfirmMm asks first: the popup holds the move
+    // exactly as computed at the click, and Confirm issues that.
     if (tabBegin("Verify and test", reg.verified)) {
     ImGui::Spacing();
 
-    // ---- Check ---------------------------------------------------------------
-    ImGui::SeparatorText("Check");
-    ImGui::TextWrapped("Drives to a pose AWAY from the one the tip was taught at, "
-                       "predicts the tip and measures how far off it is. With the "
-                       "rotation coming from the axis transforms, this is the only "
-                       "thing that ever measures what that assumption costs.");
+    // Ask, or go: the one place both buttons decide.
+    const auto requestMove = [&](const char* devName,
+                                 std::vector<std::pair<std::string, double>> targets,
+                                 double travel, const std::string& what) {
+        if (!jogArmed_) {
+            regTeachMsg_ = "arm jog first - this drives a device";
+            return;
+        }
+        if (travel > kRegConfirmMm) {
+            regConfirmDev_     = devName;
+            regConfirmTargets_ = std::move(targets);
+            char b[96];
+            std::snprintf(b, sizeof(b), "\n\n%.3f mm of travel - more than %.1f mm.", travel,
+                          kRegConfirmMm);
+            regConfirmText_ = what + b;
+            regConfirmOpen_ = true;
+            ImGui::OpenPopup("Confirm move##devreg");
+            return;
+        }
+        driveAxes(devName, targets);
+    };
+
+    double cx = 0.0, cy = 0.0, cz = 0.0;
+    bool   haveCam = false;
     {
-        ImGui::SetNextItemWidth(70.0f);
-        ImGui::InputDouble("dX", &regCheckDx_, 0.0, 0.0, "%.2f");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(70.0f);
-        ImGui::InputDouble("dY", &regCheckDy_, 0.0, 0.0, "%.2f");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(70.0f);
-        ImGui::InputDouble("dZ", &regCheckDz_, 0.0, 0.0, "%.2f");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80.0f);
-        ImGui::InputDouble("tol", &regCheckTol_, 0.0, 0.0, "%.4f");
-        if (regCheckTol_ < 0.001) regCheckTol_ = 0.001;
-
-        const double offset = std::sqrt(regCheckDx_ * regCheckDx_ +
-                                        regCheckDy_ * regCheckDy_ +
-                                        regCheckDz_ * regCheckDz_);
-        if (offset <= 0.0)
-            ImGui::TextColored(kWarn, "all zero - this would check the very pose the tip\n"
-                                      "was taught at, which returns the measurement by\n"
-                                      "construction and can verify nothing.");
-        else
-            ImGui::TextDisabled("checks %.3f mm from the taught pose", offset);
-
-        ImGui::SetNextItemWidth(80.0f);
-        ImGui::InputDouble("v travel", &regVTravel_, 0.0, 0.0, "%.2f");
-        if (regVTravel_ < 0.0) regVTravel_ = 0.0;
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80.0f);
-        ImGui::InputDouble("v jog", &regVJog_, 0.0, 0.0, "%.2f");
-        if (regVJog_ < 0.0) regVJog_ = 0.0;
-
-        // Off by default, and worth the paragraph: the tip Z in the record is a
-        // HAND-focused Z from step 2, so a check that focuses by sweep measures
-        // how far the two methods disagree - 0.15 mm on a flat coupon is normal -
-        // and reports it as a registration error. With it off, the operator
-        // focuses the same way they taught, watching the live dZ in the pick
-        // window until it closes.
-        ImGui::Checkbox("autofocus at the check pose", &regAutofocus_);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Off: the pick window shows the live dX/dY/dZ against the\n"
-                              "prediction and you focus by hand - the same way step 2\n"
-                              "taught the tip Z.\n"
-                              "On: a sweep sets Z before the pick. Only trust it if the\n"
-                              "camera view in step 2 was captured after a sweep too.");
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!regAutofocus_);
-        ImGui::SetNextItemWidth(80.0f);
-        ImGui::InputDouble("focus mm", &regFocusRangeMm_, 0.0, 0.0, "%.2f");
-        ImGui::EndDisabled();
-        if (regFocusRangeMm_ < 0.01) regFocusRangeMm_ = 0.01;
-
-        const bool running = orch_.lua.Running();
-        // Every Run surface gates on the WHOLE orchestration, never on one
-        // engine: the program runner goes momentarily idle between queue items,
-        // and a check on the engines alone lets a second run slip in.
-        ImGui::BeginDisabled(busy || !reg.valid);
-        if (ImGui::Button("Check registration", ImVec2(180.0f, 0.0f)))
-            StartDeviceRegCheckRun();
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!running);
-        if (ImGui::Button("Stop", ImVec2(70.0f, 0.0f))) orch_.lua.RequestStop();
-        ImGui::EndDisabled();
-        if (!reg.valid)
-            ImGui::TextDisabled("nothing to check until the tip is taught");
-        if (!regStartErr_.empty())
-            ImGui::TextColored(kBad, "%s", regStartErr_.c_str());
-        if (running) {
-            const LuaEngine::Status lst = orch_.lua.GetStatus();
-            ImGui::TextDisabled("%s  %s", LuaEngine::StateName(lst.state),
-                                lst.error.empty() ? "" : lst.error.c_str());
+        std::map<std::string, double> refPose;
+        if (workflow_.DevicePose(regRef_, refPose)) {
+            const auto ix = refPose.find("X"), iy = refPose.find("Y"), iz = refPose.find("Z");
+            if (ix != refPose.end() && iy != refPose.end() && iz != refPose.end()) {
+                cx = ix->second; cy = iy->second; cz = iz->second;
+                haveCam = true;
+            }
         }
     }
 
-    // ---- Send the tool here --------------------------------------------------
-    // The consuming end of the registration, on the page that taught it: drive
-    // the registered device so its TIP lands where the reference device is
-    // standing right now - the point under the camera. It is the same solve
-    // move_to_point does (h = R^T (p - t)), and it belongs here because a
-    // registration that has never been driven through has never been seen to
-    // work: reading a residual off a log is not the same as watching the tool
-    // arrive where the camera is looking.
-    //
-    // It stays an APPROACH. Nothing here closes a loop, so it must never be
-    // read as a placement - the rotation is typed, the tip is one point, and
-    // the last 20 um belongs to the gripped-object measure and correct
-    // (grip_measure / grip_move_to_camera).
-    ImGui::SeparatorText("Send the tool here");
+    if (!reg.valid)
+        ImGui::TextColored(kWarn, "nothing to drive through until the tip is taught");
+    else if (!reg.verified)
+        ImGui::TextDisabled("unverified - watch the first moves: the tool may not land\n"
+                            "exactly under the cross, and that is what this shows");
+
+    // ---- Move tool to camera -------------------------------------------------
+    // The same solve a recipe's move_to_point does (h = R^T (p - t)), with the
+    // same rotation guard. It stays an APPROACH: nothing here closes a loop.
+    ImGui::SeparatorText("Move tool to camera");
     {
-        double rx = 0.0, ry = 0.0, rz = 0.0;
-        bool   haveRefXYZ = false;
-        std::map<std::string, double> refPose;
-        if (workflow_.DevicePose(regRef_, refPose)) {
-            const auto ix = refPose.find("X"), iy = refPose.find("Y"),
-                       iz = refPose.find("Z");
-            if (ix != refPose.end() && iy != refPose.end() && iz != refPose.end()) {
-                rx = ix->second; ry = iy->second; rz = iz->second;
-                haveRefXYZ = true;
-            }
-        }
-
-        ImGui::TextWrapped("Drives '%s' so its tip lands where '%s' is standing now - "
-                           "the point under the camera. The same solve a recipe's "
-                           "move_to_point step does.", regDevice_, regRef_);
-
+        ImGui::TextWrapped("Drives '%s' so its tip lands where '%s' is looking now.",
+                           regDevice_, regRef_);
         ImGui::SetNextItemWidth(80.0f);
         ImGui::InputDouble("Z offset", &regSendZOff_, 0.0, 0.0, "%.3f");
         if (ImGui::IsItemHovered())
@@ -1072,203 +1038,151 @@ void App::DrawDeviceRegPanel()
                               "The sign is a fact about this gantry, not a rule:\n"
                               "its transform inverts Z. Re-check it after any\n"
                               "change to the transforms file.", regRef_);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80.0f);
-        ImGui::InputDouble("max mm", &regSendMaxMm_, 0.0, 0.0, "%.1f");
-        if (regSendMaxMm_ < 0.0) regSendMaxMm_ = 0.0;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Refuses a move longer than this. A stale record turns a\n"
-                              "short approach into a lunge, and that is the failure this\n"
-                              "button has to survive. 0 = no ceiling.");
-        ImGui::SameLine();
-        ImGui::Checkbox("allow unverified", &regSendUnver_);
+        if (regSendZOff_ == 0.0)
+            ImGui::TextColored(kWarn, "Z offset 0 = the tip TOUCHES the focused surface");
 
-        // Everything the move needs, computed live so the destination can be
-        // read BEFORE anything is armed. The same three refusals move_to_point
-        // makes, in the same order: a second opinion about when a registration
-        // may be driven through is how two surfaces start disagreeing.
-        const RegVec3 target{rx, ry, rz + regSendZOff_};
+        const RegVec3 target{cx, cy, cz + regSendZOff_};
         const RegVec3 h = DeviceRegSolve(reg, target);
         std::string   refuse;
-        double        travel     = 0.0;
-        bool          haveTravel = false;
-        if (!reg.valid)       refuse = "no registration to drive through";
-        else if (!haveRefXYZ) refuse = std::string("no live X/Y/Z from '") + regRef_ + "'";
-        else if (!reg.verified && !regSendUnver_)
-            refuse = "UNVERIFIED - run the check, or tick allow unverified and watch it";
+        double        travel = 0.0;
+        if (!reg.valid)    refuse = "no registration to drive through";
+        else if (!haveCam) refuse = std::string("no live X/Y/Z from '") + regRef_ + "'";
         std::map<std::string, double> devPose;
-        if (refuse.empty() && workflow_.DevicePose(regDevice_, devPose)) {
-            // A hexapod's tip swings about its pivot, so a record taken at one
-            // set of rotations describes no other. Same guard as the command.
-            const auto iu = devPose.find("U"), iv = devPose.find("V"),
-                       iw = devPose.find("W");
-            if (reg.hasRot && iu != devPose.end() && iv != devPose.end() &&
-                iw != devPose.end()) {
-                std::string why;
-                if (!DeviceRegRotationOk(reg, RegVec3{iu->second, iv->second, iw->second},
-                                         &why))
-                    refuse = why;
-            }
-            const auto ix = devPose.find("X"), iy = devPose.find("Y"),
-                       iz = devPose.find("Z");
-            if (ix != devPose.end() && iy != devPose.end() && iz != devPose.end()) {
-                const double dx = h.x - ix->second, dy = h.y - iy->second,
-                             dz = h.z - iz->second;
-                travel     = std::sqrt(dx * dx + dy * dy + dz * dz);
-                haveTravel = true;
-            }
-        }
-        if (refuse.empty() && haveTravel && regSendMaxMm_ > 0.0 &&
-            travel > regSendMaxMm_) {
-            char b[128];
-            std::snprintf(b, sizeof(b), "%.3f mm of travel exceeds the %.1f mm ceiling",
-                          travel, regSendMaxMm_);
-            refuse = b;
-        }
-
-        if (haveRefXYZ)
-            ImGui::TextDisabled("tip to (%.4f, %.4f, %.4f) in '%s' space",
-                                target.x, target.y, target.z, regRef_);
-        if (reg.valid && haveRefXYZ) {
-            if (haveTravel)
-                ImGui::Text("puts '%s' at (%.4f, %.4f, %.4f), %.3f mm of travel",
-                            regDevice_, h.x, h.y, h.z, travel);
-            else
-                ImGui::Text("puts '%s' at (%.4f, %.4f, %.4f)", regDevice_,
-                            h.x, h.y, h.z);
-        }
-        if (!refuse.empty()) ImGui::TextColored(kWarn, "%s", refuse.c_str());
-
-        // Armed like every other surface that moves something, and gated on
-        // the WHOLE orchestration rather than on one engine.
-        ImGui::BeginDisabled(busy || sameDev || !refuse.empty());
-        if (ImGui::Button("Send tool here", ImVec2(180.0f, 0.0f))) {
-            FD_WARN("devreg", "sending '%s' to the '%s' point (%.4f, %.4f, %.4f): "
-                              "pose (%.4f, %.4f, %.4f), %.3f mm of travel%s",
-                    regDevice_, regRef_, target.x, target.y, target.z,
-                    h.x, h.y, h.z, travel,
-                    reg.verified ? "" : " - THE REGISTRATION IS UNVERIFIED");
-            driveTo(regDevice_, h);
-        }
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(busy || !reg.hasImprintPose);
-        if (ImGui::Button("Back to taught pose", ImVec2(160.0f, 0.0f)))
-            driveTo(regDevice_, reg.imprintPose);
-        ImGui::EndDisabled();
-        if (!jogArmed_)
-            ImGui::TextDisabled("arm jog (Jog window) - this drives a device");
-    }
-
-    // ---- Look at the tool ----------------------------------------------------
-    // The inverse of the button above, and the one that costs nothing: leave the
-    // tool where it is and drive the CAMERA until its centre is on the tip.
-    //
-    // It belongs on this page because it is how a registration is READ. The
-    // overlay draws a cross where the record says the tip is; this puts the
-    // camera there, so the operator sees the tool itself next to the cross that
-    // claims to be on it. A registration that is out by half a millimetre is
-    // invisible in a residual and obvious in that picture.
-    //
-    // The tip comes from Workflow::DeviceRegTip - the SAME predictor the overlay
-    // and the tip topics use, refusals and all - never a second prediction here.
-    ImGui::SeparatorText("Look at the tool");
-    {
-        ImGui::TextWrapped("Drives '%s' so the camera centre lands on '%s's tip, "
-                           "predicted from where it is standing now. The tool does "
-                           "not move. Same step as a recipe's move_camera_to_tool.",
-                           regRef_, regDevice_);
-
-        RegVec3     tip;
-        std::string refuse;
-        const bool  haveTip = workflow_.DeviceRegTip(regDevice_, tip, &refuse);
-        if (haveTip) refuse.clear();
-
-        // Where the camera stands, and so how far it would go. XY only unless Z
-        // is asked for, which is also exactly what gets commanded.
-        double cx = 0.0, cy = 0.0, cz = 0.0;
-        bool   haveCam = false;
-        {
-            std::map<std::string, double> refPose;
-            if (workflow_.DevicePose(regRef_, refPose)) {
-                const auto ix = refPose.find("X"), iy = refPose.find("Y"),
-                           iz = refPose.find("Z");
-                if (ix != refPose.end() && iy != refPose.end() && iz != refPose.end()) {
-                    cx = ix->second; cy = iy->second; cz = iz->second;
-                    haveCam = true;
+        if (refuse.empty()) {
+            if (!workflow_.DevicePose(regDevice_, devPose)) {
+                refuse = std::string("'") + regDevice_ + "' is not connected";
+            } else {
+                // A record taken at one set of rotations describes no other
+                // (unless the pivot is at the tip). Same guard as the command.
+                const auto iu = devPose.find("U"), iv = devPose.find("V"),
+                           iw = devPose.find("W");
+                if (reg.hasRot && iu != devPose.end() && iv != devPose.end() &&
+                    iw != devPose.end()) {
+                    std::string why;
+                    if (!DeviceRegRotationOk(reg, RegVec3{iu->second, iv->second, iw->second},
+                                             &why))
+                        refuse = why;
+                }
+                const auto ix = devPose.find("X"), iy = devPose.find("Y"),
+                           iz = devPose.find("Z");
+                if (ix != devPose.end() && iy != devPose.end() && iz != devPose.end()) {
+                    const double dx = h.x - ix->second, dy = h.y - iy->second,
+                                 dz = h.z - iz->second;
+                    travel = std::sqrt(dx * dx + dy * dy + dz * dz);
+                } else if (refuse.empty()) {
+                    refuse = std::string("'") + regDevice_ + "' does not report X/Y/Z";
                 }
             }
         }
+        if (refuse.empty())
+            ImGui::TextDisabled("puts '%s' at (%.4f, %.4f, %.4f), %.3f mm", regDevice_,
+                                h.x, h.y, h.z, travel);
+        else
+            ImGui::TextColored(kWarn, "%s", refuse.c_str());
 
-        // Z is opt-in. The tip's reference Z is by construction the height that
-        // FOCUSES on it, so commanding it is the useful thing - and it is also
-        // the leg that drives the lens down toward a tool of unknown height, so
-        // it must never be a side effect of asking to look at something.
+        ImGui::BeginDisabled(busy || sameDev || !refuse.empty());
+        if (IconButton(UiIcon("rg_tool_to_cam"), "Move tool to camera", ImVec2(200.0f, 0.0f))) {
+            char what[256];
+            std::snprintf(what, sizeof(what),
+                          "Move '%s' so its tip lands under the camera?\n\n"
+                          "'%s' to X %.4f  Y %.4f  Z %.4f%s",
+                          regDevice_, regDevice_, h.x, h.y, h.z,
+                          reg.verified ? "" : "\nThe registration is UNVERIFIED.");
+            FD_INFO("devreg", "move tool to camera: '%s' to (%.4f, %.4f, %.4f), %.3f mm%s",
+                    regDevice_, h.x, h.y, h.z, travel,
+                    reg.verified ? "" : " - unverified registration");
+            requestMove(regDevice_, {{"X", h.x}, {"Y", h.y}, {"Z", h.z}}, travel, what);
+        }
+        ImGui::EndDisabled();
+    }
+
+    // ---- Move camera to tool -------------------------------------------------
+    // The tip comes from Workflow::DeviceRegTip - the SAME predictor the
+    // overlay and the tip topics use, refusals and all.
+    ImGui::SeparatorText("Move camera to tool");
+    {
+        ImGui::TextWrapped("Drives '%s' so the camera centre lands on '%s's tip. The "
+                           "tool does not move.", regRef_, regDevice_);
         ImGui::Checkbox("focus Z too", &regLookZ_);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Off: only X and Y move, and whatever the camera is\n"
                               "focused on now stays in focus.\n"
                               "On: Z goes to the height that focuses ON THE TIP -\n"
                               "which is the camera moving toward the tool. Watch it.");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(80.0f);
-        ImGui::InputDouble("look max mm", &regLookMaxMm_, 0.0, 0.0, "%.1f");
-        if (regLookMaxMm_ < 0.0) regLookMaxMm_ = 0.0;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Refuses a move longer than this. Wider than the tool's\n"
-                              "ceiling above, because this crosses the workspace to a\n"
-                              "parked tool rather than descending the last few mm.\n"
-                              "0 = no ceiling.");
 
-        double travel     = 0.0;
-        bool   haveTravel = false;
+        RegVec3     tip;
+        std::string refuse;
+        const bool  haveTip = workflow_.DeviceRegTip(regDevice_, tip, &refuse);
+        if (haveTip) refuse.clear();
+        if (refuse.empty() && !haveCam)
+            refuse = std::string("no live X/Y/Z from '") + regRef_ + "'";
+        double travel = 0.0;
         if (haveTip && haveCam) {
             const double dx = tip.x - cx, dy = tip.y - cy;
             const double dz = regLookZ_ ? tip.z - cz : 0.0;
-            travel     = std::sqrt(dx * dx + dy * dy + dz * dz);
-            haveTravel = true;
+            travel = std::sqrt(dx * dx + dy * dy + dz * dz);
         }
-        if (refuse.empty() && !haveCam)
-            refuse = std::string("no live X/Y/Z from '") + regRef_ + "'";
-        if (refuse.empty() && haveTravel && regLookMaxMm_ > 0.0 && travel > regLookMaxMm_) {
-            char b[128];
-            std::snprintf(b, sizeof(b), "%.3f mm of travel exceeds the %.1f mm ceiling",
-                          travel, regLookMaxMm_);
-            refuse = b;
-        }
-
-        if (haveTip) {
-            ImGui::Text("tip at (%.4f, %.4f, %.4f) in '%s' space", tip.x, tip.y, tip.z,
-                        regRef_);
-            if (haveTravel)
-                ImGui::TextDisabled("%.3f mm of travel%s", travel,
-                                    regLookZ_ ? "" : " (XY only)");
-        }
-        // No verified gate, deliberately - and move_camera_to_tool makes the
-        // identical judgement, so the two surfaces still answer as one. That
-        // gate asks whether a record nothing has checked may move a TOOL;
-        // nothing here touches the part, the camera crosses its own workspace,
-        // and LOOKING is how an operator finds out what an unverified record
-        // costs. Refusing it would hide the very error the picture exists to
-        // show. The rotation guard and the ceiling still apply: a tip that
-        // cannot be predicted has no position to drive to.
-        if (!refuse.empty()) ImGui::TextColored(kWarn, "%s", refuse.c_str());
-        else if (!reg.verified)
-            ImGui::TextDisabled("unverified - so the cross may not land on the tool;\n"
-                                "that disagreement is what this is for");
+        if (refuse.empty())
+            ImGui::TextDisabled("camera to (%.4f, %.4f%s), %.3f mm", tip.x, tip.y,
+                                regLookZ_ ? ", Z too" : "", travel);
+        else
+            ImGui::TextColored(kWarn, "%s", refuse.c_str());
 
         ImGui::BeginDisabled(busy || sameDev || !refuse.empty());
-        if (ImGui::Button("Look at the tool", ImVec2(180.0f, 0.0f))) {
-            FD_INFO("devreg", "'%s' to the '%s' tip at (%.4f, %.4f, %.4f), %s, "
-                              "%.3f mm of travel",
+        if (IconButton(UiIcon("rg_cam_to_tool"), "Move camera to tool", ImVec2(200.0f, 0.0f))) {
+            char what[256];
+            if (regLookZ_)
+                std::snprintf(what, sizeof(what),
+                              "Move '%s' over '%s's tip?\n\n'%s' to X %.4f  Y %.4f  Z %.4f\n"
+                              "Z too - the camera moves toward the tool.",
+                              regRef_, regDevice_, regRef_, tip.x, tip.y, tip.z);
+            else
+                std::snprintf(what, sizeof(what),
+                              "Move '%s' over '%s's tip?\n\n'%s' to X %.4f  Y %.4f (XY only)",
+                              regRef_, regDevice_, regRef_, tip.x, tip.y);
+            FD_INFO("devreg", "move camera to tool: '%s' to the '%s' tip (%.4f, %.4f, %.4f), "
+                              "%s, %.3f mm",
                     regRef_, regDevice_, tip.x, tip.y, tip.z,
                     regLookZ_ ? "XYZ" : "XY only", travel);
-            if (regLookZ_) driveAxes(regRef_, {{"X", tip.x}, {"Y", tip.y}, {"Z", tip.z}});
-            else           driveAxes(regRef_, {{"X", tip.x}, {"Y", tip.y}});
+            if (regLookZ_)
+                requestMove(regRef_, {{"X", tip.x}, {"Y", tip.y}, {"Z", tip.z}}, travel, what);
+            else
+                requestMove(regRef_, {{"X", tip.x}, {"Y", tip.y}}, travel, what);
         }
         ImGui::EndDisabled();
-        if (!jogArmed_)
-            ImGui::TextDisabled("arm jog (Jog window) - this drives a device");
+    }
+    if (!jogArmed_)
+        ImGui::TextDisabled("arm jog (Jog window) - these drive a device");
+
+    // ---- The confirm popup ---------------------------------------------------
+    // Raised only by a click on this tab while nothing runs (both buttons gate
+    // on orch_.Busy()), and it closes itself if a run starts anyway: a modal
+    // must never sit over the prompt window a worker is blocked on.
+    if (ImGui::BeginPopupModal("Confirm move##devreg", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (busy || !regConfirmOpen_) {
+            regConfirmOpen_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        // A fixed wrap width: TextWrapped in an auto-resizing window wraps at
+        // whatever width the window had last frame.
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 400.0f);
+        ImGui::TextUnformatted(regConfirmText_.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        if (ImGui::Button("Move", ImVec2(120.0f, 0.0f))) {
+            FD_INFO("devreg", "move confirmed: '%s'", regConfirmDev_.c_str());
+            driveAxes(regConfirmDev_.c_str(), regConfirmTargets_);
+            regConfirmOpen_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)) ||
+            ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            regConfirmOpen_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
     ImGui::EndTabItem();
     }
