@@ -729,9 +729,8 @@ void App::StartQuickAutoFocus()
 
 // ---- Tool -> cam / Cam -> tool ----------------------------------------------
 //
-// Which tool: the selected jog device when it is registered itself, else - with
-// the camera's device selected - one of the tools registered against it. Both
-// buttons run the registration commands on the engine worker (an approach can
+// Which tool: the selected jog device, and only when it is registered itself
+// (hex-left / hex-right) - the camera's device gets no row. Both buttons run the registration commands on the engine worker (an approach can
 // take seconds; the UI thread never waits), so their refusals are the ones a
 // recipe step gets, word for word.
 namespace {
@@ -768,41 +767,18 @@ void App::StartQuickRegMove(bool toolToCam, const std::string& tool)
 
 void App::DrawJogRegRow(const std::string& selected)
 {
-    // Candidates: the selected device if it is a registered tool; otherwise the
-    // tools registered AGAINST it (the camera's device is selected).
-    std::vector<std::string> tools;
-    const DeviceReg selReg = workflow_.DeviceRegFor(selected);
-    if (selReg.valid) {
-        tools.push_back(selected);
-    } else {
-        for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
-            const std::string& nm = hardware_.MotionName(i);
-            if (nm == selected) continue;
-            const DeviceReg r = workflow_.DeviceRegFor(nm);
-            if (r.valid && r.refDevice == selected) tools.push_back(nm);
-        }
-    }
-    if (tools.empty()) return;   // nothing registered here: no row at all
+    // Only a REGISTERED TOOL gets the row (hex-left / hex-right): the selected
+    // device is the tool. The camera's own device (gantry-main) has no row - it
+    // is the reference, not a tool, and offering its tools from there made the
+    // jog selection and the device the buttons move disagree.
+    const DeviceReg reg = workflow_.DeviceRegFor(selected);
+    if (!reg.valid) return;   // not a registered tool: no row at all
+    const std::string& tool = selected;
 
     ImGui::Separator();
     ImGui::TextUnformatted("Registered tool");
-    std::string tool = tools.front();
-    if (tools.size() > 1) {
-        if (std::find(tools.begin(), tools.end(), jogRegTool_) == tools.end())
-            jogRegTool_ = tools.front();
-        tool = jogRegTool_;
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::BeginCombo("##regtool", tool.c_str())) {
-            for (const std::string& t : tools)
-                if (ImGui::Selectable(t.c_str(), t == tool)) jogRegTool_ = t;
-            ImGui::EndCombo();
-        }
-    } else {
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", tool.c_str());
-    }
-    const DeviceReg reg = workflow_.DeviceRegFor(tool);
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", tool.c_str());
     if (!reg.verified)
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "unverified registration");
 

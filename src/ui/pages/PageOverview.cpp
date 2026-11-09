@@ -1,5 +1,5 @@
 // PageOverview.cpp : the Overview page — the hardware-status left panel with
-// its DUT block and Display controls, the build/HALCON middle panel, the right
+// its Preferences button and DUT block, the build/HALCON middle panel, the right
 // panel, and the shared log viewer. Definitions of App members — see App.h.
 //
 // DrawLogPanel is shared: the Overview lower strip and the Run page's log band
@@ -144,6 +144,16 @@ void App::DrawDutBlock(float serialScale)
 void App::DrawLeftPanel()
 {
     ImGui::TextUnformatted("Hardware");
+    if (CanUse(kRolePrefs)) {
+        // Top-right of the header, the DUT block's "Data" shape.
+        const float bw = ImGui::CalcTextSize("Preferences").x +
+                         ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x +
+                        ImGui::GetCursorPosX() - bw);
+        if (ImGui::SmallButton("Preferences")) OpenPreferences();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Program preferences: display, chart ranges");
+    }
     ImGui::Separator();
     for (const auto& d : hardware_.Snapshot()) {   // includes camera + Keithley
         DeviceStatusLine(d.state, d.name.c_str());
@@ -151,36 +161,8 @@ void App::DrawLeftPanel()
 
     ImGui::Spacing();
     DrawDutBlock();
-    ImGui::Spacing();
-    if (ImGui::CollapsingHeader("Display")) {
-        // Theme picker — hot-applies (mid-frame style changes are fine in
-        // immediate mode) and persists like the font choice.
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::BeginCombo("##theme", Theme::Name(themeIndex_))) {
-            for (int i = 0; i < Theme::Count(); ++i) {
-                if (ImGui::Selectable(Theme::Name(i), themeIndex_ == i)) {
-                    themeIndex_ = i;
-                    Theme::Apply(themeIndex_);
-                    SaveUiSettings();
-                }
-            }
-            ImGui::EndCombo();
-        }
-
-        const char* names[kFontCount];
-        for (int i = 0; i < kFontCount; ++i) names[i] = kFonts[i].label;
-
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("##font", &fontIndex_, names, kFontCount)) {
-            host_.SetFont(kFonts[fontIndex_].path, uiFontSize_);
-            SaveUiSettings();                        // discrete change — save now
-        }
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::SliderFloat("##fontsize", &uiFontSize_, 10.0f, 28.0f, "%.0f px")) {
-            host_.SetFont(kFonts[fontIndex_].path, uiFontSize_);
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit()) SaveUiSettings();   // save once on release
-    }
+    // Theme and font live in Preferences > Environment > Display (the button
+    // on the Hardware header above).
 }
 
 // What is on this machine: the build that is running, and whether HALCON is.

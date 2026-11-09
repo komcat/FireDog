@@ -24,6 +24,7 @@
 #include "update/AppUpdater.h"
 #include "vision/HalconEngine.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -117,6 +118,14 @@ int App::Run()
         auxChartCompact_  = ui.auxChartCompact;
         chartScope_      = ui.chartScope;
         chartSmooth_     = ui.chartSmooth;
+        chartYBands_     = ui.chartYBands;
+        chartYBandList_  = ui.chartYBandList;
+        chartChDef_      = ui.chartChDefault;
+        chartCh_         = chartChDef_;       // every start shows the chosen channel(s)
+        jogRegZOffDef_   = std::clamp(ui.jogRegZOffDefault, -100.0, 100.0);
+        jogRegUnverDef_  = ui.jogRegUnverDefault;
+        jogRegZOff_      = jogRegZOffDef_;    // every start begins at the defaults
+        jogRegUnver_     = jogRegUnverDef_;
         runLastProgUid_  = ui.runProgUid;
         runLastSlot_     = ui.runSlot > 0 ? ui.runSlot : 0;
         lastProduct      = ui.lastProduct;
@@ -236,6 +245,7 @@ int App::Run()
             if (showVisionDetHelper_ && CanAccess(Page::RecipeEdit)) DrawVisionDetectHelperWindow();
             if (showMaint_ && CanAccess(Page::Oee)) DrawMaintenanceWindow();
             if (showUsers_) DrawEmployeeManager();   // checks Admin itself
+            if (showPrefs_ && CanUse(kRolePrefs)) DrawPreferencesWindow();
         }
         host_.EndFrame();
     }
@@ -644,6 +654,11 @@ void App::SaveUiSettings()
     s.auxChartCompact  = auxChartCompact_;
     s.chartScope  = chartScope_;
     s.chartSmooth = chartSmooth_;
+    s.chartYBands = chartYBands_;
+    s.chartYBandList = chartYBandList_;
+    s.chartChDefault     = chartChDef_;
+    s.jogRegZOffDefault  = jogRegZOffDef_;
+    s.jogRegUnverDefault = jogRegUnverDef_;
     s.runProgUid  = runLastProgUid_;
     s.runSlot     = runLastSlot_;
     s.lastProduct = session_.Product().name;

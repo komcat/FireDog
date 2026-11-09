@@ -55,8 +55,21 @@ struct RunReadout {
     double      hi = 0.0;
 };
 
+// One fixed Y range of the Keithley chart, in uA (Preferences > Charts).
+struct ChartYBand {
+    double loUa = 0.0;
+    double hiUa = 0.0;
+    bool operator==(const ChartYBand&) const = default;
+};
+inline constexpr int kMaxChartYBands = 8;
+// -1..10 uA, 10..1000 uA, 1..10 mA: the dark-to-coupled photodiode decades.
+inline std::vector<ChartYBand> DefaultChartYBands()
+{
+    return {{-1.0, 10.0}, {10.0, 1000.0}, {1000.0, 10000.0}};
+}
+
 struct UiSettings {
-    int   fontIndex  = 0;       // index into App's kFonts table
+    int   fontIndex  = 0;      // index into App's kFonts table
     float fontSize   = 26.0f;   // UI font size in px
     int   themeIndex = 0;       // index into Theme's theme list
 
@@ -169,6 +182,23 @@ struct UiSettings {
     bool chartScope  = true;
     // Keithley chart display low-pass: index into the preset list, 0 = off.
     int  chartSmooth = 0;
+    // Keithley chart Y axis: fixed ranges by magnitude instead of auto-fit
+    // (Preferences > Charts). Auto-fit re-scales on every new sample, so a
+    // flat, noisy signal jumps; a band holds still. The axis spans from the
+    // band holding the visible minimum to the band holding the maximum, and a
+    // value inside no band falls back to auto-fit. Stored in uA.
+    bool chartYBands = true;
+    std::vector<ChartYBand> chartYBandList = DefaultChartYBands();
+    // Keithley chart: the channel(s) it shows at startup (Preferences >
+    // Charts): 0 = Ch1, 1 = Ch2, 2 = both. The chart's own radio buttons are
+    // not kept - every start comes back to this.
+    int  chartChDefault = 2;
+
+    // Jog window "Tool -> cam": what its Z off field and unverified checkbox
+    // start at (Preferences > Motion). The fields themselves are not kept -
+    // every start comes back to these.
+    double jogRegZOffDefault  = 0.0;
+    bool   jogRegUnverDefault = true;
 
     // Run page deck: the last-used program (by UID, so a rename keeps it) and
     // which of its slots was showing. The deck shows exactly ONE slot, so this

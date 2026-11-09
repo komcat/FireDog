@@ -161,3 +161,9 @@ Priority: safety > down > waiting > running / standby / idle.
   buzzer hangs off the switch panel (`"buzzer_device": "IOSwitch", "buzzer":
   "switch_led_13"`). Each output pin tracks its own device and last-written state,
   so two devices connecting at different times still only rewrite what changed.
+  **`force_off_at_start`** (default `["Tower_Buzzer"]`, `[]` = none; absent =
+  the default) names outputs on `device` the tower no longer drives: each is
+  written OFF once when its device first comes up (and after a reconnect), then
+  left alone. Ezi-IO latches outputs across a restart, so once the buzzer moved
+  to `buzzer_device` an old `Tower_Buzzer` left ON had nothing left to clear it.
+  A name the tower drives itself is skipped.

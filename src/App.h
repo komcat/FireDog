@@ -170,6 +170,34 @@ inline constexpr UserRole kRoleInspect = UserRole::Technician;
 //   whoever repairs the machine, the level that may move it. The OEE page and
 //   the maintenance history only read, so they are Operator.
 inline constexpr UserRole kRoleDowntime = UserRole::Technician;
+//   Preferences mostly changes how this station DRAWS (theme, font, chart
+//   ranges), so anyone signed in may open it - it took over the Overview's old
+//   Display block. Its Motion page sets what the Jog window's Tool -> cam
+//   starts with, so that page edits only at kRoleJog.
+inline constexpr UserRole kRolePrefs = UserRole::Operator;
+
+// The Preferences window's working copy (WndPreferences.cpp): what the dialog
+// edits until OK / Apply. Apply writes back only the fields that differ from
+// `prefsBase_` (the values when the window opened or last applied), so an
+// untouched field is never rewritten from a stale copy.
+struct AppPrefs {
+    int   themeIndex = 0;
+    int   fontIndex  = 0;
+    float fontSize   = 26.0f;
+    bool  chartYBands = true;
+    std::vector<ChartYBand> chartYBandList;
+    int   chartChDefault = 2;    // chart channel(s) at startup: 0 Ch1, 1 Ch2, 2 both
+    double jogRegZOff  = 0.0;    // Jog "Tool -> cam" defaults
+    bool   jogRegUnver = true;
+};
+
+// Hysteresis state for one chart's fixed Y range: the band indices it showed
+// last frame (-1 = none / auto-fit). Kept so a signal sitting on a band edge
+// does not flip the axis every frame.
+struct ChartBandState {
+    int lo = -1;
+    int hi = -1;
+};
 
 // One DUT record flattened for the View Data window: the identity columns plus
 // the LAST value written under each non-event key. The append-only log may
@@ -271,7 +299,7 @@ private:
     int         maintDays_   = 30;
     char        maintSearch_[128] = {};
     std::string maintMsg_;
-    void DrawLeftPanel();     // 20% column: hardware status + DUT + display
+    void DrawLeftPanel();     // 20% column: hardware status + Preferences button + DUT
     // Active-DUT status + open/close (Overview left, top of the Run deck).
     // `serialScale` = the serial's font size as a multiple of the body size,
     // before it shrinks to fit the row.
@@ -962,6 +990,7 @@ private:
     void UpdateKeithleyChartData(float dt);
     void DrawKeithleyChart(const ImVec2& size);
     int                       chartCh_ = 2;   // 0 ch1, 1 ch2, 2 both
+    int                       chartChDef_ = 2;   // ...what it starts at (Preferences)
     bool                      chartScope_ = true;  // scope look vs classic axes
     std::vector<float>        kT1_, kV1_, kT2_, kV2_;
     std::vector<float>        kX1_, kX2_;      // X shifted to relative time (t - now)
@@ -978,9 +1007,20 @@ private:
     void                      DrawChartSmoothCombo();   // the "LP" preset picker
     double                    chartClock_ = 0.0;   // smooth rolling X right-edge
     static constexpr double   kChartWindowSec = 10.0;
+    // Fixed Y ranges by magnitude (UiSettings chart_y_bands, Preferences >
+    // Charts). ChartBandLimits maps the visible data's [lo, hi] (A) to the
+    // axis [yLo, yHi] (A); false = off, or a value inside no band -> auto-fit.
+    // State per chart: [0] the ImPlot chart, [1]/[2] the compact chart's
+    // channels (it scales each channel on its own).
+    bool                      chartYBands_ = true;
+    std::vector<ChartYBand>   chartYBandList_ = DefaultChartYBands();
+    ChartBandState            chartBandSt_[3];
+    bool ChartBandLimits(float dataLo, float dataHi, ChartBandState& st,
+                         double& yLo, double& yHi) const;
 
-    // Display controls (theme + font picker + size). Theme applies via
-    // Theme::Apply; fonts bind to the GlHost font API.
+    // Display settings (theme + font + size), edited only in Preferences >
+    // Environment > Display. Theme applies via Theme::Apply; fonts bind to the
+    // GlHost font API.
     int   fontIndex_  = 0;       // index into kFonts (see App.cpp)
     float uiFontSize_ = 26.0f;   // current UI font size in px
     int   themeIndex_ = 0;       // index into Theme's theme list
@@ -1028,6 +1068,19 @@ private:
     char        loginId_[64] = "";
     char        loginPw_[64] = "";
     std::string loginErr_;
+
+    // Preferences window (WndPreferences.cpp; the Overview's Hardware header
+    // opens it). Non-modal on purpose: a modal would block the always-on-top
+    // prompt window a run may be waiting on. prefsCat_ = the selected page of
+    // its category tree.
+    bool        showPrefs_ = false;
+    int         prefsCat_  = 0;
+    AppPrefs    prefsBase_, prefsEdit_;
+    std::string prefsMsg_;
+    void OpenPreferences();
+    void DrawPreferencesWindow();
+    AppPrefs CurrentPrefs() const;
+    void ApplyPreferences();
 
     // User Manager window (admin only). usrSel_ indexes employees_ and is
     // re-clamped after every add/remove — a stale index into a shrunk roster
@@ -1182,15 +1235,18 @@ private:
     std::string afErr_;
 
     // Jog tab "Tool -> cam" / "Cam -> tool": the registered move_tool_to_camera
-    // and move_camera_to_tool commands, started as a one-step ad-hoc recipe
+    // and move_camera_to_tool commands for the SELECTED device, shown only
+    // when it is a registered tool (never for the camera's device), started as a one-step ad-hoc recipe
     // (StartQuickRegMove) exactly like the autofocus button - so every refusal
     // (no registration, rotation guard, unverified, ceiling) is the command's,
-    // never a second copy here. The Z offset defaults to the command's own -2
-    // (a stand-off on this machine), not the Registration page's 0 (a touch):
-    // a one-click button in a jog window must not default to contact.
-    std::string jogRegTool_;             // chosen tool when the camera device is selected
-    double      jogRegZOff_    = -2.0;   // move_tool_to_camera z_offset_mm
-    bool        jogRegUnver_   = false;  // move_tool_to_camera allow_unverified
+    // never a second copy here. The two fields start at the station's defaults
+    // (Preferences > Motion, UiSettings jog_reg_*_default: 0 mm and allow
+    // unverified, as asked 2026-11-09) on every start and on Apply; an edit in
+    // the Jog window lasts until the app closes and is never saved.
+    double      jogRegZOff_    = 0.0;    // move_tool_to_camera z_offset_mm
+    bool        jogRegUnver_   = true;   // move_tool_to_camera allow_unverified
+    double      jogRegZOffDef_  = 0.0;   // ...their defaults (Preferences)
+    bool        jogRegUnverDef_ = true;
     std::string regMoveErr_;             // the last start rejection
     void DrawJogRegRow(const std::string& selected);
     void StartQuickRegMove(bool toolToCam, const std::string& tool);

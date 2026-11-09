@@ -93,6 +93,53 @@ std::string App::ChartSmoothTag() const
     return i == 0 ? std::string() : std::string("LP ") + kChartSmoothLabel[i];
 }
 
+// Fixed Y range by magnitude. The axis runs from the band holding the visible
+// minimum to the band holding the visible maximum, so a flat signal sits still
+// inside its band instead of being stretched to fill the plot on every sample
+// (auto-fit), and a climb through a decade widens the axis at once.
+//
+// Narrowing back is held off until the data is 10 % of the narrower band clear
+// of its edge: a signal hovering on 10 uA would otherwise flip between two
+// axes every frame, which is the jumping this replaces. The window is seconds
+// long, so a peak that has left still narrows the axis that much later.
+//
+// False = bands off, none configured, or a value inside no band -> the caller
+// auto-fits as before (and the state resets, so the next band starts fresh).
+bool App::ChartBandLimits(float dataLo, float dataHi, ChartBandState& st,
+                          double& yLo, double& yHi) const
+{
+    const std::vector<ChartYBand>& b = chartYBandList_;
+    const int n = static_cast<int>(b.size());
+    auto bandOf = [&](double v) {
+        for (int i = 0; i < n; ++i)
+            if (v >= b[i].loUa * 1e-6 && v <= b[i].hiUa * 1e-6) return i;
+        return -1;
+    };
+    int lo = chartYBands_ ? bandOf(dataLo) : -1;
+    int hi = chartYBands_ ? bandOf(dataHi) : -1;
+    if (lo < 0 || hi < 0) { st = ChartBandState{}; return false; }
+    auto bLo = [&](int i) { return b[i].loUa * 1e-6; };
+    auto bHi = [&](int i) { return b[i].hiUa * 1e-6; };
+    if (lo > hi) std::swap(lo, hi);   // overlapping bands typed out of order
+
+    // Hysteresis: keep last frame's wider end unless the data is well inside
+    // the narrower one. A changed band list can leave stale indices - drop them.
+    if (st.lo >= n || st.hi >= n) st = ChartBandState{};
+    if (st.hi >= 0 && bHi(st.hi) > bHi(hi)) {
+        const double margin = 0.10 * (bHi(hi) - bLo(hi));
+        if (dataHi > bHi(hi) - margin) hi = st.hi;
+    }
+    if (st.lo >= 0 && bLo(st.lo) < bLo(lo)) {
+        const double margin = 0.10 * (bHi(lo) - bLo(lo));
+        if (dataLo < bLo(lo) + margin) lo = st.lo;
+    }
+    st.lo = lo;
+    st.hi = hi;
+    yLo = (std::min)(bLo(lo), bLo(hi));
+    yHi = (std::max)(bHi(lo), bHi(hi));
+    return yHi > yLo;
+}
+
 // Model name of the configured SMU, for the headers and the chart legend. The
 // driver exists from Workflow::Start, so this is right before the first connect.
 std::string App::KeithleyModelName()
@@ -369,6 +416,27 @@ void App::DrawKeithleyChart(const ImVec2& size)
         ImGui::TextDisabled("%.0f Hz", MeasuredHz(kT1_.empty() ? kT2_ : kT1_));
     }
 
+    // The visible window's extent over the shown channel(s), for the fixed Y
+    // bands. The same samples the trace draws: [now - window, now].
+    double yLo = 0.0, yHi = 0.0;
+    bool   fixedY = false;
+    {
+        const float tLo = static_cast<float>(chartClock_ - kChartWindowSec);
+        float lo = FLT_MAX, hi = -FLT_MAX;
+        auto extent = [&](const std::vector<float>& t, const std::vector<float>& v) {
+            const std::size_t n = (std::min)(t.size(), v.size());
+            for (std::size_t i = 0; i < n; ++i) {
+                if (t[i] < tLo) continue;
+                lo = (std::min)(lo, v[i]);
+                hi = (std::max)(hi, v[i]);
+            }
+        };
+        if (chartCh_ != 1) extent(kT1_, v1);
+        if (chartCh_ != 0) extent(kT2_, v2);
+        if (lo <= hi) fixedY = ChartBandLimits(lo, hi, chartBandSt_[0], yLo, yHi);
+        else          chartBandSt_[0] = ChartBandState{};
+    }
+
     const bool scope = chartScope_;
     if (scope) {
         ImPlot::PushStyleColor(ImPlotCol_FrameBg,    ImVec4(0.16f, 0.17f, 0.19f, 1.0f));
@@ -380,18 +448,26 @@ void App::DrawKeithleyChart(const ImVec2& size)
     }
     const ImPlotFlags pflags = scope ? ImPlotFlags_CanvasOnly : ImPlotFlags_None;
     if (ImPlot::BeginPlot("##keithley", size, pflags)) {
-        // Y auto-fits to the visible data; X is a fixed relative-time window:
-        // 0 s at the right edge (now), running back to -kChartWindowSec.
+        // Y is the fixed band range when one applies, else auto-fits to the
+        // visible data; X is a fixed relative-time window: 0 s at the right
+        // edge (now), running back to -kChartWindowSec.
+        const ImPlotAxisFlags yFit = fixedY ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
         if (scope) {
             ImPlot::SetupAxes(nullptr, nullptr,
                               ImPlotAxisFlags_NoDecorations,
-                              ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
+                              ImPlotAxisFlags_NoDecorations | yFit);
         } else {
             ImPlot::SetupAxes("t (s)", "current (A)",
-                              ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+                              ImPlotAxisFlags_None, yFit);
             ImPlot::SetupAxisFormat(ImAxis_X1, "%.0fs");
         }
         ImPlot::SetupAxisLimits(ImAxis_X1, -kChartWindowSec, 0.0, ImGuiCond_Always);
+        if (fixedY) {
+            // Headroom: the scope's overlay text (legend top-left, value
+            // bottom-left) needs the room FitPadding gives an auto-fit.
+            const double pad = (yHi - yLo) * (scope ? 0.20 : 0.03);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, yLo - pad, yHi + pad, ImGuiCond_Always);
+        }
 
         const float weight = scope ? 3.0f : 2.0f;
         if (chartCh_ != 1 && !v1.empty()) {

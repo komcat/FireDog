@@ -31,6 +31,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace firedog {
 
@@ -51,6 +52,12 @@ struct TowerLightConfig {
     std::string buzzerDevice;
     int         safetyBeeps       = 3;      // on a safety trip (0 = silent)
     double      downBuzzerSeconds = 3.0;    // steady, on a DOWN declaration (0 = silent)
+    // Outputs on `device` the tower no longer drives, switched OFF once when
+    // their device first comes up (and again after it reconnects). Ezi-IO keeps
+    // outputs latched across a restart, so a pin that was ON when the buzzer
+    // moved to `buzzer_device` would otherwise stay ON forever with nothing in
+    // FireDog left to clear it. A name the tower drives itself is skipped.
+    std::vector<std::string> forceOffAtStart = {"Tower_Buzzer"};
 };
 TowerLightConfig LoadTowerLightConfig();
 
@@ -104,6 +111,7 @@ private:
         bool        state = false;        // last value written
     };
     Out outG_, outY_, outR_, outB_;
+    std::vector<Out> forceOff_;   // cfg_.forceOffAtStart, resolved: written OFF while unknown
     int dev_ = -1;   // the lamps' device (index into the IO fleet)
 
     std::atomic<int> mode_{static_cast<int>(TowerMode::Off)};

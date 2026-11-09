@@ -35,7 +35,8 @@ nlohmann::json ToJson(const TowerLightConfig& c)
             {"buzzer", c.buzzer},
             {"buzzer_device", c.buzzerDevice},
             {"safety_beeps", c.safetyBeeps},
-            {"down_buzzer_seconds", c.downBuzzerSeconds}};
+            {"down_buzzer_seconds", c.downBuzzerSeconds},
+            {"force_off_at_start", c.forceOffAtStart}};
 }
 
 } // namespace
@@ -68,6 +69,13 @@ TowerLightConfig LoadTowerLightConfig()
         c.buzzerDevice      = j.value("buzzer_device", c.buzzerDevice);
         c.safetyBeeps       = j.value("safety_beeps", c.safetyBeeps);
         c.downBuzzerSeconds = j.value("down_buzzer_seconds", c.downBuzzerSeconds);
+        // Absent = the default list, so a file written before the key existed
+        // still clears the retired Tower_Buzzer. [] turns it off.
+        if (j.contains("force_off_at_start") && j["force_off_at_start"].is_array()) {
+            c.forceOffAtStart.clear();
+            for (const auto& v : j["force_off_at_start"])
+                if (v.is_string()) c.forceOffAtStart.push_back(v.get<std::string>());
+        }
     } catch (const std::exception& e) {
         FD_WARN("tower", "%s is malformed (%s) - using the defaults", path.c_str(), e.what());
         return TowerLightConfig{};
@@ -140,6 +148,17 @@ void TowerLight::Start(const TowerLightConfig& cfg)
     bind(outY_, dev_, cfg_.device, cfg_.yellow);
     bind(outR_, dev_, cfg_.device, cfg_.red);
     bind(outB_, buzzDev, buzzDevName, cfg_.buzzer);
+
+    // Retired outputs on the lamps' device: OFF once, never driven after.
+    forceOff_.clear();
+    for (const std::string& name : cfg_.forceOffAtStart) {
+        const bool driven = name == cfg_.green || name == cfg_.yellow || name == cfg_.red ||
+                            (buzzDev == dev_ && name == cfg_.buzzer);
+        if (name.empty() || driven) continue;
+        Out o;
+        bind(o, dev_, cfg_.device, name);
+        if (o.pin >= 0) forceOff_.push_back(o);
+    }
     worker_ = std::thread([this] { Run(); });
     FD_INFO("tower", "tower light on %s, buzzer %s", cfg_.device.c_str(),
             outB_.pin >= 0 ? outB_.label.c_str() : "(none)");
@@ -241,6 +260,15 @@ void TowerLight::Write(const Lamps& want)
     set(outY_, want.yellow);
     set(outR_, want.red);
     set(outB_, want.buzzer);
+    // Retired pins: written OFF while unknown (the first tick their device is
+    // up, and after a reconnect), then left alone - a manual toggle on the IO
+    // page holds, like the lamps'.
+    for (Out& o : forceOff_) {
+        if (o.known) continue;
+        set(o, false);
+        if (o.known) FD_INFO("tower", "%s forced OFF (no longer driven by the tower)",
+                             o.label.c_str());
+    }
     if (!ok) retryAt_ = std::chrono::steady_clock::now() + kRetryAfter;
 }
 

@@ -86,6 +86,29 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("aux_chart_compact")) s.auxChartCompact = j["aux_chart_compact"].get<bool>();
         if (j.contains("chart_scope"))   s.chartScope  = j["chart_scope"].get<bool>();
         if (j.contains("chart_smooth"))  s.chartSmooth = j["chart_smooth"].get<int>();
+        if (j.contains("chart_y_bands_on")) s.chartYBands = j["chart_y_bands_on"].get<bool>();
+        if (j.contains("chart_y_bands") && j["chart_y_bands"].is_array()) {
+            // A saved list replaces the defaults whole; malformed rows are
+            // dropped, and an empty result keeps the defaults.
+            std::vector<ChartYBand> bands;
+            for (const auto& v : j["chart_y_bands"]) {
+                if (bands.size() >= static_cast<std::size_t>(kMaxChartYBands)) break;
+                if (!v.is_object()) continue;
+                ChartYBand b;
+                b.loUa = v.value("lo_ua", 0.0);
+                b.hiUa = v.value("hi_ua", 0.0);
+                if (b.hiUa > b.loUa) bands.push_back(b);
+            }
+            if (!bands.empty()) s.chartYBandList = bands;
+        }
+        if (j.contains("chart_ch_default") && j["chart_ch_default"].is_number_integer()) {
+            const int ch = j["chart_ch_default"].get<int>();
+            s.chartChDefault = (ch >= 0 && ch <= 2) ? ch : 2;
+        }
+        if (j.contains("jog_reg_zoff_default") && j["jog_reg_zoff_default"].is_number())
+            s.jogRegZOffDefault = j["jog_reg_zoff_default"].get<double>();
+        if (j.contains("jog_reg_unverified_default"))
+            s.jogRegUnverDefault = j["jog_reg_unverified_default"].get<bool>();
         if (j.contains("run_prog_uid")) s.runProgUid = j["run_prog_uid"].get<std::string>();
         if (j.contains("run_slot"))     s.runSlot    = j["run_slot"].get<int>();
         if (j.contains("win_x")) s.winX = j["win_x"].get<int>();
@@ -224,6 +247,14 @@ bool UiSettings::Save(const std::string& path) const
     j["aux_chart_compact"]  = auxChartCompact;
     j["chart_scope"]   = chartScope;
     j["chart_smooth"]  = chartSmooth;
+    j["chart_y_bands_on"] = chartYBands;
+    nlohmann::json yb = nlohmann::json::array();
+    for (const ChartYBand& b : chartYBandList)
+        yb.push_back({{"lo_ua", b.loUa}, {"hi_ua", b.hiUa}});
+    j["chart_y_bands"] = yb;
+    j["chart_ch_default"]           = chartChDefault;
+    j["jog_reg_zoff_default"]       = jogRegZOffDefault;
+    j["jog_reg_unverified_default"] = jogRegUnverDefault;
     j["run_prog_uid"]  = runProgUid;
     j["run_slot"]      = runSlot;
     j["win_x"]   = winX;

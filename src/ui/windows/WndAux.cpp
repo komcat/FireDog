@@ -1302,7 +1302,9 @@ void App::DrawAuxJogKeys(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
 //
 // EACH CHANNEL IS SCALED TO ITS OWN RANGE. Sharing one Y range (as the full
 // chart does) flattens a pA dark channel against a nA signal into a line on
-// the floor; here the printed values carry the magnitudes.
+// the floor; here the printed values carry the magnitudes. That range is the
+// channel's fixed band (ChartBandLimits) when the Preferences turn them on and
+// the values sit inside one, else its own min/max.
 //
 // Decimated to one min/max pair per pixel column, in time order, so a spike
 // narrower than a pixel still reaches the screen instead of being stepped over.
@@ -1327,22 +1329,32 @@ void App::DrawAuxCompactChart(ImDrawList* dl, const ImVec2& p0, const ImVec2& si
 
     dl->PushClipRect(p0, p1, true);
     std::vector<ImVec2> pts;
-    auto trace = [&](const std::vector<float>& t, const std::vector<float>& v, ImU32 col) {
+    auto trace = [&](const std::vector<float>& t, const std::vector<float>& v, ImU32 col,
+                     ChartBandState& band) {
         const std::size_t n = (std::min)(t.size(), v.size());
-        if (n < 2) return;
+        if (n < 2) { band = ChartBandState{}; return; }
         // Visible window: [now - kChartWindowSec, now].
         const double tLo = chartClock_ - kChartWindowSec;
         std::size_t  i0  = 0;
         while (i0 < n && t[i0] < tLo) ++i0;
-        if (n - i0 < 2) return;
+        if (n - i0 < 2) { band = ChartBandState{}; return; }
 
         float lo = v[i0], hi = v[i0];
         for (std::size_t i = i0; i < n; ++i) { lo = (std::min)(lo, v[i]); hi = (std::max)(hi, v[i]); }
-        float span = hi - lo;
-        if (span <= 0.0f) span = (std::fabs(hi) > 0.0f ? std::fabs(hi) : 1e-12f) * 0.1f;   // flat: centre it
-        const float mid = 0.5f * (hi + lo);
-        lo = mid - span * 0.55f;   // 10 % headroom top and bottom
-        hi = mid + span * 0.55f;
+        // This channel's fixed band range (Preferences > Charts) when one
+        // applies - still per channel - else its own auto range.
+        double bLo = 0.0, bHi = 0.0;
+        if (ChartBandLimits(lo, hi, band, bLo, bHi)) {
+            const double pad = (bHi - bLo) * 0.05;
+            lo = static_cast<float>(bLo - pad);
+            hi = static_cast<float>(bHi + pad);
+        } else {
+            float span = hi - lo;
+            if (span <= 0.0f) span = (std::fabs(hi) > 0.0f ? std::fabs(hi) : 1e-12f) * 0.1f;   // flat: centre it
+            const float mid = 0.5f * (hi + lo);
+            lo = mid - span * 0.55f;   // 10 % headroom top and bottom
+            hi = mid + span * 0.55f;
+        }
 
         auto X = [&](float ts) { return t0.x + static_cast<float>((ts - tLo) / kChartWindowSec) * tw; };
         auto Y = [&](float vs) { return t1.y - (vs - lo) / (hi - lo) * th; };
@@ -1378,8 +1390,8 @@ void App::DrawAuxCompactChart(ImDrawList* dl, const ImVec2& p0, const ImVec2& si
     // Ch2 first so the main signal (Ch1) draws on top of it.
     // ChartV1/2: the display low-pass applies here too (one setting, chosen
     // on the full chart), so the compact trace is as quiet as the big one.
-    if (show2) trace(kT2_, ChartV2(), kCh2);
-    if (show1) trace(kT1_, ChartV1(), kCh1);
+    if (show2) trace(kT2_, ChartV2(), kCh2, chartBandSt_[2]);
+    if (show1) trace(kT1_, ChartV1(), kCh1, chartBandSt_[1]);
 
     // Live values, bottom-left, Ch1 lowest (the scope chart's order).
     float vy = p1.y - pad - fs;

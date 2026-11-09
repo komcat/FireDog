@@ -216,7 +216,7 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/Widgets.{h,cpp}` | shared leaf helpers + tables; sole `windows.h` user | 110 |
 | `src/ui/RoiFilter.{h,cpp}` | the live ROI filter (ROI square + binary) any camera view can carry: toolbar, cached texture, overlay | 290 |
 | `src/ui/pages/MainWindow.cpp` | menu bar, three-panel layout + splitters, page dispatch, safety-alert + exit modals, the watched-move banner (`StartWatchedMove` / `UpdateMoveWatch` / `DrawMoveStatusBar`) | 351 |
-| `src/ui/pages/PageOverview.cpp` | left panel (status + DUT block + Display), vision middle, right panel, product popups, shared `DrawLogPanel` | 245 |
+| `src/ui/pages/PageOverview.cpp` | left panel (status + Preferences button + DUT block), vision middle, right panel, product popups, shared `DrawLogPanel` | 245 |
 | `src/ui/pages/PageCamera.cpp` | Camera page + `UpdateCameraTexture` + `MainCameraFrame` + `ApplyCameraSetupNow` | 171 |
 | `src/ui/pages/PageKeithley.cpp` | Keithley page + the whole chart pipeline (two consumers: page and Aux) | 364 |
 | `src/ui/pages/PageCld.cpp` / `PagePsu.cpp` | CLD101x / UDP3305S pages | 179 / 160 |
