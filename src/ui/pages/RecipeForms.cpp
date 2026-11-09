@@ -324,6 +324,24 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             params[p.name] = v;
             changed = true;
         }
+        // A plain Int that counts MILLISECONDS (auto_ok_ms, timeout_ms,
+        // pre_delay_ms...): say how long that is on the row below, so 3000
+        // reads as 3 s at a glance. Display only - the step stores ms.
+        const std::size_t nl = p.name.size();
+        if (nl > 3 && p.name.compare(nl - 3, 3, "_ms") == 0) {
+            if (v <= 0 && p.name == "auto_ok_ms") {
+                ImGui::TextDisabled("= off - waits for the operator");
+            } else if (v < 60000) {
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%.3f", static_cast<double>(v) / 1000.0);
+                std::string sec = buf;               // 0.500 -> 0.5, 3.000 -> 3
+                while (!sec.empty() && sec.back() == '0') sec.pop_back();
+                if (!sec.empty() && sec.back() == '.') sec.pop_back();
+                ImGui::TextDisabled("= %s sec", sec.c_str());
+            } else {
+                ImGui::TextDisabled("= %s", FormatDurationMs(v).c_str());
+            }
+        }
         break;
     }
     case ParamType::DurationMs: {

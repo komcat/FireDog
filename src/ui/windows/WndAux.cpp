@@ -854,8 +854,19 @@ void App::DrawAuxVisionMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2&
 // Off-screen is the case that matters, and DrawWorldMark is what handles it:
 // a tip 8 mm to the left is not merely invisible - nothing on the picture
 // separates 'the gripper is over there' from 'the gripper is where I am
-// looking'. Same helper the pick window uses, so an edge arrow means the same
-// thing on both surfaces.
+// looking'. Here it is the LABEL-ONLY form (CameraMark::edgeDistance false):
+// a triangle on the edge in the device's colour (DeviceAccentColor - the badge
+// of its device picture) with its short label, no distance - the operator
+// wants which tool is that way, and the number crowded the picture.
+
+// The text beside a tool's tip mark: the device's Preferences entry ("HL",
+// "HR", up to kAuxTipLabelMax letters, "" = none), else its full name.
+std::string App::AuxTipLabel(const std::string& device) const
+{
+    const auto it = auxTipLabels_.find(device);
+    return it != auxTipLabels_.end() ? it->second : device;
+}
+
 float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
                                const ImVec2& imgO, const ImVec2& imgS, float bottomInset)
 {
@@ -936,10 +947,13 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
         const bool atFocus = haveGz && std::fabs(tip.z - gz) <= kTipAtFocusMM;
         if (haveGz) dz = tip.z - gz;
 
-        // The mark carries the device NAME only (with its edge arrow when off
-        // screen); the Z goes to the gauge (or a corner line), both of which
+        // The mark carries the device's short label only (Preferences >
+        // Graphic view: "HL" / "HR"), in the device's own colour; off screen it
+        // is a triangle on the edge pointing at the tip, with that label and no
+        // distance. The Z goes to the gauge (or a corner line), both of which
         // say 'reg' so a number there cannot read as an observation of the tool.
-        const std::string lbl = name;
+        const std::string lbl    = AuxTipLabel(name);
+        const ImU32       tipCol = DeviceAccentColor(name, kTipCol);
         const int side = haveGz ? GaugeSide(name, haveLeft, haveRight) : 0;
         if (side != 0) {
             GaugeTip& g = side < 0 ? gLeft : gRight;
@@ -968,8 +982,12 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
                 if (const auto iu = devPose.find("U"); iu != devPose.end())
                     devU = iu->second;
         }
+        // The footprint in the tip's colour, at the box alphas (fainter when
+        // the tip is away from the focused plane).
+        const ImU32 boxAlpha = (haveGz && !atFocus) ? (kTipBoxFarCol & IM_COL32_A_MASK)
+                                                     : (kTipBoxCol & IM_COL32_A_MASK);
         DrawWorldBox(dl, wv, tip.x, tip.y, 0.0, 0.0, r.toolWmm, r.toolLmm, devU,
-                     (haveGz && !atFocus) ? kTipBoxFarCol : kTipBoxCol);
+                     (tipCol & ~IM_COL32_A_MASK) | boxAlpha);
 
         // What the tool is HOLDING, where the profile says it sits: the object's
         // outline hung off tip + offset, so it rides along as the device moves.
@@ -992,7 +1010,8 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
         cm.wy    = tip.y;
         cm.have  = true;
         cm.label = lbl.c_str();
-        cm.col   = kTipCol;
+        cm.col   = tipCol;
+        cm.edgeDistance = false;   // which tool is that way, not how far
         DrawWorldMark(dl, wv, cm, 16.0f);
     }
 

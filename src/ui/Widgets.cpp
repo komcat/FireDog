@@ -19,6 +19,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
@@ -233,6 +234,15 @@ void DrawWorldBox(ImDrawList* dl, const WorldMarkView& wv, double ax, double ay,
     dl->PopClipRect();
 }
 
+unsigned int DeviceAccentColor(const std::string& device, unsigned int fallback)
+{
+    // Sampled from the badge circle of each shipped device picture, so the tip
+    // on the image and the picture on the Motion page are the same colour.
+    if (device == "hex-left")  return IM_COL32(88, 208, 160, 255);
+    if (device == "hex-right") return IM_COL32(252, 160, 80, 255);
+    return fallback;
+}
+
 void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
                    float crossLen)
 {
@@ -275,17 +285,27 @@ void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
     const ImVec2 tip(c.x + dx * t, c.y + dy * t);
 
     // A triangle pointing along the ray: tip, then two points swung off the
-    // perpendicular behind it.
-    const float aLen = 16.0f, aHalf = 9.0f;
+    // perpendicular behind it. The label-only form is larger and outlined: it
+    // carries no number, so the shape and colour are the whole message, and it
+    // must read over a bright frame.
+    const bool   bare  = !m.edgeDistance;
+    const float  aLen  = bare ? 24.0f : 16.0f;
+    const float  aHalf = bare ? 13.0f : 9.0f;
     const ImVec2 back(tip.x - dx * aLen, tip.y - dy * aLen);
     const ImVec2 p1(back.x - dy * aHalf, back.y + dx * aHalf);
     const ImVec2 p2(back.x + dy * aHalf, back.y - dx * aHalf);
     dl->AddTriangleFilled(tip, p1, p2, col);
+    if (bare) dl->AddTriangle(tip, p1, p2, IM_COL32(0, 0, 0, 200), 1.5f);
 
-    const double distMM = std::sqrt((m.wx - wv.gx) * (m.wx - wv.gx) +
-                                    (m.wy - wv.gy) * (m.wy - wv.gy));
     char lbl[64];
-    std::snprintf(lbl, sizeof(lbl), "%s %.2f mm", m.label ? m.label : "", distMM);
+    if (bare) {
+        if (!m.label || !m.label[0]) return;   // the triangle alone
+        std::snprintf(lbl, sizeof(lbl), "%s", m.label);
+    } else {
+        const double distMM = std::sqrt((m.wx - wv.gx) * (m.wx - wv.gx) +
+                                        (m.wy - wv.gy) * (m.wy - wv.gy));
+        std::snprintf(lbl, sizeof(lbl), "%s %.2f mm", m.label ? m.label : "", distMM);
+    }
     const ImVec2 ts = ImGui::CalcTextSize(lbl);
     // Label behind the arrow, then clamped into the box: near a corner the
     // "behind" position can still fall outside.
@@ -510,18 +530,19 @@ void DrawStepIconInline(const MarkIcon* icon)
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
 }
 
-bool IconButton(const MarkIcon* icon, const char* label, const ImVec2& size)
+bool IconButton(const MarkIcon* icon, const char* label, const ImVec2& size,
+                float iconScale)
 {
     if (!icon || !icon->tex) return ImGui::Button(label, size);
 
     const ImGuiStyle& st = ImGui::GetStyle();
-    const float  ih = ImGui::GetTextLineHeight();
+    const float  ih = ImGui::GetTextLineHeight() * (iconScale > 0.0f ? iconScale : 1.0f);
     const ImVec2 ts = ImGui::CalcTextSize(label);
     const float  contentW = ih + st.ItemInnerSpacing.x + ts.x;
 
     ImVec2 sz = size;
     if (sz.x <= 0.0f) sz.x = contentW + st.FramePadding.x * 2.0f;
-    if (sz.y <= 0.0f) sz.y = ImGui::GetFrameHeight();
+    if (sz.y <= 0.0f) sz.y = (std::max)(ImGui::GetFrameHeight(), ih + st.FramePadding.y * 2.0f);
 
     // An EMPTY-labelled button with both pieces drawn over it: Button() centres
     // ONE label and has no two-part form. The id still comes from `label`, so a

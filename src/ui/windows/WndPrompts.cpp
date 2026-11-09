@@ -430,6 +430,10 @@ void App::DrawManualAdjustWindow()
                 adjustStepIdx_ = i;
         }
     }
+    // Larger than the body text: the operator reads it from the jog position,
+    // a step back from the screen. Every fixed width below scales with it.
+    const float k = 1.4f;
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * k);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::Begin("Manual Adjust", nullptr,
@@ -443,9 +447,9 @@ void App::DrawManualAdjustWindow()
     // prevent - the small "Device:" line below was not enough from a step back.
     {
         const ImGuiStyle& style = ImGui::GetStyle();
-        const float boxW = 220.0f;
+        const float boxW = 220.0f * k;
         const float boxH = ImGui::GetTextLineHeight() * 3.0f + style.WindowPadding.y * 2.0f;
-        const float textW = 300.0f;
+        const float textW = 300.0f * k;
         ImGui::BeginGroup();
         if (req.teach) ImGui::TextColored(kTeachOrange, "TEACH  %s", req.positionName.c_str());
         ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + textW);
@@ -529,7 +533,7 @@ void App::DrawManualAdjustWindow()
         workflow_.SafetyAlertActive() && workflow_.SafetyAlert().critical;
     const bool canJog = dev && !safetyBlocked;
     const std::size_t udi = static_cast<std::size_t>(di < 0 ? 0 : di);
-    const ImVec2 jb(52.0f, 0.0f);
+    const ImVec2 jb(52.0f * k, 0.0f);
     ImGui::BeginDisabled(!canJog || !req.enableX);
     if (ImGui::Button("X-", jb)) workflow_.JogGlobal(udi, -1.0f, 0.0f, 0.0f, step);
     ImGui::SameLine();
@@ -569,21 +573,44 @@ void App::DrawManualAdjustWindow()
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kTeachOrangeHov);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kTeachOrangeAct);
         // 170 px: "Skip (keep saved)" clipped at the 140 the OK/Cancel pair use.
-        if (ImGui::Button("Save position", ImVec2(170.0f, 0.0f))) answer(true);
+        if (ImGui::Button("Save position", ImVec2(170.0f * k, 0.0f))) answer(true);
         ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Write the device's current pose into '%s'.",
                               req.positionName.c_str());
         ImGui::SameLine();
-        if (ImGui::Button("Skip (keep saved)", ImVec2(170.0f, 0.0f))) answer(false);
+        if (ImGui::Button("Skip (keep saved)", ImVec2(170.0f * k, 0.0f))) answer(false);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Leave '%s' as it is and continue.", req.positionName.c_str());
-    } else {
-        if (ImGui::Button("OK (Complete)", ImVec2(140.0f, 0.0f))) answer(true);
         ImGui::SameLine();
-        if (ImGui::Button("Cancel (Fail Step)", ImVec2(140.0f, 0.0f))) answer(false);
+        // Done teaching: this position and every one after it keep their
+        // saved values, and the run ends HERE - nothing else moves. It is the
+        // run's own stop (program queue + recipe engine; the stop releases
+        // this wait as a skip), NOT the global STOP: the device is parked at a
+        // prompt, so there is no motion to halt and no alarm to raise. A teach
+        // run writes no $run and no deck mark, so ending it early leaves no
+        // record behind - the strip shows it as Stopped.
+        if (ImGui::Button("Skip all (end teach)", ImVec2(200.0f * k, 0.0f))) {
+            FD_INFO("program", "teach: skip all at '%s' - remaining positions kept, run ended",
+                    req.positionName.c_str());
+            if (fromScript) {
+                orch_.lua.RequestStop();
+            } else {
+                orch_.programs.Stop();
+                orch_.recipe.RequestStop();
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Keep '%s' and every remaining position as saved,\n"
+                              "and end the teach run now. Nothing else moves.",
+                              req.positionName.c_str());
+    } else {
+        if (ImGui::Button("OK (Complete)", ImVec2(140.0f * k, 0.0f))) answer(true);
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel (Fail Step)", ImVec2(140.0f * k, 0.0f))) answer(false);
     }
     ImGui::End();
+    ImGui::PopFont();
 }
 
 // The align_station crosshair pick: the engine worker blocks in

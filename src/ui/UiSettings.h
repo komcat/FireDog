@@ -68,8 +68,15 @@ inline std::vector<ChartYBand> DefaultChartYBands()
     return {{-1.0, 10.0}, {10.0, 1000.0}, {1000.0, 10000.0}};
 }
 
+// The Aux view's tool-tip labels: short, because they sit on the picture.
+inline constexpr int kAuxTipLabelMax = 10;
+inline std::map<std::string, std::string> DefaultAuxTipLabels()
+{
+    return {{"hex-left", "HL"}, {"hex-right", "HR"}};
+}
+
 struct UiSettings {
-    int   fontIndex  = 0;      // index into App's kFonts table
+    int   fontIndex  = 0;     // index into App's kFonts table
     float fontSize   = 26.0f;   // UI font size in px
     int   themeIndex = 0;       // index into Theme's theme list
 
@@ -193,6 +200,12 @@ struct UiSettings {
     // Charts): 0 = Ch1, 1 = Ch2, 2 = both. The chart's own radio buttons are
     // not kept - every start comes back to this.
     int  chartChDefault = 2;
+
+    // Aux view: the text drawn beside each registered tool's tip mark (and its
+    // off-picture triangle), by device NAME, at most kAuxTipLabelMax letters
+    // (Preferences > Graphic view). "" = the mark alone. A device not listed
+    // shows its full name.
+    std::map<std::string, std::string> auxTipLabels = DefaultAuxTipLabels();
 
     // Jog window "Tool -> cam": what its Z off field and unverified checkbox
     // start at (Preferences > Motion). The fields themselves are not kept -

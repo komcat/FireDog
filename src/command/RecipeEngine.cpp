@@ -60,10 +60,11 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
     // does not refuse the run, while the movers' devices, positions and maps
     // are still checked - and again after inlining, for the sub-recipe bodies.
     Recipe run = recipe;
+    const std::set<std::string>* teachOnly = opts.teachPick ? &opts.teachOnly : nullptr;
     if (opts.teach) {
-        const std::size_t movers = MakeTeachRecipe(run, reg_);
-        FD_INFO("recipe", "teach run: %zu move(s) to teach in '%s'", movers,
-                run.name.c_str());
+        const std::size_t movers = MakeTeachRecipe(run, reg_, teachOnly);
+        FD_INFO("recipe", "teach run: %zu move(s) to teach in '%s'%s", movers,
+                run.name.c_str(), teachOnly ? " (picked positions only)" : "");
     }
     // A dry run is the same kind of rewrite (command/DryRun.h): motion, IO and
     // pneumatics only, so a meter left off behind a skipped step is no reason
@@ -95,7 +96,7 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
         if (err) *err = inlineErr;
         return false;
     }
-    if (opts.teach) MakeTeachRecipe(run, reg_);   // the inlined bodies, same rule
+    if (opts.teach) MakeTeachRecipe(run, reg_, teachOnly);   // the inlined bodies, same rule
     if (opts.dryRun) MakeDryRunRecipe(run, reg_);
 
     // The on-fail recipe is resolved, validated (devices Connected) and

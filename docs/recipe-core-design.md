@@ -471,12 +471,19 @@ It is built from two small pieces, and the engine knows nothing about it:
   `move_to_position_offset`, `move_to_position_approach`, `move_path`;
   `MotionWaits.h` `TeachParam`). When set, the command arrives as usual, then
   blocks on the Manual Adjust window (`AdjustRequest::teach`), whose buttons
-  read **Save position / Skip (keep saved)**. Save reads the live pose (fast
+  read **Save position / Skip (keep saved) / Skip all (end teach)**. Save reads the live pose (fast
   poll + one settle slice, the `save_position` recipe) and writes it INTO the
   position the step drove to, **by uid** (`ExecutionContext::RecordPositionByUid`
   → the run's own copy, so a following `move_path` start check sees it → the
   Workflow teach queue → `ProductSession::MergeTaughtPositions`, uid first).
-  Skip writes nothing and the run continues; Stop is the only abort. An offset
+  Skip writes nothing and the run continues. **Skip all** writes nothing and
+  ends the run there - the run's own stop (program queue + engine, which
+  releases the wait as a skip), not the global STOP: the device is parked at a
+  prompt, so there is no motion to halt, and a teach run leaves no `$run` or
+  deck mark to tidy. It is the strip's Stop placed where the operator's hand
+  already is, and the strip shows it as Stopped. The window is drawn at 1.4×
+  the body font (fixed widths scale with it): it is read from the jog position,
+  a step back from the screen. An offset
   move saves the BASE position (live minus offset); `move_path` teaches only its
   `to`. The param is ordinary: a hand-written recipe may set it.
 - **`MakeTeachRecipe` (`command/TeachMode.h`)**, applied by `RecipeEngine::Start`
@@ -497,6 +504,24 @@ the deck cycle (`ProgramRunner::Status::teach` outlives the run so the
 going-idle frame can tell). The flag travels App → `StartOpts` → engine; the
 runner carries its own copy and re-applies it to every queue item, because it
 goes idle between items and the toggle is disabled only while `orch_.Busy()`.
+
+**Choosing the positions first.** The deck's *Teach run* does not move: it
+opens the **Teach positions** window (`ui/windows/WndTeachPick.cpp`), which
+lists every position the run would stop at, in run order, one row per
+device + position with how many times it is visited, all ticked. The list
+comes from `ListTeachTargets` (`command/TeachMode.h`) - the same transform,
+applied to a copy with its sub-recipes inlined - so it cannot disagree with the
+run. It follows the deck selection while it is open. With every row ticked the
+run is the plain teach run. With only some, `StartOpts::teachPick` +
+`teachOnly` (keys from `TeachKey`) reach `MakeTeachRecipe`, which gives an
+unticked mover `teach = false`: it still MOVES, without opening Manual Adjust,
+so the machine follows the program to the next ticked position exactly as
+written. A ticked position stops at every visit. `App::StartDeckRun` drops the
+queue items after the last recipe holding a ticked position; that recipe runs
+to its end (its later moves are usually the retreat to safe). The pick is not
+a new mode: an unticked mover is simply a mover with `teach` false - and every
+non-mover is still disabled, so the unticked moves run back to back with no IO
+or pneumatics between them, as they would have with Skip pressed at each.
 
 ## 7. Minimal test hook (not the editor)
 

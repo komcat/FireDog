@@ -187,6 +187,7 @@ struct AppPrefs {
     bool  chartYBands = true;
     std::vector<ChartYBand> chartYBandList;
     int   chartChDefault = 2;    // chart channel(s) at startup: 0 Ch1, 1 Ch2, 2 both
+    std::map<std::string, std::string> auxTipLabels;   // Aux tool-tip text by device
     double jogRegZOff  = 0.0;    // Jog "Tool -> cam" defaults
     bool   jogRegUnver = true;
 };
@@ -736,7 +737,10 @@ private:
     void SortDataRows();              // by dataSortCol_/dataSortAsc_ (header click, reload)
     // Run page (View menu, full-page) — programs = slots of recipes. R1.
     void DrawRunPanel();              // deck | execution + Scan band + log | DUT
-    void StartDeckRun(RunScope scope);   // granularity follows the deck selection
+    // Granularity follows the deck selection. `teachOnly` (a teach run from the
+    // Teach positions window): stop only at those positions (TeachKey), and
+    // drop the queue items after the last one that holds any of them.
+    void StartDeckRun(RunScope scope, const std::set<std::string>* teachOnly = nullptr);
     void SelectDeckProgram(int idx);     // load a program into the deck (slot 0)
     void SelectDeckSlot(int slot);       // show one slot; drops the node selection
     void RememberDeckSelection();        // persist program uid + slot to UiSettings
@@ -991,6 +995,11 @@ private:
     void DrawKeithleyChart(const ImVec2& size);
     int                       chartCh_ = 2;   // 0 ch1, 1 ch2, 2 both
     int                       chartChDef_ = 2;   // ...what it starts at (Preferences)
+    // Aux view: the text beside each registered tool's tip mark, by device
+    // (UiSettings aux_tip_labels, Preferences > Graphic view). AuxTipLabel
+    // gives the device's entry, else its full name; "" = the mark alone.
+    std::map<std::string, std::string> auxTipLabels_ = DefaultAuxTipLabels();
+    std::string AuxTipLabel(const std::string& device) const;
     bool                      chartScope_ = true;  // scope look vs classic axes
     std::vector<float>        kT1_, kV1_, kT2_, kV2_;
     std::vector<float>        kX1_, kX2_;      // X shifted to relative time (t - now)
@@ -1995,6 +2004,27 @@ private:
     // The ONE place a launch's StartOpts pick up the toggle; every Run/Execute
     // surface builds its opts from this, or one of them forgets the flag.
     RecipeEngine::StartOpts RecipeStartOpts() const;
+    // Teach positions window (WndTeachPick.cpp): the deck's Teach run opens it
+    // instead of starting, lists every position the run would stop at, and
+    // starts with the ticked ones. Runtime only, like teachMode_. The rows
+    // follow the deck selection (teachPickProg_/Slot_/Node_/Scope_ say which
+    // one they were built for) and keep their ticks across a rebuild by key.
+    struct TeachPickRow {
+        std::string key, device, uid, name;
+        int  stops   = 0;      // how many times the run arrives there
+        bool checked = true;
+    };
+    bool                      showTeachPick_  = false;
+    int                       teachPickProg_  = -1;
+    int                       teachPickSlot_  = -1;
+    std::string               teachPickNode_;
+    RunScope                  teachPickScope_ = RunScope::Slot;
+    std::string               teachPickLabel_;
+    std::vector<TeachPickRow> teachPickRows_;
+    std::string               teachPickErr_;
+    void OpenTeachPick();
+    void RebuildTeachPick();
+    void DrawTeachPickWindow();
     // Per-node outcome of the current part's cycle, cleared ONLY by running the
     // start state (App::StartDeckRun). Not in the document and not in
     // UiSettings — see NodeMark above.

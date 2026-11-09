@@ -371,9 +371,14 @@ line and on the page.
 ### Seeing it on the picture
 
 The Aux window's **Grippers** toggle draws every registered tip on the live image,
-projected through the gantry pose exactly as the E marks are, with an edge arrow
-and a distance when the tip is outside the frame and `dZ` against the plane in
-focus — because two tips 3 mm apart in Z land on the same pixel. It is a readout
+projected through the gantry pose exactly as the E marks are, in the device's own
+colour (`DeviceAccentColor`, the badge of its device picture: hex-left teal-green,
+hex-right orange) and labelled with a short name from Preferences > Graphic view
+(`aux_tip_labels`, default HL / HR, at most 10 letters, empty = the mark alone).
+A tip outside the frame is an outlined triangle on the edge pointing at it, with
+that label and no distance (`CameraMark::edgeDistance = false`; a nominal keeps
+its "name N.NN mm" arrow). `dZ` against the plane in focus goes on the Z gauge —
+because two tips 3 mm apart in Z land on the same pixel. It is a readout
 and nothing acts on it, but it inherits both of the record's refusals verbatim: a
 tip that cannot be predicted (no registration, not connected, rotated away from
 where it was taught) draws **no position**, and a tip registered against a

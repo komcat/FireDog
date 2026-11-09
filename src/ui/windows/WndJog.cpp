@@ -58,7 +58,7 @@ const SavedPos* FindPosByUid(const std::vector<SavedPos>* list, const std::strin
         if (p.uid == uid) return &p;
     return nullptr;
 }
-// DrawBigLabel (the step-size and device-name readouts below) lives in
+// DrawBigLabel (the device-name banner and the step-size readout) lives in
 // ui/Widgets now: the Manual Adjust window draws the same device box.
 } // namespace
 
@@ -77,6 +77,26 @@ void App::DrawJogWindow()
         // pad, IO = the quick-output rows, PSU = the supply fleet's channels.
         // BeginTabItem pushes the tab's ID, so the Arm checkbox and STOP button
         // repeated on the Pos tab do not collide with the Jog tab's.
+        //
+        // The device the keys drive, big, at the very TOP - above the tabs, so
+        // it is the first thing read and does not scroll away with the pad on
+        // a short window. Pressing W on the wrong hexapod is the mistake it
+        // exists to prevent. Amber while the jog is armed, like the arm text.
+        if (hardware_.MotionCount() > 0) {
+            const std::size_t n   = hardware_.MotionCount();
+            const std::size_t sel = (selectedMotion_ >= 0 &&
+                                     static_cast<std::size_t>(selectedMotion_) < n)
+                                        ? static_cast<std::size_t>(selectedMotion_) : 0;
+            const float h = ImGui::GetTextLineHeight() * 2.4f;
+            ImGui::BeginChild("jogdevbanner", ImVec2(0.0f, h), ImGuiChildFlags_Borders,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            const ImVec2 pad = ImGui::GetStyle().WindowPadding;
+            DrawBigLabel(hardware_.MotionName(sel).c_str(),
+                         ImVec2(ImGui::GetContentRegionAvail().x, h - pad.y * 2.0f),
+                         jogArmed_ ? ImVec4(1.0f, 0.75f, 0.20f, 1.0f)
+                                   : ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            ImGui::EndChild();
+        }
         if (ImGui::BeginTabBar("JogTabs")) {
             if (ImGui::BeginTabItem("Jog")) {
                 DrawJogPanel();
@@ -1067,10 +1087,10 @@ void App::DrawJogPanel()
     ImGui::EndGroup();
     ImGui::EndDisabled();
 
-    // The device those keys drive, big, in the space beside the cluster: the
-    // list above scrolls out of view on a short window, and pressing W on the
-    // wrong hexapod is the mistake this readout exists to prevent. It sits
-    // outside the arm gate so it stays legible while disarmed.
+    // The box beside the cluster: hold + Upd + the taught position the device
+    // is on, and the last Upd's status. The device NAME it used to carry big
+    // is now the banner at the top of the window (DrawJogWindow). Outside the
+    // arm gate so it stays usable while disarmed.
     {
         const float nameH = ImGui::GetItemRectSize().y;
         ImGui::SameLine();
@@ -1078,23 +1098,12 @@ void App::DrawJogPanel()
         if (nameW > 40.0f) {
             ImGui::BeginChild("jogdevname", ImVec2(nameW, nameH), ImGuiChildFlags_Borders,
                               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            const ImVec2 pad = ImGui::GetStyle().WindowPadding;
-            // Small row above the name: hold + Upd + the taught position the
-            // device is on. The status of the last Upd takes a line under the
-            // name while there is one; the big label gets what is left.
             DrawJogPositionRow(*dev, axes);   // may stage jogUpd_; the modal is below
-            const float lineH  = ImGui::GetTextLineHeightWithSpacing();
-            const float usedH  = ImGui::GetCursorPosY() - pad.y;
             // The status is a brief notice, not a readout: it shows for a few
-            // seconds after Update and then gives the line back to the name.
-            // The log keeps the permanent record.
+            // seconds after Update and then leaves. The log keeps the
+            // permanent record.
             const double left   = jogPosStatusUntil_ - ImGui::GetTime();
             const bool  showSt  = !jogPosStatus_.empty() && left > 0.0;
-            const float statH   = showSt ? lineH : 0.0f;
-            const float bigH    = nameH - pad.y * 2.0f - usedH - statH;
-            if (bigH > ImGui::GetTextLineHeight())
-                DrawBigLabel(dev->Name().c_str(), ImVec2(nameW - pad.x * 2.0f, bigH),
-                             jogArmed_ ? ImVec4(1.0f, 0.75f, 0.20f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_Text));
             if (showSt) {
                 // Fades over its last second so it leaves instead of blinking out.
                 const float a = static_cast<float>(left < 1.0 ? left : 1.0);

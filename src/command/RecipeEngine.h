@@ -23,6 +23,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -68,6 +69,11 @@ public:
         // saved-position moves, each followed by a fine-tune-and-Save prompt.
         // Not a run of the part: no $run DUT event is written.
         bool teach = false;
+        // Teach PICK (only with teach): when set, Manual Adjust opens only at
+        // the positions in teachOnly (TeachKey); every other mover still
+        // moves, without stopping. Off = every mover stops, as before.
+        bool                  teachPick = false;
+        std::set<std::string> teachOnly;
         // Dry run: the recipe is rewritten (command/DryRun.h) to its motion,
         // IO and pneumatic steps. Not a run of the part: no $run DUT event.
         bool dryRun = false;

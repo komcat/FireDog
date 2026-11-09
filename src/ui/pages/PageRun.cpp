@@ -18,6 +18,7 @@
 
 #include "ui/Widgets.h"
 #include "ui/Theme.h"   // kTeachOrange
+#include "command/TeachMode.h"   // ListTeachTargets / TeachKey (picked teach runs)
 #include "core/DataBus.h"
 #include "core/DutSession.h"
 #include "core/Log.h"
@@ -344,7 +345,7 @@ RecipeEngine::StartOpts App::RecipeStartOpts() const
     return opts;
 }
 
-void App::StartDeckRun(RunScope scope)
+void App::StartDeckRun(RunScope scope, const std::set<std::string>* teachOnly)
 {
     runStartErr_.clear();
     if (progSel_ < 0 || progSel_ >= static_cast<int>(session_.Programs().size())) {
@@ -356,6 +357,26 @@ void App::StartDeckRun(RunScope scope)
     RunQueue q = BuildRunQueue(prog, scope, deckSlot_, deckNode_,
                                session_.Recipes(), &runStartErr_);
     if (q.items.empty()) return;   // reason already in runStartErr_
+
+    // A teach run that stops at PICKED positions only: nothing after the last
+    // recipe holding one of them is worth driving through, so the queue ends
+    // there. That recipe itself runs to its end - its later moves are usually
+    // the retreat to safe, and a run that stopped mid-recipe would leave the
+    // device wherever the taught move put it.
+    if (teachMode_ && teachOnly) {
+        std::size_t last = q.items.size();
+        for (std::size_t i = q.items.size(); i-- > 0 && last == q.items.size();) {
+            for (const TeachTarget& t :
+                 ListTeachTargets(q.items[i].recipe, orch_.registry, session_.Recipes())) {
+                if (teachOnly->count(TeachKey(t.device, t.uid))) { last = i; break; }
+            }
+        }
+        if (last == q.items.size()) {
+            runStartErr_ = "none of the checked positions is in this run";
+            return;
+        }
+        q.items.erase(q.items.begin() + static_cast<std::ptrdiff_t>(last) + 1, q.items.end());
+    }
 
     // Every deck run starts with no FRESH taught frame. A frame from an earlier
     // run was measured against a part that may since have been handled, and
@@ -399,8 +420,13 @@ void App::StartDeckRun(RunScope scope)
     }
 
     RecipeEngine::Env env = session_.MakeRecipeEnv();
+    RecipeEngine::StartOpts opts = RecipeStartOpts();
+    if (opts.teach && teachOnly) {
+        opts.teachPick = true;
+        opts.teachOnly = *teachOnly;
+    }
     if (!orch_.programs.Start(q.kind, q.label, prog.uid, std::move(q.items),
-                              std::move(env), &runStartErr_, RecipeStartOpts())) {
+                              std::move(env), &runStartErr_, std::move(opts))) {
         FD_WARN("program", "run rejected: %s", runStartErr_.c_str());
         return;
     }
@@ -1208,12 +1234,16 @@ void App::DrawRunPanel()
         // teaches positions instead of running the part.
         if (IconButton(UiIcon(teachMode_ ? "run_teach" : "run_execute"),
                        teachMode_ ? "Teach run" : "Execute",
-                       ImVec2(260.0f, stripBtnH)))
-            StartDeckRun(onNode ? RunScope::Node : RunScope::Slot);
+                       ImVec2(260.0f, stripBtnH))) {
+            // Teach: nothing moves yet - first the list of positions the run
+            // would stop at, to tick all or some (WndTeachPick.cpp).
+            if (teachMode_) OpenTeachPick();
+            else            StartDeckRun(onNode ? RunScope::Node : RunScope::Slot);
+        }
         if (ImGui::IsItemHovered()) {
             if (teachMode_)
-                ImGui::SetTooltip("TEACH: run only the moves to saved positions,\n"
-                                  "and after each one fine-tune and Save that position.");
+                ImGui::SetTooltip("TEACH: choose which saved positions to stop at, then\n"
+                                  "run the moves and fine-tune and Save each chosen one.");
             else
                 ImGui::SetTooltip(onNode ? "Run the selected item (a folder runs its loops)"
                                          : "Run every recipe in this slot");
@@ -1382,10 +1412,15 @@ void App::DrawRunPanel()
             ImGui::PopFont();   // the deck's big text, pushed above
             const float gap  = style.ItemSpacing.x;
             const float rowW = ImGui::GetContentRegionAvail().x;
-            const float btnH = ImGui::GetFrameHeight() * 1.6f;
+            // The icons are drawn at twice the text height; the row grows to
+            // hold them if the font is small enough that 1.6 frames would not.
+            constexpr float kIconScale = 2.0f;
+            const float iconH = ImGui::GetTextLineHeight() * kIconScale;
+            const float btnH = (std::max)(ImGui::GetFrameHeight() * 1.6f,
+                                          iconH + style.FramePadding.y * 2.0f);
             const float btnW = (showTeach && showInspect) ? (rowW - gap) * 0.5f : rowW;
             const auto fits = [&](const char* label) {
-                return ImGui::GetTextLineHeight() + style.ItemInnerSpacing.x +
+                return iconH + style.ItemInnerSpacing.x +
                            ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.0f <=
                        btnW;
             };
@@ -1405,7 +1440,7 @@ void App::DrawRunPanel()
                     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kTeachOrangeAct);
                 }
                 if (IconButton(UiIcon("run_teach"), wasOn ? "TEACH ON" : "Teach",
-                               ImVec2(btnW, btnH))) {
+                               ImVec2(btnW, btnH), kIconScale)) {
                     teachMode_ = !teachMode_;
                     FD_INFO("program", "teach mode %s", teachMode_ ? "ON" : "off");
                 }
@@ -1429,7 +1464,7 @@ void App::DrawRunPanel()
                                           ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
                 if (IconButton(UiIcon("run_inspect"),
                                fits("Inspect Motion") ? "Inspect Motion" : "Inspect",
-                               ImVec2(btnW, btnH)))
+                               ImVec2(btnW, btnH), kIconScale))
                     showMotionInspect_ = !showMotionInspect_;
                 if (wasOpen) ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered())
@@ -1441,6 +1476,12 @@ void App::DrawRunPanel()
         }
     }
     ImGui::Separator();
+
+    // Everything above (DUT, slot combo, Teach / Inspect) stays PUT; only the
+    // tree below scrolls, in its own child filling the rest of the column. The
+    // DUT and the mode buttons are what an operator reaches for between parts,
+    // and on a long slot they used to scroll away with the list.
+    ImGui::BeginChild("runDeckTree", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
 
     // The deck is READ-ONLY. Every edit — add, delete, move, folder, loop
     // count — lives in the Program Organizer window, because the two are
@@ -1498,8 +1539,9 @@ void App::DrawRunPanel()
             }
         }
     }
+    ImGui::EndChild();   // runDeckTree
     ImGui::PopFont();
-    ImGui::EndChild();
+    ImGui::EndChild();   // runDeck
 
     // Drag either splitter to re-proportion the row; both persist on the drag
     // END, like every other splitter in the app.

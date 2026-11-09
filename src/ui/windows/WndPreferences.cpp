@@ -32,7 +32,8 @@ namespace firedog {
 namespace {
 // The category tree. A group is a non-selectable parent; a page is a leaf with
 // the id prefsCat_ holds. Add a page: a row here and a case in the switch.
-enum PrefsPage { kPrefDisplay = 0, kPrefChartCurrent = 1, kPrefMotionRegMove = 2 };
+enum PrefsPage { kPrefDisplay = 0, kPrefChartCurrent = 1, kPrefMotionRegMove = 2,
+                 kPrefToolMarkers = 3 };
 
 struct PrefsGroup {
     const char* name;
@@ -46,6 +47,7 @@ const std::vector<PrefsGroup>& PrefsTree()
         {"Environment", {{"Display", kPrefDisplay, "Environment > Display"}}},
         {"Charts",      {{"Current (SMU)", kPrefChartCurrent, "Charts > Current (SMU)"}}},
         {"Motion",      {{"Tool -> cam", kPrefMotionRegMove, "Motion > Tool -> cam"}}},
+        {"Graphic view", {{"Tool markers", kPrefToolMarkers, "Graphic view > Tool markers"}}},
     };
     return tree;
 }
@@ -81,6 +83,7 @@ AppPrefs App::CurrentPrefs() const
     p.chartYBands    = chartYBands_;
     p.chartYBandList = chartYBandList_;
     p.chartChDefault = chartChDef_;
+    p.auxTipLabels   = auxTipLabels_;
     p.jogRegZOff     = jogRegZOffDef_;
     p.jogRegUnver    = jogRegUnverDef_;
     return p;
@@ -123,6 +126,7 @@ void App::ApplyPreferences()
     }
     // A changed default also resets the Jog window's live field now - the
     // operator applied it to see it, not to wait for a restart.
+    if (e.auxTipLabels != b.auxTipLabels) auxTipLabels_ = e.auxTipLabels;
     if (e.chartChDefault != b.chartChDefault) {
         chartChDef_ = e.chartChDefault;
         chartCh_    = chartChDef_;   // show it now, as the Jog defaults below do
@@ -300,6 +304,80 @@ void App::DrawPreferencesWindow()
                             "read the raw stream.");
         break;
     }
+    case kPrefToolMarkers: {
+        ImGui::TextWrapped("The text drawn beside each registered tool's tip on the Aux "
+                           "view, and beside the triangle on the picture's edge that points "
+                           "to a tip out of view. Up to %d letters; empty = the mark alone. "
+                           "The colour is the device's own (its device picture).",
+                           kAuxTipLabelMax);
+        ImGui::Spacing();
+
+        // A row per registered tool, plus any device already holding a label
+        // (a registration not loaded right now keeps its entry).
+        std::vector<std::string> devs;
+        for (const auto& kv : workflow_.DeviceRegs())
+            if (kv.second.valid) devs.push_back(kv.first);
+        for (const auto& kv : e.auxTipLabels)
+            if (std::find(devs.begin(), devs.end(), kv.first) == devs.end())
+                devs.push_back(kv.first);
+        std::sort(devs.begin(), devs.end());
+
+        if (devs.empty()) {
+            ImGui::TextDisabled("No registered tools.");
+        } else if (ImGui::BeginTable("##prefTipLbl", 3,
+                                     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                     ImGuiTableFlags_SizingFixedFit)) {
+            ImGui::TableSetupColumn("Device");
+            ImGui::TableSetupColumn("Label");
+            ImGui::TableSetupColumn("Shown as", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+            for (const std::string& d : devs) {
+                ImGui::PushID(d.c_str());
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(d.c_str());
+
+                ImGui::TableNextColumn();
+                // An absent entry shows (and would draw) the full name; typing
+                // creates the entry, clearing it to "" leaves the mark alone.
+                const auto it  = e.auxTipLabels.find(d);
+                const std::string cur = it != e.auxTipLabels.end() ? it->second : d;
+                char buf[kAuxTipLabelMax + 1] = {};
+                std::snprintf(buf, sizeof(buf), "%s", cur.c_str());
+                ImGui::SetNextItemWidth(ImGui::CalcTextSize("MMMMMMMMMM").x +
+                                        st.FramePadding.x * 2.0f);
+                if (ImGui::InputText("##lbl", buf, sizeof(buf)))
+                    e.auxTipLabels[d] = buf;
+
+                ImGui::TableNextColumn();
+                // A preview of the edge marker: the triangle in the device's
+                // colour, pointing left, then the label.
+                const ImU32  col = DeviceAccentColor(d, IM_COL32(255, 190, 70, 255));
+                const float  h   = ImGui::GetFrameHeight();
+                const ImVec2 p   = ImGui::GetCursorScreenPos();
+                ImDrawList*  dl  = ImGui::GetWindowDrawList();
+                const ImVec2 tip(p.x + 2.0f, p.y + h * 0.5f);
+                const ImVec2 b1(p.x + h * 0.8f, p.y + h * 0.15f);
+                const ImVec2 b2(p.x + h * 0.8f, p.y + h * 0.85f);
+                dl->AddTriangleFilled(tip, b1, b2, col);
+                dl->AddTriangle(tip, b1, b2, IM_COL32(0, 0, 0, 200), 1.5f);
+                ImGui::Dummy(ImVec2(h, h));
+                ImGui::SameLine();
+                ImGui::AlignTextToFramePadding();
+                const std::string shown = e.auxTipLabels.count(d) ? e.auxTipLabels[d] : d;
+                if (shown.empty()) ImGui::TextDisabled("(mark only)");
+                else ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(col), "%s", shown.c_str());
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        ImGui::Spacing();
+        if (ImGui::Button("Reset to defaults##tipLbl")) e.auxTipLabels = DefaultAuxTipLabels();
+        ImGui::SameLine();
+        ImGui::TextDisabled("HL = hex-left, HR = hex-right");
+        break;
+    }
     case kPrefMotionRegMove: {
         ImGui::TextWrapped("What the Jog window's Tool -> cam row (a registered tool "
                            "sent to the point the camera looks at) starts with. Its "
@@ -345,6 +423,7 @@ void App::DrawPreferencesWindow()
                                 e.chartYBands == prefsBase_.chartYBands &&
                                 e.chartYBandList == prefsBase_.chartYBandList &&
                                 e.chartChDefault == prefsBase_.chartChDefault &&
+                                e.auxTipLabels == prefsBase_.auxTipLabels &&
                                 e.jogRegZOff == prefsBase_.jogRegZOff &&
                                 e.jogRegUnver == prefsBase_.jogRegUnver);
     ImGui::Spacing();

@@ -161,7 +161,17 @@ struct CameraMark {
     // 0 = the default "latched mark" colour. Set to distinguish a reference
     // point (a nominal, say) from the marks being placed.
     unsigned int col = 0;
+    // Off-screen form. true = the edge arrow labelled "<label> <dist> mm" (a
+    // nominal: how far is the point of the arrow). false = a larger outlined
+    // triangle with the label alone, or nothing when the label is empty (the
+    // Aux view's tool tips: WHICH tool is that way, in its own colour).
+    bool edgeDistance = true;
 };
+
+// The accent colour a motion device is drawn in on the image - the badge colour
+// of its device picture (assets/devices/<name>.png): hex-left teal-green,
+// hex-right orange. `fallback` for any other device.
+unsigned int DeviceAccentColor(const std::string& device, unsigned int fallback);
 
 // Everything needed to put a MACHINE-mm point on screen: the view, the box it
 // is clipped to, and the pose + calibration the projection goes through.
@@ -273,9 +283,10 @@ void DrawStepIconInline(const MarkIcon* icon);
 // nothing and only make the control wider.
 //
 // `label` must be a PLAIN label (no `##` id suffix): it is both the button's id
-// and the text drawn on it.
+// and the text drawn on it. `iconScale` sizes the icon in text-line heights
+// (1 = the text's height); the label stays the body size beside it.
 bool IconButton(const MarkIcon* icon, const char* label,
-                const ImVec2& size = ImVec2(0.0f, 0.0f));
+                const ImVec2& size = ImVec2(0.0f, 0.0f), float iconScale = 1.0f);
 bool IconSmallButton(const MarkIcon* icon, const char* label);
 
 // A square TOOL button: one icon centred in a frame-height square, its meaning

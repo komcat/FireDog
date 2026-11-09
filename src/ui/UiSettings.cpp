@@ -105,6 +105,14 @@ UiSettings UiSettings::Load(const std::string& path)
             const int ch = j["chart_ch_default"].get<int>();
             s.chartChDefault = (ch >= 0 && ch <= 2) ? ch : 2;
         }
+        if (j.contains("aux_tip_labels") && j["aux_tip_labels"].is_object()) {
+            // Replaces the defaults whole, so a label cleared to "" stays clear.
+            s.auxTipLabels.clear();
+            for (auto it = j["aux_tip_labels"].begin(); it != j["aux_tip_labels"].end(); ++it)
+                if (it.value().is_string())
+                    s.auxTipLabels[it.key()] =
+                        it.value().get<std::string>().substr(0, kAuxTipLabelMax);
+        }
         if (j.contains("jog_reg_zoff_default") && j["jog_reg_zoff_default"].is_number())
             s.jogRegZOffDefault = j["jog_reg_zoff_default"].get<double>();
         if (j.contains("jog_reg_unverified_default"))
@@ -253,6 +261,9 @@ bool UiSettings::Save(const std::string& path) const
         yb.push_back({{"lo_ua", b.loUa}, {"hi_ua", b.hiUa}});
     j["chart_y_bands"] = yb;
     j["chart_ch_default"]           = chartChDefault;
+    nlohmann::json tl = nlohmann::json::object();
+    for (const auto& kv : auxTipLabels) tl[kv.first] = kv.second;
+    j["aux_tip_labels"] = tl;
     j["jog_reg_zoff_default"]       = jogRegZOffDefault;
     j["jog_reg_unverified_default"] = jogRegUnverDefault;
     j["run_prog_uid"]  = runProgUid;

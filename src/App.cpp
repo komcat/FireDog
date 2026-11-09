@@ -120,6 +120,7 @@ int App::Run()
         chartSmooth_     = ui.chartSmooth;
         chartYBands_     = ui.chartYBands;
         chartYBandList_  = ui.chartYBandList;
+        auxTipLabels_    = ui.auxTipLabels;
         chartChDef_      = ui.chartChDefault;
         chartCh_         = chartChDef_;       // every start shows the chosen channel(s)
         jogRegZOffDef_   = std::clamp(ui.jogRegZOffDefault, -100.0, 100.0);
@@ -246,6 +247,7 @@ int App::Run()
             if (showMaint_ && CanAccess(Page::Oee)) DrawMaintenanceWindow();
             if (showUsers_) DrawEmployeeManager();   // checks Admin itself
             if (showPrefs_ && CanUse(kRolePrefs)) DrawPreferencesWindow();
+            if (showTeachPick_) DrawTeachPickWindow();   // checks teach mode + level itself
         }
         host_.EndFrame();
     }
@@ -657,6 +659,7 @@ void App::SaveUiSettings()
     s.chartYBands = chartYBands_;
     s.chartYBandList = chartYBandList_;
     s.chartChDefault     = chartChDef_;
+    s.auxTipLabels       = auxTipLabels_;
     s.jogRegZOffDefault  = jogRegZOffDef_;
     s.jogRegUnverDefault = jogRegUnverDef_;
     s.runProgUid  = runLastProgUid_;
