@@ -359,6 +359,9 @@ void App::DrawRecipeEditPanel()
         if (filterChanged) SaveUiSettings();
     }
     ImGui::Separator();
+    // Only the rows scroll: the toolbar and the filter above stay put, so a long
+    // library never scrolls New / Delete / the tag filter out of reach.
+    ImGui::BeginChild("##edRecipeRows");
     if (session_.Recipes().empty())
         ImGui::TextWrapped("No recipes yet - New creates one, or Reload from disk.");
     // Two groups, WORKING (a program deck reaches it) on top, then LOOSE. The
@@ -438,6 +441,7 @@ void App::DrawRecipeEditPanel()
     }
     if (listed == 0 && !session_.Recipes().empty())
         ImGui::TextDisabled("(all %zu filtered out)", session_.Recipes().size());
+    ImGui::EndChild();   // ##edRecipeRows
     ImGui::EndChild();
     ImGui::SameLine();
 
