@@ -254,7 +254,7 @@ hook kills pure-Lua loops independently.
 |---|---|---|---|
 | `align_device` | `device` | — | hexapod name |
 | `align_topic` | `topic` | `keithley/ch1` | feedback stream |
-| `align_axes` | `axes` (`XYZ`/`XY`/`XZ`/`YZ`), preset `axes` | `Z,Y,X` | which axes descend; the command chooses the SET, the order is always Z, Y, X |
+| `align_axes` | `axes` (`XYZ`/`XY`/`XZ`/`YZ`/`Z`/`Y`/`X`), preset `axes` | `Z,Y,X` | which axes descend; the command chooses the SET, the order is always Z, Y, X |
 | `align_steps_um` | `steps_um` | `10,5,2,1` | ladder (adaptive: the zone steps) |
 | `align_exit_threshold` | `exit_target_ua` ×1e-6 | 0 | stop-and-stay target |
 | `align_adaptive` | `adaptive` | false (Run band: on) | signal-zoned ladder |
@@ -277,8 +277,8 @@ hook kills pure-Lua loops independently.
 Outputs: `align_baseline`, `align_best`, `align_delta`, `align_gain` (0 unless both
 readings are positive), `align_exit_hit`.
 
-The `xcan` step's `axes` parameter is a **choice of four sets** (`XYZ`, `XY`, `XZ`,
-`YZ`), not the free-text order the script and the Motion-page band take. A recipe
+The `xcan` step's `axes` parameter is a **choice of seven sets** (`XYZ`, `XY`, `XZ`,
+`YZ`, and the single axes `Z`, `Y`, `X`), not the free-text order the script and the Motion-page band take. A recipe
 step says *which axes may move* — dropping Z once the gap is already closed, or
 scanning Z alone against X for a device that only couples in a plane — and that is
 a statement about what the machine is allowed to do, so a typo must not become an

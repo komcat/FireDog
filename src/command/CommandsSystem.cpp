@@ -40,6 +40,9 @@ const char* XcanAxisOrder(const std::string& choice)
     if (choice == "XY") return "Y,X";
     if (choice == "XZ") return "Z,X";
     if (choice == "YZ") return "Z,Y";
+    if (choice == "Z")  return "Z";
+    if (choice == "Y")  return "Y";
+    if (choice == "X")  return "X";
     return "";
 }
 
@@ -350,9 +353,10 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"device", PT::DeviceHexapod, true, {}, 0, 0, {}, "hexapod to scan"},
                       {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
                        "feedback signal"},
-                      {"axes", PT::Enum, false, "XYZ", 0, 0, {"XYZ", "XY", "XZ", "YZ"},
+                      {"axes", PT::Enum, false, "XYZ", 0, 0,
+                       {"XYZ", "XY", "XZ", "YZ", "Z", "Y", "X"},
                        "which axes the coordinate descent scans (order is always Z, "
-                       "then Y, then X)"},
+                       "then Y, then X; a single axis is a one-axis line scan)"},
                       {"steps_um", PT::String, false, "10,5,2,1", 0, 0, {},
                        "coarse -> fine step ladder (um); adaptive mode: the zone steps, far -> near"},
                       {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},

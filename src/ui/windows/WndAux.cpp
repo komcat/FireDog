@@ -1403,8 +1403,13 @@ void App::DrawAuxCompactChart(ImDrawList* dl, const ImVec2& p0, const ImVec2& si
             }
         }
         flush();
-        if (pts.size() >= 2)
-            dl->AddPolyline(pts.data(), static_cast<int>(pts.size()), col, ImDrawFlags_None, 2.0f);
+        // Segment by segment, never one AddPolyline: a thick polyline joins with
+        // MITERS, and the per-column min/max turns this trace through near-180
+        // degrees at every wiggle - each such turn draws a thin spike above the
+        // signal. Separate segments have no joins (ImPlot's way, which is why
+        // the full chart never showed it).
+        for (std::size_t i = 1; i < pts.size(); ++i)
+            dl->AddLine(pts[i - 1], pts[i], col, 2.0f);
     };
     // Ch2 first so the main signal (Ch1) draws on top of it.
     // ChartV1/2: the display low-pass applies here too (one setting, chosen
