@@ -192,6 +192,7 @@ int App::Run()
     session_.LoadInitial(lastProduct);   // positions/maps/recipes/programs/scripts + DUT wiring
     ResetDocumentSelections();           // the UI side of that load
     LoadScanPresets();             // XCAN launch presets (machine-global local.json)
+    panelSw_ = LoadPanelSwitchConfig();   // the operator panel switches (prompt, Execute, Stop)
     // The roster, read once. It lives under products/ rather than config/
     // because config/ is what a fresh build tree or a release zip ships, and
     // would replace every registration made on this machine — see core/Employees.h.
@@ -285,6 +286,7 @@ void App::Update(float dt)
     }
     UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)
     UpdateMoveWatch(dt);         // a UI move in flight (the frame's MOVING banner)
+    UpdatePanelSwitches();       // this frame's panel-switch presses (prompt, Execute, Stop)
 
     // Teach hand-backs from save_position steps: engine worker threads queue
     // them on Workflow, and THIS is the worker->UI hand-off point — the

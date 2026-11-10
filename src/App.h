@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <map>
 #include <set>
 #include <string>
@@ -32,6 +33,7 @@
 #include "session/ProductSession.h"
 #include "workflow/Workflow.h"
 #include "core/MosaicConfig.h"
+#include "core/PanelSwitches.h"
 #include "mosaic/MosaicDoc.h"
 #include "mosaic/MosaicWorker.h"
 
@@ -441,6 +443,12 @@ private:
     bool DrawConditionEditor(nlohmann::json& cond);   // if / loop-while / wait_until
     void DrawRecipeRunStrip(float height);
     void DrawRecipePromptWindow();    // GLOBAL prompt (recipe + script) — non-modal, always on top
+    // The operator's panel switches (core/PanelSwitches.h): edge-detects the
+    // inputs every frame from Update() and leaves this frame's presses in
+    // panelSwRose_ - the prompt window consumes confirm/cancel and the Run
+    // page's strip consumes run, each like its own button; stop is acted on
+    // here (a stop needs no page).
+    void UpdatePanelSwitches();
     void DrawManualAdjustWindow();    // GLOBAL manual_adjust jog window — non-modal, always on top
     void DrawOperatorNoticeWindow();  // GLOBAL notify_operator window — yellow, OK only, non-modal, on top
     void DrawAlignPickWindow();       // GLOBAL align_station crosshair pick — non-modal, always on top
@@ -1918,6 +1926,27 @@ private:
     // Edge-detect a NEW pending prompt/adjust (the windows are non-modal, so a
     // back-to-back request may arrive while the window is still shown).
     bool promptWasPending_ = false;
+    // Panel switches. panelSwRose_ holds THIS frame's presses only: Update()
+    // rewrites them, the surface that owns the button consumes them, so a
+    // press with nothing on screen to press does nothing - not even to a
+    // prompt (or an Execute) that appears later.
+    enum PanelSw { kSwConfirm, kSwCancel, kSwRun, kSwStop, kSwCount };
+    struct PanelSwitchPin {
+        bool prev = false, hasPrev = false;   // no edge until two valid reads
+        bool hasEdge = false;
+        std::chrono::steady_clock::time_point lastEdge{};
+        bool resolved = false;                // the pin name exists on the device
+    };
+    const std::string& PanelSwName(int k) const;   // the config's pin name for k
+    PanelSwitchConfig panelSw_;                // loaded once in Run()
+    PanelSwitchPin    panelSwPin_[kSwCount];
+    bool              panelSwRose_[kSwCount] = {};
+    bool              panelSwFound_  = false;   // the device exists
+    bool              panelSwOnline_ = false;   // ... and is connected + read
+    // The prompt the switches may answer, and since when it has been shown
+    // (PanelSwitchConfig::minShownMs).
+    std::string                           promptSwKey_;
+    std::chrono::steady_clock::time_point promptShownAt_{};
     // The pictures of the pending prompt (ParamType::ImageFile), decoded and
     // uploaded when it appears, keyed by the resolved path; a failed load is
     // cached as tex 0 so it is drawn as missing rather than retried per frame.

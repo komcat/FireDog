@@ -251,7 +251,7 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/windows/WndJog.cpp` | Jog window (Jog / Camera / **Pos** / **IO** tabs) + the shared velocity combo | 885 |
 | `src/ui/windows/WndAux.cpp` | Aux window (camera + chart, own OS window) | 170 |
 | `src/ui/windows/WndProgramOrganizer.cpp` | Program Organizer window (Run strip's Edit / View menu): recipe library \| slot tree with folders, loop counts, drag-drop; the ONLY program-editing surface | 520 |
-| `src/ui/windows/WndPrompts.cpp` | global `prompt` + `manual_adjust` + alignment crosshair-pick windows; sole `imgui_internal.h` user | 360 |
+| `src/ui/windows/WndPrompts.cpp` | global `prompt` + `manual_adjust` + alignment crosshair-pick windows; the operator panel switches (`UpdatePanelSwitches`, from `Update()`; the Run strip consumes `run`); sole `imgui_internal.h` user | 360 |
 
 CMake needs no edits: `GLOB_RECURSE … CONFIGURE_DEPENDS` picks up new files.
 

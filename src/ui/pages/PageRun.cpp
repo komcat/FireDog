@@ -1229,24 +1229,43 @@ void App::DrawRunPanel()
         if (IconButton(UiIcon("Stop"), "Stop", ImVec2(260.0f, stripBtnH)))
             orch_.programs.Stop();
     } else {
+        // The run panel switch (UpdatePanelSwitches) is this button: consumed
+        // here, so it only ever presses an Execute that is on screen - the Run
+        // page drawn, nothing busy, a slot picked - and does what a click does.
+        const bool swRun = panelSwRose_[kSwRun] && canRun;
+        if (panelSwRose_[kSwRun] && !canRun)
+            FD_INFO("panel", "panel switch %s ignored - nothing to execute (%s)",
+                    panelSw_.run.c_str(), orch_.Busy() ? "busy" : "no program or slot selected");
+        panelSwRose_[kSwRun] = false;
+        if (swRun)
+            FD_INFO("panel", "%s by panel switch %s (%s)",
+                    teachMode_ ? "teach run" : "execute", panelSw_.run.c_str(),
+                    panelSw_.device.c_str());
         ImGui::BeginDisabled(!canRun);
         // In teach mode the go button says so itself: the press that follows
         // teaches positions instead of running the part.
         if (IconButton(UiIcon(teachMode_ ? "run_teach" : "run_execute"),
                        teachMode_ ? "Teach run" : "Execute",
-                       ImVec2(260.0f, stripBtnH))) {
+                       ImVec2(260.0f, stripBtnH)) || swRun) {
             // Teach: nothing moves yet - first the list of positions the run
             // would stop at, to tick all or some (WndTeachPick.cpp).
             if (teachMode_) OpenTeachPick();
             else            StartDeckRun(onNode ? RunScope::Node : RunScope::Slot);
         }
         if (ImGui::IsItemHovered()) {
+            // The panel switch that presses it, when one is wired.
+            const std::string sw = (panelSw_.enabled && !panelSw_.run.empty())
+                                       ? "\nPanel switch: " + panelSw_.run
+                                       : std::string();
             if (teachMode_)
                 ImGui::SetTooltip("TEACH: choose which saved positions to stop at, then\n"
-                                  "run the moves and fine-tune and Save each chosen one.");
+                                  "run the moves and fine-tune and Save each chosen one.%s",
+                                  sw.c_str());
             else
-                ImGui::SetTooltip(onNode ? "Run the selected item (a folder runs its loops)"
-                                         : "Run every recipe in this slot");
+                ImGui::SetTooltip("%s%s",
+                                  onNode ? "Run the selected item (a folder runs its loops)"
+                                         : "Run every recipe in this slot",
+                                  sw.c_str());
         }
         ImGui::EndDisabled();
     }

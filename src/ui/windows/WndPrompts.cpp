@@ -28,6 +28,85 @@
 
 namespace firedog {
 
+// The operator's panel switches (core/PanelSwitches.h), from Update() every
+// frame whether or not anything is on screen - an edge needs the previous
+// level. Reads the driver's cached Status() only (never the hardware), so
+// nothing blocks. An OFF -> ON edge is a press: a switch already held ON when a
+// prompt appears answers nothing until it is released and pressed again, and a
+// device that is offline (or not yet read twice) yields no edge at all.
+// Ambiguous pairs answer nothing: confirm + cancel in one frame is ignored, and
+// stop + run in one frame is a stop.
+const std::string& App::PanelSwName(int k) const
+{
+    switch (k) {
+    case kSwConfirm: return panelSw_.confirm;
+    case kSwCancel:  return panelSw_.cancel;
+    case kSwRun:     return panelSw_.run;
+    default:         return panelSw_.stop;
+    }
+}
+
+void App::UpdatePanelSwitches()
+{
+    for (bool& r : panelSwRose_) r = false;
+    panelSwFound_  = false;
+    panelSwOnline_ = false;
+    if (!panelSw_.enabled) return;
+
+    IIoDevice*  d  = nullptr;
+    std::size_t di = 0;
+    for (std::size_t i = 0; i < hardware_.IoCount(); ++i) {
+        IIoDevice* c = hardware_.IoDevice(i);
+        if (c && c->Name() == panelSw_.device) { d = c; di = i; break; }
+    }
+    if (!d) {
+        for (PanelSwitchPin& p : panelSwPin_) p = PanelSwitchPin{};
+        return;
+    }
+    panelSwFound_ = true;
+    const IIoDevice::IoStatus s = d->Status();
+    panelSwOnline_ = hardware_.IoState(di) == ConnState::Connected && s.valid;
+
+    const auto now = std::chrono::steady_clock::now();
+    for (int k = 0; k < kSwCount; ++k) {
+        PanelSwitchPin& p = panelSwPin_[k];
+        const std::string& name = PanelSwName(k);
+        const int pin = name.empty() ? -1 : d->InputPinByName(name);
+        p.resolved = pin >= 0;
+        if (!panelSwOnline_ || pin < 0) {
+            p.hasPrev = false;   // a reconnect must not read as an edge
+            continue;
+        }
+        const bool on = ((s.inputs >> pin) & 1ull) != 0;
+        const bool rising = p.hasPrev && !p.prev && on;
+        p.prev    = on;
+        p.hasPrev = true;
+        if (!rising) continue;
+        if (p.hasEdge &&
+            now - p.lastEdge < std::chrono::milliseconds(panelSw_.debounceMs))
+            continue;   // bounce, not a second press
+        p.lastEdge = now;
+        p.hasEdge  = true;
+        panelSwRose_[k] = true;
+    }
+    if (panelSwRose_[kSwConfirm] && panelSwRose_[kSwCancel]) {
+        FD_WARN("panel", "%s and %s pressed together - ignored",
+                panelSw_.confirm.c_str(), panelSw_.cancel.c_str());
+        panelSwRose_[kSwConfirm] = panelSwRose_[kSwCancel] = false;
+    }
+    if (panelSwRose_[kSwStop]) {
+        panelSwRose_[kSwRun] = false;   // stop + run together is a stop
+        // The Run page's Stop button, from any page: a stop needs nothing on
+        // screen, and the operator reaching for it may be anywhere.
+        if (orch_.programs.Active()) {
+            FD_INFO("panel", "program stopped by panel switch %s (%s)",
+                    panelSw_.stop.c_str(), panelSw_.device.c_str());
+            orch_.programs.Stop();
+        }
+        panelSwRose_[kSwStop] = false;
+    }
+}
+
 // Global orchestration prompt — drawn every frame from DrawMainWindow, so a
 // blocking recipe `prompt` step or script fd.prompt() surfaces no matter which
 // page or window the operator is on. Only one engine runs at a time, so at
@@ -60,7 +139,13 @@ void App::DrawRecipePromptWindow()
     // window is still visible, so IsWindowAppearing alone is not enough).
     const bool newPrompt = !pending.empty() && !promptWasPending_;
     promptWasPending_ = !pending.empty();
+    // This frame's panel-switch press (UpdatePanelSwitches), consumed here so
+    // it can only ever answer the prompt drawn this frame.
+    const bool swHitOk     = panelSwRose_[kSwConfirm];
+    const bool swHitCancel = panelSwRose_[kSwCancel];
+    panelSwRose_[kSwConfirm] = panelSwRose_[kSwCancel] = false;
     if (pending.empty()) {   // nothing pending (or stop released it)
+        promptSwKey_.clear();
         // The pictures served the prompt that just ended: free them, so the
         // next one re-reads the file (an edited picture shows) and nothing
         // full-size sits on the GPU between prompts.
@@ -70,6 +155,21 @@ void App::DrawRecipePromptWindow()
         return;
     }
     if (newPrompt) promptInputBuf_[0] = '\0';
+    // When did THIS prompt appear? A different text with no empty frame
+    // between (back-to-back prompts) is a new prompt too.
+    const auto swNow = std::chrono::steady_clock::now();
+    if (newPrompt || pending != promptSwKey_) {
+        promptSwKey_   = pending;
+        promptShownAt_ = swNow;
+    }
+    const bool swArmed =
+        swNow - promptShownAt_ >= std::chrono::milliseconds(panelSw_.minShownMs);
+    if ((swHitOk || swHitCancel) && !swArmed)
+        FD_INFO("panel", "panel switch ignored - the prompt appeared %d ms ago",
+                static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     swNow - promptShownAt_).count()));
+    const bool swOk     = swArmed && swHitOk;
+    const bool swCancel = swArmed && swHitCancel;
 
     // Operator-facing dialog: it defines its OWN high-contrast palette (opaque
     // near-black body, pure-white text, amber accent frame, dark grey buttons)
@@ -275,6 +375,10 @@ void App::DrawRecipePromptWindow()
         const float avail = ImGui::GetContentRegionAvail().x;
         const ImVec2 cbtn(fmaxf(promptFont * 4.0f, (avail - sp * (n - 1)) / n),
                           ImGui::GetFrameHeight() * 2.0f);
+        // The panel switches do not answer a choice: which of the author's
+        // buttons "OK" would mean is the author's to say, not the wiring's.
+        if (swOk || swCancel)
+            FD_INFO("panel", "panel switch ignored - this prompt asks for a choice");
         for (int i = 0; i < n; ++i) {
             if (i > 0) ImGui::SameLine();
             ImGui::PushID(i);
@@ -307,18 +411,53 @@ void App::DrawRecipePromptWindow()
     // Double height, and the two answers coloured apart: green says "go on",
     // grey says "no" — a glance tells them apart before the label is read.
     const ImVec2 btn(btnW, ImGui::GetFrameHeight() * 2.0f);
+    const float  rowX = ImGui::GetCursorPosX();   // the hint line lines up under it
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.42f, 0.20f, 1.00f));
     char okLabel[32] = "OK";
     if (autoOkMs > 0)   // "###OK" keeps the ID steady while the number counts down
         std::snprintf(okLabel, sizeof(okLabel), "OK (%d)###OK", (autoOkMs + 999) / 1000);
-    const bool ok = ImGui::Button(okLabel, btn) || submit;
+    // The confirm switch is the OK button, input prompts included: it submits
+    // whatever is in the box, exactly as a click would.
+    const bool ok = ImGui::Button(okLabel, btn) || submit || swOk;
     ImGui::PopStyleColor(3);
     if (ok) answer(true);
     ImGui::SameLine();
     // Cancel keeps the grey pushed for the whole window above.
-    if (ImGui::Button("Cancel", btn)) answer(false);
+    const bool cancel = ImGui::Button("Cancel", btn) || swCancel;
+    if (cancel && !ok) answer(false);
+    if (swOk || swCancel)
+        FD_INFO("panel", "prompt answered %s by panel switch %s (%s)", swOk ? "OK" : "Cancel",
+                (swOk ? panelSw_.confirm : panelSw_.cancel).c_str(),
+                panelSw_.device.c_str());
+
+    // Under each button, the panel input that presses it - so the operator at
+    // the bench knows which switch is which without asking. Dimmed, with the
+    // reason, when that switch cannot answer right now.
+    if (panelSw_.enabled && panelSwFound_) {
+        ImGui::PushFont(nullptr, promptFont * 0.7f);
+        const float y  = ImGui::GetCursorPosY();
+        const float sp = ImGui::GetStyle().ItemSpacing.x;
+        for (int k = 0; k < 2; ++k) {   // kSwConfirm under OK, kSwCancel under Cancel
+            const std::string& name = PanelSwName(k);
+            if (name.empty()) continue;
+            std::string line = "Switch: " + name;
+            ImVec4 col(0.80f, 0.82f, 0.86f, 1.00f);
+            if (!panelSwPin_[k].resolved) {
+                line += "  (no such input on " + panelSw_.device + ")";
+                col = ImVec4(1.00f, 0.55f, 0.45f, 1.00f);
+            } else if (!panelSwOnline_) {
+                line += "  (" + panelSw_.device + " offline)";
+                col = ImVec4(0.55f, 0.56f, 0.60f, 1.00f);
+            }
+            const float textW = ImGui::CalcTextSize(line.c_str()).x;
+            const float cellX = rowX + static_cast<float>(k) * (btnW + sp);
+            ImGui::SetCursorPos(ImVec2(cellX + fmaxf(0.0f, (btnW - textW) * 0.5f), y));
+            ImGui::TextColored(col, "%s", line.c_str());
+        }
+        ImGui::PopFont();
+    }
     ImGui::End();
 
     ImGui::PopStyleVar(3);
