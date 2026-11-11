@@ -3,6 +3,7 @@
 // An OFF -> ON edge of the input is the press.
 //
 //   confirm   the run prompt's OK / Continue        (any page; a prompt on screen)
+//             - and the Operator Notice's OK (notify_operator) when no prompt is
 //   cancel    the run prompt's Cancel               (any page; a prompt on screen)
 //   run       the Run page's Execute                (Run page only, nothing busy)
 //   stop      stop the program run                  (any page, while a program runs)
@@ -14,7 +15,8 @@
 //
 // Every switch answers exactly what its button answers, and only a button that
 // is ON SCREEN this frame: confirm/cancel are consumed by
-// App::DrawRecipePromptWindow, run by the Run page's strip. A choice prompt
+// App::DrawRecipePromptWindow while it shows a prompt, confirm otherwise by
+// App::DrawOperatorNoticeWindow, run by the Run page's strip. A choice prompt
 // (custom buttons) is not answered by them, nor is Manual Adjust or the
 // alignment pick.
 #pragma once

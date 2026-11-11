@@ -147,6 +147,10 @@ Priority: safety > down > waiting > running / standby / idle.
   `on_timeout` fail | continue, optional ctx key `ack` | `timeout`); the UI's
   yellow, OK-only, non-modal `App::DrawOperatorNoticeWindow` acks it, which
   silences the buzzer on the click; every exit of the command clears the slot.
+  The **confirm panel switch** (`core/PanelSwitches`, default `switch_8`) is the
+  same OK, armed `min_shown_ms` after each notice id first shows; the prompt
+  window leaves the press alone when it shows no prompt, and the notice names
+  the switch under its button.
   It is deliberately NOT the engines' prompt handshake — there is no Cancel, the
   wait has its own outcome, and a script reaches it exactly as a recipe does.
   A dry run skips it (not on `kDryRunCommands`); a teach run disables it.

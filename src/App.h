@@ -1947,6 +1947,14 @@ private:
     // (PanelSwitchConfig::minShownMs).
     std::string                           promptSwKey_;
     std::chrono::steady_clock::time_point promptShownAt_{};
+    // The same for the Operator Notice (notify_operator): the confirm switch is
+    // its OK, armed minShownMs after THIS notice id first showed.
+    std::uint64_t                         noticeSwId_ = 0;
+    std::chrono::steady_clock::time_point noticeShownAt_{};
+    // Draws "Switch: <pin>" (dimmed with the reason when it cannot answer)
+    // centred in a cell - under a prompt's OK / Cancel and the notice's OK.
+    void DrawPanelSwitchHint(int k, float cellX, float cellW, const ImVec4& col,
+                             bool onLight = false);
     // The pictures of the pending prompt (ParamType::ImageFile), decoded and
     // uploaded when it appears, keyed by the resolved path; a failed load is
     // cached as tex 0 so it is drawn as missing rather than retried per frame.

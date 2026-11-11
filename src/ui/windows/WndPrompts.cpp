@@ -139,11 +139,13 @@ void App::DrawRecipePromptWindow()
     // window is still visible, so IsWindowAppearing alone is not enough).
     const bool newPrompt = !pending.empty() && !promptWasPending_;
     promptWasPending_ = !pending.empty();
-    // This frame's panel-switch press (UpdatePanelSwitches), consumed here so
-    // it can only ever answer the prompt drawn this frame.
+    // This frame's panel-switch press (UpdatePanelSwitches). Consumed only
+    // while a prompt is showing, so it answers the prompt drawn this frame; with
+    // none, confirm is left for the Operator Notice drawn after this window
+    // (Update rewrites the flags every frame, so nothing is kept for later).
     const bool swHitOk     = panelSwRose_[kSwConfirm];
     const bool swHitCancel = panelSwRose_[kSwCancel];
-    panelSwRose_[kSwConfirm] = panelSwRose_[kSwCancel] = false;
+    if (!pending.empty()) panelSwRose_[kSwConfirm] = panelSwRose_[kSwCancel] = false;
     if (pending.empty()) {   // nothing pending (or stop released it)
         promptSwKey_.clear();
         // The pictures served the prompt that just ended: free them, so the
@@ -440,21 +442,9 @@ void App::DrawRecipePromptWindow()
         const float y  = ImGui::GetCursorPosY();
         const float sp = ImGui::GetStyle().ItemSpacing.x;
         for (int k = 0; k < 2; ++k) {   // kSwConfirm under OK, kSwCancel under Cancel
-            const std::string& name = PanelSwName(k);
-            if (name.empty()) continue;
-            std::string line = "Switch: " + name;
-            ImVec4 col(0.80f, 0.82f, 0.86f, 1.00f);
-            if (!panelSwPin_[k].resolved) {
-                line += "  (no such input on " + panelSw_.device + ")";
-                col = ImVec4(1.00f, 0.55f, 0.45f, 1.00f);
-            } else if (!panelSwOnline_) {
-                line += "  (" + panelSw_.device + " offline)";
-                col = ImVec4(0.55f, 0.56f, 0.60f, 1.00f);
-            }
-            const float textW = ImGui::CalcTextSize(line.c_str()).x;
-            const float cellX = rowX + static_cast<float>(k) * (btnW + sp);
-            ImGui::SetCursorPos(ImVec2(cellX + fmaxf(0.0f, (btnW - textW) * 0.5f), y));
-            ImGui::TextColored(col, "%s", line.c_str());
+            ImGui::SetCursorPosY(y);
+            DrawPanelSwitchHint(k, rowX + static_cast<float>(k) * (btnW + sp), btnW,
+                                ImVec4(0.80f, 0.82f, 0.86f, 1.00f));
         }
         ImGui::PopFont();
     }
@@ -463,6 +453,29 @@ void App::DrawRecipePromptWindow()
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(10);
     ImGui::PopFont();
+}
+
+// "Switch: <pin>" centred in [cellX, cellX + cellW) on the current line, in
+// `col` when the switch can answer, else dimmed with the reason. Nothing when
+// that switch is not wired. The caller sets the font and the line's Y.
+// `onLight`: darker warning shades, for the notice's yellow background.
+void App::DrawPanelSwitchHint(int k, float cellX, float cellW, const ImVec4& col,
+                              bool onLight)
+{
+    const std::string& name = PanelSwName(k);
+    if (name.empty()) return;
+    std::string line = "Switch: " + name;
+    ImVec4 c = col;
+    if (!panelSwPin_[k].resolved) {
+        line += "  (no such input on " + panelSw_.device + ")";
+        c = onLight ? ImVec4(0.60f, 0.08f, 0.04f, 1.00f) : ImVec4(1.00f, 0.55f, 0.45f, 1.00f);
+    } else if (!panelSwOnline_) {
+        line += "  (" + panelSw_.device + " offline)";
+        c = onLight ? ImVec4(0.38f, 0.34f, 0.20f, 1.00f) : ImVec4(0.55f, 0.56f, 0.60f, 1.00f);
+    }
+    const float textW = ImGui::CalcTextSize(line.c_str()).x;
+    ImGui::SetCursorPosX(cellX + fmaxf(0.0f, (cellW - textW) * 0.5f));
+    ImGui::TextColored(c, "%s", line.c_str());
 }
 
 // The notify_operator window: the machine calling somebody over (UV curing
@@ -474,7 +487,29 @@ void App::DrawRecipePromptWindow()
 void App::DrawOperatorNoticeWindow()
 {
     const Workflow::OperatorNotice n = workflow_.PendingNotice();
-    if (n.id == 0) return;
+    // The confirm panel switch is this window's OK (the prompt window, drawn
+    // first, leaves it alone when it shows nothing). Consumed here either way:
+    // a press with nothing to press does nothing.
+    const bool swHit = panelSwRose_[kSwConfirm];
+    panelSwRose_[kSwConfirm] = false;
+    if (n.id == 0) {
+        noticeSwId_ = 0;
+        return;
+    }
+    // Armed minShownMs after THIS notice first showed, like a prompt: a press
+    // meant for the window before must not acknowledge one nobody has read.
+    const auto swNow = std::chrono::steady_clock::now();
+    if (n.id != noticeSwId_) {
+        noticeSwId_    = n.id;
+        noticeShownAt_ = swNow;
+    }
+    const bool swArmed =
+        swNow - noticeShownAt_ >= std::chrono::milliseconds(panelSw_.minShownMs);
+    if (swHit && !swArmed)
+        FD_INFO("panel", "panel switch ignored - the notice appeared %d ms ago",
+                static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     swNow - noticeShownAt_).count()));
+    const bool swOk = swHit && swArmed;
 
     const float font = ImGui::GetStyle().FontSizeBase * 1.5f;
     const ImVec4 yellow(1.00f, 0.85f, 0.10f, 1.00f);
@@ -530,9 +565,20 @@ void App::DrawOperatorNoticeWindow()
     ImGui::Dummy(ImVec2(0.0f, font));
     ImGui::Separator();
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));   // white on green
-    if (ImGui::Button("OK", ImVec2(-FLT_MIN, ImGui::GetFrameHeight() * 2.0f)))
-        workflow_.AckNotice(n.id);
+    const float rowX = ImGui::GetCursorPosX();
+    const float btnW = ImGui::GetContentRegionAvail().x;
+    const bool  click = ImGui::Button("OK", ImVec2(-FLT_MIN, ImGui::GetFrameHeight() * 2.0f));
     ImGui::PopStyleColor();
+    if (click || swOk) workflow_.AckNotice(n.id);
+    if (swOk && !click)
+        FD_INFO("panel", "notice acknowledged by panel switch %s (%s)",
+                panelSw_.confirm.c_str(), panelSw_.device.c_str());
+    // Which panel switch presses OK, as under the prompt's buttons.
+    if (panelSw_.enabled && panelSwFound_) {
+        ImGui::PushFont(nullptr, font * 0.7f);
+        DrawPanelSwitchHint(kSwConfirm, rowX, btnW, ink, true);
+        ImGui::PopFont();
+    }
     ImGui::End();
 
     ImGui::PopStyleVar(3);
