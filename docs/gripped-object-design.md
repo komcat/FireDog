@@ -252,7 +252,7 @@ exists for the two things a recipe cannot do:
   measured, a tip is a thing the machine computed out of a registration.
 
 Its **Measure** button launches the same shipped script the recipe step runs —
-the rule the Alignment, Placement and Registration pages all follow — with one
+the rule the Alignment and Registration pages follow — with one
 difference it states on the page: `require_ok` is **false** there. Looking at a
 measurement that may be out is the entire point of running it by hand.
 

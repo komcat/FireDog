@@ -751,8 +751,8 @@ taught `.pgm` for NCC (cross at the anchor, else the centre), the **synthesised*
 `MakeCornerTemplate` patch for a two-edge corner (cross at the centre, which is
 where that method reports), and nothing for the blob chains — a circle or a
 solid square is matched as a shape, so the window falls back to naming the point
-in words. The Alignment page's station panel and the Placement page's object
-points draw the same thumbnail from the same helper, so what an operator is
+in words. The Alignment page's station panel and the Gripped object page draw the
+same thumbnail from the same helper, so what an operator is
 shown mid-run is what the procedure was authored against.
 
 ### The pixel→mm calibration moved to layer 2

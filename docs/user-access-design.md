@@ -219,8 +219,8 @@ operator, not *by* them.
 
 ### Helpers that mutate before they switch
 
-`OpenVisionTeach`, `OpenVisionTeachForNominal`, `OpenAlignNominalTeach` and
-`OpenAlignPlace` each set up a model, marks or selections and *then* call
+`OpenVisionTeach`, `OpenVisionTeachForGrip` and
+`OpenAlignNominalTeach` each set up a model, marks or selections and *then* call
 `SwitchPage`. A refusal at the choke point would leave those edits behind on a
 page the caller never reaches. They check at the top instead — the same shape as
 the Run deck's right-click, and the reason the rule is written as *"gate a click

@@ -103,19 +103,6 @@ std::string StationDetectorName(const std::string& procUid, int station, int tie
     return n;
 }
 
-// The same convention one level down, for the two marks that locate an OBJECT
-// being placed on a nominal. Private to that nominal for the same reason a
-// station's is private to the station: the ROI, the threshold and the taught
-// patch only mean anything at the pose and exposure they were tuned at, and a
-// nominal is viewed from its own place.
-//
-// "vdet_" + 8 + "_" + 8 + "_p1" = 25 chars.
-std::string NominalDetectorName(const std::string& procUid, const std::string& nomUid,
-                                int index)
-{
-    return "vdet_" + procUid + "_" + nomUid + "_p" + std::to_string(index);
-}
-
 // And once more for a gripped object. Private to the profile for the third
 // time and for the same reason: the patch is cut at the inspect pose, through
 // the camera standing over that tool, and it means nothing anywhere else.
@@ -383,8 +370,8 @@ void App::OpenVisionTeach(AlignProc& a, int station, int tier)
     visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
     visionTmpl_.key.clear();   // force a thumbnail reload for the new model
 
-    // Set every time, not just once: the page is shared with the nominals'
-    // object detectors, and a station teach must not inherit their exit.
+    // Set every time, not just once: the page is shared with the grip
+    // profiles' detectors, and a station teach must not inherit their exit.
     visionReturnPage_ = Page::Align;
     SwitchPage(Page::VisionTeach);   // every page switch routes through here
 }
@@ -412,8 +399,6 @@ void App::DropAlignStationDetectors(const AlignProc& a)
         FD_INFO("vision", "'%s': dropped %d private detection model(s)",
                 a.name.c_str(), dropped);
     }
-    // The procedure's nominals die with it, so their object detectors do too.
-    for (const AlignNominal& n : a.nominals) DropNominalDetectors(a, n);
 }
 
 // A duplicated procedure gets its OWN copies, patch file included — sharing
@@ -435,29 +420,12 @@ void App::CopyAlignStationDetectors(const AlignProc& src, AlignProc& dst)
             any = true;
         }
     }
-    // A duplicate's NOMINALS came along with the plain copy, so their private
-    // object detectors have to as well — otherwise the copy would silently fall
-    // back to asking an operator for every placement.
-    for (std::size_t i = 0; i < dst.nominals.size() && i < src.nominals.size(); ++i) {
-        for (int k = 1; k <= 2; ++k) {
-            const VisionModel* sm = FindVisionModel(
-                session_.VisionModels(),
-                NominalDetectorName(src.uid, src.nominals[i].uid, k));
-            if (!sm) continue;
-            const std::string newName =
-                NominalDetectorName(dst.uid, dst.nominals[i].uid, k);
-            const std::string uid = CopyVisionModelAs(*sm, newName);
-            if (uid.empty()) continue;
-            (k == 1 ? dst.nominals[i].det1 : dst.nominals[i].det2) = uid;
-            any = true;
-        }
-    }
     if (any) session_.SaveVision();
 }
 
 // Copy one model under a new private name, patch file included. Returns the new
-// uid, or "" if the copy could not be made. Factored out when the nominals'
-// object detectors needed the identical operation — a second copy of the .pgm
+// uid, or "" if the copy could not be made. Shared by the station and grip
+// detectors — a second copy of the .pgm
 // handling is how one of them ends up sharing a patch file with its original.
 // The copy itself is the session's (ProductSession::CopyVisionModelAs), which
 // SyncStepDetectors uses too - one copy of the .pgm handling.
@@ -538,83 +506,6 @@ void App::PasteDetectionToStation(AlignProc& a, int station, int tier)
     visionTmpl_.key.clear();
     FD_INFO("vision", "'%s' E%d detection %d: pasted from %s", a.name.c_str(), station,
             tier, visionClipFrom_.c_str());
-}
-
-// ---- A nominal's object detectors ------------------------------------------
-
-const VisionModel* App::NominalDetector(const AlignProc& a, const AlignNominal& n,
-                                        int index) const
-{
-    return FindVisionModel(session_.VisionModels(),
-                           NominalDetectorName(a.uid, n.uid, index));
-}
-
-// Same page, same model lifecycle, different owner: Close returns to the
-// Placement page rather than to Alignment, which is what visionReturnPage_
-// carries (a takeover -> takeover switch does not update prevPage_).
-void App::OpenVisionTeachForNominal(AlignProc& a, AlignNominal& n, int index)
-{
-    // Level checked at the TOP, not left to SwitchPage's refusal: everything
-    // below mutates state (the model, the marks, the selections) before it
-    // switches, so a refused switch would leave those edits behind on a page
-    // the caller never reaches. Same reason the Run deck's right-click checks
-    // early. Every caller today sits on an Admin page, so this is insurance,
-    // not a fix — but it is what makes the rule true everywhere.
-    if (!CanAccess(Page::VisionTeach)) return;
-    ResetVisionTeachState();
-    // A nominal's own camera view is where the placement is WATCHED from, which
-    // is the pose this detector has to work at — the exact counterpart of a
-    // station's private position.
-    visionOwnerDevice_ = a.device;
-    visionOwnerPosUid_ = n.viewUid;
-
-    const std::string name = NominalDetectorName(a.uid, n.uid, index);
-    VisionModel* m = FindVisionModel(session_.VisionModels(), name);
-    if (!m) {
-        VisionModel fresh;
-        fresh.uid  = GenerateUid();
-        fresh.name = name;
-        session_.VisionModels().push_back(std::move(fresh));
-        m = &session_.VisionModels().back();
-        session_.SaveVision();   // the nominal's reference below must survive a crash
-    }
-    visionSelUid_ = m->uid;
-
-    (index == 1 ? n.det1 : n.det2)   = m->uid;   // place_mark resolves by uid
-    (index == 1 ? n.mode1 : n.mode2) = "auto";   // teaching one is asking to use it
-    session_.SaveAligns();                       // taught by hand; persist like the rest
-
-    char buf[160];
-    std::snprintf(buf, sizeof(buf), "%s  -  nominal '%s'  -  object point %d",
-                  a.name.c_str(), n.name.c_str(), index);
-    visionOwnerLabel_ = buf;
-
-    visionFocusX_ = static_cast<float>(cameraW_) * 0.5f;
-    visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
-    visionTmpl_.key.clear();
-
-    visionReturnPage_ = Page::AlignPlace;
-    SwitchPage(Page::VisionTeach);
-}
-
-// Deleting a nominal takes its object detectors with it, exactly as deleting a
-// procedure takes its station detectors.
-void App::DropNominalDetectors(const AlignProc& a, const AlignNominal& n)
-{
-    int dropped = 0;
-    for (int k = 1; k <= 2; ++k) {
-        const VisionModel* m = NominalDetector(a, n, k);
-        if (!m) continue;
-        const std::string uid = m->uid;
-        if (visionSelUid_ == uid) visionSelUid_.clear();
-        workflow_.InvalidateDetector(uid);
-        if (session_.DeleteVisionModel(uid)) ++dropped;
-    }
-    if (dropped > 0) {
-        session_.SaveVision();
-        FD_INFO("vision", "'%s' nominal '%s': dropped %d object detector(s)",
-                a.name.c_str(), n.name.c_str(), dropped);
-    }
 }
 
 // ---- A gripped object's detector -------------------------------------------

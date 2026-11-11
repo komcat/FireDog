@@ -43,7 +43,7 @@ bool IsTakeoverPage(Page p)
            p == Page::RecipeEdit || p == Page::Scripts ||
            p == Page::DutView || p == Page::Run || p == Page::Align ||
            p == Page::VisionTeach || p == Page::AlignNominal ||
-           p == Page::AlignPlace || p == Page::Needle || p == Page::DeviceReg ||
+           p == Page::Needle || p == Page::DeviceReg ||
            p == Page::Grip || p == Page::Tray || p == Page::Mosaic ||
            p == Page::Version || p == Page::Oee;
 }
@@ -717,14 +717,6 @@ void App::ResetDocumentSelections()
     nomEditUid_.clear();
     nomHave_[0] = nomHave_[1] = false;
     nomErr_.clear();
-    // The placement page likewise: its measurement was of an object that was on
-    // the machine for the previous product.
-    if (currentPage_ == Page::AlignPlace) SwitchPage(Page::Align);
-    plcProcUid_.clear();
-    plcNomUid_.clear();
-    plcHave_[0] = plcHave_[1] = false;
-    plcLastMove_.clear();
-    plcSamples_.clear();
     visionSelUid_.clear();
     visionOwnerLabel_.clear();
     // Every patch thumbnail belongs to the models that just went away.

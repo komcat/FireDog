@@ -191,55 +191,14 @@ struct AlignNominal {
 
     // Where the CAMERA stands, focused, to look at this nominal ITSELF — the
     // bare target on the substrate, with nothing gripped over it. A private
-    // position like `viewUid`, named `algn_<procUid>_<nomUid>_c`.
-    //
-    // It is NOT `viewUid` and must never be merged with it. That one is the view
-    // of a gripped OBJECT hovering above the point: a different XY, and a
-    // different Z, because the height that focuses a part held in the jaws does
-    // not focus the substrate under it. Teaching one from the other is exactly
-    // the mistake `viewUid`'s tooltip already warns about, and merging the two
-    // fields would make that mistake unavoidable rather than merely easy.
+    // position named `algn_<procUid>_<nomUid>_c`, on the same ownership rule as
+    // a station's.
     //
     // Its Z is the whole point of storing it: the local frame is 2-D, so
     // local->machine hands back XY and nothing else. The focused Z is a
     // measurement of where the substrate is at this point, and the only way to
     // get it back is to have written it down when it was in focus.
     std::string camUid;
-
-    // How the OBJECT's two marks are found when something is placed here.
-    // "manual" = ask the operator; "auto" = run the taught detection model in
-    // `detN`, named `vdet_<procUid>_<nomUid>_p<N>` on the same private-ownership
-    // rule as an alignment station's detector.
-    //
-    // The mode is its own field, exactly like AlignStation::mode, rather than
-    // being read off `detN` being non-empty: a taught patch and its parameters
-    // cost real time at the microscope, so choosing manual for one part must not
-    // destroy them. Manual keeps the model on the shelf; detect picks it back up.
-    //
-    // The fallback defaults ON here, unlike a station's, because a placement is
-    // a per-part operation an operator is usually standing over: failing the
-    // whole run beats nothing, but asking beats both. It is never SILENT — a
-    // fallback logs a warning naming what failed, so a procedure cannot quietly
-    // claim to be automatic while a human places every point.
-    std::string mode1 = "manual", mode2 = "manual";
-    std::string det1, det2;
-    bool        autoFallbackManual = true;
-
-    // Where the CAMERA has to stand to see the object being placed here. A
-    // saved-position uid on the procedure's own device, private to this nominal
-    // and named `algn_<procUid>_<nomUid>_v` on the same ownership rule as a
-    // station's position.
-    //
-    // It is NOT the nominal, and usually shares no coordinate with it: the
-    // object is picked up somewhere else, and the height that focuses on a
-    // gripped part is not the height that focuses on the substrate. Without it
-    // every placement needed a hand-driven camera or an extra move_to_position
-    // step in front of it, and the nominal — the thing that knows where its
-    // object is looked at — knew nothing about it.
-    //
-    // Empty = not taught, and `place_view` then leaves the camera alone: a
-    // procedure written before this field must keep working.
-    std::string viewUid;
 };
 
 // The document: a named, uid'd, reusable procedure.

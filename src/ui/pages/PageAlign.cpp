@@ -51,19 +51,8 @@ bool IsOwnedStationPos(const SavedPos& sp, const std::string& procUid)
     return sp.name == StationPosName(procUid, 1) || sp.name == StationPosName(procUid, 2);
 }
 
-// The same convention one level down: where the CAMERA stands to see the object
-// being placed on one nominal. Private to the nominal, for the reason the field
-// itself gives — it is a viewing pose for a gripped part, not the target.
-//
-// "algn_" + 8 + "_" + 8 + "_v" = 24 chars, inside SavedPos::name's 32.
-std::string NominalViewPosName(const std::string& procUid, const std::string& nomUid)
-{
-    return "algn_" + procUid + "_" + nomUid + "_v";
-}
-
-// And the second pose a nominal owns: where the camera stands, FOCUSED, over the
-// nominal itself. Same convention, "_c" — it is not the "_v" object view, and
-// the two differ in Z by however far a gripped part hovers above the substrate.
+// The pose a nominal owns: where the camera stands, FOCUSED, over the nominal
+// itself. Same convention as a station's, suffixed "_c".
 //
 // "algn_" + 8 + "_" + 8 + "_c" = 24 chars, inside SavedPos::name's 32.
 std::string NominalCamPosName(const std::string& procUid, const std::string& nomUid)
@@ -217,9 +206,8 @@ void App::TeachAlignStation(AlignProc& a, int station)
     FD_INFO("align", "'%s' station %d taught as '%s'", a.name.c_str(), station, name.c_str());
 }
 
-// The one place a hidden, owner-named position is written. Three callers now
-// (a station, a nominal's object view and its camera focus pose) and they must
-// not drift: an
+// The one place a hidden, owner-named position is written. Two callers now
+// (a station and a nominal's camera focus pose) and they must not drift: an
 // update-in-place that assigned a fresh uid would silently orphan whatever
 // already pointed at the old one. "" when the device cannot be read.
 std::string App::CapturePrivatePose(const std::string& device, const std::string& name)
@@ -252,79 +240,11 @@ std::string App::CapturePrivatePose(const std::string& device, const std::string
     return tgt->uid;
 }
 
-// ---- a nominal's camera view ----------------------------------------------
-// Where the camera stands to SEE the object being placed on this nominal —
-// a different XY from the nominal, and usually a different Z, because a gripped
-// part is not at the substrate's focus. Owned by the nominal so the placement
-// can drive there by itself instead of needing a move_to_position in front of
-// every run.
-
-const SavedPos* App::AlignNominalView(const AlignProc& a, const AlignNominal& n) const
-{
-    return FindPos(session_.Positions(), a.device, n.viewUid);
-}
-
-void App::TeachAlignNominalView(AlignProc& a, AlignNominal& n)
-{
-    const std::string name = NominalViewPosName(a.uid, n.uid);
-    const std::string uid  = CapturePrivatePose(a.device, name);
-    if (uid.empty()) return;
-    n.viewUid = uid;
-    session_.SavePositions();
-    session_.SaveAligns();   // the reference is the taught thing; persist it too
-    FD_INFO("align", "'%s' nominal '%s': camera view taught as '%s'",
-            a.name.c_str(), n.name.c_str(), name.c_str());
-}
-
-// A plain UI move to a pose a human taught, like a station's Go — not the
-// armed class, which is for COMPUTED destinations.
-void App::GoToAlignNominalView(const AlignProc& a, const AlignNominal& n)
-{
-    const SavedPos* pos = AlignNominalView(a, n);
-    if (!pos) return;
-    for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
-        if (hardware_.MotionName(i) != a.device) continue;
-        IMotionController* dev = hardware_.MotionDevice(i);
-        if (!dev || !dev->IsConnected()) return;
-        std::vector<std::pair<std::string, double>> targets;
-        for (const std::string& ax : dev->Axes()) {
-            const auto it = pos->vals.find(ax);
-            if (it != pos->vals.end()) targets.emplace_back(ax, it->second);
-        }
-        if (!targets.empty()) workflow_.MoveToPosition(i, targets);
-        return;
-    }
-}
-
-// Deleting a nominal takes its view position with it, exactly as it takes its
-// detection models — a hidden orphan is something nobody goes looking for.
-void App::DropAlignNominalView(const AlignProc& a, AlignNominal& n)
-{
-    n.viewUid.clear();          // whether or not the row is there to erase
-    session_.SaveAligns();      // the reference is document state
-    const auto it = session_.Positions().find(a.device);
-    if (it == session_.Positions().end()) return;
-    std::vector<SavedPos>& list = it->second;
-    const std::string name = NominalViewPosName(a.uid, n.uid);
-    for (std::size_t i = list.size(); i-- > 0;) {
-        if (list[i].name != name) continue;
-        list.erase(list.begin() + static_cast<long>(i));
-        session_.SavePositions();
-        FD_INFO("align", "'%s' nominal '%s': dropped its camera view position",
-                a.name.c_str(), n.name.c_str());
-        return;
-    }
-}
-
 // ---- a nominal's camera FOCUS pose ----------------------------------------
 // Where the camera stands, focused, looking at the nominal itself. The local
 // frame is 2-D: local->machine hands back an XY and says nothing about height,
 // so the focused Z is a measurement that exists nowhere else once the stage
 // has moved. Writing it down while it is in focus is the only way to have it.
-//
-// Deliberately its own pose and not the `_v` object view: that one looks at a
-// part held ABOVE this point and is out of focus on the substrate by exactly
-// the height of the grip.
 
 const SavedPos* App::AlignNominalCamPos(const AlignProc& a, const AlignNominal& n) const
 {
@@ -513,21 +433,9 @@ void App::DrawAlignListPanel()
             (s == 1 ? a.s1 : a.s2).posUid = np.uid;
             pl.push_back(std::move(np));
         }
-        // ...and so does every nominal's CAMERA VIEW, for the same reason: the
-        // nominals came along with the plain copy, and a view they share with
-        // the original would vanish the day the original is deleted.
-        for (std::size_t i = 0; i < a.nominals.size() && i < src.nominals.size(); ++i) {
-            const SavedPos* vp = FindPos(session_.Positions(), src.device,
-                                         src.nominals[i].viewUid);
-            if (!vp) continue;
-            SavedPos np = *vp;   // copy BEFORE the push_back that may reallocate
-            std::snprintf(np.name, sizeof(np.name), "%s",
-                          NominalViewPosName(a.uid, a.nominals[i].uid).c_str());
-            np.uid = GenerateUid();
-            a.nominals[i].viewUid = np.uid;
-            pl.push_back(std::move(np));
-        }
-        // ...and every nominal's CAMERA FOCUS pose, on the identical argument.
+        // ...and so does every nominal's CAMERA FOCUS pose, for the same reason:
+        // the nominals came along with the plain copy, and a pose they share
+        // with the original would vanish the day the original is deleted.
         for (std::size_t i = 0; i < a.nominals.size() && i < src.nominals.size(); ++i) {
             const SavedPos* cp = FindPos(session_.Positions(), src.device,
                                          src.nominals[i].camUid);
@@ -1687,16 +1595,14 @@ void App::DrawAlignNominalList(AlignProc& a)
     ImGui::EndChild();
 
     // The deferred delete, now that nothing points into the vector any more.
-    // It still sweeps the private poses and models an older nominal may own,
-    // or they would linger as hidden orphans.
+    // It still sweeps the nominal's private focus pose, or it would linger as
+    // a hidden orphan.
     if (!dropUid.empty()) {
         for (std::size_t i = 0; i < a.nominals.size(); ++i) {
             if (a.nominals[i].uid != dropUid) continue;
             FD_INFO("align", "'%s': dropped nominal '%s'", a.name.c_str(),
                     a.nominals[i].name.c_str());
-            DropNominalDetectors(a, a.nominals[i]);   // its private object models go too
-            DropAlignNominalView(a, a.nominals[i]);   // and its private camera view
-            DropAlignNominalCamPos(a, a.nominals[i]);  // ...and its focus pose
+            DropAlignNominalCamPos(a, a.nominals[i]);  // its private focus pose
             a.nominals.erase(a.nominals.begin() + static_cast<long>(i));
             session_.SaveAligns();   // taught by hand — persisted like the frame
             alignNomSel_.clear();    // the fallback above picks the first one

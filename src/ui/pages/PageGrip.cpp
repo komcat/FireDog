@@ -27,7 +27,7 @@
 //     error is a number in a log and a glaring picture here.
 //
 // The Measure button launches the SAME shipped script the recipe step runs, for
-// the reason the Alignment and Placement pages do: the procedure an operator
+// the reason the Alignment page does: the procedure an operator
 // taught and the one that runs at three in the morning have to be one thing.
 //
 // The right-hand column is the profile list over four tabs: Profile (step 1

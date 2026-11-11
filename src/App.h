@@ -44,14 +44,12 @@ namespace firedog {
 // until closed via their top-right Close button (back to the previous page).
 // VisionTeach and AlignNominal are takeovers that are deliberately NOT in the
 // View menu: each teaches ONE station or nominal, so the only way in is that
-// thing's own button. AlignPlace is in the menu — it carries no state the
-// caller has to supply (it picks its own procedure and nominal), and being
-// three clicks deep inside another page made it findable only by someone who
-// already knew it was there. All three Close back to Align rather than to
-// prevPage_ (a takeover->takeover switch does not update prevPage_).
+// thing's own button. AlignNominal Closes back to Align and VisionTeach to
+// whoever opened it, rather than to prevPage_ (a takeover->takeover switch
+// does not update prevPage_).
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Light, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
-                  Align, VisionTeach, AlignNominal, AlignPlace, Needle,
+                  Align, VisionTeach, AlignNominal, Needle,
                   DeviceReg, Grip, Tray, Mosaic, Version, Oee };
 
 class AppUpdater;   // update/AppUpdater.h - owned by main(), it outlives App
@@ -485,19 +483,9 @@ private:
     // creating it if new; "" when the device cannot be read. The uid is stable
     // across a re-teach, which is what keeps references alive.
     std::string CapturePrivatePose(const std::string& device, const std::string& name);
-    // A nominal's CAMERA VIEW: where the procedure's device has to stand to see
-    // the object being placed there — named `algn_<procUid>_<nomUid>_v` and
-    // hidden, on the same ownership rule as a station's position. It is what
-    // lets place_view drive there instead of every placement needing a
-    // move_to_position step in front of it.
-    const SavedPos* AlignNominalView(const AlignProc& a, const AlignNominal& n) const;
-    void TeachAlignNominalView(AlignProc& a, AlignNominal& n);
-    void GoToAlignNominalView(const AlignProc& a, const AlignNominal& n);
-    void DropAlignNominalView(const AlignProc& a, AlignNominal& n);
     // The camera's FOCUSED view of the nominal itself (its own private
     // position, `_c`), and the computed move that centres the camera on the
-    // nominal so that pose can be taught in the first place. Separate from
-    // the `_v` object view on purpose - see AlignNominal::camUid.
+    // nominal so that pose can be taught in the first place.
     const SavedPos* AlignNominalCamPos(const AlignProc& a, const AlignNominal& n) const;
     void TeachAlignNominalCamPos(AlignProc& a, AlignNominal& n);
     void GoToAlignNominalCamPos(const AlignProc& a, const AlignNominal& n);
@@ -519,11 +507,6 @@ private:
                              bool ghost, double gx, double gy);
     void DrawAlignNominalPanel();                  // page body (takeover frame)
     void OpenAlignNominalTeach(const AlignProc& a, const std::string& nomUid);
-    // Placement page: measure where a gripped object actually is (the same two
-    // marks), and work out the correction that would put it on a nominal.
-    // COMPUTE ONLY — nothing is wired to move yet.
-    void DrawAlignPlacePanel();                    // page body (takeover frame)
-    void OpenAlignPlace(const AlignProc& a, const std::string& nomUid);
 
     // Needle page (View menu, full-page): the dispense needle's lever arm — what
     // it currently is, and the button that measures it again. Deliberately a
@@ -657,21 +640,13 @@ private:
     const VisionModel* StationDetector(const AlignProc& a, int station, int tier = 1) const;
     void DropAlignStationDetectors(const AlignProc& a);  // with the procedure
     void CopyAlignStationDetectors(const AlignProc& src, AlignProc& dst);
-    // The same page and the same private-ownership rule, for the two marks that
-    // locate an OBJECT being placed on a nominal: `vdet_<procUid>_<nomUid>_p<N>`.
-    // Teaching these is what lets a placement run without an operator; a
-    // detector that fails still falls back to asking, loudly.
-    void OpenVisionTeachForNominal(AlignProc& a, AlignNominal& n, int index);
-    const VisionModel* NominalDetector(const AlignProc& a, const AlignNominal& n,
-                                       int index) const;
     // The same three, one owner further out: a gripped-object profile's private
     // detector. Auto-named vdet_grip_<uid>, so the name is the ownership record
-    // exactly as it is for a station and for a nominal's object points.
+    // exactly as it is for a station.
     const VisionModel* GripDetector(const GripProfile& g) const;
     void OpenVisionTeachForGrip(GripProfile& g);
     void DropGripDetector(const GripProfile& g);
     void CopyGripDetector(const GripProfile& src, GripProfile& dst);
-    void DropNominalDetectors(const AlignProc& a, const AlignNominal& n);
     // Copy a model under a new private name, patch file included; "" on failure.
     std::string CopyVisionModelAs(const VisionModel& src, const std::string& newName);
     // Detection clipboard: Copy takes a model's SETTINGS (method, parameters,
@@ -1701,37 +1676,12 @@ private:
     float       nomZoom_ = 1.5f;          // same default as the pick window
     std::string nomErr_;                  // why the last Save refused
 
-    // Placement page state. Nothing here is persisted: a measurement of where
-    // one object happens to sit right now is not document data, and keeping it
-    // would invite somebody to move against a correction computed yesterday.
-    std::string plcProcUid_;              // procedure whose frame is in play
-    std::string plcNomUid_;               // the nominal being aimed at
-    std::string plcDevice_;               // device HOLDING the object (the mover)
-    AlignPoint  plcPt_[2];                // the object's two marks, machine mm
-    bool        plcHave_[2] = {false, false};
-    int         plcActive_  = 0;
-    float       plcPx_ = 0.0f, plcPy_ = 0.0f;
-    float       plcZoom_ = 1.5f;
-    // Largest correction the page will issue. A computed destination built on a
-    // mis-taught frame or a mis-marked object is not implausible-looking — it is
-    // an ordinary number that happens to be huge — so the ceiling is on screen
-    // and editable rather than a constant nobody can see. Beyond it, Move is
-    // refused and the operator has to raise it deliberately.
-    float       plcMaxMM_ = 2.0f;
-    std::string plcLastMove_;   // what was last issued, to compare the re-measure against
-    // Repeatability check: repeated measurements of the SAME, stationary
-    // object. Their spread is the MARKING error — the floor under any
-    // placement, and the only thing that says whether a leftover residual is a
-    // real miss or just two operators' worth of pixel. Object midpoints in
-    // machine mm; UI-only, never persisted.
-    std::vector<std::pair<double, double>> plcSamples_;
-
     // Vision teach page state — the models themselves live in session_.
     // Page::VisionTeach IS the "open" flag; visionSelUid_ says which model.
     std::string visionSelUid_;          // model being tuned ("" = none)
     std::string visionOwnerLabel_;      // "calibrate plate  -  station 1 (E1)"
     // Where Close goes: the page belongs to whoever opened it (a station card on
-    // Align, an object mark on Placement), and a takeover->takeover switch does
+    // Align, a detect step's helper, a grip profile), and a takeover->takeover switch does
     // not update prevPage_.
     Page        visionReturnPage_ = Page::Align;
     // Where the OWNER of this model stands, so the page can drive back there
@@ -1879,7 +1829,7 @@ private:
     // a re-teach or an anchor drag reloads it and nothing else does.
     PatchTex visionTmpl_;       // vision teach page: the NCC patch + its anchor
     PatchTex visionViewTex_;    // Vision detect helper: the step's view thumbnail
-    PatchTex alignTmpl_[2];     // object point 1/2 (placement), grip page
+    PatchTex alignTmpl_[2];     // grip page ([0]; [1] spare)
     // Alignment page station cards: one thumbnail per station x detection tier,
     // index (station - 1) * kAlignDetectTiers + (tier - 1).
     PatchTex alignTierTmpl_[2 * kAlignDetectTiers];

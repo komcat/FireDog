@@ -648,9 +648,11 @@ is listed under §6c.
 
 ### A nominal owns two camera poses, not one
 
-> **Being removed.** The pane no longer teaches either pose below, and
-> `nominal_view` / `place_view` go with the placement module (§6c). Kept here
-> until that removal lands, because existing files still carry the fields.
+> **Half removed (2026-11-10).** The object view (`viewUid`, `_v`,
+> `DropAlignNominalView`) is gone with the Placement page and `place_view`; a
+> nominal now owns ONE pose, the focus pose (`camUid`, `_c`), which `nominal_view`
+> still drives to. The text below keeps both because it explains why they were
+> never one field.
 
 `viewUid` (`algn_<procUid>_<nomUid>_v`) is where the camera stands to watch a
 **gripped object** hovering over this point. `camUid` (`…_c`) is where it stands,
@@ -705,10 +707,15 @@ is matched against a picture it never saw.
 
 ## 6c. Placement — putting a gripped object on a nominal
 
-> **Superseded — to be removed.** Device registration
-> (`device-registration-design.md`) and the gripped-object module
-> (`gripped-object-design.md`) replace this. The page is no longer reachable from
-> the nominal pane; the commands, scripts and page below are slated for deletion.
+> **Retired.** Device registration (`device-registration-design.md`) and the
+> gripped-object module (`gripped-object-design.md`) replace this. The `place_*`
+> commands and scripts are gone, and so is the page (`Page::AlignPlace`,
+> `PageAlignPlace.cpp`, F6, removed 2026-11-10) together with its teachers of a
+> nominal's camera view and object detectors (`TeachAlignNominalView`,
+> `OpenVisionTeachForNominal`), and the nominal fields only they wrote: `viewUid`,
+> `det1/det2`, `mode1/mode2` and the nominal's `auto_fallback_manual` are no
+> longer read or written. The text below is kept as the history of why the
+> correction is a delta.
 
 The interesting case is the other one: the object is held by **hex-left**, and
 the nominal is a point the **gantry's** camera measured. That is not a different

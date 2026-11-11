@@ -265,37 +265,6 @@ void App::DrawMainWindow()
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
                      ImGuiWindowFlags_MenuBar)) {
-        // Placement opens on whatever procedure the Alignment page has
-        // selected, so all three ways in — the View menu, F6, the quick strip —
-        // want the same two lines. It is NOT a plain page switch: OpenAlignPlace
-        // resets the marks, so a page already open is left alone. The F-keys
-        // activate rather than toggle anyway, and here that also protects a
-        // measurement in progress from a stray key.
-        //
-        // The list is fetched on use, not captured: the File menu above can
-        // replace the session's procedures wholesale.
-        const auto openPlacement = [&]() {
-            if (currentPage_ == Page::AlignPlace) return;
-            // Checked here as well as in SwitchPage, because the "no procedure
-            // selected" warning below would otherwise be the first thing an
-            // operator pressing F6 is told — an answer to a question they are
-            // not allowed to ask.
-            if (!CanAccess(Page::AlignPlace)) {
-                FD_WARN("users", "%s (%s) may not open Placement",
-                        user_.id.c_str(), RoleName(user_.role));
-                return;
-            }
-            std::vector<AlignProc>& list = session_.Aligns();
-            if (alignSel_ < 0 || alignSel_ >= static_cast<int>(list.size())) {
-                FD_WARN("ui", "Placement needs an alignment procedure selected "
-                              "(Alignment, F5)");
-                return;
-            }
-            AlignProc& a = list[static_cast<std::size_t>(alignSel_)];
-            OpenAlignPlace(a, a.nominals.empty() ? std::string()
-                                                 : a.nominals.front().uid);
-        };
-
         // The Version page's menu item, in View and in Help: one definition so
         // the two cannot disagree. The label carries the news - a found release
         // says so where an Admin looks, without a popup over anybody's work.
@@ -409,23 +378,6 @@ void App::DrawMainWindow()
                 if (CanAccess(Page::Align) &&
                     ImGui::MenuItem("Alignment", "F5", currentPage_ == Page::Align))
                     ToggleEditorPage(Page::Align);
-                // Placement IS reachable from a nominal's Place... button, but
-                // that is three clicks deep inside another page — findable only
-                // by someone who already knows it exists. It opens on whatever
-                // procedure the Alignment page has selected and picks that
-                // procedure's own combo up from there, so the menu costs it
-                // nothing: unlike the two teach pages, it carries no state that
-                // only the caller could supply.
-                if (CanAccess(Page::AlignPlace)) {
-                    const bool haveProc =
-                        alignSel_ >= 0 &&
-                        alignSel_ < static_cast<int>(session_.Aligns().size());
-                    if (ImGui::MenuItem("Placement", "F6",
-                                        currentPage_ == Page::AlignPlace, haveProc))
-                        openPlacement();
-                    if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                        ImGui::SetTooltip("Select an alignment procedure first (View > Alignment)");
-                }
                 if (CanAccess(Page::Needle) &&
                     ImGui::MenuItem("Needle", "F7", currentPage_ == Page::Needle))
                     ToggleEditorPage(Page::Needle);
@@ -471,7 +423,7 @@ void App::DrawMainWindow()
         }
 
         // Global page shortcuts: F1 Run, F2 Recipe Editor, F3 Motion, F4
-        // Scripts, F5 Alignment, F6 Placement, F7 Needle, F8 Registration,
+        // Scripts, F5 Alignment, F7 Needle, F8 Registration,
         // F9 Gripped object, F10 Waffle Tray, F11 Mosaic. Activate (not toggle)
         // — pressing the key on its own page is a no-op.
         if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && currentPage_ != Page::Run)
@@ -486,10 +438,6 @@ void App::DrawMainWindow()
             ToggleEditorPage(Page::Scripts);
         if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && currentPage_ != Page::Align)
             ToggleEditorPage(Page::Align);
-        // F6 says so in the log when no procedure is selected: a key press has
-        // no disabled state to look at, so a silent nothing reads as broken.
-        if (ImGui::IsKeyPressed(ImGuiKey_F6, false))
-            openPlacement();
         if (ImGui::IsKeyPressed(ImGuiKey_F7, false) && currentPage_ != Page::Needle)
             ToggleEditorPage(Page::Needle);
         if (ImGui::IsKeyPressed(ImGuiKey_F8, false) && currentPage_ != Page::DeviceReg)
@@ -532,26 +480,6 @@ void App::DrawMainWindow()
             pageBtn("Motion (F3)", Page::Motion, false);
             pageBtn("Scripts (F4)", Page::Scripts, true);
             pageBtn("Alignment (F5)", Page::Align, true);
-            // Not pageBtn: opening Placement is not a page switch but a switch
-            // WITH a subject (the selected procedure), and with no procedure
-            // there is nothing to open — hence the disabled state the other
-            // buttons never need.
-            if (CanAccess(Page::AlignPlace)) {
-                if (anyBtn) ImGui::SameLine();
-                anyBtn = true;
-                const bool active = (currentPage_ == Page::AlignPlace);
-                const bool haveProc =
-                    alignSel_ >= 0 &&
-                    alignSel_ < static_cast<int>(session_.Aligns().size());
-                if (active)
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.85f, 1.0f));
-                ImGui::BeginDisabled(!haveProc);
-                if (ImGui::Button("Placement (F6)", stripBtn)) openPlacement();
-                ImGui::EndDisabled();
-                if (active) ImGui::PopStyleColor();
-                if (!haveProc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("Select an alignment procedure first (Alignment, F5)");
-            }
             pageBtn("Needle (F7)", Page::Needle, true);
             // No Registration or Gripped object button: both are one-time
             // teach setups, reached from the View menu (or F8 / F9) only, so
@@ -586,7 +514,7 @@ void App::DrawMainWindow()
             currentPage_ == Page::RecipeEdit || currentPage_ == Page::Scripts ||
             currentPage_ == Page::DutView || currentPage_ == Page::Run ||
             currentPage_ == Page::Align || currentPage_ == Page::VisionTeach ||
-            currentPage_ == Page::AlignNominal || currentPage_ == Page::AlignPlace ||
+            currentPage_ == Page::AlignNominal ||
             currentPage_ == Page::Needle || currentPage_ == Page::DeviceReg ||
             currentPage_ == Page::Grip || currentPage_ == Page::Tray ||
             currentPage_ == Page::Mosaic || currentPage_ == Page::Version ||
@@ -599,7 +527,6 @@ void App::DrawMainWindow()
                                 : currentPage_ == Page::Align         ? "Alignment"
                                 : currentPage_ == Page::VisionTeach   ? "Vision detection"
                                 : currentPage_ == Page::AlignNominal  ? "Nominal target"
-                                : currentPage_ == Page::AlignPlace    ? "Place on nominal"
                                 : currentPage_ == Page::Needle        ? "Dispense needle"
                                 : currentPage_ == Page::DeviceReg     ? "Device registration"
                                 : currentPage_ == Page::Grip          ? "Gripped object"
@@ -613,13 +540,12 @@ void App::DrawMainWindow()
             // does not update prevPage_, so Close has to name Align explicitly
             // or it would jump to whatever hardware page happened to be open
             // before the Alignment page was.
-            // Vision teach is shared by the alignment stations and the nominals'
-            // object detectors, so it carries its own return page rather than
-            // naming one here.
-            const Page closeTo = (currentPage_ == Page::VisionTeach) ? visionReturnPage_
-                                 : (currentPage_ == Page::AlignNominal ||
-                                    currentPage_ == Page::AlignPlace)  ? Page::Align
-                                                                       : prevPage_;
+            // Vision teach is shared by the alignment stations, the detect
+            // steps and the grip profiles, so it carries its own return page
+            // rather than naming one here.
+            const Page closeTo = (currentPage_ == Page::VisionTeach)  ? visionReturnPage_
+                                 : (currentPage_ == Page::AlignNominal) ? Page::Align
+                                                                        : prevPage_;
             ImGui::BeginChild("EditorPage", ImGui::GetContentRegionAvail(),
                               ImGuiChildFlags_Borders);
             // The title row is the page's name and its way out: drawn larger
@@ -649,7 +575,6 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::Align)         DrawAlignPanel();
             else if (currentPage_ == Page::VisionTeach)   DrawVisionTeachPanel();
             else if (currentPage_ == Page::AlignNominal)  DrawAlignNominalPanel();
-            else if (currentPage_ == Page::AlignPlace)    DrawAlignPlacePanel();
             else if (currentPage_ == Page::Needle)        DrawNeedlePanel();
             else if (currentPage_ == Page::DeviceReg)     DrawDeviceRegPanel();
             else if (currentPage_ == Page::Grip)          DrawGripPanel();

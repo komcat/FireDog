@@ -61,7 +61,7 @@ UserRole MinRoleFor(Page p)
             return UserRole::Technician;
 
         // Teaching the machine: WatchEdit, TransformEdit, Scripts, Align,
-        // VisionTeach, AlignNominal, AlignPlace, Needle, DeviceReg. And
+        // VisionTeach, AlignNominal, Needle, DeviceReg. And
         // Version, whose button replaces the program itself.
         default:
             return UserRole::Admin;
