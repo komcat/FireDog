@@ -1744,4 +1744,38 @@ void OpenFolderInExplorer(const std::string& dir)
                   SW_SHOWNORMAL);
 }
 
+bool TuneButton(const char* what, double& value, double& tuneBy, bool& tuneByEdited,
+                double lo, double hi)
+{
+    tuneByEdited = false;
+    bool changed = false;
+    if (ImGui::SmallButton("Tune")) ImGui::OpenPopup("##tune");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add to or subtract from %s", what);
+    if (ImGui::BeginPopup("##tune")) {
+        const auto round6 = [](double x) { return std::round(x * 1e6) / 1e6; };
+        ImGui::Text("%s = %g", what, value);
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::InputDouble("tune by", &tuneBy, 0.0, 0.0, "%g");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            tuneBy       = std::fabs(tuneBy);   // the sign is the button pressed
+            tuneByEdited = true;
+        }
+        const double t = std::fabs(tuneBy);
+        const auto apply = [&](double nv) {
+            nv = round6(nv);
+            if (lo < hi) nv = std::clamp(nv, lo, hi);
+            value   = nv;
+            changed = true;
+        };
+        char lbl[96];
+        std::snprintf(lbl, sizeof(lbl), "+ %g = %g###plus", t, round6(value + t));
+        if (ImGui::Button(lbl)) apply(value + t);
+        ImGui::SameLine();
+        std::snprintf(lbl, sizeof(lbl), "- %g = %g###minus", t, round6(value - t));
+        if (ImGui::Button(lbl)) apply(value - t);
+        ImGui::EndPopup();
+    }
+    return changed;
+}
+
 } // namespace firedog

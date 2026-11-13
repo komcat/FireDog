@@ -1412,8 +1412,9 @@ private:
     // only - the step always stores ms. Persisted (ed_duration_sec).
     bool        edDurationSec_ = false;
     // The amount the Tune popup adds to / subtracts from a relative move's
-    // delta (move_relative delta_mm, move_relative_global dx/dy/dz_mm).
-    // One editor-wide value. Persisted (ed_tune_mm).
+    // delta (move_relative delta_mm, move_relative_global dx/dy/dz_mm) and to
+    // each axis of the Motion page's Edit Position dialog (ui/Widgets
+    // TuneButton). One app-wide value. Persisted (ed_tune_mm).
     double      edTuneMm_      = 0.01;
     std::string edTagFilter_;
     bool        edTagHide_    = false;

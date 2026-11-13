@@ -578,4 +578,14 @@ float KeyGlow(double since, double dur);
 // folder may not exist yet (product data/ before the first DUT) — create it.
 void OpenFolderInExplorer(const std::string& dir);
 
+// A "Tune" small button on the current row (SameLine first) that opens a popup
+// to add or subtract `tuneBy` from `value`: "+ 0.012 = 0.471". The result is
+// rounded to 6 decimals (no float dust in a saved file) and clamped to
+// [lo, hi] when lo < hi. `tuneBy` is the caller's (persisted) amount; it is
+// edited in the popup and `tuneByEdited` set when an edit finishes, so the
+// caller saves it. `what` names the value in the popup and tooltip. Push an ID
+// per row. Returns true when `value` changed.
+bool TuneButton(const char* what, double& value, double& tuneBy, bool& tuneByEdited,
+                double lo = 0.0, double hi = 0.0);
+
 } // namespace firedog

@@ -1209,6 +1209,12 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                 first = false;
                 ImGui::InputDouble("##v", &editVals_[a], 0.0, 0.0, "%.4f");
                 ImGui::SameLine();
+                // Nudge the typed value; still written on Save only. The amount
+                // is the one the Recipe Editor's Tune uses (edTuneMm_).
+                bool tuneEdited = false;
+                TuneButton(a.c_str(), editVals_[a], edTuneMm_, tuneEdited);
+                if (tuneEdited) SaveUiSettings();
+                ImGui::SameLine();
                 const auto it = sp.vals.find(a);
                 const double cur = (it != sp.vals.end()) ? it->second : 0.0;
                 ImGui::Text("%s", a.c_str());

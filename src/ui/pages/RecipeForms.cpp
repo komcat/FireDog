@@ -442,38 +442,15 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             if (ImGui::IsItemHovered()) HelpTooltip(p.help);
             tipShown = true;
             ImGui::SameLine();
-            if (ImGui::SmallButton("Tune")) ImGui::OpenPopup("##tune");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Add to or subtract from %s", p.name.c_str());
-            if (ImGui::BeginPopup("##tune")) {
-                // Round away float dust (0.459 + 0.012 = 0.47100000000000003)
-                // so the recipe file shows the number that was meant.
-                const auto round6 = [](double x) { return std::round(x * 1e6) / 1e6; };
-                const double now = params.contains(p.name) && params[p.name].is_number()
-                                       ? params[p.name].get<double>()
-                                       : v;
-                ImGui::Text("%s = %g", p.name.c_str(), now);
-                ImGui::SetNextItemWidth(110.0f);
-                ImGui::InputDouble("tune by", &edTuneMm_, 0.0, 0.0, "%g");
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    edTuneMm_ = std::fabs(edTuneMm_);
-                    SaveUiSettings();
-                }
-                const double t = std::fabs(edTuneMm_);
-                const auto apply = [&](double nv) {
-                    nv = round6(nv);
-                    if (p.minVal < p.maxVal) nv = std::clamp(nv, p.minVal, p.maxVal);
-                    params[p.name] = nv;
-                    changed = true;
-                };
-                char lbl[96];
-                std::snprintf(lbl, sizeof(lbl), "+ %g = %g###plus", t, round6(now + t));
-                if (ImGui::Button(lbl)) apply(now + t);
-                ImGui::SameLine();
-                std::snprintf(lbl, sizeof(lbl), "- %g = %g###minus", t, round6(now - t));
-                if (ImGui::Button(lbl)) apply(now - t);
-                ImGui::EndPopup();
+            double now = params.contains(p.name) && params[p.name].is_number()
+                             ? params[p.name].get<double>()
+                             : v;
+            bool tuneEdited = false;
+            if (TuneButton(p.name.c_str(), now, edTuneMm_, tuneEdited, p.minVal, p.maxVal)) {
+                params[p.name] = now;
+                changed = true;
             }
+            if (tuneEdited) SaveUiSettings();
         }
         // `z_mm` is an ABSOLUTE Z in the device's own axis space on every step
         // that has one (move_to_nominal, move_local, move_axis_to), so it gets
