@@ -75,7 +75,8 @@ struct PorSide {
 std::vector<std::string> ListPorProducts(const std::string& root);
 
 // Load one side. False (with *out->notes saying why) when the product's
-// manifest cannot be read; a missing role file is a note and an empty document.
+// manifest cannot be read - the machine files (hardware, maps, transforms) are
+// loaded all the same; a missing role file is a note and an empty document.
 // A role file that is EMPTY falls back to <root>/config/<role>.local.json, the
 // same way the app falls back for a product that never saved that role - so the
 // compare sees what a run on that machine would.

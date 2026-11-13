@@ -116,6 +116,25 @@ bool LoadPorSide(const std::string& root, const std::string& product, PorSide* o
     s.product    = product;
     const std::string dir = s.root + "/products/" + product;
 
+    // The machine's own files first: a target that does not have the product
+    // yet still has hardware worth comparing.
+    const std::string maps = s.root + "/config/maps.local.json";
+    if (IsFile(maps)) {
+        s.maps = LoadMotionMapsFile(maps);
+        s.notes.push_back("maps: " + maps);
+    } else {
+        s.notes.push_back("maps: none (" + maps + ")");
+    }
+    LoadHardware(s);
+    const std::string xf = s.root + "/config/motion_transforms.json";
+    if (IsFile(xf)) {
+        s.transforms    = LoadMotionTransforms(xf);
+        s.hasTransforms = true;
+        s.notes.push_back("transforms: " + xf);
+    } else {
+        s.notes.push_back("transforms: none (" + xf + ")");
+    }
+
     s.manifest = LoadProductManifestAt(dir);
     if (!s.manifest.Loaded()) {
         s.notes.push_back("no readable manifest in " + dir);
@@ -150,23 +169,6 @@ bool LoadPorSide(const std::string& root, const std::string& product, PorSide* o
         s, "trays", "trays.local.json",
         [](const std::string& p) { return LoadWaffleTraysFile(p); },
         [](const std::vector<WaffleTray>& d) { return d.empty(); });
-
-    const std::string maps = s.root + "/config/maps.local.json";
-    if (IsFile(maps)) {
-        s.maps = LoadMotionMapsFile(maps);
-        s.notes.push_back("maps: " + maps);
-    } else {
-        s.notes.push_back("maps: none (" + maps + ")");
-    }
-    LoadHardware(s);
-    const std::string xf = s.root + "/config/motion_transforms.json";
-    if (IsFile(xf)) {
-        s.transforms    = LoadMotionTransforms(xf);
-        s.hasTransforms = true;
-        s.notes.push_back("transforms: " + xf);
-    } else {
-        s.notes.push_back("transforms: none (" + xf + ")");
-    }
 
     AddFileNames(dir + "/scripts", &s.scripts);
     AddFileNames(s.root + "/config/scripts", &s.scripts);

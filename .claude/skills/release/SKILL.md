@@ -73,7 +73,7 @@ On failure, report the first error lines from the log and stop - do not pack.
 Verify, whatever ran the build:
 
 ```
-Get-Item out\build\x64-release-deploy\FireDog.exe, out\build\x64-release-deploy\FireDogRig.exe | Select-Object Name, Length, LastWriteTime
+Get-Item out\build\x64-release-deploy\FireDog.exe, out\build\x64-release-deploy\FireDogRig.exe, out\build\x64-release-deploy\FireDogPor.exe | Select-Object Name, Length, LastWriteTime
 Get-Content out\build\x64-release-deploy\generated\firedog_gitinfo.h
 ```
 

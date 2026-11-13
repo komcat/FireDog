@@ -18,11 +18,12 @@ WAGO needs no SDK — it speaks Modbus TCP over raw winsock. Neither does the CC
 cmake --preset x64-debug             # configure (presets: x64/x86 × debug/release)
 out/build/x64-debug/FireDog.exe      # run the client
 out/build/x64-debug/FireDogRig.exe   # run the console bring-up rig
+out/build/x64-debug/FireDogPor.exe   # compare a master product with a machine (read-only)
 ```
 
 ## Targets
 
-Four, from the one root `CMakeLists.txt`:
+Five, from the one root `CMakeLists.txt`:
 
 - **`firedog_hw`** (STATIC) — the UI-free layers: `src/core`, `src/hardware`,
   `src/vision`, `src/workflow`. **All vendor-SDK gating lives here**, as PUBLIC compile
@@ -42,6 +43,10 @@ Four, from the one root `CMakeLists.txt`:
   libraries compile, links both, adds GLFW/ImGui/ImPlot and Velopack.
 - **`FireDogRig`** — the console bring-up rig (`tools/rig/`, see
   `docs/rig-console.md`). Links `firedog_hw` and nothing else.
+- **`FireDogPor`** — the POR compare tool (`tools/por/`, `docs/por-design.md`): an
+  ImGui window over `firedog_cmd`'s `src/por` engine. Compiles the client's
+  `ui/GlHost.cpp` + `ui/Theme.cpp` itself and links `firedog_cmd`, `firedog_hw` and
+  GLFW/ImGui/ImPlot. Read-only; its own state is under `%LOCALAPPDATA%\FireDogPor`.
 
 `firedog_stage_runtime(<target>)` performs the POST_BUILD staging both exes need
 — the shipped `config/` defaults next to the exe (the machine's own state is

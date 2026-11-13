@@ -20,14 +20,17 @@ Entry point is `FireDog.cpp` → `firedog::App::Run()`, whose main loop is `whil
 cmake --preset x64-debug             # configure (presets: x64/x86 × debug/release)
 out/build/x64-debug/FireDog.exe      # run the client
 out/build/x64-debug/FireDogRig.exe   # console hardware bring-up rig
+out/build/x64-debug/FireDogPor.exe   # POR compare: master product vs a machine (read-only)
 ```
 
-Four targets: **`firedog_hw`** (static lib — `src/core` + `src/hardware` +
+Five targets: **`firedog_hw`** (static lib — `src/core` + `src/hardware` +
 `src/vision` + `src/workflow`, and where all vendor-SDK gating lives),
 **`firedog_cmd`** (static lib — `src/command` + `src/session` +
-`src/mosaic/MosaicDoc` + `src/por` (the POR compare engine), links `firedog_hw` + Lua; UI-free, so a second exe can load a
-product and list the command specs), **`FireDog`** (the GUI client),
-**`FireDogRig`** (the console rig, sources in `tools/rig/`; `firedog_hw` only).
+`src/mosaic/MosaicDoc` + `src/por` (the POR compare engine), links `firedog_hw` + Lua;
+UI-free, so a second exe can load a product and list the command specs), **`FireDog`**
+(the GUI client), **`FireDogRig`** (the console rig, sources in `tools/rig/`;
+`firedog_hw` only), **`FireDogPor`** (the read-only POR compare window, `tools/por/`,
+`docs/por-design.md`).
 
 CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first configure needs network). Vendor SDKs are optional, each gated by a compile def (`HAS_PYLON`/`HAS_VISA`/`HAS_PI`/`HAS_ACS`/`HAS_EZIIO`/`HAS_HALCON`) with a simulated stub fallback, so the build always stays green — details in `docs/build-and-sdks.md`.
 
@@ -47,6 +50,7 @@ CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first con
 | — Files | `src/core/Paths.*`, `FireDog.ini` (beside the exe, never shipped) | where every file lives: the exe folder (shipped only), the machine root (state), the data root (production output); the first-start copy of old exe-side state | `docs/machine-root-design.md` |
 | — Mosaic | `core/MosaicConfig`, `vision/MosaicLayout` + `ImageShift`, `mosaic/`, `command/CommandsMosaic.cpp`, `ui/pages/PageMosaic.cpp` | large-area capture: an area from 3/4 taught corners walked by `mosaic_capture`, viewed tile-paged with pan/zoom, markers + crop labels, stitched/crop exports, camera-map calibration, seam refinement | `docs/mosaic-design.md` |
 | — Tools | `tools/rig/` | `FireDogRig`, the console bring-up rig (layers 1–2, no UI) | `docs/rig-console.md` |
+| — POR | `src/por/` (engine, in `firedog_cmd`), `tools/por/` (`FireDogPor`) | a master product compared read-only with another machine's copy: deck, recipes and steps matched by NAME (uids are per machine), the positions the deck needs, `hardware.json` pin by pin; *Export master* to an empty folder | `docs/por-design.md` |
 | — ML data | `tools/xcan/xcan_label.py`, `xcan_label_ui.py` | offline Python labeler for `<data root>/xcan/`: automatic stall/peak/recovery labels from the scan chains; a tkinter review window for overrides (`data/xcan/overrides.csv`); export to `xcan_labeled/` (CSVs + per-label COPIES — raw day folders are never moved) | `docs/xcan-dataset.md` |
 | — DUT repair | `tools/dut/dut_recover_from_logs.py` | one-off: rebuilds DUT records wiped by the old destructive `dut_open new=true` from the logs (XCAN peaks, after-bake reading, `$run`s); dry-run to `data_recovered/` by default, `--apply` keeps `dut.json.pre-recovery.bak` | `docs/dut-design.md` |
 | — Position records | `core/PositionRecords.*`, `command/CommandsRecords.cpp`, `ui/windows/WndPositionRecords.cpp` | `record_position` appends a device's current pose under a NAME to `<product data>/position_records/<name>.jsonl` on every unit run; the Position Records window views it (stats, histograms, trend, X–Y) by week / month / last N units | `docs/position-records-design.md` |
@@ -230,4 +234,5 @@ Breaking any of these is a defect, not a style choice.
 - Windows-only, MSVC, C++20. Aim for `/W4`-clean.
 - **Vendor-SDK gating belongs on the `firedog_hw` library, PUBLIC** — never on an executable, or the second exe silently loses a `HAS_*` def. New executables call `firedog_stage_runtime(<target>)` for the config/DLL staging.
 - **`FireDogRig` is read-only.** It connects and reports; it must never gain a command that moves an axis, writes an IO output, or switches an output. Actuation stays in the client behind its armed checkboxes.
+- **`FireDogPor` writes nothing to either side it compares.** It must never resolve `MachinePath`/`DataPath` (that runs `InitPaths` and its first-start writes): its log is redirected with `Logger::SetFileBeforeFirstUse` before the first `FD_*` line, the root is only previewed (`ResolveRootsReadOnly`), sides load through `LoadPorSide` (plain `Load*File` readers, never `ProductSession`), and its own state lives under `%LOCALAPPDATA%\FireDogPor`. The one writer is *Export master*, into an EMPTY folder the engineer names. It constructs `HardwareManager` + `Workflow` only to register the command specs and never `Start`s them.
 - **There is no automated test suite.** Verify by building clean, then running (simulated hardware today). Never claim "tests pass" or invent a test command.

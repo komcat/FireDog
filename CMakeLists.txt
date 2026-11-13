@@ -647,6 +647,25 @@ target_link_libraries(FireDogRig PRIVATE firedog_hw)
 
 firedog_stage_runtime(FireDogRig)
 
+# ---- FireDogPor executable (POR compare: a master product vs a machine) ----
+# Read-only ImGui tool over firedog_cmd's src/por engine (docs/por-design.md).
+# Lives in tools/ for the same reason as the rig. It reuses the client's window
+# host and theme by compiling those two TUs itself - they depend on nothing but
+# ImGui/ImPlot/GLFW - and the client's icon.
+file(GLOB_RECURSE FIREDOG_POR_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/por/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/por/*.h")
+
+add_executable(FireDogPor
+    ${FIREDOG_POR_SOURCES}
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/GlHost.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/Theme.cpp"
+    ${FIREDOG_ICON_RC})
+target_link_libraries(FireDogPor PRIVATE firedog_cmd firedog_hw
+    glfw imgui_lib implot_lib opengl32)
+
+firedog_stage_runtime(FireDogPor)
+
 # TODO (layer 1 hardware SDKs still to port) — mirror the detection blocks above:
 #   PI GCS2  -> external/PI/PI_GCS2_DLL_x64.lib   (DONE: HAS_PI, copies DLL)
 #   ACS ACSC -> external/ACS/ACSCL_x64.LIB        (DONE: HAS_ACS, links ws2_32)

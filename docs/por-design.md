@@ -1,8 +1,8 @@
 # POR — a master product compared with, then deployed to, another machine
 
-*Status: DESIGN (2026-11-12). Phase 1 (foundations) and phase 2 (the compare
-engine, `src/por/`) are in; phases 3-4 are not built yet. Working name of the tool:
-`FireDogPor`.*
+*Status: phases 1-3 are in (2026-11-13): the foundations, the compare engine
+(`src/por/`) and the read-only tool `FireDogPor` (`tools/por/`). Phase 4 (deploy) is
+not built. Working name of the tool: `FireDogPor`.*
 
 ## 1. What it is for
 
@@ -97,13 +97,21 @@ call a difference:
 ## 5. The tool
 
 ### 5.1 Inputs
-- **Master** — a folder: the product folder plus the master machine's
-  `config/hardware.json` and `config/maps.local.json`. The tool's *Export master*
-  writes exactly that to a chosen folder (read-only on the master; it writes only to
-  the destination) with a small `por_export.json` (product, source machine name, date,
-  exe version, file hashes).
-- **Target** — this machine's root, resolved from `FireDog.ini` READ-ONLY, or any
-  folder of the same shape (so an engineer can compare two exports on a desk PC).
+- **Master** — a ROOT folder laid out like a machine root: an export, or another
+  machine's root over the network (`\\M1\D$\ProgramData\FireDog`). The tool's *Export
+  master* (`tools/por/PorExport`) copies `products/<name>/` (minus `*.bak` and the
+  `*.history.jsonl` journal) and `config/hardware.json`, `maps.local.json`,
+  `motion_transforms.json` into an EMPTY folder the engineer names, plus a
+  `por_export.json` (product, source root, date, the tool's build, the file list). It
+  refuses a non-empty destination or one inside the product folder; the master is
+  only read.
+- **Target** — this machine's root, resolved from `FireDog.ini` READ-ONLY
+  (`ResolveRootsReadOnly`, the *This machine* button), or any folder of the same shape
+  (so an engineer can compare two exports on a desk PC). A target that lacks the
+  product still loads its hardware, maps and transforms, so a first compare shows the
+  hardware page and every master row as only-on-master.
+- The tool's own state — the roots last used, thresholds, the window, `imgui.ini`, the
+  log — is under `%LOCALAPPDATA%\FireDogPor`: never beside the exe, never a machine root.
 
 ### 5.2 Read-only by construction
 The compare must not write a byte to the target. So the tool does **not** use
