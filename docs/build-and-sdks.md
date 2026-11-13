@@ -31,9 +31,10 @@ Four, from the one root `CMakeLists.txt`:
   reach every consumer. Add a new SDK by extending the detection block *and* the
   matching `if(..._FOUND)` block on this library — not on an executable.
 - **`firedog_cmd`** (STATIC) — the document + command layer: `src/command`,
-  `src/session`, and `src/mosaic/MosaicDoc` (`CommandsMosaic` writes the mosaic record
-  through it). Links `firedog_hw`, `lua_static`, `sol2` and the stb include dir, all
-  PUBLIC, plus `SOL_ALL_SAFETIES_ON` PUBLIC. UI-free — nothing here includes ImGui,
+  `src/session`, `src/mosaic/MosaicDoc` (`CommandsMosaic` writes the mosaic record
+  through it) and `src/por` (the POR compare engine, `docs/por-design.md`). Links
+  `firedog_hw`, `lua_static`, `sol2` and the stb include dir, all PUBLIC, plus
+  `SOL_ALL_SAFETIES_ON` PUBLIC. UI-free — nothing here includes ImGui,
   GLFW, OpenGL, `ui/`, `App` or Velopack — so a second executable can load a product
   and enumerate the command specs (`docs/por-design.md`). `MosaicWorker` stays in the
   client.

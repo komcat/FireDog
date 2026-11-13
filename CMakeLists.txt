@@ -547,19 +547,22 @@ function(firedog_stage_runtime tgt)
     endif()
 endfunction()
 
-# ---- firedog_cmd : the document + command layer (command + session) ----
+# ---- firedog_cmd : the document + command layer (command + session + por) ----
 # The recipe/program model, the command registry and every command, the recipe
 # and Lua engines, and ProductSession. UI-free: nothing here includes ImGui,
 # GLFW, OpenGL, ui/, App or Velopack — keep it that way. A library so that a
 # second executable can load a product and list the command specs without the
 # client (docs/por-design.md). mosaic/MosaicDoc comes along because
 # CommandsMosaic writes the mosaic record through it; MosaicWorker (texture
-# paging for the viewer) stays in the client.
+# paging for the viewer) stays in the client. src/por is the POR compare engine
+# (docs/por-design.md): pure C++ over two loaded product sides.
 file(GLOB_RECURSE FIREDOG_CMD_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/command/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/command/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/session/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/session/*.h")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/session/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/por/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/por/*.h")
 list(APPEND FIREDOG_CMD_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/mosaic/MosaicDoc.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/mosaic/MosaicDoc.h")
@@ -587,7 +590,7 @@ file(GLOB_RECURSE FIREDOG_SOURCES CONFIGURE_DEPENDS
 # core/, hardware/, vision/ and workflow/ are compiled into firedog_hw, command/,
 # session/ and mosaic/MosaicDoc into firedog_cmd, both linked below — compiling
 # them a second time here would duplicate every symbol.
-list(FILTER FIREDOG_SOURCES EXCLUDE REGEX "/src/(core|hardware|vision|workflow|command|session)/")
+list(FILTER FIREDOG_SOURCES EXCLUDE REGEX "/src/(core|hardware|vision|workflow|command|session|por)/")
 list(FILTER FIREDOG_SOURCES EXCLUDE REGEX "/src/mosaic/MosaicDoc\\.(cpp|h)$")
 
 # The app icon, compiled in as a Win32 resource (see resources/FireDog.rc for

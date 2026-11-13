@@ -25,7 +25,7 @@ out/build/x64-debug/FireDogRig.exe   # console hardware bring-up rig
 Four targets: **`firedog_hw`** (static lib — `src/core` + `src/hardware` +
 `src/vision` + `src/workflow`, and where all vendor-SDK gating lives),
 **`firedog_cmd`** (static lib — `src/command` + `src/session` +
-`src/mosaic/MosaicDoc`, links `firedog_hw` + Lua; UI-free, so a second exe can load a
+`src/mosaic/MosaicDoc` + `src/por` (the POR compare engine), links `firedog_hw` + Lua; UI-free, so a second exe can load a
 product and list the command specs), **`FireDog`** (the GUI client),
 **`FireDogRig`** (the console rig, sources in `tools/rig/`; `firedog_hw` only).
 

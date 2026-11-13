@@ -1,8 +1,8 @@
 # POR — a master product compared with, then deployed to, another machine
 
-*Status: DESIGN (2026-11-12). Phase 1 (foundations: the `firedog_cmd` library,
-`GlHost`'s ini path, `StepSummary`, the read-only loaders) is in; phases 2-4 are not
-built yet. Working name of the tool: `FireDogPor`.*
+*Status: DESIGN (2026-11-12). Phase 1 (foundations) and phase 2 (the compare
+engine, `src/por/`) are in; phases 3-4 are not built yet. Working name of the tool:
+`FireDogPor`.*
 
 ## 1. What it is for
 
@@ -128,7 +128,7 @@ connects; Pylon is initialised, which is why the tool ships beside `FireDog.exe`
 └──────────────────┴──────────────────────────────┴──────────────────────────────┘
 ```
 - **Explorer** (left): Deck (programs → slots → folders → recipe nodes), Recipes,
-  Positions (§6). Every item carries the WORST status below it, so the problem is found
+  Positions (§6), Hardware (§6a). Every item carries the WORST status below it, so the problem is found
   without opening anything.
 - **Master | Target** (middle, right) are ONE `ImGui::BeginTable` with two columns in
   one scroll region — paired rows line up and scroll together by construction (there is
@@ -177,6 +177,40 @@ master axes · target axes · Δ per axis and |ΔXYZ|. Statuses:
   settings) — highlighted, never an error.
 - **map** — a required map missing on the target, or a node of it pointing at a
   position the target lacks.
+
+## 6a. The Hardware page
+
+Two machines of one TYPE should be configured alike, and the step compare cannot see
+a wiring difference: a step that names `switch_8` resolves on both machines even when
+`switch_8` is input 3 on one and input 5 on the other. So the master's
+`hardware.json` and `motion_transforms.json` are compared with the target's, section
+by section (`por/PorHardware`):
+
+| Section | Matched by | Rows beneath |
+|---|---|---|
+| Motion devices | name | — |
+| Motion transforms | device name | — |
+| IO devices | name | one per named pin, `IN n` / `OUT n` |
+| Pneumatic slides | name | — |
+| Cameras | display name, else id | — |
+| Keithley · CLD101x · PSUs | name | — |
+| Lights | name | one per channel `Ln` |
+| IO watch · Safety watch | (one each) | bindings by name · signals by device + pin |
+
+- **Pins are compared by NUMBER**, both sides' names on the same pin side by side
+  (pin numbers are normalised, bit i == pin i, `CLAUDE.md` Hardware). A name that sits
+  on another pin on the other side is **Changed — "wired differently"**, with the pin
+  it is on there. A name the target lacks is Missing when the deck uses it.
+- **Fields have a class.** DESIGN (axes, controller type, counts, pin and channel
+  names, triggers, transforms) is judged. MACHINE (IP, port, board id, serial, VISA
+  address) is this unit's identity: shown dimmed, never judged. A camera's pixel→mm is
+  MEASURED: shown with its difference.
+- **`used`**: every device, pin, slide and light channel the master's deck reaches
+  (the working recipes' device/pin/slide/light params, a slide's own pins, a command's
+  `needs`) is marked; a used one missing on the target is Missing, the rest of a
+  difference Changed.
+- The page compares and nothing else: a fix is a hand edit of the target's
+  `<root>/config/hardware.json`, the same as today (`CLAUDE.md`, State & documents).
 
 ## 7. Deploy (phase 4 — direction, to be designed on phase-3 results)
 
@@ -231,19 +265,31 @@ Each numbered item is its own commit; foundations change no behaviour.
     (the no-`File` loaders, `ProductSession`, `DutSession`, `HardwareConfigPath`).
 
 **Phase 2 — the compare engine (plain C++, no UI, `src/por/` in `firedog_cmd`)**
-- 2a. `PorSide`: one side loaded read-only from a folder — manifest, positions,
-  recipes, programs, aligns, grips, trays, vision index, hardware names, maps.
-- 2b. Name resolution + ambiguity detection; param normalisation (§4) driven by
-  `ParamType`.
-- 2c. Sequence alignment (LCS) for slots/folders/steps → a diff tree of paired rows with
-  statuses; the worst-status roll-up for the explorer.
-- 2d. The position trace (§6.1) and the positions table (§6.2).
+- 2a. `PorSide` (`por/PorSide`): one side loaded read-only from a ROOT folder laid out
+  like a machine root (`products/<name>/`, `config/hardware.json`,
+  `config/maps.local.json`) — so the target is its machine root and a master export
+  is a folder of the same shape. A role file that is empty falls back to
+  `<root>/config/<role>.local.json`, as the app does. Hardware is reduced to the
+  NAMES a recipe may use (enabled motion / IO + pins / PSUs / slides / light
+  channels); scripts and prompt pictures to file names.
+- 2b/2c. `ComparePor` (`por/PorCompare`): recipes first (by name; a name used twice
+  on a side is Ambiguous), then the deck, whose recipe nodes take their recipe's
+  result. `PorAlign` is the one sequence aligner (LCS, then same-type pairing in each
+  gap) for slots, nodes and steps. Params go through `EffectiveParams` and are judged
+  per `ParamType`: references resolved to names on each side (`Missing` when one
+  does not resolve), `PointXyz` and `detect_object.model` as Measured, the rest by
+  value. A row's `worst` rolls up for the explorer's badges.
+- 2d. `ComparePositions` (`por/PorPositions`): the §6 trace and table — Deck tier in
+  first-use order, Private poses matched through their owner, Unused, TargetOnly;
+  untraced product scripts and missing required maps listed beside it.
+- 2e. `CompareHardware` (`por/PorHardware`): §6a. `PorSide` keeps the whole
+  `HardwareConfig` and `motion_transforms.json` for it.
 
 **Phase 3 — `FireDogPor` (read-only)**
 - 3a. Target + shell: `tools/por/`, links `firedog_cmd` + imgui/implot/glfw, own icon
   `.rc`, own `imgui.ini` and log, `firedog_stage_runtime`; pick master folder / target.
 - 3b. Explorer + Deck/Recipes compare (§5.3).
-- 3c. Positions page (§6).
+- 3c. Positions page (§6) and Hardware page (§6a).
 - 3d. *Export master* (§5.1).
 - Release: `package-release.ps1` already packs every exe; the `/release` skill's
   verify step learns the third exe.
