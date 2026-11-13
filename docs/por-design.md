@@ -1,8 +1,8 @@
 # POR — a master product compared with, then deployed to, another machine
 
-*Status: DESIGN (2026-11-12). Phases 1a (the `firedog_cmd` library) and 1b
-(`GlHost::Init` takes the ini path) are in; nothing else is built yet. Working name
-of the tool: `FireDogPor`.*
+*Status: DESIGN (2026-11-12). Phases 1a (the `firedog_cmd` library), 1b
+(`GlHost::Init` takes the ini path) and 1c (`StepSummary`) are in; nothing else is
+built yet. Working name of the tool: `FireDogPor`.*
 
 ## 1. What it is for
 
@@ -212,9 +212,11 @@ Each numbered item is its own commit; foundations change no behaviour.
   updated to four targets.
 - 1b. `GlHost::Init` takes the `imgui.ini` path (FireDog passes today's
   `MachinePath("imgui.ini")`).
-- 1c. `App::AutoNickname` becomes a free function over a small resolver interface
-  (recipes, positions, aligns, grips, trays by uid → name), output byte-identical; the
-  editor calls it through an adapter over `session_`.
+- 1c. `App::AutoNickname`'s body becomes `StepSummary(step, StepSummaryDocs)`
+  (`command/StepSummary.h`): the docs are pointers to the registry, recipes, positions,
+  aligns, grips and trays (null = show the uid), output byte-identical;
+  `AutoNickname` is the editor's adapter over `session_`. `FormatDurationMs` moved
+  there from `ui/Widgets` with it.
 - 1d. A path-taking product loader (`LoadProductManifestAt(dir)`) beside the
   name-taking one, and a read-only `FireDog.ini` reader that resolves the root without
   `InitPaths`' side effects.

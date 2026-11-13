@@ -10,6 +10,7 @@
 #include "imgui.h"
 
 #include "ui/Widgets.h"
+#include "command/StepSummary.h"   // FormatDurationMs
 #include "core/DataBus.h"
 #include "core/Log.h"
 #include "core/Topics.h"

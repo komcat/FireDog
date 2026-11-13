@@ -14,7 +14,7 @@
 #include "ui/Widgets.h"
 #include "ui/Theme.h"   // kTeachOrange
 #include "command/Commands.h"   // kDispenseHelper, kRoiFilterViewHelper
-#include "command/RoiFilterView.h"   // the roi_filter_view_setup tree label
+#include "command/StepSummary.h"   // the step tree label (AutoNickname)
 #include "core/Log.h"
 #include "core/DutSession.h"
 
@@ -914,119 +914,19 @@ bool App::TeachPositionByUid(const std::string& device, const std::string& uid)
 
 // Live-generated step label from the params: shown in the tree whenever the
 // nickname is empty (so it always tracks edits), and materialized into the
-// nickname field by the inspector's "gen" button. Skips plumbing params
-// (timeouts, tolerances, poll rates) and resolves position uids to names.
+// nickname field by the inspector's "gen" button. The text itself is
+// StepSummary (command/StepSummary.h), shared with the POR compare tool so the
+// two describe a step identically; this only hands it the session's documents.
 std::string App::AutoNickname(const RecipeStep& s) const
 {
-    const auto num = [](double v) {
-        char b[32];
-        std::snprintf(b, sizeof(b), "%g", v);
-        return std::string(b);
-    };
-    const auto condText = [&num](const nlohmann::json& c) {
-        std::string t = c.value("key", c.value("topic", std::string()));
-        t += " " + c.value("op", std::string());
-        if (c.contains("value")) {
-            const nlohmann::json& v = c["value"];
-            t += " " + (v.is_string() ? v.get<std::string>()
-                                      : v.is_number() ? num(v.get<double>()) : v.dump());
-        }
-        return t;
-    };
-
-    if (s.type == "loop") {
-        if (s.params.contains("while"))
-            return "loop while " + condText(s.params["while"]);
-        return "loop x" + num(s.params.value("count", 1.0));
-    }
-    if (s.type == "if") return "if " + condText(s.params);
-    if (s.type == "group") return "group";
-    if (s.type == "parallel") return "parallel";
-    if (s.type == "sub_recipe") {
-        const std::string uid = s.params.value("uid", std::string());
-        for (const Recipe& r : session_.Recipes())
-            if (r.uid == uid) return "run " + r.name;
-        return "sub_recipe";
-    }
-    if (s.type == "stop_recipe")
-        return s.params.value("ok", true) ? "stop (ok)" : "stop (fail)";
-
-    const CommandSpec* spec = orch_.registry.Find(s.type);
-    if (!spec) return s.type;
-
-    // Seven numbers that read as one thing: what the view will look like.
-    if (s.type == "roi_filter_view_setup")
-        return "view: " + CameraSetupSummary(RoiFilterViewSetupFromParams(
-                              ParamValues(EffectiveParams(*spec, s.params))));
-    if (s.type == "roi_filter_view_clear") return "view: clear the filter";
-
-    const auto skip = [](const std::string& n) {
-        return n == "timeout_ms" || n == "leg_timeout_ms" || n == "tol_mm" ||
-               n == "start_tol_mm" || n == "poll_ms" || n == "max_iterations" ||
-               n == "velocity_mm_s" || n == "exposure_us" || n == "settle_min_ms" ||
-               n == "pre_delay_ms" || n == "post_delay_ms";
-    };
-    std::string out = s.type;
-    const std::string dev = EffectiveString(*spec, s.params, "device");
-    int added = 0;
-    for (const ParamSpec& p : spec->params) {
-        if (added >= 3) break;
-        if (skip(p.name) || !s.params.contains(p.name)) continue;
-        const nlohmann::json& v = s.params[p.name];
-        std::string piece;
-        if (p.type == ParamType::PositionUid && v.is_string()) {
-            piece = v.get<std::string>();
-            const auto it = session_.Positions().find(dev);
-            if (it != session_.Positions().end()) {
-                for (const SavedPos& sp : it->second)
-                    if (sp.uid == piece) { piece = sp.name; break; }
-            }
-        } else if (p.type == ParamType::NominalUid && v.is_string()) {
-            // Same reason as PositionUid: the step stores a uid, and a uid in
-            // the step tree tells the operator nothing.
-            piece = v.get<std::string>();
-            const AlignProc* ap =
-                FindAlignProc(session_.Aligns(), s.params.value("alignment", std::string()));
-            if (ap) {
-                if (const AlignNominal* nm = FindAlignNominal(*ap, piece)) piece = nm->name;
-            }
-        } else if (p.type == ParamType::GripUid && v.is_string()) {
-            piece = v.get<std::string>();
-            if (const GripProfile* g = FindGripProfile(session_.Grips(), piece))
-                piece = g->name;
-        } else if (p.type == ParamType::TrayUid && v.is_string()) {
-            piece = v.get<std::string>();
-            if (const WaffleTray* t = FindWaffleTray(session_.Trays(), piece))
-                piece = t->name;
-        } else if (p.type == ParamType::DurationMs && v.is_number()) {
-            piece = FormatDurationMs(std::llround(v.get<double>()));   // "delay 5 s"
-        } else if (p.type == ParamType::IntChoice && v.is_number()) {
-            // The choice's name, for the same reason: "align_station 2" makes
-            // the reader look the numbering up.
-            const int idx = static_cast<int>(v.get<double>()) - static_cast<int>(p.minVal);
-            if (idx >= 0 && idx < static_cast<int>(p.options.size())) piece = p.options[idx];
-            else piece = num(v.get<double>());
-        } else if (p.type == ParamType::PointXyz && v.is_object() &&
-                   v.value("X", nlohmann::json()).is_number() &&
-                   v.value("Y", nlohmann::json()).is_number()) {
-            // Where on the part, which is what tells two dispense steps apart.
-            piece = "@" + num(v["X"].get<double>()) + "," + num(v["Y"].get<double>());
-        } else if (p.type == ParamType::ScriptFile && v.is_string()) {
-            piece = v.get<std::string>();   // show the file name, not the path
-            const std::size_t cut = piece.find_last_of("/\\");
-            if (cut != std::string::npos) piece = piece.substr(cut + 1);
-        } else if (v.is_string()) {
-            piece = v.get<std::string>();
-        } else if (v.is_boolean()) {
-            piece = v.get<bool>() ? "on" : "off";
-        } else if (v.is_number()) {
-            piece = num(v.get<double>());
-        }
-        if (piece.empty()) continue;
-        out += " " + piece;
-        ++added;
-    }
-    return out;
+    StepSummaryDocs docs;
+    docs.registry  = &orch_.registry;
+    docs.recipes   = &session_.Recipes();
+    docs.positions = &session_.Positions();
+    docs.aligns    = &session_.Aligns();
+    docs.grips     = &session_.Grips();
+    docs.trays     = &session_.Trays();
+    return StepSummary(s, docs);
 }
 
 // One row per step; structural steps (except stop_recipe) are tree nodes.
