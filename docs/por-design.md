@@ -1,7 +1,8 @@
 # POR — a master product compared with, then deployed to, another machine
 
-*Status: DESIGN (2026-11-12). Phase 1a (the `firedog_cmd` library) is in; nothing
-else is built yet. Working name of the tool: `FireDogPor`.*
+*Status: DESIGN (2026-11-12). Phases 1a (the `firedog_cmd` library) and 1b
+(`GlHost::Init` takes the ini path) are in; nothing else is built yet. Working name
+of the tool: `FireDogPor`.*
 
 ## 1. What it is for
 

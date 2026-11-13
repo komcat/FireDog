@@ -148,7 +148,10 @@ int App::Run()
     place.x = ui.winX;  place.y = ui.winY;
     place.w = ui.winW;  place.h = ui.winH;
     place.maximized = ui.winMaximized;
-    if (!host_.Init("FireDog - Active Alignment", kWinW, kWinH, place)) {
+    // The window layout is this machine's, not the build's: beside the other
+    // machine state rather than in the working directory (the exe folder).
+    if (!host_.Init("FireDog - Active Alignment", kWinW, kWinH,
+                    MachinePath("imgui.ini"), place)) {
         FD_ERROR("app", "GlHost init failed");
         return 1;
     }

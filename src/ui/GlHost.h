@@ -31,7 +31,13 @@ public:
     // on any connected monitor is ignored for POSITION but still honoured for
     // size: a screen can be unplugged between runs, and a window nobody can
     // reach with the mouse is worse than one in the wrong place.
-    bool Init(const char* title, int width, int height,
+    //
+    // `iniPath` is where ImGui keeps the window layout (imgui.ini); empty means
+    // none is read or written. The CALLER names it, because two executables
+    // sharing one file overwrite each other's layout, and because the host
+    // must not resolve a machine path itself: that runs InitPaths, whose
+    // first-start side effects a read-only tool must never trigger.
+    bool Init(const char* title, int width, int height, const std::string& iniPath,
               const WindowPlacement& restore = WindowPlacement{});
     void Shutdown();
 
@@ -83,7 +89,7 @@ private:
     GLFWwindow*     window_ = nullptr;
     WindowPlacement placement_;
 
-    std::string iniPath_;              // imgui.ini under the machine root (ImGui keeps the pointer)
+    std::string iniPath_;              // the caller's imgui.ini (ImGui keeps the pointer)
     std::string fontPath_;             // requested typeface; empty = built-in font
     std::string loadedPath_;           // typeface currently in the atlas
     float       fontSize_  = 14.0f;

@@ -1,7 +1,6 @@
 // GlHost.cpp
 #include "ui/GlHost.h"
 
-#include "core/Paths.h"
 
 #include "imgui.h"
 #include "implot.h"
@@ -38,7 +37,7 @@ bool RectReachable(int x, int y, int w, int h)
 }
 } // namespace
 
-bool GlHost::Init(const char* title, int width, int height,
+bool GlHost::Init(const char* title, int width, int height, const std::string& iniPath,
                   const WindowPlacement& restore)
 {
     if (!glfwInit()) return false;
@@ -79,10 +78,10 @@ bool GlHost::Init(const char* title, int width, int height,
     ImPlot::CreateContext();
 
     ImGuiIO& io = ImGui::GetIO();
-    // The window layout is this machine's, not the build's: beside the other
-    // machine state rather than in the working directory (the exe folder).
-    iniPath_       = MachinePath("imgui.ini");
-    io.IniFilename = iniPath_.c_str();
+    // The window layout file is the caller's choice (see Init in GlHost.h);
+    // none at all when it passes an empty path.
+    iniPath_       = iniPath;
+    io.IniFilename = iniPath_.empty() ? nullptr : iniPath_.c_str();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;   // real extra OS windows
 
