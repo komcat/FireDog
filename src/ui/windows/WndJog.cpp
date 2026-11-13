@@ -416,7 +416,7 @@ void App::DrawJogPosTab()
 
         // An unresolved uid must never be clickable: it names a position this
         // product does not contain, and the pad has no idea where that is.
-        ImGui::BeginDisabled(!ready || !p);
+        ImGui::BeginDisabled(!ready || !p || p->untaught);
         if (empty)         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
         else if (dangling) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.30f, 0.20f, 1.0f));
         const char* label = p ? p->name : (dangling ? "?" : "--");
@@ -444,6 +444,8 @@ void App::DrawJogPosTab()
                     std::snprintf(b, sizeof(b), "%s %9.4f\n", av.first.c_str(), av.second);
                     tip += b;
                 }
+                if (p->untaught)
+                    tip += "NOT TAUGHT on this machine - teach it before driving to it\n";
                 tip += "right-click to reassign";
                 ImGui::SetTooltip("%s", tip.c_str());
             } else if (dangling) {
@@ -1349,6 +1351,7 @@ void App::DrawJogUpdatePosModal()
             for (SavedPos& p : it->second) if (p.uid == u.uid) { rec = &p; break; }
         if (rec) {
             std::string from, to;
+            rec->untaught = false;   // written from the live pose: taught here
             for (const JogPosUpdate::Row& r : u.rows) {
                 rec->vals[r.axis] = r.after;
                 char b[48];

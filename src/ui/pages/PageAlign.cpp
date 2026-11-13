@@ -237,6 +237,7 @@ std::string App::CapturePrivatePose(const std::string& device, const std::string
         const auto it = live.find(ax);
         tgt->vals[ax] = (it != live.end()) ? it->second : 0.0;
     }
+    tgt->untaught = false;   // captured from the live pose: taught here
     return tgt->uid;
 }
 
@@ -268,6 +269,10 @@ void App::GoToAlignNominalCamPos(const AlignProc& a, const AlignNominal& n)
 {
     const SavedPos* pos = AlignNominalCamPos(a, n);
     if (!pos) return;
+    if (pos->untaught) {
+        FD_WARN("align", "%s", UntaughtPositionMessage(a.device, *pos).c_str());
+        return;
+    }
     for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
         if (hardware_.MotionName(i) != a.device) continue;
         IMotionController* dev = hardware_.MotionDevice(i);
@@ -538,7 +543,8 @@ void App::DrawAlignStationCard(AlignProc& a, int station)
         // Go: a plain UI move to the station, so the operator can confirm the
         // teach point without launching the whole procedure. Layer 2 owns it.
         const SavedPos* pos = FindPos(session_.Positions(), a.device, st.posUid);
-        ImGui::BeginDisabled(busy || !pos || !dev || !dev->IsConnected());
+        ImGui::BeginDisabled(busy || !pos || (pos && pos->untaught) || !dev ||
+                             !dev->IsConnected());
         // NOTE: `pos` points into the positions vector. Teaching may push_back into
         // that same vector, so it is re-resolved after the Teach button below.
         if (ImGui::Button("Go")) {

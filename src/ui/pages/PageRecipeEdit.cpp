@@ -903,6 +903,7 @@ bool App::TeachPositionByUid(const std::string& device, const std::string& uid)
             const auto lv = live.find(ax);
             sp.vals[ax] = (lv != live.end()) ? lv->second : 0.0;
         }
+        sp.untaught = false;
         session_.SavePositions();
         FD_INFO("saved", "re-taught '%s' (uid %s, %s) from the live pose",
                 sp.name, uid.c_str(), device.c_str());

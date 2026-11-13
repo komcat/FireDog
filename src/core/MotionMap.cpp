@@ -269,6 +269,7 @@ std::string NearestMapNodeUid(const MotionMap& map,
         for (const SavedPos& sp : positions)
             if (sp.uid == n.uid) { p = &sp; break; }
         if (!p) continue;   // dangling node (position deleted) — not a candidate
+        if (p->untaught) continue;   // another machine's numbers, like NearestSavedPos
         double d2 = 0.0;
         for (const auto& [axis, v] : p->vals) {
             const auto it = pose.find(axis);

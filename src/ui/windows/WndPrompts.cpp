@@ -636,7 +636,10 @@ void App::DrawManualAdjustWindow()
         const float boxH = ImGui::GetTextLineHeight() * 3.0f + style.WindowPadding.y * 2.0f;
         const float textW = 300.0f * k;
         ImGui::BeginGroup();
-        if (req.teach) ImGui::TextColored(kTeachOrange, "TEACH  %s", req.positionName.c_str());
+        if (req.teach)
+            ImGui::TextColored(kTeachOrange, req.untaught ? "TEACH  %s  (NOT TAUGHT HERE)"
+                                                          : "TEACH  %s",
+                               req.positionName.c_str());
         ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + textW);
         ImGui::TextUnformatted(req.message.c_str());
         ImGui::PopTextWrapPos();
@@ -691,7 +694,9 @@ void App::DrawManualAdjustWindow()
                               axis.c_str(), li->second - val);
                 delta += buf;
             }
-            ImGui::TextDisabled("saved  %s", saved.c_str());
+            // A placeholder's numbers are another machine's: shown as such, so
+            // the delta reads as "how far from the master", never as a target.
+            ImGui::TextDisabled(req.untaught ? "master %s" : "saved  %s", saved.c_str());
             if (!delta.empty()) ImGui::TextColored(kTeachOrange, "delta  %s", delta.c_str());
         }
     }
@@ -764,9 +769,14 @@ void App::DrawManualAdjustWindow()
             ImGui::SetTooltip("Write the device's current pose into '%s'.",
                               req.positionName.c_str());
         ImGui::SameLine();
-        if (ImGui::Button("Skip (keep saved)", ImVec2(170.0f * k, 0.0f))) answer(false);
+        if (ImGui::Button(req.untaught ? "Skip (leave untaught)" : "Skip (keep saved)",
+                          ImVec2(170.0f * k, 0.0f)))
+            answer(false);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Leave '%s' as it is and continue.", req.positionName.c_str());
+            ImGui::SetTooltip(req.untaught ? "Leave '%s' untaught and continue - every run\n"
+                                             "refuses it until it is taught."
+                                           : "Leave '%s' as it is and continue.",
+                              req.positionName.c_str());
         ImGui::SameLine();
         // Done teaching: this position and every one after it keep their
         // saved values, and the run ends HERE - nothing else moves. It is the

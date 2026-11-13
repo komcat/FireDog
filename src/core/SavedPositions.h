@@ -19,6 +19,13 @@ struct SavedPos {
                                           // recipes/programs reference this
     std::map<std::string, double> vals;   // axis -> value
     bool hidden = false;                  // system position — not shown by default
+    // A PLACEHOLDER: the row exists (a POR deploy added it because the deck
+    // names it) but nobody has taught it on THIS machine, so `vals` are another
+    // machine's numbers, kept for reference only. Every mover refuses it, every
+    // Go is disabled on it, and a teach of it starts where the device already
+    // stands. Any write of real values (a teach, Update, Edit) clears it.
+    // docs/por-design.md §7.8.
+    bool untaught = false;
 };
 
 // Device name -> ordered list of taught positions.
@@ -29,6 +36,10 @@ using SavedPosMap = std::map<std::string, std::vector<SavedPos>>;
 // readout that names where a device is (the Aux plate, the Jog box), so two
 // panels never disagree about whether the stage has arrived.
 inline constexpr double kSavedPosAtTolMM = 0.050;
+
+// The one refusal text for driving to an untaught position, so a recipe step, a
+// script and a page button say the same thing.
+std::string UntaughtPositionMessage(const std::string& device, const SavedPos& p);
 
 // Reads config/positions.local.json, falling back to config/positions.json.
 SavedPosMap LoadSavedPositions();
@@ -41,6 +52,9 @@ bool SaveSavedPositions(const SavedPosMap& positions);
 // Euclidean over the axes the position and the pose SHARE; a position that
 // shares no axis with the pose is not a candidate, so a partial reading still
 // ranks. `distMM` (if given) receives that distance. Null when nothing ranks.
+//
+// Untaught positions are never candidates: their values are another machine's,
+// so naming the stage by one would name a place this machine never stood.
 //
 // Hidden positions are candidates by DEFAULT: this answers "where is the
 // stage", and withholding the true nearest would name a neighbour instead and

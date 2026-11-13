@@ -86,7 +86,11 @@ void App::RebuildTeachPick()
                 const auto di = session_.Positions().find(t.device);
                 if (di != session_.Positions().end())
                     for (const SavedPos& p : di->second)
-                        if (p.uid == t.uid) { row.name = p.name; break; }
+                        if (p.uid == t.uid) {
+                            row.name     = p.name;
+                            row.untaught = p.untaught;
+                            break;
+                        }
                 const auto wi = was.find(key);
                 row.checked = (wi == was.end()) ? true : wi->second;
                 ri = rowOf.emplace(key, teachPickRows_.size()).first;
@@ -172,7 +176,17 @@ void App::DrawTeachPickWindow()
             ImGui::TableNextColumn();
             ImGui::Text("%d", i + 1);
             ImGui::TableNextColumn();
+            if (r.untaught) ImGui::PushStyleColor(ImGuiCol_Text, kTeachOrange);
             ImGui::Checkbox(r.name.c_str(), &r.checked);
+            if (r.untaught) {
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Not taught on this machine. Ticked, the run stops\n"
+                                      "here WITHOUT moving and you teach it where the\n"
+                                      "device stands; unticked, the run is refused.");
+                ImGui::SameLine();
+                ImGui::TextColored(kTeachOrange, "untaught");
+            }
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(r.device.c_str());
             ImGui::TableNextColumn();

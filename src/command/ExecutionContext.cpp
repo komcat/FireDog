@@ -150,7 +150,8 @@ void ExecutionContext::RecordPosition(const std::string& device,
         list.push_back(std::move(np));
         tgt = &list.back();
     }
-    tgt->vals = vals;
+    tgt->vals     = vals;
+    tgt->untaught = false;
     wf_.QueueSavedPosition(device, *tgt);
     FD_INFO("recipe", "taught '%s' on %s (%zu axes)", tgt->name, device.c_str(),
             vals.size());
@@ -165,6 +166,7 @@ bool ExecutionContext::RecordPositionByUid(const std::string& device,
     for (SavedPos& sp : it->second) {
         if (sp.uid != uid) continue;
         for (const auto& [axis, v] : vals) sp.vals[axis] = v;
+        sp.untaught = false;   // the run's copy too: a later step may drive to it
         wf_.QueueSavedPosition(device, sp);
         FD_INFO("recipe", "taught '%s' on %s by uid (%zu axes)", sp.name, device.c_str(),
                 vals.size());

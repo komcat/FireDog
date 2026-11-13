@@ -279,6 +279,9 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
 
     const SavedPos* pos = ctx.FindPosition(proc->device, st.posUid);
     if (!pos) return CommandResult::Fail("station position uid not found");
+    if (pos->untaught)
+        return CommandResult::Fail("station " + std::to_string(station) + ": " +
+                                   UntaughtPositionMessage(proc->device, *pos));
     const auto targets = TargetsOf(*pos, m);
     if (targets.empty()) return CommandResult::Fail("station position shares no axes with device");
 
@@ -955,6 +958,9 @@ CommandResult DriveToNominalPose(ExecutionContext& ctx, const ParamValues& p,
     if (!pos)
         return CommandResult::Fail("nominal '" + nom->name + "' names a " + what +
                                    " that no longer exists - re-teach it");
+    if (pos->untaught)
+        return CommandResult::Fail("nominal '" + nom->name + "': " +
+                                   UntaughtPositionMessage(proc->device, *pos));
     auto targets = TargetsOf(*pos, m);
     if (targets.empty())
         return CommandResult::Fail(std::string(what) + " shares no axes with '" +

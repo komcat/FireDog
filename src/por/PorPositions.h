@@ -44,6 +44,11 @@ struct PorPosRow {
     bool        axesDiffer    = false;
     bool        ambiguous     = false;   // the name is used twice on a side
     bool        overThreshold = false;
+    // SavedPos::untaught on either side: a placeholder whose numbers are the
+    // master's, so a value compare would call it Same. An untaught target row
+    // is judged Missing (it is not taught here); an untaught master row on the
+    // deck is the master's own defect.
+    bool        masterUntaught = false, targetUntaught = false;
     std::vector<std::string> uses;       // "Siphog888 > PROD V2 > Load > 3.2 move_to_position"
     std::string note;
 };

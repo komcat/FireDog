@@ -36,11 +36,17 @@ struct PosChange {
     std::string nameBefore;   // rename only
     std::map<std::string, double> before;   // update / delete: the old axis values
     std::map<std::string, double> after;    // add / update: the new axis values
+    // The untaught flag (SavedPos::untaught) after and before the change. A
+    // teach of a placeholder is an "update" with untaughtBefore set, journalled
+    // even when the values did not move; an add of a placeholder has untaught.
+    bool untaught       = false;
+    bool untaughtBefore = false;
 };
 
 // Diff two maps into journal entries (stamped with `at`/`by`/`source`).
 // A position is matched by uid within its device. Values are compared at
-// 1e-6 mm: a rewrite of the same numbers is not a change. A row that moved
+// 1e-6 mm: a rewrite of the same numbers is not a change - unless the
+// untaught flag changed with it, which is. A row that moved
 // AND was renamed yields two entries, so each is restorable on its own.
 std::vector<PosChange> DiffPositions(const SavedPosMap& before, const SavedPosMap& after,
                                      const std::string& by, const std::string& source);

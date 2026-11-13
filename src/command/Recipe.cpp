@@ -447,15 +447,22 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             break;
         case ParamType::PositionUid: {
             const auto it = env.positions.find(device);
-            bool found = false;
+            const SavedPos* found = nullptr;
             if (it != env.positions.end()) {
                 for (const SavedPos& sp : it->second) {
-                    if (sp.uid == v) { found = true; break; }
+                    if (sp.uid == v) { found = &sp; break; }
                 }
             }
             if (!found)
                 Issue(env, where, path, "position uid '" + v + "' not found for device '" +
                                       device + "'");
+            // An untaught placeholder refuses the run here, before anything
+            // moves - except on a mover that is about to TEACH it (`teach`, set
+            // by a teach run), which teaches it where the device stands. The
+            // movers refuse it again at run time for the paths that skip this
+            // check (Lua, a command run from another).
+            else if (found->untaught && !merged.value(std::string(kTeachParamName), false))
+                Issue(env, where, path, UntaughtPositionMessage(device, *found));
             break;
         }
         case ParamType::AlignUid: {

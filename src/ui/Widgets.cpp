@@ -1595,6 +1595,12 @@ const SavedPos* TaughtPosePicker(const char* id, const SavedPosMap& all,
         for (const SavedPos& sp : it->second) {
             if (sp.hidden) continue;
             any = true;
+            // A placeholder's numbers are another machine's - listed, so the
+            // name is not a mystery, but not pickable.
+            if (sp.untaught) {
+                ImGui::TextDisabled("%s  (untaught)", sp.name);
+                continue;
+            }
             if (ImGui::Selectable(sp.name)) picked = &sp;
         }
         if (!any) ImGui::TextDisabled("only system positions taught");

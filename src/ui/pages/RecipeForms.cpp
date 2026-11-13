@@ -9,6 +9,7 @@
 
 #include "imgui.h"
 
+#include "ui/Theme.h"     // kTeachOrange (an untaught position)
 #include "ui/Widgets.h"
 #include "command/StepSummary.h"   // FormatDurationMs
 #include "core/DataBus.h"
@@ -699,9 +700,13 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             break;
         }
         const bool canTeach = mc && mc->IsConnected() && resolved && !v.empty();
+        bool untaught = false;   // a placeholder: Teach here, never Go
+        if (!v.empty() && it != session_.Positions().end())
+            for (const SavedPos& sp : it->second)
+                if (sp.uid == v) { untaught = sp.untaught; break; }
         if (showPair) {
             ImGui::SameLine();
-            ImGui::BeginDisabled(!canTeach);
+            ImGui::BeginDisabled(!canTeach || untaught);
             if (ImGui::SmallButton("Go")) {
                 std::vector<std::pair<std::string, double>> tgt;
                 // it->second, not Positions()[dev]: operator[] would INSERT an
@@ -718,7 +723,9 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
                 if (!workflow_.MoveToPosition(static_cast<std::size_t>(devIdx), tgt))
                     FD_WARN("saved", "move %s -> '%s' failed", dev.c_str(), preview.c_str());
             }
+            ImGui::EndDisabled();
             ImGui::SameLine();
+            ImGui::BeginDisabled(!canTeach);
             if (ImGui::SmallButton("Teach here")) {
                 // Handoff only. The pose is read when the dialog is confirmed, not
                 // now: the driver idles at 1 Hz and the dialog is what asks it to
@@ -736,6 +743,8 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
 
         if (!resolved)
             ImGui::TextColored(kStaleRed, "not a position of '%s' - re-pick", dev.c_str());
+        else if (untaught)
+            ImGui::TextColored(kTeachOrange, "not taught on this machine - jog there and Teach here");
         break;
     }
     case ParamType::PointXyz: {

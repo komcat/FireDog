@@ -149,6 +149,12 @@ std::string ValidateParams(const CommandSpec& spec, const nlohmann::json& params
             continue;
         }
         const nlohmann::json& v = params[p.name];
+        // `{}` is the UNTAUGHT point a POR deploy writes for a step it could not
+        // pair with this machine's: present, so it can never pass for "no
+        // point" (for detect_object that would mean "detect where the camera
+        // stands"), and refused with a message that says what to do.
+        if (p.type == ParamType::PointXyz && v.is_object() && v.empty())
+            return "point '" + p.name + "' not taught on this machine - Teach here in the step";
         if (!TypeMatches(p.type, v)) {
             return "parameter '" + p.name + "' must be a " +
                    std::string(ParamTypeName(p.type));

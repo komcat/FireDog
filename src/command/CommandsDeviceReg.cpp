@@ -558,6 +558,8 @@ CommandResult ExecToolTravelToCamera(ExecutionContext& ctx, const ParamValues& p
         const SavedPos* pos = ctx.FindPosition(device, via);
         if (!pos)
             return CommandResult::Fail("via_position uid not found for '" + device + "'");
+        if (pos->untaught)
+            return CommandResult::Fail("via_position: " + UntaughtPositionMessage(device, *pos));
         const auto targets = TargetsOf(*pos, m);
         if (targets.empty())
             return CommandResult::Fail("via_position shares no axes with '" + device + "'");

@@ -250,7 +250,9 @@ bool ProductSession::RestorePosition(const PosChange& entry)
         std::snprintf(row->name, sizeof(row->name), "%s", entry.nameBefore.c_str());
     } else if (entry.action == "update") {
         if (!row || entry.before.empty()) return false;
-        row->vals = entry.before;
+        row->vals     = entry.before;
+        row->untaught = entry.untaughtBefore;   // restoring a teach of a placeholder
+                                                // puts the placeholder back
     } else if (entry.action == "delete") {
         if (entry.before.empty()) return false;
         if (!row) {   // re-create under the same uid so old references resolve again
@@ -950,8 +952,9 @@ void ProductSession::MergeTaughtPositions(
         if (!sp.uid.empty()) {
             for (SavedPos& e : list) {
                 if (e.uid == sp.uid) {
-                    e.vals = sp.vals;
-                    found  = true;
+                    e.vals     = sp.vals;
+                    e.untaught = false;   // taught now, on this machine
+                    found      = true;
                     break;
                 }
             }
@@ -959,8 +962,9 @@ void ProductSession::MergeTaughtPositions(
         if (!found) {
             for (SavedPos& e : list) {
                 if (std::string(e.name) == sp.name) {
-                    e.vals = sp.vals;
-                    found  = true;
+                    e.vals     = sp.vals;
+                    e.untaught = false;
+                    found      = true;
                     break;
                 }
             }

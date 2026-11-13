@@ -92,10 +92,11 @@ std::vector<PosChange> DiffPositions(const SavedPosMap& before, const SavedPosMa
                 c.uid    = np.uid;
                 c.name   = np.name;
                 c.after  = np.vals;
+                c.untaught = np.untaught;
                 out.push_back(std::move(c));
                 continue;
             }
-            if (!SameVals(op->vals, np.vals)) {
+            if (!SameVals(op->vals, np.vals) || op->untaught != np.untaught) {
                 PosChange c;
                 stamp(c);
                 c.action = "update";
@@ -104,6 +105,8 @@ std::vector<PosChange> DiffPositions(const SavedPosMap& before, const SavedPosMa
                 c.name   = np.name;
                 c.before = op->vals;
                 c.after  = np.vals;
+                c.untaught       = np.untaught;
+                c.untaughtBefore = op->untaught;
                 out.push_back(std::move(c));
             }
             if (std::string(op->name) != np.name) {
@@ -162,6 +165,8 @@ bool AppendPositionHistory(const std::string& path, const std::vector<PosChange>
         if (!c.nameBefore.empty()) j["name_before"] = c.nameBefore;
         if (!c.before.empty())     j["before"]      = ValsToJson(c.before);
         if (!c.after.empty())      j["after"]       = ValsToJson(c.after);
+        if (c.untaught)            j["untaught"]        = true;
+        if (c.untaughtBefore)      j["untaught_before"] = true;
         f << j.dump() << '\n';
         FD_INFO("saved", "history: %s '%s' (%s, %s) by %s via %s", c.action.c_str(),
                 c.name.c_str(), c.device.c_str(), c.uid.c_str(),
@@ -193,6 +198,8 @@ std::vector<PosChange> LoadPositionHistory(const std::string& path)
             c.nameBefore = j.value("name_before", "");
             if (j.contains("before")) c.before = ValsFromJson(j["before"]);
             if (j.contains("after"))  c.after  = ValsFromJson(j["after"]);
+            c.untaught       = j.value("untaught", false);
+            c.untaughtBefore = j.value("untaught_before", false);
             out.push_back(std::move(c));
         } catch (const std::exception& e) {
             FD_WARN("saved", "%s:%d: bad history line skipped (%s)", path.c_str(), lineNo,

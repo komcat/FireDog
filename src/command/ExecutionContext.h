@@ -152,6 +152,9 @@ public:
         bool        teach = false;
         std::string positionName;              // display only
         std::map<std::string, double> target;  // the saved values, display only
+        // The position is an untaught placeholder: the device did NOT move to
+        // it, `target` is another machine's numbers, and Skip leaves it untaught.
+        bool        untaught = false;
     };
 
     // Crosshair pick (the Alignment Procedure's manual mode): the run pauses

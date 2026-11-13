@@ -37,7 +37,8 @@ SavedPosMap ParsePositions(std::ifstream& f, const std::string& path, std::strin
                 std::snprintf(p.name, sizeof(p.name), "%s", name.c_str());
                 p.uid    = row.value("uid", "");
                 if (p.uid.empty()) p.uid = GenerateUid();   // legacy row — assign once
-                p.hidden = row.value("hidden", false);
+                p.hidden   = row.value("hidden", false);
+                p.untaught = row.value("untaught", false);
                 if (row.contains("axes") && row["axes"].is_object()) {
                     for (const auto& [axis, v] : row["axes"].items()) {
                         if (v.is_number()) p.vals[axis] = v.get<double>();
@@ -57,6 +58,13 @@ SavedPosMap ParsePositions(std::ifstream& f, const std::string& path, std::strin
 }
 
 } // namespace
+
+std::string UntaughtPositionMessage(const std::string& device, const SavedPos& p)
+{
+    return "position '" + std::string(p.name) + "' on " + device +
+           " is not taught on this machine (a placeholder from a POR deploy) - teach it "
+           "first: the deck's Teach run, or Update on the Motion page";
+}
 
 SavedPosMap LoadSavedPositions()
 {
@@ -88,7 +96,8 @@ bool SaveSavedPositionsFile(const std::string& path, const SavedPosMap& position
             nlohmann::json row;
             row["uid"]  = p.uid;
             row["name"] = p.name;
-            if (p.hidden) row["hidden"] = true;
+            if (p.hidden)   row["hidden"]   = true;
+            if (p.untaught) row["untaught"] = true;
             row["axes"] = p.vals;
             rows.push_back(std::move(row));
         }
@@ -120,6 +129,7 @@ const SavedPos* NearestSavedPos(const std::vector<SavedPos>& positions,
     double bestD2 = 0.0;
     for (const SavedPos& p : positions) {
         if (p.hidden && !includeHidden) continue;
+        if (p.untaught) continue;   // another machine's numbers
         double d2 = 0.0;
         int shared = 0;
         for (const auto& [axis, v] : p.vals) {

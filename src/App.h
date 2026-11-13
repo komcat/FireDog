@@ -2021,6 +2021,7 @@ private:
         std::string key, device, uid, name;
         int  stops   = 0;      // how many times the run arrives there
         bool checked = true;
+        bool untaught = false; // a placeholder: unticked, the run is refused
     };
     bool                      showTeachPick_  = false;
     int                       teachPickProg_  = -1;

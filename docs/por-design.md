@@ -2,7 +2,9 @@
 
 *Status: phases 1-3 are in (2026-11-13): the foundations, the compare engine
 (`src/por/`) and the read-only tool `FireDogPor` (`tools/por/`), released in v0.24.
-Phase 4 (deploy) is designed in §7 and not built. Working name of the tool: `FireDogPor`.*
+Phase 4 (deploy) is designed in §7; its first step, 4a (FireDog understands an
+untaught position and an untaught point, §7.8), is built. The deploy itself is not.
+Working name of the tool: `FireDogPor`.*
 
 ## 1. What it is for
 
@@ -386,23 +388,44 @@ is the link to history, which is why a deploy never renames.
 6. **Re-compare** and open the Fix list: it should now hold the teach list and nothing
    else, and the differences only what the target kept.
 
-### 7.8 What FireDog must learn first (phase 4a)
+### 7.8 What FireDog must learn first (phase 4a - built 2026-11-13)
 
-- **`SavedPos::untaught`** (persisted `"untaught": true`, absent = taught):
-  - movers refuse it at VALIDATION, before anything moves - `ValidateRecipe`'s
-    `PositionUid` check, `FindPosition` as the run-time backstop, `move_path` for a
-    route through an untaught node;
-  - the UI's Go buttons (Motion page, the Jog window's Pos pad, the alignment station
-    and grip inspect drives) are disabled on it, and the row is drawn as untaught;
-  - **teaching it does not move first**: a teach mover whose position is untaught skips
-    the approach and opens Manual Adjust where the device stands - the operator jogs
-    to the spot and saves, which clears the flag. A teach run's validation allows an
-    untaught position on a mover that has `teach = true`, and only there;
-  - the Motion page's *Teach here* / Save clears it too;
-  - `DiffPositions` journals the flag clearing, even when the values did not change.
-- **The untaught point `{}`**: `ValidateParams` refuses a `PointXyz` that is an object
-  without X/Y/Z, with "point not taught on this machine - Teach here in the step"; the
-  editor's *Teach here* fills it as today.
+- **`SavedPos::untaught`** (persisted `"untaught": true`, absent = taught;
+  `core/SavedPositions`). One refusal text, `UntaughtPositionMessage`, everywhere:
+  - **validation** refuses it before anything moves - `ValidateRecipe`'s `PositionUid`
+    check (`CheckReferences`), unless the step's merged `teach` is true;
+  - **every mover refuses it at run time** too, for the paths that skip validation (Lua,
+    `RunRegistered` from `plant_beacon` / the grip inspect / ...): `move_to_position`,
+    `_slow`, `_offset`, `move_lift_off`, the alignment station and nominal poses,
+    `device_reg_*`'s `via_position`. `move_path` refuses an untaught `from` and any
+    untaught node on the route, all checked before the first leg;
+  - `move_to_position_axes` refuses it **even in a teach run**: it would save only its
+    named axes and clear the flag, leaving the rest of the row the master's numbers;
+  - **teaching it does not move first**: a teach mover on an untaught position runs its
+    pre-move (velocity, exposure), skips the approach (and the lift-off) and opens
+    Manual Adjust where the device stands, marked *NOT TAUGHT HERE*, the row's values
+    shown as *master* and Skip as *leave untaught*. `move_path` drives the route to one
+    node short of an untaught destination, then teaches in place. Saving clears the
+    flag (`RecordPositionByUid` / `RecordPosition`, and `MergeTaughtPositions` in the
+    drain). A teach run with the position unticked in *Teach positions* is refused at
+    validation - the pick window marks the row *untaught* and says so;
+  - **the UI never drives to it**: `App::StartWatchedMove(uid)` refuses it (the backstop
+    for the Jog pad, the grip inspect and vision-teach drives); the Motion page's Move
+    and double-click, the Jog pad button, the Alignment page's station Go, a recipe
+    form's Go, the map page's Path / Go / Move directly and the nominal camera Go are
+    disabled or refuse. The Motion page draws the row orange; the "or taught..." picker
+    lists it greyed and unpickable; `NearestSavedPos` / `NearestMapNodeUid` skip it;
+  - **any write of real values clears it**: Motion page Update and Edit, the Jog window's
+    held Update, a recipe form's Teach here, the alignment `CapturePrivatePose`;
+  - `DiffPositions` journals an `update` whenever the flag changed, even with the
+    values unchanged (`untaught` / `untaught_before` in the JSON line; the history window
+    says *taught (was an untaught placeholder)*), and restoring that entry puts the
+    placeholder back.
+- **The untaught point `{}`**: `ValidateParams` refuses a `PointXyz` that is an empty
+  object with "point '<name>' not taught on this machine - Teach here in the step"; the
+  editor's *Teach here* fills it as today, and the form already shows *(not taught)*.
+- **FireDogPor** judges an untaught target position *Missing* (a Teach item), and an
+  untaught master position on the deck *the master itself is broken*.
 - **`por.json`**: read with the product (read-only); Help > Version shows the POR label,
   where from, when, by whom, and *modified locally since* when a structure file's hash
   no longer matches; every `$run` carries `por` = the label and a short hash, so a unit
@@ -511,6 +534,7 @@ Each numbered item is its own commit; foundations change no behaviour.
   per-machine in practice, it should become a taught value or machine config - not an
   exception in the deploy. The compare shows each one before a deploy, so the first
   real deploys will say which.
-- **Whether a placeholder keeps the master's axis values** (§7.4). They are never driven
-  to; they only let the teach list say how far the taught value landed from the
-  master's. Dropping them is simpler; keeping them costs nothing at run time.
+- ~~Whether a placeholder keeps the master's axis values~~ - **settled by 4a: it must.**
+  A teach writes the axes the ROW has (`TeachAfterMove` reads `pos.vals`' keys), so a
+  placeholder without them could not be taught by a teach run. They are never driven to;
+  Manual Adjust shows them as *master* with the delta.

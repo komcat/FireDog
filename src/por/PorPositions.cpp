@@ -224,6 +224,11 @@ const SavedPos* FindOnTarget(const PorSide& t, const Need& n, const SavedPos* mp
 void Judge(PorPosRow& r, PorStatus whenMissing)
 {
     if (!r.hasTarget || !r.hasMaster) { r.status = r.hasMaster ? whenMissing : PorStatus::OnlyTarget; return; }
+    if (r.targetUntaught) {
+        r.status = whenMissing;
+        if (r.note.empty()) r.note = "an untaught placeholder on the target - teach it there";
+        return;
+    }
     if (r.ambiguous)                         r.status = PorStatus::Ambiguous;
     else if (r.axesDiffer || r.overThreshold) r.status = PorStatus::Measured;
     else                                     r.status = PorStatus::Same;
@@ -256,9 +261,10 @@ PorPositionsReport ComparePositions(const PorSide& master, const PorSide& target
             row.uses   = n.uses;
             const SavedPos* mp = PorFindPosByUid(master.positions, n.device, n.uid);
             if (mp) {
-                row.hasMaster = true;
-                row.name      = mp->name;
-                row.master    = mp->vals;
+                row.hasMaster      = true;
+                row.name           = mp->name;
+                row.master         = mp->vals;
+                row.masterUntaught = mp->untaught;
                 int count = 0;
                 PorFindPosByName(master.positions, n.device, mp->name, &count);
                 if (count > 1 && n.kind == OwnerKind::None) row.ambiguous = true;
@@ -271,8 +277,9 @@ PorPositionsReport ComparePositions(const PorSide& master, const PorSide& target
             }
             std::string tdev;
             if (const SavedPos* tp = FindOnTarget(target, n, mp, row, &tdev)) {
-                row.hasTarget = true;
-                row.target    = tp->vals;
+                row.hasTarget      = true;
+                row.target         = tp->vals;
+                row.targetUntaught = tp->untaught;
                 matchedTarget.insert({tdev, tp->uid});
                 Deltas(row, mmThreshold, degThreshold);
             }
@@ -289,13 +296,15 @@ PorPositionsReport ComparePositions(const PorSide& master, const PorSide& target
             row.tier      = PorPosTier::Unused;
             row.device    = dev;
             row.name      = mp.name;
-            row.hasMaster = true;
-            row.master    = mp.vals;
+            row.hasMaster      = true;
+            row.master         = mp.vals;
+            row.masterUntaught = mp.untaught;
             int cm = 0, ct = 0;
             PorFindPosByName(master.positions, dev, mp.name, &cm);
             if (const SavedPos* tp = PorFindPosByName(target.positions, dev, mp.name, &ct)) {
-                row.hasTarget = true;
-                row.target    = tp->vals;
+                row.hasTarget      = true;
+                row.target         = tp->vals;
+                row.targetUntaught = tp->untaught;
                 matchedTarget.insert({dev, tp->uid});
                 Deltas(row, mmThreshold, degThreshold);
             }
@@ -314,9 +323,10 @@ PorPositionsReport ComparePositions(const PorSide& master, const PorSide& target
             row.tier      = PorPosTier::TargetOnly;
             row.device    = dev;
             row.name      = tp.name;
-            row.hasTarget = true;
-            row.target    = tp.vals;
-            row.status    = PorStatus::OnlyTarget;
+            row.hasTarget      = true;
+            row.target         = tp.vals;
+            row.targetUntaught = tp.untaught;
+            row.status         = PorStatus::OnlyTarget;
             rep.rows.push_back(std::move(row));
         }
     }

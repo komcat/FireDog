@@ -300,8 +300,13 @@ CommandResult TeachAfterMove(ExecutionContext& ctx, IMotionController* m,
                              const std::map<std::string, double>& subtract)
 {
     ExecutionContext::AdjustRequest req;
-    req.message = "Teach '" + std::string(pos.name) + "' on " + device +
-                  ": jog onto the exact spot, then Save. Skip keeps the saved value.";
+    req.message = pos.untaught
+        ? "Teach '" + std::string(pos.name) + "' on " + device +
+              ": NOT TAUGHT on this machine - the device has NOT moved. Jog onto the "
+              "spot, then Save. Skip leaves it untaught."
+        : "Teach '" + std::string(pos.name) + "' on " + device +
+              ": jog onto the exact spot, then Save. Skip keeps the saved value.";
+    req.untaught     = pos.untaught;
     req.device       = device;
     req.stepUm       = 10.0;
     req.teach        = true;
@@ -320,8 +325,8 @@ CommandResult TeachAfterMove(ExecutionContext& ctx, IMotionController* m,
     const bool save = ctx.AwaitAdjust(req);
     if (ctx.ShouldStop()) return CommandResult::Fail("stopped");
     if (!save) {
-        FD_INFO("recipe", "teach '%s' on %s: skipped, saved value kept", pos.name,
-                device.c_str());
+        FD_INFO("recipe", "teach '%s' on %s: skipped, %s", pos.name, device.c_str(),
+                pos.untaught ? "still untaught" : "saved value kept");
         return CommandResult::Success();
     }
 
@@ -455,11 +460,16 @@ CommandResult ExecMoveToPosition(ExecutionContext& ctx, const ParamValues& p)
 
     const SavedPos* pos = ctx.FindPosition(device, p.GetString("position"));
     if (!pos) return CommandResult::Fail("position uid not found");
+    if (pos->untaught && !p.GetBool(kTeachParamName))
+        return CommandResult::Fail(UntaughtPositionMessage(device, *pos));
     const auto targets = TargetsOf(*pos, m);
     if (targets.empty()) return CommandResult::Fail("position shares no axes with device");
 
     const CommandResult pre = ApplyPreMove(ctx, idx, p);
     if (!pre.ok) return pre;
+    // A placeholder is taught where the device stands: its numbers are another
+    // machine's, and driving there first is the one thing that must not happen.
+    if (pos->untaught) return TeachAfterMove(ctx, m, device, *pos);
     const CommandResult mv =
         MoveWithApproach(ctx, m, idx, targets, p, "'" + std::string(pos->name) + "'");
     if (!mv.ok || !p.GetBool(kTeachParamName)) return mv;
@@ -479,6 +489,10 @@ CommandResult ExecMovePath(ExecutionContext& ctx, const ParamValues& p)
     const std::string fromUid = p.GetString("from");
     const SavedPos*   fromPos = ctx.FindPosition(device, fromUid);
     if (!fromPos) return CommandResult::Fail("'from' position uid not found");
+    // The strict start below compares the device with `from`: against another
+    // machine's numbers that check means nothing, teach run or not.
+    if (fromPos->untaught)
+        return CommandResult::Fail("'from': " + UntaughtPositionMessage(device, *fromPos));
 
     // STRICT START (design decision): the device must already be at `from` on
     // every axis the position defines — no nearest-node snapping, no implicit
@@ -509,8 +523,27 @@ CommandResult ExecMovePath(ExecutionContext& ctx, const ParamValues& p)
         *map, posIt->second, m->Axes(), fromUid, p.GetString("to"), &routeErr);
     if (legs.empty()) return CommandResult::Fail(routeErr);
 
-    const int legTimeout = p.GetInt("leg_timeout_ms");
+    // Every node the route drives through must be taught - all checked BEFORE
+    // the first leg, so a refusal moves nothing. The one exception is the
+    // destination of a teach: the route stops one node short and the
+    // destination is taught where the device stands.
+    const bool  teach        = p.GetBool(kTeachParamName);
+    std::size_t driveLegs    = legs.size();
+    bool        teachInPlace = false;
     for (std::size_t i = 0; i < legs.size(); ++i) {
+        const SavedPos* node = ctx.FindPosition(device, legs[i].uid);
+        if (!node || !node->untaught) continue;
+        if (i + 1 == legs.size() && teach) {
+            driveLegs    = legs.size() - 1;
+            teachInPlace = true;
+        } else {
+            return CommandResult::Fail("route passes through '" + legs[i].label + "': " +
+                                       UntaughtPositionMessage(device, *node));
+        }
+    }
+
+    const int legTimeout = p.GetInt("leg_timeout_ms");
+    for (std::size_t i = 0; i < driveLegs; ++i) {
         const MapRouteLeg& leg = legs[i];
         if (leg.targets.empty()) continue;   // node with no shared axes (first = start)
         if (!IssueMove(ctx, idx, leg.targets, p))
@@ -526,11 +559,14 @@ CommandResult ExecMovePath(ExecutionContext& ctx, const ParamValues& p)
                 leg.label.c_str(), i + 1, legs.size());
     }
     const CommandResult settled = WaitSettle(ctx, m, idx);
-    if (!settled.ok || !p.GetBool(kTeachParamName)) return settled;
+    if (!settled.ok || !teach) return settled;
     // Only the destination is taught: the intermediate nodes are the map's,
     // each reached by its own step somewhere else.
     const SavedPos* toPos = ctx.FindPosition(device, p.GetString("to"));
     if (!toPos) return CommandResult::Fail("'to' position uid not found");
+    if (teachInPlace)
+        FD_INFO("recipe", "%s: '%s' is untaught - stopped one node short, teach in place",
+                device.c_str(), toPos->name);
     return TeachAfterMove(ctx, m, device, *toPos);
 }
 
@@ -677,6 +713,8 @@ CommandResult ExecMoveLiftOff(ExecutionContext& ctx, const ParamValues& p)
 
     const SavedPos* pos = ctx.FindPosition(device, p.GetString("position"));
     if (!pos) return CommandResult::Fail("position uid not found");
+    if (pos->untaught && !p.GetBool(kTeachParamName))
+        return CommandResult::Fail(UntaughtPositionMessage(device, *pos));
     const auto targets = TargetsOf(*pos, m);
     if (targets.empty()) return CommandResult::Fail("position shares no axes with device");
 
@@ -687,6 +725,9 @@ CommandResult ExecMoveLiftOff(ExecutionContext& ctx, const ParamValues& p)
 
     const CommandResult pre = ApplyPreMove(ctx, idx, p);
     if (!pre.ok) return pre;
+    // Teach a placeholder in place: no lift either - the operator is about to
+    // jog, and a retreat they did not ask for is a move they did not watch.
+    if (pos->untaught) return TeachAfterMove(ctx, m, device, *pos);
 
     const double lift = p.GetDouble("lift_mm");
     if (lift > 0.0) {
@@ -950,6 +991,13 @@ CommandResult ExecMoveToPositionAxes(ExecutionContext& ctx, const ParamValues& p
 
     const SavedPos* pos = ctx.FindPosition(device, p.GetString("position"));
     if (!pos) return CommandResult::Fail("position uid not found");
+    // Refused even in a teach run: this step would save only its named axes and
+    // clear the flag, leaving the rest of the row another machine's numbers
+    // that the next full move_to_position would drive to.
+    if (pos->untaught)
+        return CommandResult::Fail(
+            UntaughtPositionMessage(device, *pos) +
+            " (an axes-only step cannot teach it: it would save only its own axes)");
 
     const std::string axes = p.GetString("axes");
     if (axes.empty()) return CommandResult::Fail("axes is empty - name the axes to command");
@@ -994,6 +1042,8 @@ CommandResult ExecMoveToPositionOffset(ExecutionContext& ctx, const ParamValues&
 
     const SavedPos* pos = ctx.FindPosition(device, p.GetString("position"));
     if (!pos) return CommandResult::Fail("position uid not found");
+    if (pos->untaught && !p.GetBool(kTeachParamName))
+        return CommandResult::Fail(UntaughtPositionMessage(device, *pos));
     auto targets = TargetsOf(*pos, m);
     if (targets.empty()) return CommandResult::Fail("position shares no axes with device");
 
@@ -1019,13 +1069,16 @@ CommandResult ExecMoveToPositionOffset(ExecutionContext& ctx, const ParamValues&
 
     const CommandResult pre = ApplyPreMove(ctx, idx, p);
     if (!pre.ok) return pre;
-    const CommandResult mv = MoveWithApproach(ctx, m, idx, targets, p,
-                                              "'" + std::string(pos->name) + "' + offset");
-    if (!mv.ok || !p.GetBool(kTeachParamName)) return mv;
     // The operator stands at base + offset; the BASE is what gets saved.
     std::map<std::string, double> sub;
     for (const auto& [axis, off] : offsets)
         if (off != 0.0) sub[axis] = off;
+    // A placeholder: taught in place - the operator jogs to where base + offset
+    // belongs on this machine and the base is derived from that, as below.
+    if (pos->untaught) return TeachAfterMove(ctx, m, device, *pos, sub);
+    const CommandResult mv = MoveWithApproach(ctx, m, idx, targets, p,
+                                              "'" + std::string(pos->name) + "' + offset");
+    if (!mv.ok || !p.GetBool(kTeachParamName)) return mv;
     return TeachAfterMove(ctx, m, device, *pos, sub);
 }
 

@@ -449,6 +449,12 @@ PorFixList BuildFixList(const PorSide& master, const PorSide& target, const Comm
             b.items[b.Add(PorFixKind::MasterBroken, "position uid " + r.name + " on " + r.device,
                           "the master's deck refers to a position the master does not have", "",
                           PorFixJump::Positions)].uses = r.uses;
+        } else if (r.masterUntaught) {
+            // A master that cannot run its own deck is not a master yet.
+            b.items[b.Add(PorFixKind::MasterBroken,
+                          "position '" + r.name + "' on " + r.device + where,
+                          "untaught on the master itself - teach it there, then export again", "",
+                          PorFixJump::Positions)].uses = r.uses;
         } else if (r.status == PorStatus::Missing) {
             b.items[b.Add(PorFixKind::Teach, "position '" + r.name + "' on " + r.device + where,
                           r.owner.empty() ? "teach it here: the Motion page, or the deck's Teach run once "

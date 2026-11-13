@@ -10,6 +10,7 @@
 
 #include "imgui.h"
 
+#include "ui/Theme.h"     // kTeachOrange (an untaught row)
 #include "ui/Widgets.h"
 #include "core/DataBus.h"
 #include "core/Paths.h"
@@ -905,12 +906,17 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
     ImGui::BeginDisabled(!selPos);
     // Move and Update both hand off to a confirmation dialog below: one
     // drives the machine, the other overwrites a taught place, and neither
-    // should happen on a single click.
+    // should happen on a single click. A placeholder (untaught) is never
+    // driven to: Update is how it gets taught - jog there, then Update.
+    ImGui::BeginDisabled(selPos && selPos->untaught);
     if (IconToolButton(UiIcon("mo_move_to"), "posMove", "Move",
-                       "Move the device to this position (asks first)")) {
+                       selPos && selPos->untaught
+                           ? "Not taught on this machine - jog to the spot and Update it"
+                           : "Move the device to this position (asks first)")) {
         moveRow_     = sel;
         openMovePos_ = true;
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (IconToolButton(UiIcon("tb_reload"), "posUpd", "Update",
                        "Update: overwrite this position with where the device is now (asks first)")) {
@@ -963,7 +969,12 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             if (sp.hidden && !showHiddenPos_) continue;   // system position
             ImGui::TableNextRow();
             ImGui::PushID(static_cast<int>(r));
-            if (sp.hidden)   // revealed hidden row — dim the whole row's text
+            // A revealed hidden row is dimmed; a placeholder is orange, the
+            // teach colour, because teaching it is what it is waiting for.
+            const bool tinted = sp.hidden || sp.untaught;
+            if (sp.untaught)
+                ImGui::PushStyleColor(ImGuiCol_Text, kTeachOrange);
+            else if (sp.hidden)
                 ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 
             ImGui::TableSetColumnIndex(0);
@@ -974,12 +985,19 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                 posSelUid_ = sp.uid;
                 // A double-click is the one-gesture Move; it still lands on
                 // the confirmation dialog, never straight on the axes.
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !sp.untaught) {
                     moveRow_     = static_cast<int>(r);
                     openMovePos_ = true;
                 }
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("uid: %s", sp.uid.c_str());
+            if (ImGui::IsItemHovered()) {
+                if (sp.untaught)
+                    ImGui::SetTooltip("uid: %s\nNOT TAUGHT on this machine (a POR deploy placeholder;\n"
+                                      "the values are the master's). Jog to the spot and Update.",
+                                      sp.uid.c_str());
+                else
+                    ImGui::SetTooltip("uid: %s", sp.uid.c_str());
+            }
 
             int c = 1;
             for (const auto& a : axes) {
@@ -987,7 +1005,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                 const auto it = sp.vals.find(a);
                 ImGui::Text("%.4f", (it != sp.vals.end()) ? it->second : 0.0);
             }
-            if (sp.hidden) ImGui::PopStyleColor();
+            if (tinted) ImGui::PopStyleColor();
             ImGui::PopID();
         }
         ImGui::EndTable();
@@ -1071,6 +1089,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             ImGui::CloseCurrentPopup();
         } else {
             const SavedPos& sp = saved[static_cast<size_t>(moveRow_)];
+            if (sp.untaught) { moveRow_ = -1; ImGui::CloseCurrentPopup(); }
             ImGui::Text("Move %s to '%s'?", devName.c_str(), sp.name);
             ImGui::TextDisabled("All axes travel together. Make sure the path is clear.");
             drawDiffTable(sp, m->Positions(), "Target", "Now");
@@ -1171,6 +1190,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                         const auto it = live.find(a);
                         if (it != live.end()) sp.vals[a] = it->second;
                     }
+                    sp.untaught = false;   // taught here, now (the journal records it)
                     FD_INFO("saved", "updated '%s' from current position (max delta %.4f)",
                             sp.name, maxAbs);
                     session_.SavePositions();
@@ -1227,6 +1247,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.0f));
             if (ImGui::Button("Save", ImVec2(120.0f, 0.0f))) {
                 for (const auto& a : axes) sp.vals[a] = editVals_[a];
+                sp.untaught = false;   // typed values are a teach, by whoever typed them
                 FD_INFO("saved", "edited '%s' (uid %s, %s) by hand", sp.name, sp.uid.c_str(), devName.c_str());
                 session_.SavePositions();
                 editRow_ = -1;

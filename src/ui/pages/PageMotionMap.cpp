@@ -453,6 +453,14 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             FD_WARN("path", "%s: %s", devName.c_str(), routeErr.c_str());
             return;
         }
+        // The same refusal move_path makes, before anything moves.
+        for (const MapRouteLeg& leg : legs)
+            for (const SavedPos& sp : saved)
+                if (sp.uid == leg.uid && sp.untaught) {
+                    FD_WARN("path", "route passes through '%s': %s", leg.label.c_str(),
+                            UntaughtPositionMessage(devName, sp).c_str());
+                    return;
+                }
         mapLastPath_.clear();
         std::vector<Workflow::PathWaypoint> wps;
         wps.reserve(legs.size());
@@ -544,7 +552,9 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.52f, 0.16f, 1.0f));
             if (ImGui::Button("Move directly")) {
                 const auto targets = TargetsOf(*selPos, m);
-                if (targets.empty()) {
+                if (selPos->untaught) {
+                    FD_WARN("path", "%s", UntaughtPositionMessage(devName, *selPos).c_str());
+                } else if (targets.empty()) {
                     FD_WARN("path", "%s: '%s' shares no axis with the device",
                             devName.c_str(), selPos->name);
                 } else {

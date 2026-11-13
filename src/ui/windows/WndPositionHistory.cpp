@@ -62,6 +62,8 @@ std::string DescribeChange(const PosChange& c)
         return "'" + c.nameBefore + "' -> '" + c.name + "'";
     }
     if (c.action == "update") {
+        if (c.untaughtBefore && !c.untaught) out = "taught (was an untaught placeholder)";
+        else if (c.untaught && !c.untaughtBefore) out = "made untaught";
         for (const auto& [axis, nv] : c.after) {
             const auto it = c.before.find(axis);
             const bool had = it != c.before.end();
