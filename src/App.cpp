@@ -83,6 +83,7 @@ int App::Run()
         edShowHidden_ = ui.edShowHidden;
         edLooseOnly_  = ui.edLooseOnly;
         edDurationSec_ = ui.edDurationSec;
+        edTuneMm_      = ui.edTuneMm;
         edTagFilter_  = ui.edTagFilter;
         edTagHide_    = ui.edTagHide;
         if (ui.runDeckW      > 0.0f) runDeckW_      = ui.runDeckW;
@@ -628,6 +629,7 @@ void App::SaveUiSettings()
     s.edShowHidden  = edShowHidden_;
     s.edLooseOnly   = edLooseOnly_;
     s.edDurationSec = edDurationSec_;
+    s.edTuneMm      = edTuneMm_;
     s.edTagFilter   = edTagFilter_;
     s.edTagHide     = edTagHide_;
     s.runDeckW      = runDeckW_;

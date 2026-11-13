@@ -56,6 +56,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("ed_show_hidden")) s.edShowHidden = j["ed_show_hidden"].get<bool>();
         if (j.contains("ed_loose_only")) s.edLooseOnly = j["ed_loose_only"].get<bool>();
         if (j.contains("ed_duration_sec")) s.edDurationSec = j["ed_duration_sec"].get<bool>();
+        if (j.contains("ed_tune_mm")) s.edTuneMm = j["ed_tune_mm"].get<double>();
         if (j.contains("ed_tag_filter"))  s.edTagFilter  = j["ed_tag_filter"].get<std::string>();
         if (j.contains("ed_tag_hide"))    s.edTagHide    = j["ed_tag_hide"].get<bool>();
         if (j.contains("run_deck_w")) s.runDeckW = j["run_deck_w"].get<float>();
@@ -225,6 +226,7 @@ bool UiSettings::Save(const std::string& path) const
     j["ed_show_hidden"]  = edShowHidden;
     j["ed_loose_only"]   = edLooseOnly;
     j["ed_duration_sec"] = edDurationSec;
+    j["ed_tune_mm"]      = edTuneMm;
     j["ed_tag_filter"]   = edTagFilter;
     j["ed_tag_hide"]     = edTagHide;
     j["run_deck_w"]      = runDeckW;

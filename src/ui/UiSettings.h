@@ -106,6 +106,7 @@ struct UiSettings {
     bool        edShowHidden  = false;   // list recipes marked hidden
     bool        edLooseOnly   = false;   // list only recipes no program uses
     bool        edDurationSec = false;   // type DurationMs params in s (else ms)
+    double      edTuneMm      = 0.01;    // the Tune step on relative-move deltas
     std::string edTagFilter;             // "" = every tag
     bool        edTagHide     = false;   // false = show only that tag, true = hide it
 

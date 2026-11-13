@@ -429,6 +429,52 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             params[p.name] = v;
             changed = true;
         }
+        // A relative move's delta gets Tune: nudge the stored value by a small
+        // amount (0.459 + 0.012 = 0.471) instead of retyping it. The amount is
+        // one editor-wide setting; the step stores only the result.
+        const bool tunable =
+            (spec.name == "move_relative" && p.name == "delta_mm") ||
+            (spec.name == "move_relative_global" &&
+             (p.name == "dx_mm" || p.name == "dy_mm" || p.name == "dz_mm"));
+        if (tunable) {
+            // The row's last item is no longer the field, so its help is shown
+            // here and the generic tooltip at the end stands down.
+            if (ImGui::IsItemHovered()) HelpTooltip(p.help);
+            tipShown = true;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Tune")) ImGui::OpenPopup("##tune");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Add to or subtract from %s", p.name.c_str());
+            if (ImGui::BeginPopup("##tune")) {
+                // Round away float dust (0.459 + 0.012 = 0.47100000000000003)
+                // so the recipe file shows the number that was meant.
+                const auto round6 = [](double x) { return std::round(x * 1e6) / 1e6; };
+                const double now = params.contains(p.name) && params[p.name].is_number()
+                                       ? params[p.name].get<double>()
+                                       : v;
+                ImGui::Text("%s = %g", p.name.c_str(), now);
+                ImGui::SetNextItemWidth(110.0f);
+                ImGui::InputDouble("tune by", &edTuneMm_, 0.0, 0.0, "%g");
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    edTuneMm_ = std::fabs(edTuneMm_);
+                    SaveUiSettings();
+                }
+                const double t = std::fabs(edTuneMm_);
+                const auto apply = [&](double nv) {
+                    nv = round6(nv);
+                    if (p.minVal < p.maxVal) nv = std::clamp(nv, p.minVal, p.maxVal);
+                    params[p.name] = nv;
+                    changed = true;
+                };
+                char lbl[96];
+                std::snprintf(lbl, sizeof(lbl), "+ %g = %g###plus", t, round6(now + t));
+                if (ImGui::Button(lbl)) apply(now + t);
+                ImGui::SameLine();
+                std::snprintf(lbl, sizeof(lbl), "- %g = %g###minus", t, round6(now - t));
+                if (ImGui::Button(lbl)) apply(now - t);
+                ImGui::EndPopup();
+            }
+        }
         // `z_mm` is an ABSOLUTE Z in the device's own axis space on every step
         // that has one (move_to_nominal, move_local, move_axis_to), so it gets
         // Teach here: read the Z the device is standing at now. The device is

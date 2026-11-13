@@ -1411,6 +1411,10 @@ private:
     // How the editor TYPES a DurationMs param: false = ms, true = s. Display
     // only - the step always stores ms. Persisted (ed_duration_sec).
     bool        edDurationSec_ = false;
+    // The amount the Tune popup adds to / subtracts from a relative move's
+    // delta (move_relative delta_mm, move_relative_global dx/dy/dz_mm).
+    // One editor-wide value. Persisted (ed_tune_mm).
+    double      edTuneMm_      = 0.01;
     std::string edTagFilter_;
     bool        edTagHide_    = false;
     bool RecipeListed(const Recipe& r) const;   // passes the filter above
