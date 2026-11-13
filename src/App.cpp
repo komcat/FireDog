@@ -242,6 +242,7 @@ int App::Run()
             if (showData_  && CanUse(kRoleData)) DrawViewDataWindow();
             if (showPosHist_ && CanUse(kRoleJog)) DrawPositionHistoryWindow();
             if (showTray_  && CanUse(kRoleTray)) DrawTrayWindow();
+            if (showPosRec_ && CanUse(kRolePosRecords)) DrawPositionRecordsWindow();
             if (showMotionInspect_ && CanUse(kRoleInspect)) DrawMotionInspectWindow();
             if (showDispHelper_ && CanAccess(Page::RecipeEdit)) DrawDispenseHelperWindow();
             if (showRoiViewHelper_ && CanAccess(Page::RecipeEdit)) DrawRoiFilterViewHelperWindow();

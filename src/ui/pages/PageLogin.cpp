@@ -136,6 +136,7 @@ void App::LogOut()
     orgOpen_   = false;
     runEdit_   = false;
     showData_  = false;
+    showPosRec_ = false;
     // An ARMED jog must never survive a change of hands. The arm exists so that
     // moving the machine is a deliberate act by a specific person; inherited by
     // whoever signs in next it is the opposite of that. showAux_ is left alone —

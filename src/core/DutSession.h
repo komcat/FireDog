@@ -62,6 +62,11 @@ public:
     // folder, else the product's data/ root ("" when no product is set).
     std::string BrowseDir() const;
 
+    // The loaded product's data/ root ("" when no product is set), whatever
+    // DUT is open - for product-level production output that is not one
+    // part's record (core/PositionRecords).
+    std::string ProductDataDir() const;
+
     // Lifecycle. Serial must be filesystem-safe (alnum - _ .). Open validates
     // and loads/creates the NEW record before auto-closing the previous one.
     bool Open(const std::string& serial, bool destructiveNew, std::string* err);

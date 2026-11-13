@@ -34,6 +34,7 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
 void RegisterTrayCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterMosaicCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 void RegisterBeaconCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
+void RegisterRecordCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw);
 
 inline void RegisterBuiltinCommands(CommandRegistry& reg, Workflow& wf,
                                     HardwareManager& hw)
@@ -51,6 +52,7 @@ inline void RegisterBuiltinCommands(CommandRegistry& reg, Workflow& wf,
     RegisterTrayCommands(reg, wf, hw);
     RegisterMosaicCommands(reg, wf, hw);
     RegisterBeaconCommands(reg, wf, hw);
+    RegisterRecordCommands(reg, wf, hw);
 }
 
 } // namespace firedog

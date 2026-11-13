@@ -125,6 +125,12 @@ std::string DutSession::BrowseDir() const
     return open_ ? dirPath_ : dataDir_;
 }
 
+std::string DutSession::ProductDataDir() const
+{
+    const std::scoped_lock lock(mu_);
+    return dataDir_;
+}
+
 bool DutSession::Open(const std::string& serial, bool destructiveNew,
                       std::string* err)
 {

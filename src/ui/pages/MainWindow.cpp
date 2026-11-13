@@ -339,6 +339,8 @@ void App::DrawMainWindow()
                 if (CanUse(kRoleData)) ImGui::MenuItem("View Data", nullptr, &showData_);
                 if (CanUse(kRoleJog))  ImGui::MenuItem("Position History", nullptr, &showPosHist_);
                 if (CanUse(kRoleTray)) ImGui::MenuItem("Waffle Tray window", nullptr, &showTray_);
+                if (CanUse(kRolePosRecords))
+                    ImGui::MenuItem("Position Records", nullptr, &showPosRec_);
                 if (ImGui::BeginMenu("Theme")) {   // same picker as Display header
                     for (int i = 0; i < Theme::Count(); ++i) {
                         if (ImGui::MenuItem(Theme::Name(i), nullptr, themeIndex_ == i)) {

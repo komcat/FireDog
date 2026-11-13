@@ -34,6 +34,7 @@
 #include "workflow/Workflow.h"
 #include "core/MosaicConfig.h"
 #include "core/PanelSwitches.h"
+#include "core/PositionRecords.h"
 #include "mosaic/MosaicDoc.h"
 #include "mosaic/MosaicWorker.h"
 
@@ -159,6 +160,9 @@ inline constexpr UserRole kRoleOrg = UserRole::Technician;
 inline constexpr UserRole kRoleAux = UserRole::Operator;
 //   View Data reads the same records as the DUT Records page, so it sits with it.
 inline constexpr UserRole kRoleData = UserRole::Technician;
+//   Position Records only views the product's recorded poses - production
+//   data, like View Data, so it sits with it.
+inline constexpr UserRole kRolePosRecords = UserRole::Technician;
 //   The Waffle Tray window picks the active cell and marks cavities used or
 //   full - what an operator does as parts come and go. Its Drive here is
 //   kRoleJog, like every other move.
@@ -554,6 +558,13 @@ private:
     // the ACTIVE cell a recipe's move_to_active_cell drives to, and mark
     // cavities used or full as parts come and go.
     void DrawTrayWindow();
+    // The floating Position Records window (WndPositionRecords.cpp, View
+    // menu): VIEW ONLY - the poses record_position appended for the loaded
+    // product, one name at a time, as statistics, histograms, a trend and an
+    // X-Y scatter. LoadPositionRecordsView re-reads the folder and the
+    // selected name's tail (a view cache, never the document).
+    void DrawPositionRecordsWindow();
+    void LoadPositionRecordsView(const std::string& dir);
     // The floating Inspect Motion window (WndMotionInspect.cpp, the Run strip's
     // button): every move in what Execute would run - the selected item, else
     // the slot - with its device, target, velocity, approach and exposure.
@@ -2149,6 +2160,25 @@ private:
     std::string              posHistPath_;        // what posHistEntries_ was read from
     unsigned                 posHistVer_ = ~0u;   // session version it was read at
     std::vector<PosChange>   posHistEntries_;     // oldest first, as on disk
+    // Position Records window (View menu). posRecDir_ is the folder the rows
+    // came from and posRecSeq_ the append counter they were read at: either
+    // moving reloads, so a run that records shows up without a callback. Not
+    // persisted - a viewer is opened on demand, like View Data.
+    bool                        showPosRec_ = false;
+    std::string                 posRecDir_;
+    std::uint64_t               posRecSeq_ = ~std::uint64_t{0};
+    bool                        posRecReload_ = false;
+    std::vector<std::string>    posRecNames_;        // file stems in posRecDir_
+    std::string                 posRecName_;         // the name on show
+    std::vector<PositionRecord> posRecRows_;         // oldest first, the file's tail
+    int                         posRecTail_  = 5000; // newest lines read from the file
+    int                         posRecRange_ = 0;    // RecordRange
+    int                         posRecN_     = 100;  // RecordRange::LastN
+    int                         posRecBins_  = 20;
+    bool                        posRecUvw_   = false;
+    bool                        posRecTrendTime_ = true;  // trend x: time, else unit
+    int                         posRecSel_   = -1;   // index into posRecRows_
+    std::string                 posRecMsg_;          // load warning
     std::string              dataDir_;
     std::vector<DutDataRow>  dataRows_;
     std::vector<std::string> dataKeys_;       // union of keys, first-seen order
