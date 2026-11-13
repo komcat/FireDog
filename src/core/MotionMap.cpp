@@ -59,13 +59,17 @@ void MotionMap::RemoveEdge(const std::string& a, const std::string& b)
 
 MotionMapSet LoadMotionMaps()
 {
-    std::string path = LocalPath();
+    // The first file that OPENS wins, exactly as before the parse moved out.
+    const std::string local = LocalPath();
+    if (std::ifstream(local).is_open()) return LoadMotionMapsFile(local);
+    if (std::ifstream(kBasePath).is_open()) return LoadMotionMapsFile(kBasePath);
+    return MotionMapSet{};   // first run — start empty
+}
+
+MotionMapSet LoadMotionMapsFile(const std::string& path)
+{
     std::ifstream f(path);
-    if (!f.is_open()) {
-        path = kBasePath;
-        f.open(path);
-        if (!f.is_open()) return MotionMapSet{};   // first run — start empty
-    }
+    if (!f.is_open()) return MotionMapSet{};
 
     MotionMapSet out;
     try {

@@ -51,6 +51,11 @@ using MotionMapSet = std::map<std::string, std::vector<MotionMap>>;
 // Reads config/maps.local.json, falling back to config/maps.json.
 MotionMapSet LoadMotionMaps();
 
+// Reads one maps file at `path` (no fallback, no write): the same parse
+// LoadMotionMaps uses, for a reader that is handed another machine's file.
+// Empty on a missing or malformed file.
+MotionMapSet LoadMotionMapsFile(const std::string& path);
+
 // Writes config/maps.local.json. Best-effort; false if unwritable.
 bool SaveMotionMaps(const MotionMapSet& maps);
 

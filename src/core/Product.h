@@ -28,9 +28,12 @@ struct ProductManifest {
     std::vector<ManifestFile> files;
     std::string dataDir   = "data";     // relative subfolder for save data
     std::string imagesDir = "images";   // relative subfolder for images
+    // Set only by LoadProductManifestAt: the folder it was read from. Empty for
+    // every product the app opens, whose folder is derived from the machine root.
+    std::string folder;
 
     bool        Loaded() const { return !name.empty(); }
-    std::string Dir() const;                              // <machine root>/products/<name>
+    std::string Dir() const;                              // `folder`, else <machine root>/products/<name>
     std::string FilePath(const std::string& role) const;  // "" if role missing
     const ManifestFile* Entry(const std::string& role) const;
     // DUT records are production output, so they live under the DATA root,
@@ -47,6 +50,13 @@ std::vector<std::string> ListProducts();
 
 // Read products/<name>/manifest.json. Not-loaded manifest on any failure.
 ProductManifest LoadProductManifest(const std::string& name);
+
+// Read <dir>/manifest.json from ANY folder - another machine's product copied to
+// a stick, say - with no machine root involved: the name is the folder's, and
+// Dir()/FilePath() answer under `dir`. Reads only; never backfills a role or
+// rewrites the manifest. DataDir()/ImagesDir() still mean THIS machine's data
+// root, so a reader of a foreign product must not call them.
+ProductManifest LoadProductManifestAt(const std::string& dir);
 
 // Create products/<name>/ (+ data/, images/), fresh uids, manifest.json and
 // one {uid}.<role>.json seed file per role. Not-loaded manifest on failure.

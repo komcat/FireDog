@@ -63,4 +63,19 @@ struct PathNote {
 // What InitPaths resolved, migrated and fell back from, in order.
 const std::vector<PathNote>& PathNotes();
 
+// Where InitPaths WOULD put the roots, worked out without any of its side
+// effects: no working-directory change, no template FireDog.ini, no folder
+// created, no migration, no seeding. For a tool that reads a machine and must
+// never write to it (docs/por-design.md). It never calls InitPaths, so the
+// accessors above stay unresolved unless something else asks them.
+// Differs from InitPaths only where InitPaths would REPAIR: an unusable root
+// is reported as it is configured, not swapped for a fallback.
+struct RootsPreview {
+    std::string exeDir, ini, root, data;   // forward slashes, like the accessors
+    bool        iniFound   = false;         // FireDog.ini exists (else the defaults)
+    bool        rootExists = false;         // <root>/config exists: FireDog has run here
+    std::vector<std::string> notes;          // what is worth showing the reader
+};
+RootsPreview ResolveRootsReadOnly();
+
 } // namespace firedog

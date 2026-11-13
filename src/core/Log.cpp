@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <ctime>
 #include <exception>
+#include <mutex>
+#include <string>
 #include <vector>
 
 namespace firedog {
@@ -62,6 +64,21 @@ std::int64_t NowNs()
 }
 } // namespace
 
+namespace {
+// SetFileBeforeFirstUse's answer, read once by the constructor.
+std::mutex  g_fileMu;
+std::string g_fileOverride;
+bool        g_created = false;
+} // namespace
+
+bool Logger::SetFileBeforeFirstUse(const std::string& path)
+{
+    std::lock_guard<std::mutex> lk(g_fileMu);
+    if (g_created) return false;
+    g_fileOverride = path;
+    return true;
+}
+
 struct Logger::Impl {
     std::shared_ptr<spdlog::logger>                        logger;
     std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt>     ring;
@@ -78,8 +95,15 @@ Logger::Logger() : p_(std::make_unique<Impl>())
         // switched at midnight even mid-run; spdlog prunes files beyond the
         // newest 30 so a day of heavy xcan tracing can't rotate an older day's
         // data away.
+        std::string filePath;
+        {
+            std::lock_guard<std::mutex> lk(g_fileMu);
+            g_created = true;
+            filePath  = g_fileOverride;
+        }
+        if (filePath.empty()) filePath = MachinePath("logs/firedog.log");
         auto file    = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
-                           MachinePath("logs/firedog.log"), 0, 0, false, 30);
+                           filePath, 0, 0, false, 30);
         p_->ring     = std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(5000);
 
         std::vector<spdlog::sink_ptr> sinks{console, file, p_->ring};

@@ -192,10 +192,11 @@ std::string ProgramDataFallback()
 // else %ProgramData% (C:). Removable media is not a D: drive here - a USB
 // stick that is there on some boots would flip the root between starts, and
 // each flip would look like a first start against an empty folder.
-fs::path DefaultRoot()
+// `note` receives the reason when the D: default does not apply.
+fs::path DefaultRoot(std::string* note)
 {
     if (GetDriveTypeA("D:\\") == DRIVE_FIXED) return fs::path(kDefaultRoot);
-    Note(false, "no fixed D: drive - default machine root is " + ProgramDataFallback());
+    if (note) *note = "no fixed D: drive - default machine root is " + ProgramDataFallback();
     return fs::path(ProgramDataFallback());
 }
 
@@ -381,7 +382,14 @@ void DoInit()
     }
 
     // ---- The machine root ----
-    fs::path root = ini.count("root") ? FromIni(ini["root"], iniDir) : DefaultRoot();
+    fs::path root;
+    if (ini.count("root")) {
+        root = FromIni(ini["root"], iniDir);
+    } else {
+        std::string note;
+        root = DefaultRoot(&note);
+        if (!note.empty()) Note(false, note);
+    }
     std::error_code ec;
     bool firstStart = !fs::exists(root / "config", ec);
     std::string why;
@@ -430,5 +438,40 @@ std::string MachinePath(const std::string& rel) { return MachineRoot() + "/" + r
 std::string DataPath(const std::string& rel)    { return DataRoot() + "/" + rel; }
 
 const std::vector<PathNote>& PathNotes() { InitPaths(); return S().notes; }
+
+RootsPreview ResolveRootsReadOnly()
+{
+    // DoInit's resolution, minus everything it DOES: no chdir, no template ini,
+    // no directory created, no unusable-root fallback (telling a root is
+    // unusable takes creating it), no migration, no seeding. Keep the order of
+    // the two in step with DoInit.
+    RootsPreview r;
+    const fs::path exe    = ExeFolder();
+    const fs::path iniDir = IniFolder(exe);
+    r.exeDir = Generic(exe);
+    r.ini    = Generic(iniDir / kIniName);
+
+    std::error_code ec;
+    std::map<std::string, std::string> ini;
+    r.iniFound = fs::exists(iniDir / kIniName, ec);
+    if (r.iniFound) ini = ReadIni(iniDir / kIniName);
+
+    fs::path root;
+    if (ini.count("root")) {
+        root = FromIni(ini["root"], iniDir);
+    } else {
+        std::string note;
+        root = DefaultRoot(&note);
+        if (!note.empty()) r.notes.push_back(note);
+    }
+    const fs::path data = ini.count("data") ? FromIni(ini["data"], iniDir) : root / "data";
+    r.root       = Generic(root);
+    r.data       = Generic(data);
+    r.rootExists = fs::is_directory(root / "config", ec);
+    if (!r.rootExists)
+        r.notes.push_back("no " + Generic(root / "config") +
+                          " - FireDog has not run against this root yet");
+    return r;
+}
 
 } // namespace firedog

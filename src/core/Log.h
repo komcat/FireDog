@@ -38,6 +38,13 @@ class Logger {
 public:
     static Logger& Instance();
 
+    // Send the log FILE to `path` (a daily file, as usual) instead of
+    // <machine root>/logs/firedog.log. For a second executable that must not
+    // share FireDog's log - and must not resolve the machine root at all, which
+    // runs InitPaths and its first-start writes. Only before the logger exists:
+    // call it ahead of the first FD_* line; false (and ignored) once it does.
+    static bool SetFileBeforeFirstUse(const std::string& path);
+
     // printf-style. Thread-safe; entries below MinLevel() are dropped cheaply.
     void Write(LogLevel level, const char* source, const char* fmt, ...);
     void WriteV(LogLevel level, const char* source, const char* fmt, va_list args);

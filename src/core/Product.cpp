@@ -41,6 +41,7 @@ std::string NowStamp()
 
 std::string ProductManifest::Dir() const
 {
+    if (!folder.empty()) return folder;
     return ProductsRoot() + "/" + name;
 }
 
@@ -82,10 +83,13 @@ std::vector<std::string> ListProducts()
     return out;
 }
 
-ProductManifest LoadProductManifest(const std::string& name)
+namespace {
+
+// The one manifest parse. `name` is the folder name: the identity the app
+// navigates by, authoritative over the "product" field inside.
+ProductManifest ParseManifest(const std::string& path, const std::string& name)
 {
     ProductManifest m;
-    const std::string path = ProductsRoot() + "/" + name + "/manifest.json";
     std::ifstream f(path);
     if (!f.is_open()) {
         FD_WARN("product", "no manifest at %s", path.c_str());
@@ -124,6 +128,23 @@ ProductManifest LoadProductManifest(const std::string& name)
         FD_WARN("product", "manifest load failed (%s)", e.what());
         return ProductManifest{};
     }
+    return m;
+}
+
+} // namespace
+
+ProductManifest LoadProductManifest(const std::string& name)
+{
+    return ParseManifest(ProductsRoot() + "/" + name + "/manifest.json", name);
+}
+
+ProductManifest LoadProductManifestAt(const std::string& dir)
+{
+    std::filesystem::path p(dir);
+    if (!p.has_filename()) p = p.parent_path();   // "X:/stick/siphog888/"
+    const std::string folder = p.lexically_normal().generic_string();
+    ProductManifest m = ParseManifest(folder + "/manifest.json", p.filename().string());
+    if (m.Loaded()) m.folder = folder;
     return m;
 }
 

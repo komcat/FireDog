@@ -1,7 +1,7 @@
 # POR — a master product compared with, then deployed to, another machine
 
-*Status: DESIGN (2026-11-12). Phases 1a (the `firedog_cmd` library), 1b
-(`GlHost::Init` takes the ini path) and 1c (`StepSummary`) are in; nothing else is
+*Status: DESIGN (2026-11-12). Phase 1 (foundations: the `firedog_cmd` library,
+`GlHost`'s ini path, `StepSummary`, the read-only loaders) is in; phases 2-4 are not
 built yet. Working name of the tool: `FireDogPor`.*
 
 ## 1. What it is for
@@ -217,9 +217,18 @@ Each numbered item is its own commit; foundations change no behaviour.
   aligns, grips and trays (null = show the uid), output byte-identical;
   `AutoNickname` is the editor's adapter over `session_`. `FormatDurationMs` moved
   there from `ui/Widgets` with it.
-- 1d. A path-taking product loader (`LoadProductManifestAt(dir)`) beside the
-  name-taking one, and a read-only `FireDog.ini` reader that resolves the root without
-  `InitPaths`' side effects.
+- 1d. Reading a machine without touching it:
+  - `LoadProductManifestAt(dir)` (`core/Product`): a manifest from ANY folder, named
+    by the folder, `Dir()`/`FilePath()` answering under it (`ProductManifest::folder`).
+    One parse shared with `LoadProductManifest(name)`; it never backfills a role.
+  - `LoadMotionMapsFile(path)` (`core/MotionMap`): the maps parse without the
+    machine fallback. Every other document already had a `Load*File(path)`.
+  - `ResolveRootsReadOnly()` (`core/Paths`): where `InitPaths` WOULD put the roots,
+    with no chdir, template ini, folder, migration or seed.
+  - `Logger::SetFileBeforeFirstUse(path)`: the tool's own log file. Without it the
+    first `FD_*` line would resolve `MachinePath("logs/...")` and so run `InitPaths`.
+  - The tool's rule that follows: call nothing that resolves `MachinePath`/`DataPath`
+    (the no-`File` loaders, `ProductSession`, `DutSession`, `HardwareConfigPath`).
 
 **Phase 2 — the compare engine (plain C++, no UI, `src/por/` in `firedog_cmd`)**
 - 2a. `PorSide`: one side loaded read-only from a folder — manifest, positions,
