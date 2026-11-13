@@ -22,7 +22,7 @@ out/build/x64-debug/FireDogRig.exe   # run the console bring-up rig
 
 ## Targets
 
-Three, from the one root `CMakeLists.txt`:
+Four, from the one root `CMakeLists.txt`:
 
 - **`firedog_hw`** (STATIC) — the UI-free layers: `src/core`, `src/hardware`,
   `src/vision`, `src/workflow`. **All vendor-SDK gating lives here**, as PUBLIC compile
@@ -30,8 +30,15 @@ Three, from the one root `CMakeLists.txt`:
   `PylonCamera.h` & co into the UI translation units and the `HAS_*` defs must
   reach every consumer. Add a new SDK by extending the detection block *and* the
   matching `if(..._FOUND)` block on this library — not on an executable.
-- **`FireDog`** — the GUI client. Globs `src/**` and filters out the four
-  directories above (they arrive via `firedog_hw`), adds GLFW/ImGui/ImPlot/Lua.
+- **`firedog_cmd`** (STATIC) — the document + command layer: `src/command`,
+  `src/session`, and `src/mosaic/MosaicDoc` (`CommandsMosaic` writes the mosaic record
+  through it). Links `firedog_hw`, `lua_static`, `sol2` and the stb include dir, all
+  PUBLIC, plus `SOL_ALL_SAFETIES_ON` PUBLIC. UI-free — nothing here includes ImGui,
+  GLFW, OpenGL, `ui/`, `App` or Velopack — so a second executable can load a product
+  and enumerate the command specs (`docs/por-design.md`). `MosaicWorker` stays in the
+  client.
+- **`FireDog`** — the GUI client. Globs `src/**` and filters out everything the two
+  libraries compile, links both, adds GLFW/ImGui/ImPlot and Velopack.
 - **`FireDogRig`** — the console bring-up rig (`tools/rig/`, see
   `docs/rig-console.md`). Links `firedog_hw` and nothing else.
 

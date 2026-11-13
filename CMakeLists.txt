@@ -547,6 +547,35 @@ function(firedog_stage_runtime tgt)
     endif()
 endfunction()
 
+# ---- firedog_cmd : the document + command layer (command + session) ----
+# The recipe/program model, the command registry and every command, the recipe
+# and Lua engines, and ProductSession. UI-free: nothing here includes ImGui,
+# GLFW, OpenGL, ui/, App or Velopack — keep it that way. A library so that a
+# second executable can load a product and list the command specs without the
+# client (docs/por-design.md). mosaic/MosaicDoc comes along because
+# CommandsMosaic writes the mosaic record through it; MosaicWorker (texture
+# paging for the viewer) stays in the client.
+file(GLOB_RECURSE FIREDOG_CMD_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/command/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/command/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/session/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/session/*.h")
+list(APPEND FIREDOG_CMD_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/mosaic/MosaicDoc.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/mosaic/MosaicDoc.h")
+
+add_library(firedog_cmd STATIC ${FIREDOG_CMD_SOURCES})
+
+# stb_image_write's implementation lives in CommandsDut.cpp, so the include dir
+# is PUBLIC: the client's MosaicWorker includes the same header.
+target_include_directories(firedog_cmd PUBLIC ${stb_SOURCE_DIR})
+target_link_libraries(firedog_cmd PUBLIC firedog_hw lua_static sol2::sol2)
+# sol2 safety checks (argument/type validation on every boundary crossing) —
+# cheap insurance for a layer that commands real hardware. PUBLIC so that any
+# consumer TU that ever includes sol compiles it with the same settings as
+# LuaEngine.cpp (today the only includer) — two settings would be an ODR hazard.
+target_compile_definitions(firedog_cmd PUBLIC SOL_ALL_SAFETIES_ON=1)
+
 # ---- FireDog executable (the GUI client) ----
 # Sources are globbed from src/ so new files are picked up automatically.
 # CONFIGURE_DEPENDS re-globs at build time (Ninja/MSBuild), so adding or removing
@@ -555,9 +584,11 @@ file(GLOB_RECURSE FIREDOG_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
 
-# core/, hardware/, vision/ and workflow/ are compiled into firedog_hw and linked
-# below — compiling them a second time here would duplicate every symbol.
-list(FILTER FIREDOG_SOURCES EXCLUDE REGEX "/src/(core|hardware|vision|workflow)/")
+# core/, hardware/, vision/ and workflow/ are compiled into firedog_hw, command/,
+# session/ and mosaic/MosaicDoc into firedog_cmd, both linked below — compiling
+# them a second time here would duplicate every symbol.
+list(FILTER FIREDOG_SOURCES EXCLUDE REGEX "/src/(core|hardware|vision|workflow|command|session)/")
+list(FILTER FIREDOG_SOURCES EXCLUDE REGEX "/src/mosaic/MosaicDoc\\.(cpp|h)$")
 
 # The app icon, compiled in as a Win32 resource (see resources/FireDog.rc for
 # why it is named GLFW_ICON). RC is enabled here rather than in project()
@@ -574,15 +605,11 @@ add_executable(FireDog
     ${FIREDOG_ICON_RC}
     ${FIREDOG_SOURCES})
 
-# The project include dirs arrive PUBLIC from firedog_hw; stb is UI/command-only.
-target_include_directories(FireDog PRIVATE ${stb_SOURCE_DIR})
-
+# The project include dirs arrive PUBLIC from firedog_hw; stb, Lua/sol2 and the
+# sol safety define arrive PUBLIC from firedog_cmd.
 # opengl32 for the base GL calls in GlHost (texture upload, clear).
-target_link_libraries(FireDog PRIVATE firedog_hw
-    glfw imgui_lib implot_lib opengl32 lua_static sol2::sol2)
-# sol2 safety checks (argument/type validation on every boundary crossing) —
-# cheap insurance for a layer that commands real hardware.
-target_compile_definitions(FireDog PRIVATE SOL_ALL_SAFETIES_ON=1)
+target_link_libraries(FireDog PRIVATE firedog_cmd firedog_hw
+    glfw imgui_lib implot_lib opengl32)
 
 # Velopack: the client only (update/AppUpdater.cpp is its one includer). It is
 # not a vendor SDK with a stub - it is always fetched - and FireDogRig has no

@@ -22,10 +22,12 @@ out/build/x64-debug/FireDog.exe      # run the client
 out/build/x64-debug/FireDogRig.exe   # console hardware bring-up rig
 ```
 
-Three targets: **`firedog_hw`** (static lib — `src/core` + `src/hardware` +
+Four targets: **`firedog_hw`** (static lib — `src/core` + `src/hardware` +
 `src/vision` + `src/workflow`, and where all vendor-SDK gating lives),
-**`FireDog`** (the GUI client), **`FireDogRig`** (the console rig, sources in
-`tools/rig/`).
+**`firedog_cmd`** (static lib — `src/command` + `src/session` +
+`src/mosaic/MosaicDoc`, links `firedog_hw` + Lua; UI-free, so a second exe can load a
+product and list the command specs), **`FireDog`** (the GUI client),
+**`FireDogRig`** (the console rig, sources in `tools/rig/`; `firedog_hw` only).
 
 CMake + Ninja + MSVC, **Windows only**. Deps come from `FetchContent` (first configure needs network). Vendor SDKs are optional, each gated by a compile def (`HAS_PYLON`/`HAS_VISA`/`HAS_PI`/`HAS_ACS`/`HAS_EZIIO`/`HAS_HALCON`) with a simulated stub fallback, so the build always stays green — details in `docs/build-and-sdks.md`.
 
