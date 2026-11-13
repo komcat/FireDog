@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -104,8 +105,14 @@ float GaugeFrac(double dz)
     return static_cast<float>(dz < 0.0 ? -c : c);
 }
 
+// The gauge prints in MICRONS, whole numbers: an approach is read in the last
+// tenths of a mm, and "+12990" reads faster than "+12.990" and needs no decimal
+// point to line up. The tape still plots mm (GaugeFrac).
+constexpr const char* kUm = "\xC2\xB5m";   // UTF-8 micro sign + m
+long long GaugeUm(double mm) { return std::llround(mm * 1000.0); }
+
 struct GaugeTip {
-    std::string name;
+    std::string name;            // the SHORT label (AuxTipLabel: "HL" / "HR")
     double      dz      = 0.0;   // what the tape plots and prints: height when
                                  // the up sign is known, else the axis dZ
     bool        atFocus = false;
@@ -134,31 +141,33 @@ float DrawZGauge(ImDrawList* dl, float right, float bottom, float maxH, bool upK
     // twitching about the line reads as motion that is not there.
     const auto shown = [](const GaugeTip* t) { return t->atFocus ? 0.0 : t->dz; };
     const auto label = [&](const GaugeTip* t) {
-        char b[128];
-        if (t->atFocus) std::snprintf(b, sizeof(b), "%s  0.000", t->name.c_str());
-        else            std::snprintf(b, sizeof(b), "%s  %+.3f", t->name.c_str(), shown(t));
+        char b[96];
+        if (t->atFocus) std::snprintf(b, sizeof(b), "%s  0", t->name.c_str());
+        else            std::snprintf(b, sizeof(b), "%s  %+lld", t->name.c_str(), GaugeUm(shown(t)));
         return std::string(b);
     };
     const std::string lTxt = left ? label(left) : std::string();
     const std::string rTxt = rightTip ? label(rightTip) : std::string();
-    // The slot: the widest of the names on screen and a stand-in, each with a
-    // worst-case number; the same width on both sides.
-    float slotW = ImGui::CalcTextSize("hex-right  -00.000").x;
+    // The slot: the widest of the labels on screen and a stand-in, each with a
+    // worst-case number (5 digits: a pinned tip 10+ mm off); the same width on
+    // both sides.
+    float slotW = ImGui::CalcTextSize("HR  -00000").x;
     for (const GaugeTip* t : {left, rightTip})
-        if (t) slotW = fmaxf(slotW, ImGui::CalcTextSize((t->name + "  -00.000").c_str()).x);
+        if (t) slotW = fmaxf(slotW, ImGui::CalcTextSize((t->name + "  -00000").c_str()).x);
     const float lW  = left ? ImGui::CalcTextSize(lTxt.c_str()).x : 0.0f;
     const float rW  = rightTip ? ImGui::CalcTextSize(rTxt.c_str()).x : 0.0f;
     const char* topEnd = upKnown ? "above" : "+Z";
     const char* botEnd = upKnown ? "below" : "-Z";
-    const float tlW = font->CalcTextSizeA(ss, FLT_MAX, 0.0f, "10").x;
+    const float tlW = font->CalcTextSizeA(ss, FLT_MAX, 0.0f, "10k").x;
     const float endW = fmaxf(font->CalcTextSizeA(ss, FLT_MAX, 0.0f, topEnd).x,
                              font->CalcTextSizeA(ss, FLT_MAX, 0.0f, botEnd).x);
 
     // Right to left: [left label][leader]|tape|[tick numbers + leader][right label]
     const float xRL = right - slotW - 6.0f;                      // right leader's outer end
-    const float xT  = xRL - (tlW + 18.0f);                       // the tape
-    const float xLL = xT - 24.0f;                                // left leader's outer end
-    const char* title = upKnown ? "height to focus, mm (reg)" : "dZ to focus, mm (reg)";
+    const float xT  = xRL - (tlW + 14.0f);                       // the tape
+    const float xLL = xT - 16.0f;                                // left leader's outer end
+    char title[48];
+    std::snprintf(title, sizeof(title), "%s, %s (reg)", upKnown ? "height" : "dZ", kUm);
     const float tw    = font->CalcTextSizeA(ss, FLT_MAX, 0.0f, title).x;
     const float plateL = fminf(fminf(xLL - 6.0f - slotW - 6.0f, xT - endW - 12.0f),
                                right - tw - 4.0f);
@@ -184,7 +193,7 @@ float DrawZGauge(ImDrawList* dl, float right, float bottom, float maxH, bool upK
     dl->AddText(font, ss, ImVec2(xT - endW - 6.0f, yB - ss * 0.5f), kGaugeTapeCol, botEnd);
     struct Tick { double v; const char* txt; };
     static constexpr Tick kTicks[] = {
-        {0.1, nullptr}, {0.5, nullptr}, {1.0, "1"}, {2.0, nullptr}, {5.0, "5"}, {10.0, "10"}};
+        {0.1, nullptr}, {0.5, nullptr}, {1.0, "1k"}, {2.0, nullptr}, {5.0, "5k"}, {10.0, "10k"}};
     for (const Tick& t : kTicks) {
         for (const double s : {1.0, -1.0}) {
             const float y   = yOf(s * t.v);
@@ -243,6 +252,22 @@ constexpr ImU32 kGripObjCol   = IM_COL32(90, 220, 235, 255);
 constexpr ImU32 kGripOkCol    = IM_COL32(120, 240, 150, 255);
 constexpr ImU32 kGripBadCol   = IM_COL32(245, 120, 100, 255);
 constexpr ImU32 kGripPlateCol = IM_COL32(220, 225, 235, 255);
+
+// A planted beacon (plant_beacon), coloured and paced by how far the nearest
+// registered tool's tip is from the beacon's HEIGHT - a tale-tell for the Z
+// approach, read without reading a number:
+//   |dZ| <= 0.3 mm  green, 127 bpm  (there)
+//   |dZ| <= 1.0 mm  yellow, 80 bpm  (close)
+//   further / no tool  pink, 30 bpm (a place the camera WAS, nothing near it)
+// Display only; nothing acts on it.
+constexpr double kBeaconNearMm  = 0.3;
+constexpr double kBeaconMidMm   = 1.0;
+constexpr ImU32  kBeaconNearCol = IM_COL32(110, 235, 130, 255);
+constexpr ImU32  kBeaconMidCol  = IM_COL32(245, 215, 80, 255);
+constexpr ImU32  kBeaconFarCol  = IM_COL32(240, 110, 230, 255);
+constexpr float  kBeaconNearBpm = 127.0f;
+constexpr float  kBeaconMidBpm  = 80.0f;
+constexpr float  kBeaconFarBpm  = 30.0f;
 
 // The tool's own footprint around that tip. Same amber, dimmer than the cross:
 // it is the SAME claim - one registration - drawn at the size the operator
@@ -471,6 +496,11 @@ void App::DrawAuxWindow()
         // tips' "no tip:" lines stack above its plate.
         float gripPlateH = 0.0f;
         if (haveImg) gripPlateH = DrawAuxGripResult(dl, origin, avail, imgO, imgS);
+
+        // ---- Beacons: where plant_beacon marked the camera ----
+        // Always on: a beacon is something a run will send a tool to, and the
+        // operator should see where before it goes.
+        if (haveImg) DrawAuxBeacons(dl, imgO, imgS);
 
         float tipsH = 0.0f;
         if (haveImg && showGripperMarks_)
@@ -957,7 +987,7 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
         const int side = haveGz ? GaugeSide(name, haveLeft, haveRight) : 0;
         if (side != 0) {
             GaugeTip& g = side < 0 ? gLeft : gRight;
-            g.name    = name;
+            g.name    = lbl.empty() ? name : lbl;   // "HL" / "HR" keeps the gauge narrow
             g.dz      = upSign != 0 ? upSign * dz : dz;
             g.atFocus = atFocus;
             (side < 0 ? haveLeft : haveRight) = true;
@@ -1039,8 +1069,8 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
                 if (g->atFocus)
                     std::snprintf(line, sizeof(line), "%s reg  in focus", g->name.c_str());
                 else
-                    std::snprintf(line, sizeof(line), "%s reg  %s %+.3f mm", g->name.c_str(),
-                                  upSign != 0 ? "height" : "dZ", g->dz);
+                    std::snprintf(line, sizeof(line), "%s reg  %s %+lld %s", g->name.c_str(),
+                                  upSign != 0 ? "height" : "dZ", GaugeUm(g->dz), kUm);
                 dzLines.insert(dzLines.begin(), line);
             }
         }
@@ -1148,6 +1178,94 @@ float App::DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2&
     cm.col   = kGripObjCol;
     DrawWorldMark(dl, wv, cm, 14.0f);
     return plateH;
+}
+
+// The live beacons, projected through the CURRENT gantry pose so each stays on
+// the spot it was planted at as the camera moves on. Only beacons planted on
+// the device that poses the picture: a point in another device's axis space
+// means nothing here. Expired ones are already gone from Workflow::Beacons().
+void App::DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
+{
+    if (pixelToMmX_ <= 0.0f || pixelToMmY_ <= 0.0f) return;
+    const std::vector<Beacon> beacons = workflow_.Beacons();
+    if (beacons.empty()) return;
+    double gx = 0.0, gy = 0.0;
+    if (!workflow_.GantryXY(gx, gy)) return;
+    const std::string refName = workflow_.GantryName();
+    if (refName.empty()) return;
+
+    WorldMarkView wv;
+    wv.view       = MakeCameraView(imgO, imgS, cameraW_, cameraH_,
+                                   static_cast<float>(cameraW_) * 0.5f,
+                                   static_cast<float>(cameraH_) * 0.5f, 1.0f);
+    wv.boxMin     = imgO;
+    wv.boxMax     = ImVec2(imgO.x + imgS.x, imgO.y + imgS.y);
+    wv.gx         = gx;
+    wv.gy         = gy;
+    wv.pixelToMmX = pixelToMmX_;
+    wv.pixelToMmY = pixelToMmY_;
+    wv.imgW       = cameraW_;
+    wv.imgH       = cameraH_;
+
+    // Every tool tip predictable in this picture's frame, once per frame: the
+    // same DeviceRegTip the tip marks use, so the beacon and the tip agree.
+    struct ToolTip { std::string label; RegVec3 tip; };
+    std::vector<ToolTip> tools;
+    for (const auto& [name, r] : workflow_.DeviceRegs()) {
+        if (!r.valid || r.refDevice != refName) continue;
+        RegVec3 tip{};
+        if (!workflow_.DeviceRegTip(name, tip, nullptr)) continue;
+        const std::string l = AuxTipLabel(name);
+        tools.push_back({l.empty() ? name : l, tip});
+    }
+    const int upSign = workflow_.GantryAxisZUpSign();
+
+    const auto now = std::chrono::steady_clock::now();
+    for (const Beacon& b : beacons) {
+        if (b.device != refName) continue;
+
+        // The tool this beacon is talking to: the one whose tip is nearest it
+        // in XY (the one being brought to it). Its height above the beacon
+        // sets the colour and the beat - a tale-tell for the Z approach.
+        const ToolTip* nearest = nullptr;
+        double         best    = 0.0;
+        for (const ToolTip& t : tools) {
+            const double d = std::hypot(t.tip.x - b.x, t.tip.y - b.y);
+            if (!nearest || d < best) { nearest = &t; best = d; }
+        }
+        ImU32 col    = kBeaconFarCol;
+        float bpm    = kBeaconFarBpm;
+        double hgtMm = 0.0;
+        if (nearest) {
+            const double dz = nearest->tip.z - b.z;   // gantry axis
+            hgtMm = upSign != 0 ? upSign * dz : dz;
+            const double a = std::fabs(dz);
+            if (a <= kBeaconNearMm)     { col = kBeaconNearCol; bpm = kBeaconNearBpm; }
+            else if (a <= kBeaconMidMm) { col = kBeaconMidCol;  bpm = kBeaconMidBpm;  }
+        }
+
+        const double left = BeaconMinutesLeft(b, now);
+        char ttl[16];
+        if (left >= 1.0) std::snprintf(ttl, sizeof(ttl), "%dm", static_cast<int>(left));
+        else             std::snprintf(ttl, sizeof(ttl), "<1m");
+        char lbl[96];
+        if (nearest)
+            std::snprintf(lbl, sizeof(lbl), "%s  %s  %s %+lld", b.name.c_str(), ttl,
+                          nearest->label.c_str(), GaugeUm(hgtMm));
+        else
+            std::snprintf(lbl, sizeof(lbl), "%s  %s", b.name.c_str(), ttl);
+
+        CameraMark cm;
+        cm.wx           = b.x;
+        cm.wy           = b.y;
+        cm.have         = true;
+        cm.label        = lbl;
+        cm.col          = col;
+        cm.edgeDistance = true;
+        cm.glyph        = CameraMark::Glyph::Pulse;
+        cm.pulsePeriodS = 60.0f / bpm;
+        DrawWorldMark(dl, wv, cm, 16.0f);
+    }
 }
 
 // Where each stage stands, named against the taught positions.

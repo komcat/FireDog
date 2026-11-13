@@ -37,6 +37,8 @@ public:
     bool IsSettled() const override;                                        // !PI_IsMoving
     bool IsOnTarget() const override;                                       // PI_qONT (all axes)
     bool StopAll() override;                                                // PI_STP
+    Reach CheckMove(const std::vector<std::pair<std::string, double>>& targets,
+                    std::string* why) override;                             // PI_qVMO
     void RequestFastPoll() override;
 
     bool     SupportsReference() const override { return true; }

@@ -132,6 +132,34 @@ void DrawCross(ImDrawList* dl, const ImVec2& p, ImU32 col, float len, const char
     if (label && label[0]) dl->AddText(ImVec2(p.x + 8.0f, p.y + 6.0f), col, label);
 }
 
+// CameraMark::Glyph::Pulse: a dot, a fixed ring, and a second ring that grows
+// from the fixed one to `size` beyond it while fading, once every `periodS`.
+// Driven by ImGui::GetTime(), so it needs nothing kept between frames. The
+// label sits on a dark pill (below right) so it reads over a bright frame.
+void DrawPulse(ImDrawList* dl, const ImVec2& p, ImU32 col, float size, const char* label,
+               float periodS)
+{
+    const double period = periodS > 0.05f ? static_cast<double>(periodS) : 1.6;
+    const float ring = size * 0.6f;
+    dl->AddCircleFilled(p, 4.0f, col);
+    dl->AddCircle(p, ring, col, 0, 2.0f);
+
+    const float t = static_cast<float>(std::fmod(ImGui::GetTime(), period) / period);
+    const ImU32 a = (col >> IM_COL32_A_SHIFT) & 0xFF;
+    const ImU32 fade = static_cast<ImU32>(static_cast<float>(a) * 0.9f * (1.0f - t));
+    const ImU32 pc = (col & ~IM_COL32_A_MASK) | (fade << IM_COL32_A_SHIFT);
+    if (fade > 0) dl->AddCircle(p, ring + size * t, pc, 0, 2.0f);
+
+    if (label && label[0]) {
+        const ImVec2 ts = ImGui::CalcTextSize(label);
+        const ImVec2 lp(p.x + ring + 8.0f, p.y + ring * 0.5f);
+        dl->AddRectFilled(ImVec2(lp.x - 4.0f, lp.y - 2.0f),
+                          ImVec2(lp.x + ts.x + 4.0f, lp.y + ts.y + 2.0f),
+                          IM_COL32(0, 0, 0, 165), 3.0f);
+        dl->AddText(lp, col, label);
+    }
+}
+
 } // namespace
 
 bool LoadPngRGBA(const char* path, std::vector<unsigned char>* rgba,
@@ -259,7 +287,10 @@ void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
     const float pad = 2.0f;
     if (s.x >= wv.boxMin.x - pad && s.x <= wv.boxMax.x + pad &&
         s.y >= wv.boxMin.y - pad && s.y <= wv.boxMax.y + pad) {
-        DrawCross(dl, s, col, crossLen, m.label);
+        if (m.glyph == CameraMark::Glyph::Pulse)
+            DrawPulse(dl, s, col, crossLen, m.label, m.pulsePeriodS);
+        else
+            DrawCross(dl, s, col, crossLen, m.label);
         return;
     }
 
@@ -450,6 +481,10 @@ const char* StepIconFile(const char* type)
         {"move_tool_to_camera",       "rg_tool_to_cam"},
         {"move_camera_to_tool",       "rg_cam_to_tool"},
         {"tool_travel_to_camera",     "rg_tool_to_cam"},
+        {"move_tool_to_beacon",       "rg_tool_to_cam"},
+        {"plant_beacon",              "rg_device_reg"},
+        {"plant_beacon_here",         "rg_device_reg"},
+        {"remove_beacon",             "rg_device_reg"},
         {"detect_object",             "vi_detect"},
         // IO. wait_input has its own glyph - the pin is the news there.
         {"set_output",                "io_output"},

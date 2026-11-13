@@ -315,6 +315,21 @@ measured described tooling that may no longer be on the machine.
   rotation away from the taught one, and — via `max_mm`, default 10 mm — a move
   longer than an approach has any business being. Unattended, nobody notices that
   a stale record turned a short approach into a lunge.
+  **Every registration move runs one precheck before anything moves.** It lives in
+  `ApproachAxisPoint`, the shared helper where all of them end.
+  - It logs the travel and the per-axis deltas from the live pose, then applies the
+    `max_mm` ceiling.
+  - It asks the CONTROLLER whether the target can be reached at all, with
+    `IMotionController::CheckMove` (PI: `VMO?`, a "virtual move"). A hexapod's
+    workspace depends on all six axes together: a pose can be inside every axis's
+    range and still be unreachable, and only the controller knows.
+  - **No** fails the step with "nothing moved", instead of a `PI_MOV` error
+    mid-approach after the travel leg was already issued.
+  - **A query that failed also fails.** A check that could not run is not a pass.
+  - A controller with no such query (ACS, the sims) answers **Unknown**. That is
+    logged and the move goes on, with the controller's own MOV check the only one.
+  - Only the final pose is asked. The approach leg's intermediate point lies on the
+    straight line to it.
 * `move_tool_to_camera{device, z_offset_mm}` — the same approach aimed at the one
   point a recipe author cannot write down: wherever the camera is looking when
   the step runs. It reads the reference device's live pose, so the target comes
@@ -378,7 +393,10 @@ hex-right orange) and labelled with a short name from Preferences > Graphic view
 A tip outside the frame is an outlined triangle on the edge pointing at it, with
 that label and no distance (`CameraMark::edgeDistance = false`; a nominal keeps
 its "name N.NN mm" arrow). `dZ` against the plane in focus goes on the Z gauge —
-because two tips 3 mm apart in Z land on the same pixel. It is a readout
+because two tips 3 mm apart in Z land on the same pixel. The gauge names each
+pointer by the same short label (HL / HR; the full name only when the label is
+empty) and prints whole MICRONS (`+12990`, ticks 1k / 5k / 10k), which keeps the
+plate narrow; the tape itself still scales in mm. It is a readout
 and nothing acts on it, but it inherits both of the record's refusals verbatim: a
 tip that cannot be predicted (no registration, not connected, rotated away from
 where it was taught) draws **no position**, and a tip registered against a

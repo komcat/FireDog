@@ -8,6 +8,7 @@
 #include "core/CameraSetup.h"          // CameraSetup / ViewFilter (how a view is looked at)
 #include "core/DeviceReg.h"            // DeviceReg (a gripper tip in gantry space)
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
+#include "core/Beacon.h"               // Beacon (temporary camera-pose markers)
 #include "core/ObjectResult.h"         // ObjectResult (detected objects, live)
 #include "core/PivotDefaults.h"        // PivotDefault (restored after a controller restart)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
@@ -556,6 +557,21 @@ public:
     std::vector<ObjectResult> ObjectResults() const;   // snapshot, by name
     void ClearObjectResults(const char* reason);
 
+    // ---- Beacons (plant_beacon -> move_tool_to_beacon) ----------------------
+    // A temporary, named marker of a measured CAMERA pose (core/Beacon.h). NOT
+    // part-scoped like the results above: program start and DUT open keep it.
+    // It goes at remove_beacon, product load (ClearBeacons) or kBeaconLifeMin
+    // after planting. An expired beacon reads as absent everywhere; ExpireBeacons
+    // (App::Update) erases it and logs that once. Mutex-guarded: engine workers
+    // write, the Aux window reads.
+    void SetBeacon(const Beacon& b);
+    bool EraseBeacon(const std::string& name);
+    // false + *why ("no beacon 'x'" / "beacon 'x' expired") when unusable.
+    bool BeaconFor(const std::string& name, Beacon* out, std::string* why) const;
+    std::vector<Beacon> Beacons() const;   // snapshot of the unexpired, by name
+    void ClearBeacons(const char* reason);
+    void ExpireBeacons();
+
     // ---- Waffle tray cursors (tray_next / tray_reset / the Waffle Tray page)
     // Which cells of a tray are USED (the cavity is empty), by tray uid. The
     // live, thread-safe mirror of WaffleTray::usedCells, which is the
@@ -827,6 +843,8 @@ private:
     // Live object results by name (SetObjectResult / ClearObjectResults).
     mutable std::mutex                       objectMu_;
     std::map<std::string, ObjectResult>      objectResults_;
+    mutable std::mutex                       beaconMu_;
+    std::map<std::string, Beacon>            beacons_;
 
     // Used waffle-tray cells by tray uid (see TrayNext), and the worker->UI
     // queue that carries a run's changes to the document.

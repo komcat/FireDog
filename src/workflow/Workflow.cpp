@@ -744,6 +744,86 @@ void Workflow::ClearObjectResults(const char* reason)
                 reason ? reason : "reset", n);
 }
 
+// ---- Beacons ---------------------------------------------------------------
+
+void Workflow::SetBeacon(const Beacon& b)
+{
+    const std::lock_guard<std::mutex> lock(beaconMu_);
+    beacons_[b.name] = b;
+}
+
+bool Workflow::EraseBeacon(const std::string& name)
+{
+    const std::lock_guard<std::mutex> lock(beaconMu_);
+    return beacons_.erase(name) > 0;
+}
+
+bool Workflow::BeaconFor(const std::string& name, Beacon* out, std::string* why) const
+{
+    const std::lock_guard<std::mutex> lock(beaconMu_);
+    const auto it = beacons_.find(name);
+    if (it == beacons_.end()) {
+        if (why) *why = "no beacon '" + name + "' - plant_beacon first";
+        return false;
+    }
+    if (BeaconExpired(it->second)) {
+        if (why) {
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                          "beacon '%s' expired (planted %s, good for %d min)",
+                          name.c_str(), it->second.at.c_str(), kBeaconLifeMin);
+            *why = buf;
+        }
+        return false;
+    }
+    if (out) *out = it->second;
+    return true;
+}
+
+std::vector<Beacon> Workflow::Beacons() const
+{
+    const auto now = std::chrono::steady_clock::now();
+    const std::lock_guard<std::mutex> lock(beaconMu_);
+    std::vector<Beacon> v;
+    v.reserve(beacons_.size());
+    for (const auto& [name, b] : beacons_)
+        if (!BeaconExpired(b, now)) v.push_back(b);
+    return v;
+}
+
+void Workflow::ClearBeacons(const char* reason)
+{
+    std::size_t n = 0;
+    {
+        const std::lock_guard<std::mutex> lock(beaconMu_);
+        n = beacons_.size();
+        beacons_.clear();
+    }
+    if (n > 0)
+        FD_INFO("beacon", "beacon(s) cleared: %s (%zu dropped)",
+                reason ? reason : "reset", n);
+}
+
+void Workflow::ExpireBeacons()
+{
+    std::vector<std::string> gone;
+    {
+        const auto now = std::chrono::steady_clock::now();
+        const std::lock_guard<std::mutex> lock(beaconMu_);
+        for (auto it = beacons_.begin(); it != beacons_.end();) {
+            if (BeaconExpired(it->second, now)) {
+                gone.push_back(it->first);
+                it = beacons_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const std::string& name : gone)
+        FD_INFO("beacon", "beacon '%s' expired after %d min - removed", name.c_str(),
+                kBeaconLifeMin);
+}
+
 // ---- Waffle tray cursors ---------------------------------------------------
 
 void Workflow::TrayConsume(const std::string& trayUid, int row, int col)

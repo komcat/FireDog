@@ -166,6 +166,17 @@ struct CameraMark {
     // triangle with the label alone, or nothing when the label is empty (the
     // Aux view's tool tips: WHICH tool is that way, in its own colour).
     bool edgeDistance = true;
+    // The on-screen form. Cross = the labelled cross every mark has always
+    // been. Pulse = a dot, a fixed ring and a second ring that grows and fades
+    // (~1.6 s), with the label on a dark pill: the one MOVING mark on the
+    // picture, for a beacon (plant_beacon) - a place to come back to, so it
+    // must be findable at a glance and never read as a tip or a detection.
+    // The off-screen arrow is the same for both.
+    enum class Glyph { Cross, Pulse };
+    Glyph glyph = Glyph::Cross;
+    // Pulse only: seconds per beat (60 / bpm). The beacon beats faster as a
+    // tool closes on its height - see App::DrawAuxBeacons.
+    float pulsePeriodS = 1.6f;
 };
 
 // The accent colour a motion device is drawn in on the image - the badge colour

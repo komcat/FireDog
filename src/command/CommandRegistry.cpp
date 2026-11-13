@@ -43,4 +43,17 @@ std::vector<const CommandSpec*> CommandRegistry::List() const
     return out;
 }
 
+CommandResult RunRegistered(ExecutionContext& ctx, const CommandRegistry& reg,
+                            const char* name, const nlohmann::json& args)
+{
+    const CommandSpec* spec = reg.Find(name);
+    if (!spec) return CommandResult::Fail(std::string(name) + " is not registered");
+    nlohmann::json merged;
+    const std::string ve = ValidateParams(*spec, args, &merged);
+    if (!ve.empty()) return CommandResult::Fail(std::string(name) + ": " + ve);
+    const CommandResult r = spec->execute(ctx, ParamValues(std::move(merged)));
+    if (!r.ok) return CommandResult::Fail(std::string(name) + ": " + r.error);
+    return r;
+}
+
 } // namespace firedog

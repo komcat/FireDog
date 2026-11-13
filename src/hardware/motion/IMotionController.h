@@ -104,6 +104,22 @@ public:
     virtual bool IsOnTarget() const { return true; }
     virtual bool StopAll() = 0;
 
+    // Ask the CONTROLLER whether an absolute move to `targets` is possible,
+    // WITHOUT moving (PI: qVMO, the "virtual move" - for a hexapod whether a
+    // pose is reachable depends on all six axes at once, so only the controller
+    // can say; axes not named keep their current commanded value). One answer
+    // for the whole set. Unknown = this driver has no such query (ACS, the
+    // sims) and *why says so; Error = the query was sent and failed, *why has
+    // the controller's error. Blocks for one controller exchange.
+    enum class Reach { Unknown, Yes, No, Error };
+    virtual Reach CheckMove(const std::vector<std::pair<std::string, double>>& targets,
+                            std::string* why)
+    {
+        (void)targets;
+        if (why) *why = "this controller has no reachability query";
+        return Reach::Unknown;
+    }
+
     // Per-axis servo enable (ACS: acsc_Enable / acsc_Disable; the state is the
     // ENABLE bit of the motor-state word, polled with the positions). A driver
     // without the concept (PI) says so and refuses. An axis missing from

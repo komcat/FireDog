@@ -361,6 +361,40 @@ struct PIHexapod::Impl {
         return true;
     }
 
+    // VMO? - "can the platform move there?", answered by the controller from
+    // its own workspace model, nothing moves. One BOOL for the whole pose.
+    IMotionController::Reach CheckMove(const std::vector<std::pair<std::string, double>>& targets,
+                                       std::string* why)
+    {
+        using R = IMotionController::Reach;
+        if (targets.empty()) return R::Yes;
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!connected.load()) {
+            if (why) *why = "not connected";
+            return R::Error;
+        }
+        std::string ax;
+        std::vector<double> vals;
+        vals.reserve(targets.size());
+        for (const auto& kv : targets) {
+            if (!ax.empty()) ax += ' ';
+            ax += kv.first;
+            vals.push_back(kv.second);
+        }
+        BOOL possible = FALSE;
+        if (!PI_qVMO(id, ax.c_str(), vals.data(), &possible)) {
+            int err = 0; PI_qERR(id, &err);
+            if (why) *why = "PI_qVMO failed (" + std::to_string(err) + ")";
+            FD_WARN("pi", "%s reachability query failed: GCS error %d", cfg.name.c_str(), err);
+            return R::Error;
+        }
+        if (!possible) {
+            if (why) *why = "the controller reports the pose is outside its workspace (VMO? = 0)";
+            return R::No;
+        }
+        return R::Yes;
+    }
+
     bool SetVelocity(double v)
     {
         // The C-887 rejects VLS while the platform is still executing a motion
@@ -612,6 +646,13 @@ struct PIHexapod::Impl {
     std::atomic<double> simVelocity{10.0};   // what the "controller" is set to
     bool IsSettled() { return true; }   // sim snaps to target — never "moving"
     bool IsOnTarget() { return true; }
+    // No workspace model to ask: say so rather than invent a "yes".
+    IMotionController::Reach CheckMove(const std::vector<std::pair<std::string, double>>&,
+                                       std::string* why)
+    {
+        if (why) *why = "simulated hexapod: no workspace model to query";
+        return IMotionController::Reach::Unknown;
+    }
     bool StopAll()
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -664,6 +705,11 @@ bool PIHexapod::ReadVelocity(double* v) { return p_->ReadVelocity(v); }
 bool PIHexapod::IsSettled() const       { return p_->IsSettled(); }
 bool PIHexapod::IsOnTarget() const      { return p_->IsOnTarget(); }
 bool PIHexapod::StopAll()               { return p_->StopAll(); }
+IMotionController::Reach PIHexapod::CheckMove(
+    const std::vector<std::pair<std::string, double>>& t, std::string* why)
+{
+    return p_->CheckMove(t, why);
+}
 void PIHexapod::RequestFastPoll()       { p_->RequestFastPoll(); }
 IMotionController::RefState PIHexapod::Referenced() const { return p_->Referenced(); }
 bool PIHexapod::StartReference()        { return p_->StartReference(); }

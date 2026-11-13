@@ -238,6 +238,7 @@ CommandResult ApproachAxisPoint(ExecutionContext& ctx, const ParamValues& p,
                                 int idx, const RegVec3& h, const char* ceiling,
                                 const char* what)
 {
+    m->RequestFastPoll();
     const std::map<std::string, double> live = m->Positions();
 
     const std::string axes = p.GetString("axes");
@@ -246,6 +247,7 @@ CommandResult ApproachAxisPoint(ExecutionContext& ctx, const ParamValues& p,
     const std::vector<std::string> have = m->Axes();
     std::vector<std::pair<std::string, double>> targets;
     double travelSq = 0.0;
+    std::string deltas;   // "dX +0.1234 dY -0.0500 ..." for the precheck line
     for (const char raw : axes) {
         const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(raw)));
         const std::string axis(1, c);
@@ -266,15 +268,22 @@ CommandResult ApproachAxisPoint(ExecutionContext& ctx, const ParamValues& p,
         if (const auto it = live.find(axis); it != live.end()) {
             const double d = val - it->second;
             travelSq += d * d;
+            char dbuf[32];
+            std::snprintf(dbuf, sizeof(dbuf), "%sd%c %+.4f", deltas.empty() ? "" : " ", c, d);
+            deltas += dbuf;
         }
         targets.emplace_back(axis, val);
     }
 
-    // The ceiling. Unattended there is nobody to notice that a stale record
-    // turned a short approach into a lunge, and a registration is exactly the
-    // kind of number that goes wrong silently.
+    // ---- PRECHECK: everything below decides before anything moves ----------
+    // The distance, computed from the live pose, and the ceiling on it.
+    // Unattended there is nobody to notice that a stale record turned a short
+    // approach into a lunge, and a registration is exactly the kind of number
+    // that goes wrong silently.
     const double maxMM  = p.GetDouble("max_mm");
     const double travel = std::sqrt(travelSq);
+    FD_INFO("devreg", "'%s' precheck: %.4f mm of travel (%s), max_mm %.4f",
+            device.c_str(), travel, deltas.c_str(), maxMM);
     if (maxMM > 0.0 && travel > maxMM) {
         char buf[320];
         std::snprintf(buf, sizeof(buf), "move of %.4f mm exceeds max_mm %.4f - %s",
@@ -282,12 +291,40 @@ CommandResult ApproachAxisPoint(ExecutionContext& ctx, const ParamValues& p,
         return CommandResult::Fail(buf);
     }
 
+    // Then the CONTROLLER's own answer: can it get there at all (PI VMO? -
+    // a hexapod's workspace depends on all six axes together, so a point can
+    // be in every axis's range and still be unreachable). A refusal here is
+    // a clean failure before the move, instead of a PI_MOV error mid-approach
+    // with the travel leg already issued. A query that FAILED is not a pass;
+    // a controller with no such query (ACS, the sims) is logged and goes on -
+    // its own MOV check is then the only one.
+    std::string why;
+    switch (m->CheckMove(targets, &why)) {
+    case IMotionController::Reach::Yes:
+        FD_INFO("devreg", "'%s' precheck: controller confirms the pose is reachable",
+                device.c_str());
+        break;
+    case IMotionController::Reach::No: {
+        char buf[384];
+        std::snprintf(buf, sizeof(buf), "'%s' cannot reach (%.4f, %.4f, %.4f): %s - "
+                      "nothing moved", device.c_str(), h.x, h.y, h.z, why.c_str());
+        return CommandResult::Fail(buf);
+    }
+    case IMotionController::Reach::Error:
+        return CommandResult::Fail("'" + device + "' reachability check failed: " + why +
+                                   " - nothing moved");
+    case IMotionController::Reach::Unknown:
+        FD_INFO("devreg", "'%s' precheck: %s - the controller checks the move itself",
+                device.c_str(), why.c_str());
+        break;
+    }
+
     const double vel = p.GetDouble("velocity_mm_s");
     if (vel > 0.0 && !ctx.Wf().SetJogVelocity(static_cast<std::size_t>(idx), vel))
         return CommandResult::Fail("velocity change rejected");
 
-    FD_INFO("devreg", "'%s' approaching pose (%.4f, %.4f, %.4f), %.4f mm of travel",
-            device.c_str(), h.x, h.y, h.z, travel);
+    FD_INFO("devreg", "'%s' approaching pose (%.4f, %.4f, %.4f)", device.c_str(), h.x,
+            h.y, h.z);
     return MoveWithApproach(ctx, m, idx, targets, p, what);
 }
 

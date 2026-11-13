@@ -29,4 +29,13 @@ private:
     std::map<std::string, CommandSpec> byName_;
 };
 
+// Run another registered command from inside a command, with ITS defaults for
+// everything `args` does not give: the ceilings, tolerances and timeouts belong
+// to that command, and a copy of them in the caller would be the one that goes
+// stale. Validated like a step; a failure is prefixed with the command's name.
+// Calls spec.execute directly (no pre/post delays - those belong to the outer
+// step). Used by grip_detect and plant_beacon.
+CommandResult RunRegistered(ExecutionContext& ctx, const CommandRegistry& reg,
+                            const char* name, const nlohmann::json& args);
+
 } // namespace firedog

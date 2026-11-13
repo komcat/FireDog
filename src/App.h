@@ -832,6 +832,11 @@ private:
     // Window box for the plate, image rect for the cross (as DrawAuxGripperMarks).
     float DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
                             const ImVec2& imgO, const ImVec2& imgS);
+    // The live beacons (plant_beacon) planted on the device posing the picture:
+    // a pulse coloured and paced by the nearest tool's height against the
+    // beacon, labelled with the minutes left; an edge arrow when off the image.
+    // Draw only - reads Workflow::Beacons(), changes nothing.
+    void DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS);
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     // The Aux window's COMPACT chart: drawn straight onto `dl` with no plot
     // library and no child window - a trace over the picture that takes no

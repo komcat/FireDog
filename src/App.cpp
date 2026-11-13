@@ -381,6 +381,10 @@ void App::Update(float dt)
     // route; see DrainAlignPoints for the idle fallback.
     DrainAlignPoints();
 
+    // A beacon is good for kBeaconLifeMin: drop and log the expired ones here,
+    // once, rather than leaving the first reader to discover it.
+    workflow_.ExpireBeacons();
+
     // A NEW DUT is a new physical part, so any taught frame stops meaning
     // anything. Edge-detected off DutSession's own state rather than hooked
     // into the two Open call sites (the dut_open command and the Overview
@@ -740,6 +744,9 @@ void App::ResetDocumentSelections()
     // This also covers app start, since Run() calls us before the first frame.
     workflow_.ClearLiveFrames("product loaded");
     workflow_.ClearObjectResults("product loaded");
+    // Beacons are not part-scoped (program start and DUT open keep them), but
+    // a different product's locations mean nothing.
+    workflow_.ClearBeacons("product loaded");
     // And a different product's trays are different trays: the cursor is
     // rebuilt from what THIS product's records say is used — the persisted
     // set is the truth, the cursor its live mirror.

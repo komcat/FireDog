@@ -457,22 +457,6 @@ CommandResult ExecGripApply(ExecutionContext& ctx, const ParamValues& p)
 // command's defaults (the 60 mm ceiling, the tolerance) rather than a copy of
 // them. Z stays where it is unless `focus_z` says otherwise, for the reason
 // that command's axes default to XY.
-// Run another registered command with ITS defaults for everything not given:
-// the ceilings, tolerances and timeouts belong to that command, and a copy of
-// them here would be the one that goes stale.
-static CommandResult RunRegistered(ExecutionContext& ctx, const CommandRegistry& reg,
-                            const char* name, const nlohmann::json& args)
-{
-    const CommandSpec* spec = reg.Find(name);
-    if (!spec) return CommandResult::Fail(std::string(name) + " is not registered");
-    nlohmann::json merged;
-    const std::string ve = ValidateParams(*spec, args, &merged);
-    if (!ve.empty()) return CommandResult::Fail(std::string(name) + ": " + ve);
-    const CommandResult r = spec->execute(ctx, ParamValues(std::move(merged)));
-    if (!r.ok) return CommandResult::Fail(std::string(name) + ": " + r.error);
-    return r;
-}
-
 CommandResult ExecGripDetect(ExecutionContext& ctx, const ParamValues& p,
                              const CommandRegistry& reg)
 {
