@@ -65,6 +65,9 @@ struct PorSide {
 
     std::set<std::string> scripts;        // file names: <product>/scripts, then <root>/config/scripts
     std::set<std::string> promptImages;   // file names: <product>/prompt_images, then <root>/config/prompt_images
+    // The PRODUCT's own (a deploy carries these; the rest are the machine's).
+    std::set<std::string> productScripts;
+    std::set<std::string> productImages;
 
     std::vector<std::string> notes;       // what was read from where, and what could not be
 

@@ -220,6 +220,33 @@ by section (`por/PorHardware`):
 - The page compares and nothing else: a fix is a hand edit of the target's
   `<root>/config/hardware.json`, the same as today (`CLAUDE.md`, State & documents).
 
+## 6b. The Fix list - errors, not differences
+
+Two questions, kept apart:
+
+- **Differences** (the tree, §5.3-§6a): is the target the same as the master? A
+  difference may be intended, and a deploy can carry the structure across.
+- **Errors** (the Fix list, `por/PorFixList`, the first page): can the MASTER's deck
+  run on THIS machine? Almost every error is something a deploy never carries,
+  because it is measured or machine data - so it is a to-do list, not a diff.
+
+The list walks the master's deck (every program > slot > node > recipe, `sub_recipe`
+and `on_fail` followed, disabled steps included) and checks each reference BY NAME on
+the target, exactly as a deploy would translate it. A recipe, a sub_recipe, a product
+script or a product picture the target lacks is not an error: the deploy brings it.
+Positions come from the Positions page's own trace, so the two pages cannot disagree.
+
+| Group | What lands in it | Fixed by |
+|---|---|---|
+| The master itself is broken | a reference the MASTER cannot resolve: a deck node, sub_recipe or on_fail uid, a position, alignment, model, grip, tray, map, script or picture | fixing the master before it is distributed |
+| Teach on this machine | a missing position (or a private pose, through its owner), alignment, nominal, detection model, grip profile, tray; a `PointXyz` or `detect_object` model whose step has no twin here (same recipe, same type, same `ctx_prefix`, else the same nickname) | teaching it here |
+| Configure this machine | a device, PSU, slide, light or pin not in this `hardware.json`; a pin NAME on another pin NUMBER than on the master; a motion device with other axes; a missing map; a machine-level script or picture | editing this machine's `hardware.json`, the Motion page's maps, `<root>/config/scripts` |
+| Names to resolve | a name used twice here, so a reference cannot be told apart | renaming |
+| Update FireDog | a command this build does not know | an update (or the master still uses a retired command) |
+
+Each item carries its uses (`slot > recipe > step`) and a Go to the recipe, the
+Positions page or the Hardware section. The summary line leads with the count to fix.
+
 ## 7. Deploy (phase 4 — direction, to be designed on phase-3 results)
 
 - Refused while `FireDog.exe` is running (its session holds the product in memory and
@@ -299,6 +326,7 @@ Each numbered item is its own commit; foundations change no behaviour.
 - 3b. Explorer + Deck/Recipes compare (§5.3).
 - 3c. Positions page (§6) and Hardware page (§6a).
 - 3d. *Export master* (§5.1).
+- 3e. The Fix list (§6b): `por/PorFixList` + the first explorer page.
 - Release: `package-release.ps1` already packs every exe; the `/release` skill's
   verify step learns the third exe.
 

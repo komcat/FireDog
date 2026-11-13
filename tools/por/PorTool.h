@@ -13,6 +13,7 @@
 
 #include "core/Paths.h"   // RootsPreview
 #include "por/PorCompare.h"
+#include "por/PorFixList.h"
 #include "por/PorHardware.h"
 #include "por/PorPositions.h"
 #include "por/PorSide.h"
@@ -37,17 +38,22 @@ public:
     void Draw();
 
 private:
-    enum class View { None, Program, Slot, Recipe, Positions, Hardware, Notes };
+    enum class View { None, FixList, Program, Slot, Recipe, Positions, Hardware, Notes };
 
     void DrawTopBar();
     void DrawExplorer();
     void DrawContent();
     void DrawExportWindow();
+    void DrawMenuBar();
+    void DrawLegendLine();
+    void DrawLegendWindow();
+    void DrawHelpWindow();
     void DrawRowsTable(const char* id, const std::vector<PorRow>& rows,
                        const std::vector<PorParam>* header);
     void DrawRow(const PorRow& r, int depth);
     void DrawParam(const PorParam& p);
     void DrawPositions();
+    void DrawFixList();
     void DrawNotes();
 
     void RefreshProducts();
@@ -75,6 +81,8 @@ private:
     bool  allParams_    = false;
     bool  workingOnly_  = false;
     bool  showExport_   = false;
+    bool  showLegend_   = false;
+    bool  showHelp_     = false;
     float explorerW_    = 330.0f;
 
     bool               compared_ = false;
@@ -83,6 +91,7 @@ private:
     PorReport          report_;
     PorPositionsReport positions_;
     PorHardwareReport  hardware_;
+    PorFixList         fixes_;
     std::string        summary_;
 
     View view_ = View::None;

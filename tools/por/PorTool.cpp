@@ -90,6 +90,48 @@ std::string RowLabel(const std::string& text, bool off, bool used, PorRowKind ki
     return l;
 }
 
+// Worst first: the order the legend lists them and a reader should fix them.
+constexpr PorStatus kLegendOrder[] = {
+    PorStatus::Missing,    PorStatus::Ambiguous, PorStatus::OnlyMaster, PorStatus::OnlyTarget,
+    PorStatus::Changed,    PorStatus::Unknown,   PorStatus::Measured,
+};
+
+// What a colour MEANS, and what to do about it. One text, shown by the inline
+// key's tooltips and the Legend window alike.
+const char* StatusMeaning(PorStatus s)
+{
+    switch (s) {
+    case PorStatus::Missing:
+        return "Something refers to an object that does not exist on that side: a position, "
+               "recipe, alignment, detection model, grip, tray, map, device, pin, slide, light, "
+               "script or prompt picture. The deck cannot run as it is. Teach or create it on "
+               "the target, or fix the reference.";
+    case PorStatus::Ambiguous:
+        return "The name is used twice on one side, so the tool will not guess which one pairs "
+               "with the other side. Rename one of them.";
+    case PorStatus::OnlyMaster:
+        return "Present on the master, absent on the target: a step, node, slot, recipe, "
+               "device, pin or position the target does not have.";
+    case PorStatus::OnlyTarget:
+        return "Present on the target, absent on the master: something added on this machine "
+               "that the master does not have.";
+    case PorStatus::Changed:
+        return "Both sides have it but a DESIGN value differs: a step param, a loop count, a "
+               "cycle state, an axis list, a pin name (or the same pin name wired to another "
+               "pin number).";
+    case PorStatus::Unknown:
+        return "A command this build does not know (retired, or newer than this exe). It is "
+               "compared as raw JSON, so a difference is reported but not interpreted.";
+    case PorStatus::Measured:
+        return "Differs only in a value MEASURED on each machine: a point taught into a step, "
+               "a camera's pixel-to-mm, a position over the threshold. Expected between two "
+               "machines; shown so a large one gets a look, never a design difference.";
+    case PorStatus::Same:
+        return "Identical after normalisation (defaults filled in, uids turned into names).";
+    }
+    return "";
+}
+
 void StatusCell(PorStatus own, PorStatus worst, const std::string& note)
 {
     if (own != PorStatus::Same)
@@ -180,26 +222,29 @@ void PorTool::Compare()
     report_    = ComparePor(master_, target_, reg_, roots_.exeDir + "/config/scripts");
     positions_ = ComparePositions(master_, target_, reg_, mmThreshold_, degThreshold_);
     hardware_  = CompareHardware(master_, target_, reg_);
+    fixes_     = BuildFixList(master_, target_, reg_, positions_, roots_.exeDir + "/config/scripts");
     compared_  = true;
-    view_      = View::None;
+    view_      = View::FixList;   // "can it run?" before "is it the same?"
     sel_ = sel2_ = -1;
 
     int recipesDiffer = 0;
     for (const PorRow& r : report_.recipes) recipesDiffer += r.worst != PorStatus::Same;
-    int need = 0, missing = 0;
-    for (const PorPosRow& p : positions_.rows) {
-        if (p.tier != PorPosTier::Deck && p.tier != PorPosTier::Private) continue;
-        ++need;
-        missing += p.status == PorStatus::Missing;
-    }
+    int need = 0;
+    for (const PorPosRow& p : positions_.rows)
+        need += p.tier == PorPosTier::Deck || p.tier == PorPosTier::Private;
     char b[512];
     std::snprintf(b, sizeof(b),
-                  "%s%s   deck: %s   recipes: %zu, %d differ   positions the deck needs: %d, %d missing"
-                  "   hardware: %s",
+                  "%s%sTO FIX on this machine: %d%s      differences:  deck %s   recipes %zu, %d differ"
+                  "   positions the deck needs %d   hardware %s",
                   masterOk_ ? "" : "MASTER HAS NO SUCH PRODUCT.  ",
                   targetOk_ ? "" : "TARGET HAS NO SUCH PRODUCT.  ",
+                  fixes_.TargetCount(),
+                  fixes_.Count(PorFixKind::MasterBroken)
+                      ? ("   (+" + std::to_string(fixes_.Count(PorFixKind::MasterBroken)) +
+                         " broken on the MASTER)").c_str()
+                      : "",
                   PorStatusName(WorstOf(report_.deck)), report_.recipes.size(), recipesDiffer,
-                  need, missing, PorStatusName(WorstOf(hardware_.sections)));
+                  need, PorStatusName(WorstOf(hardware_.sections)));
     summary_ = b;
     FD_INFO("por", "compared '%s': %s vs %s", product_.c_str(), masterRoot_, targetRoot_);
     SaveSettings();
@@ -239,9 +284,10 @@ void PorTool::Draw()
     ImGui::SetNextWindowSize(vp->WorkSize);
     ImGui::SetNextWindowViewport(vp->ID);
     const ImGuiWindowFlags wf = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                                ImGuiWindowFlags_NoSavedSettings |
+                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_MenuBar |
                                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoDocking;
     if (ImGui::Begin("##por", nullptr, wf)) {
+        DrawMenuBar();
         DrawTopBar();
         ImGui::Separator();
 
@@ -265,6 +311,8 @@ void PorTool::Draw()
     ImGui::End();
 
     if (showExport_) DrawExportWindow();
+    if (showLegend_) DrawLegendWindow();
+    if (showHelp_)   DrawHelpWindow();
     if (jumpRecipe_ >= 0) {
         view_       = View::Recipe;
         sel_        = jumpRecipe_;
@@ -275,11 +323,20 @@ void PorTool::Draw()
 void PorTool::DrawTopBar()
 {
     ImGui::SetNextItemWidth(460.0f);
-    ImGui::InputText("Master root", masterRoot_, sizeof(masterRoot_));
+    ImGui::InputTextWithHint("Master root",
+                             "an export folder, \\\\MASTER-PC\\D$\\ProgramData\\FireDog, or This machine",
+                             masterRoot_, sizeof(masterRoot_));
     if (ImGui::IsItemDeactivatedAfterEdit()) RefreshProducts();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("A folder laid out like a machine root: an Export master folder,\n"
-                          "or another machine's root over the network (\\\\M1\\D$\\ProgramData\\FireDog).");
+                          "or another machine's root over the network (\\\\M1\\D$\\ProgramData\\FireDog).\n"
+                          "To EXPORT this machine's product, use This machine.");
+    ImGui::SameLine();
+    if (ImGui::Button("This machine##master")) {
+        CopyTo(masterRoot_, roots_.root);
+        RefreshProducts();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", roots_.root.c_str());
     ImGui::SameLine();
     ImGui::SetNextItemWidth(240.0f);
     if (ImGui::BeginCombo("Product", product_.empty() ? "(none)" : product_.c_str())) {
@@ -321,6 +378,146 @@ void PorTool::DrawTopBar()
 
     if (compared_) ImGui::TextUnformatted(summary_.c_str());
     else           ImGui::TextDisabled("Read-only: nothing on either side is written.");
+    DrawLegendLine();
+}
+
+void PorTool::DrawMenuBar()
+{
+    if (!ImGui::BeginMenuBar()) return;
+    if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Export master...")) showExport_ = true;
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Help")) {
+        ImGui::MenuItem("Legend", nullptr, &showLegend_);
+        ImGui::MenuItem("How to use", nullptr, &showHelp_);
+        ImGui::EndMenu();
+    }
+    ImGui::EndMenuBar();
+}
+
+// The colour key, always on screen: each word in its own colour, its meaning
+// on hover. Help > Legend has the long form.
+void PorTool::DrawLegendLine()
+{
+    ImGui::TextDisabled("Legend:");
+    for (PorStatus s : kLegendOrder) {
+        ImGui::SameLine();
+        ImGui::TextColored(StatusColor(s), "%s", PorStatusName(s));
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+            ImGui::TextUnformatted(StatusMeaning(s));
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("   (hover a word; Help > Legend for the rest)");
+}
+
+void PorTool::DrawLegendWindow()
+{
+    ImGui::SetNextWindowSize(ImVec2(760.0f, 620.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Legend", &showLegend_)) {
+        ImGui::SeparatorText("Colours - worst first");
+        if (ImGui::BeginTable("##legend", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
+            ImGui::TableSetupColumn("status", ImGuiTableColumnFlags_WidthFixed, 170.0f);
+            ImGui::TableSetupColumn("meaning", ImGuiTableColumnFlags_WidthStretch);
+            for (PorStatus s : kLegendOrder) {
+                ImGui::TableNextRow();
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, Band(s));
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextColored(StatusColor(s), "%s", PorStatusName(s));
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextWrapped("%s", StatusMeaning(s));
+            }
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(PorStatusName(PorStatus::Same));
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextWrapped("%s", StatusMeaning(PorStatus::Same));
+            ImGui::EndTable();
+        }
+
+        ImGui::SeparatorText("Fix list vs differences");
+        ImGui::TextWrapped("The colours above mark DIFFERENCES. The Fix list (top of the explorer) is "
+                           "the other question - what stops the master's deck running HERE - and "
+                           "colours its groups: red = broken on the master, orange = teach here, "
+                           "gold = configure here, magenta = names to resolve, purple = update FireDog.");
+
+        ImGui::SeparatorText("Where the colour sits");
+        ImGui::BulletText("Explorer item: the WORST result anywhere beneath it - follow the colour down.");
+        ImGui::BulletText("Row text and the faint band behind it: that row's OWN result.");
+        ImGui::BulletText("Status column 'below: changed': the row itself matches; something inside it differs.");
+        ImGui::BulletText("A parameter line under an open row: that one field, with a note where there is one.");
+
+        ImGui::SeparatorText("Marks");
+        ImGui::BulletText("\xE2\x80\x94   absent on that side.");
+        ImGui::BulletText("[+]   a folder of the deck.");
+        ImGui::BulletText("[off]   a disabled step (still compared - it is one click from running).");
+        ImGui::BulletText("[deck]   (Hardware) the master's deck uses this device, pin, slide or light.");
+        ImGui::BulletText("Grey parameter   this machine's own identity (IP, port, serial, VISA address):");
+        ImGui::TextDisabled("        shown, never judged - every machine has its own.");
+        ImGui::BulletText("Positions 'difference' in blue   over the mm / deg threshold in the top bar.");
+    }
+    ImGui::End();
+}
+
+void PorTool::DrawHelpWindow()
+{
+    ImGui::SetNextWindowSize(ImVec2(760.0f, 640.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("How to use", &showHelp_)) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::SeparatorText("What it does");
+        ImGui::TextUnformatted(
+            "Compares a MASTER product - the one that works - with the same product on a TARGET "
+            "machine: the deck, every recipe and step, the positions the deck needs, and the "
+            "hardware configuration. It is read-only: nothing on either side is written.");
+        ImGui::TextUnformatted(
+            "Uids are different on every machine, so everything is matched by NAME and by "
+            "order, like a text diff. A reference (a position, a recipe, a device) is turned into "
+            "its name on each side before the two are compared.");
+
+        ImGui::SeparatorText("1. Get the master");
+        ImGui::TextUnformatted(
+            "On the master machine: Master root > This machine, pick the Product, then "
+            "Export master... into an EMPTY folder (a USB stick, a share). Or skip the export and "
+            "point Master root straight at the master over the network: "
+            "\\\\MASTER-PC\\D$\\ProgramData\\FireDog.");
+
+        ImGui::SeparatorText("2. Compare");
+        ImGui::TextUnformatted(
+            "On the target: Master root = the export folder (or the share), pick the Product, "
+            "Target root > This machine, then Compare.");
+
+        ImGui::SeparatorText("3. Read it - two questions");
+        ImGui::TextUnformatted(
+            "FIX LIST - can the master's deck run on this machine? Every position, alignment, model, "
+            "taught point, device, pin, map or script the deck names that does not exist here, grouped "
+            "by what fixes it (teach here, configure here, rename, update FireDog). A deploy would "
+            "NOT bring these - they are measured or machine data. 'The master itself is broken' "
+            "means the plan of record names something even the master lacks: fix it there first.");
+        ImGui::TextUnformatted(
+            "DIFFERENCES - is this machine the same as the master? Deck, Recipes, Positions, "
+            "Hardware. A difference may be intended; a deploy can carry the structure across.");
+        ImGui::BulletText("Fix list: Go jumps to the recipe, the Positions page or the Hardware section.");
+        ImGui::BulletText("Deck: programs > slots. Double-click a recipe row to open that recipe's compare.");
+        ImGui::BulletText("Recipes: 'deck recipes only' hides the ones no program runs.");
+        ImGui::BulletText("Positions: what the deck drives to, in first-use order - the teach order of a cycle.");
+        ImGui::BulletText("Hardware: hardware.json + motion_transforms.json, pins by NUMBER, so a moved wire shows.");
+        ImGui::BulletText("Notes: which files were read on each side, and how this machine's root was found.");
+        ImGui::BulletText("Differences only hides what matches; All params shows every field, not just the different ones.");
+
+        ImGui::SeparatorText("What it cannot see");
+        ImGui::BulletText("A wire moved on the panel while hardware.json was copied unchanged - check it on the IO page.");
+        ImGui::BulletText("A product script that finds positions by name - listed on the Positions page as not traced.");
+        ImGui::PopTextWrapPos();
+
+        ImGui::SeparatorText("Files");
+        ImGui::TextDisabled("The tool's own settings, window layout and log: %s", localDir_.c_str());
+    }
+    ImGui::End();
 }
 
 // One explorer entry with its badge. True when the node is open (non-leaf).
@@ -346,6 +543,13 @@ void PorTool::DrawExplorer()
         return;
     }
     const auto clicked = [] { return ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen(); };
+
+    const std::string fixLabel = "Fix list (" + std::to_string(fixes_.items.size()) + ")";
+    ExplorerItem(fixLabel.c_str(), view_ == View::FixList, true,
+                 fixes_.items.empty() ? PorStatus::Same : PorStatus::Missing);
+    if (clicked()) view_ = View::FixList;
+    ImGui::Separator();
+    ImGui::TextDisabled("Differences");
 
     if (ExplorerItem("Deck", false, false, WorstOf(report_.deck), true)) {
         for (std::size_t i = 0; i < report_.deck.size(); ++i) {
@@ -418,6 +622,7 @@ void PorTool::DrawContent()
     case View::None:
         ImGui::TextDisabled(compared_ ? "Pick something in the explorer." : "");
         break;
+    case View::FixList: DrawFixList(); break;
     case View::Program:
         if (sel_ >= 0 && sel_ < (int)report_.deck.size()) {
             const PorRow& p = report_.deck[sel_];
@@ -526,6 +731,117 @@ void PorTool::DrawParam(const PorParam& p)
     ImGui::PopStyleColor();
     ImGui::TableSetColumnIndex(2);
     StatusCell(p.status, PorStatus::Same, p.note);
+}
+
+// ---- Fix list ----------------------------------------------------------------------------
+
+namespace {
+
+ImVec4 FixColor(PorFixKind k)
+{
+    switch (k) {
+    case PorFixKind::MasterBroken: return StatusColor(PorStatus::Missing);
+    case PorFixKind::Teach:        return StatusColor(PorStatus::OnlyMaster);
+    case PorFixKind::Configure:    return StatusColor(PorStatus::Changed);
+    case PorFixKind::Names:        return StatusColor(PorStatus::Ambiguous);
+    case PorFixKind::UpdateExe:    return StatusColor(PorStatus::Unknown);
+    }
+    return StatusColor(PorStatus::Same);
+}
+
+} // namespace
+
+void PorTool::DrawFixList()
+{
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("What stops the master's deck from running on THIS machine. Almost none of it "
+                        "comes with a deploy: positions, alignments, models, taught points, "
+                        "hardware.json and maps are taught or configured here by hand. The "
+                        "differences are in the tree below Deck.");
+    ImGui::PopTextWrapPos();
+    if (fixes_.items.empty()) {
+        ImGui::Spacing();
+        ImGui::TextColored(StatusColor(PorStatus::OnlyTarget),
+                           "Nothing to fix: every position, device, pin, map, alignment and model the "
+                           "master's deck names exists here.");
+        return;
+    }
+
+    std::size_t i = 0;
+    while (i < fixes_.items.size()) {
+        const PorFixKind kind = fixes_.items[i].kind;
+        const int n = fixes_.Count(kind);
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, FixColor(kind));
+        ImGui::SeparatorText((std::string(PorFixKindTitle(kind)) + "  (" + std::to_string(n) + ")").c_str());
+        ImGui::PopStyleColor();
+
+        const ImGuiTableFlags f = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+                                  ImGuiTableFlags_Resizable;
+        ImGui::PushID(static_cast<int>(kind));
+        if (ImGui::BeginTable("##fix", 4, f)) {
+            ImGui::TableSetupColumn("what", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+            ImGui::TableSetupColumn("how to fix it", ImGuiTableColumnFlags_WidthStretch, 1.4f);
+            ImGui::TableSetupColumn("used", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+            ImGui::TableHeadersRow();
+            for (; i < fixes_.items.size() && fixes_.items[i].kind == kind; ++i) {
+                const PorFixItem& it = fixes_.items[i];
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextColored(FixColor(kind), "%s", it.what.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::TableSetColumnIndex(1);
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextUnformatted(it.fix.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::TableSetColumnIndex(2);
+                if (!it.uses.empty()) {
+                    ImGui::Text("%zu", it.uses.size());
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::BeginTooltip();
+                        const std::size_t shown = std::min<std::size_t>(it.uses.size(), 30);
+                        for (std::size_t k = 0; k < shown; ++k) ImGui::TextUnformatted(it.uses[k].c_str());
+                        if (it.uses.size() > shown) ImGui::TextDisabled("... and %zu more", it.uses.size() - shown);
+                        ImGui::EndTooltip();
+                    }
+                }
+                ImGui::TableSetColumnIndex(3);
+                bool canGo = it.jump != PorFixJump::None;
+                if (it.jump == PorFixJump::Recipe) canGo = FindRecipe(it.recipe) >= 0;
+                if (canGo && ImGui::SmallButton("Go")) {
+                    switch (it.jump) {
+                    case PorFixJump::Recipe:
+                        jumpRecipe_ = FindRecipe(it.recipe);
+                        break;
+                    case PorFixJump::Positions:
+                        view_ = View::Positions;
+                        break;
+                    case PorFixJump::Hardware:
+                        for (std::size_t k = 0; k < hardware_.sections.size(); ++k)
+                            if (hardware_.sections[k].master == it.section) {
+                                view_ = View::Hardware;
+                                sel_  = static_cast<int>(k);
+                            }
+                        break;
+                    case PorFixJump::None:
+                        break;
+                    }
+                }
+                if (canGo && ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", it.jump == PorFixJump::Recipe   ? ("Open recipe '" + it.recipe + "'").c_str()
+                                            : it.jump == PorFixJump::Positions ? "Open the Positions page"
+                                                                               : "Open the Hardware section");
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        } else {
+            while (i < fixes_.items.size() && fixes_.items[i].kind == kind) ++i;
+        }
+        ImGui::PopID();
+    }
 }
 
 // ---- Positions -------------------------------------------------------------------------

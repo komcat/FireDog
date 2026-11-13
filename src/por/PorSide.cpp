@@ -170,9 +170,11 @@ bool LoadPorSide(const std::string& root, const std::string& product, PorSide* o
         [](const std::string& p) { return LoadWaffleTraysFile(p); },
         [](const std::vector<WaffleTray>& d) { return d.empty(); });
 
-    AddFileNames(dir + "/scripts", &s.scripts);
+    AddFileNames(dir + "/scripts", &s.productScripts);
+    AddFileNames(dir + "/prompt_images", &s.productImages);
+    s.scripts      = s.productScripts;
+    s.promptImages = s.productImages;
     AddFileNames(s.root + "/config/scripts", &s.scripts);
-    AddFileNames(dir + "/prompt_images", &s.promptImages);
     AddFileNames(s.root + "/config/prompt_images", &s.promptImages);
     return true;
 }
