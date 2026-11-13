@@ -1,8 +1,8 @@
 # POR — a master product compared with, then deployed to, another machine
 
 *Status: phases 1-3 are in (2026-11-13): the foundations, the compare engine
-(`src/por/`) and the read-only tool `FireDogPor` (`tools/por/`). Phase 4 (deploy) is
-not built. Working name of the tool: `FireDogPor`.*
+(`src/por/`) and the read-only tool `FireDogPor` (`tools/por/`), released in v0.24.
+Phase 4 (deploy) is designed in §7 and not built. Working name of the tool: `FireDogPor`.*
 
 ## 1. What it is for
 
@@ -247,25 +247,183 @@ Positions come from the Positions page's own trace, so the two pages cannot disa
 Each item carries its uses (`slot > recipe > step`) and a Go to the recipe, the
 Positions page or the Hardware section. The summary line leads with the count to fix.
 
-## 7. Deploy (phase 4 — direction, to be designed on phase-3 results)
+## 7. Deploy (phase 4) - design, 2026-11-13
 
-- Refused while `FireDog.exe` is running (its session holds the product in memory and
-  its next Save would overwrite the deploy), and while the target has a device / pin /
-  slide / light / map the deck needs missing, or a command this build lacks.
-- Back up the target's product folder (dated copy) before writing anything.
-- Write programs, recipes, product scripts, prompt images — **translated**: every
-  master uid replaced by the target's uid of the same name. A matched step keeps the
-  TARGET's `PointXyz` and private model; an unmatched one is flagged "re-teach".
-- A required position the target lacks becomes a placeholder row with a fresh target
-  uid and the master's name, flagged **untaught**. This needs FireDog to learn one
-  boolean: movers refuse an untaught position, and teaching one opens Manual Adjust
-  where the device stands instead of driving to the stored value first
-  (`RecordPositionByUid` already refuses to create a row).
-- Never writes positions that exist, alignment poses, models, grip offsets, tray
-  corners, or anything under `<root>/config/`.
-- Stamps `por.json` in the product folder (rev, source machine, date, hash per deployed
-  file): FireDog shows "POR rev N" / "modified locally", every `$run` carries the rev,
-  and the next compare can say what changed on the target since.
+Deploy makes the target's STRUCTURE the master's, translated onto the target's own
+objects, and leaves everything measured or machine-owned where it is. Afterwards the
+Fix list is the target's teach list and nothing else.
+
+### 7.1 Where and when it may run
+
+- **On the target machine, into its own root only.** The target root must be what
+  `ResolveRootsReadOnly()` says this machine's root is; a network or export root is
+  never a deploy target. That is what makes the next check meaningful.
+- **Refused while `FireDog.exe` runs on this PC** (process list). Its open session holds
+  the product in memory and its next save would overwrite the deploy - and a run in
+  progress must never have its recipes swapped under it.
+- **Signed by an Admin of THIS machine's roster.** The tool has no session, so the
+  deploy window asks for an employee number and password, checked with `Authenticate`
+  against `<root>/products/employees.json` (a path-taking `LoadEmployeesFile`; the
+  built-in admin works, as on the login gate). The id signs the journal and `por.json`.
+- **A master export from a newer build is refused.** The tool's loaders and savers are
+  this build's (it ships with this FireDog), so a field a newer master wrote would be
+  read, not understood, and dropped on save. `por_export.json`'s `tool` is compared
+  with this build; a master read live over the network has no such record and gets a
+  warning instead.
+
+### 7.2 Preflight - the Fix list decides
+
+A deploy runs only when the Fix list (§6b) holds nothing but things a deploy turns into
+**placeholders**. Every other group blocks, because the deck it would leave behind could
+not run, or the translation would have to guess:
+
+| Fix list group | Deploy |
+|---|---|
+| The master itself is broken | **blocks** - fix the master, export again |
+| Configure this machine (hardware names, wiring, axes, maps, machine scripts) | **blocks** - configure first |
+| Names to resolve | **blocks** - a name used twice cannot be translated |
+| Update FireDog | **blocks** - update first |
+| Teach: positions, private poses, taught points, `detect_object` models | allowed - become untaught placeholders (§7.4) |
+| Teach: alignments, nominals, grip profiles, trays, named models | allowed from phase 4d (§7.5); blocks before it |
+
+The deploy window shows the blockers with the Fix list's Go buttons, and the plan
+(§7.7) only when there are none.
+
+### 7.3 What is written - and what is never touched
+
+| Product file | Deploy |
+|---|---|
+| recipes | master's recipes, translated (§7.4); target-only recipes kept |
+| programs | master's programs, translated; target-only programs kept |
+| `scripts/`, `prompt_images/` | master's files copied over; target-only files kept |
+| positions | **only additions**: untaught placeholders for required positions the target lacks. Existing rows are never changed |
+| alignments, grips, trays | phase 4d: missing ones created DESIGN-ONLY (§7.5); existing ones never changed |
+| vision (models + `.pgm`) | never - every detector is taught per camera |
+| manifest | kept; created only on a first deploy (§7.6) |
+
+Never touched: anything under `<root>/config/` (hardware, transforms, maps, needle cal,
+device registration, panel switches, ...), the data root (DUT records, position
+records, mosaics), the roster.
+
+**Target-only recipes and programs are kept** by default - a local experiment is work
+somebody did. The deploy window lists them, and offers *Remove what the master does not
+have* (off by default) for a strict mirror.
+
+### 7.4 Translation - every uid, by name, through the same pairing the compare uses
+
+The master's documents are copied and every reference rewritten from the master's uid
+to the target's uid of the same NAME, per `ParamType` - the compare's own resolution
+(§4), now writing instead of judging:
+
+| Reference | Becomes |
+|---|---|
+| recipe (program node, `sub_recipe`, `on_fail`) | the target's recipe of that name; a recipe new to the target keeps the MASTER's uid when it is free here, else a fresh one |
+| program | the target's program of that name keeps ITS uid (DUT `$run`s reference it); a new one keeps the master's uid when free |
+| program node uids, slot cycle states | the master's, as written (unique within the file; only runtime state refers to them) |
+| `PositionUid` | the target's position of `device` + name; none -> an untaught placeholder (below) |
+| `AlignUid`, `GripUid`, `TrayUid`, named `VisionUid` | the target's object of that name |
+| `NominalUid` | the nominal of that name within the translated alignment |
+| private `VisionUid` (`vdet_<procUid>_...`) | the same station's model of the target's alignment of that name |
+| device / IO / PSU / slide / light / map / pin names, scripts, pictures | unchanged (names already; the preflight proved they exist) |
+
+**Measured values travel with the TARGET's step, never the master's.** Recipes are
+paired by name and their steps by `PorAlign` - exactly the compare's pairing (§3), so the
+preview and the result cannot disagree. Where a master step pairs with a target step,
+the target step's `PointXyz` values and `detect_object` model are carried into the
+written step. Where it does not, they are made **untaught**:
+
+- a `PointXyz` becomes `{}` - the untaught-point marker (§7.8). FireDog's validation
+  refuses a run whose step holds `{}`, so it never silently becomes "no point" (for
+  `detect_object` that would mean *detect where the camera stands*);
+- a `detect_object` model becomes `""` - creating one is a button in the Vision detect
+  helper, and a step without one is refused at Start.
+
+The Fix list's own `Twin` heuristic (same type + `ctx_prefix` / nickname) is replaced by
+this `PorAlign` pairing first (phase 4b), so "teach this point" and "this point was
+carried" are one answer.
+
+**Placeholders.** A required position the target lacks (from the Positions page's trace:
+deck positions and map nodes, and in 4d the private poses of created owners) is added
+with a FRESH target uid, the master's name and `hidden` flag, the master's axis values,
+and **`untaught: true`**. The values are kept only as what the master had - every mover
+refuses an untaught position (§7.8), so they can never be driven to.
+
+### 7.5 Missing alignments, grips and trays - design-only copies (phase 4d)
+
+Each carries its design and has every measured part emptied, so it exists to be taught:
+
+| Object | Copied | Emptied |
+|---|---|---|
+| alignment | name, device, guard, nominals (`lx`/`ly`: the local frame is design), station modes | station poses and nominal camera poses -> untaught placeholders `algn_<newUid>_...`; detectors -> none; `result`, `runs` -> empty |
+| grip profile | name, device, find mode, tolerance, outline | inspect pose -> untaught placeholder `grip_<newUid>_i`; detector -> none; reference and last offsets -> none (no reference = no PASS) |
+| tray | name, device, rows x cols, masks | corners -> untaught; `usedCells` -> none (it describes one physical tray) |
+
+Until 4d, a missing alignment, grip or tray blocks (§7.2) and is created by hand.
+
+### 7.6 First deploy - the target has no such product
+
+A new product folder is created the way `CreateProduct` does (fresh manifest uid, one
+uid-named file per role) but by path, not through `MachinePath`. Everything the deck
+needs becomes a placeholder, so the first Fix list after it is the machine's complete
+teach list. DUT records start fresh under `<data>/products/<name>/` - the product NAME
+is the link to history, which is why a deploy never renames.
+
+### 7.7 Apply - preview, backup, write, journal, stamp
+
+1. **Plan** (no write): load both sides fresh, run the preflight, translate everything
+   in memory. The window shows the plan - recipes replaced / added / kept, programs
+   likewise, placeholders by device, points and models made untaught, files copied - and
+   the master's label (§7.9).
+2. **Backup** the target's whole product folder to
+   `<root>/por_backups/<product>/<stamp>/` - outside `products/`, where `ListProducts`
+   would mistake it for a product. *Restore backup* in the tool copies one back.
+3. **Write** each file to a temp name and rename it into place, after the backup and
+   only once the whole plan is in memory.
+4. **Journal** the placeholders through the existing diff - `DiffPositions(before,
+   after, <admin id>, "deploy POR <label>")` + `AppendPositionHistory` - so the position
+   rule (a change is recorded by diff, never at a call site) holds for the tool too.
+5. **Stamp** `<product>/por.json` (§7.9).
+6. **Re-compare** and open the Fix list: it should now hold the teach list and nothing
+   else, and the differences only what the target kept.
+
+### 7.8 What FireDog must learn first (phase 4a)
+
+- **`SavedPos::untaught`** (persisted `"untaught": true`, absent = taught):
+  - movers refuse it at VALIDATION, before anything moves - `ValidateRecipe`'s
+    `PositionUid` check, `FindPosition` as the run-time backstop, `move_path` for a
+    route through an untaught node;
+  - the UI's Go buttons (Motion page, the Jog window's Pos pad, the alignment station
+    and grip inspect drives) are disabled on it, and the row is drawn as untaught;
+  - **teaching it does not move first**: a teach mover whose position is untaught skips
+    the approach and opens Manual Adjust where the device stands - the operator jogs
+    to the spot and saves, which clears the flag. A teach run's validation allows an
+    untaught position on a mover that has `teach = true`, and only there;
+  - the Motion page's *Teach here* / Save clears it too;
+  - `DiffPositions` journals the flag clearing, even when the values did not change.
+- **The untaught point `{}`**: `ValidateParams` refuses a `PointXyz` that is an object
+  without X/Y/Z, with "point not taught on this machine - Teach here in the step"; the
+  editor's *Teach here* fills it as today.
+- **`por.json`**: read with the product (read-only); Help > Version shows the POR label,
+  where from, when, by whom, and *modified locally since* when a structure file's hash
+  no longer matches; every `$run` carries `por` = the label and a short hash, so a unit
+  says which plan of record built it.
+
+### 7.9 POR identity - the label and `por.json`
+
+The master has no revision counter, so the identity is made at **export**: *Export
+master* asks for a **label** (`UAA2 2026-11-13`, free text) and records it in
+`por_export.json` with a hash of each structure file (recipes, programs, scripts,
+prompt images). Deploy copies that into `<product>/por.json`:
+
+```json
+{ "label": "UAA2 2026-11-13", "master": "D:/master_uaa2", "exported": "...",
+  "deployed": "...", "by": "EN1023", "tool": "v0.25",
+  "files": { "recipes": "<sha256>", "programs": "<sha256>", "scripts/x.lua": "<sha256>" } }
+```
+
+A deploy straight from a network root has no export record: the deploy window asks for
+the label there and hashes the master's files itself. The hashes are SHA-256 through
+Windows CNG (`bcrypt`), one helper in `core/`, used by the tool and FireDog alike.
 
 ## 8. Phases
 
@@ -330,14 +488,29 @@ Each numbered item is its own commit; foundations change no behaviour.
 - Release: `package-release.ps1` already packs every exe; the `/release` skill's
   verify step learns the third exe.
 
-**Phase 4 — deploy** (§7), designed in detail once phase 3 has been run against two
-real machines: the untaught flag + teach-in-place in FireDog first, then the
-translated write, backup, `por.json`, and the rev on `$run`.
+**Phase 4 - deploy** (§7). FireDog learns the placeholders before anything can make one.
+- 4a. FireDog: `SavedPos::untaught` (validation refusal, UI Go disabled, teach-in-place,
+  journalled clearing) and the untaught point `{}` (§7.8).
+- 4b. The plan, read-only: the Fix list's twin check moves onto `PorAlign`; `PorDeploy`
+  translates both sides into the documents a deploy would write and the tool's Deploy
+  window previews them, with the blockers. Nothing is written yet.
+- 4c. Apply: process check, Admin sign-in against the target's roster, backup, temp +
+  rename writes, journal, re-compare. *Restore backup*.
+- 4d. Design-only copies of missing alignments, grip profiles and trays (§7.5); first
+  deploy into a machine without the product (§7.6).
+- 4e. POR identity: the export label + SHA-256 hashes, `por.json`, FireDog's Help >
+  Version line and `por` on every `$run` (§7.9).
 
 ## 9. Open questions
-- The tool's name (`FireDogPor` is a working name).
-- Which level may run it — it is an engineer's tool, but it has no login of its own;
-  deploy (phase 4) probably wants the roster's Admin.
-- First deploy to a machine that lacks the product entirely: structure + all
-  placeholders and a full teach is the safe default; seeding the master's values as
-  untaught starting points is a possible option.
+- **Strict mirror by default?** Keeping target-only recipes and programs is the default
+  (§7.3). A plant that wants every machine IDENTICAL would flip it - one checkbox
+  either way.
+- **Design params that are really per-machine.** Everything a step holds that is not a
+  reference or a `PointXyz` is design and a deploy overwrites it: a relative-move delta,
+  an approach zone, an exposure a machine was tuned to. If one of those turns out to be
+  per-machine in practice, it should become a taught value or machine config - not an
+  exception in the deploy. The compare shows each one before a deploy, so the first
+  real deploys will say which.
+- **Whether a placeholder keeps the master's axis values** (§7.4). They are never driven
+  to; they only let the teach list say how far the taught value landed from the
+  master's. Dropping them is simpler; keeping them costs nothing at run time.
