@@ -54,6 +54,11 @@ static void PushRunBigText()
 
 // Raster first-light exit levels, in uA (feedback amps; injected x1e-6).
 static constexpr double kRasterTargetsUa[] = {5.0, 20.0};
+// The Run page raster's grid, in the hexapod's OWN (local) axes: rows step
+// down local Y, each row sweeps local X centred on the start. Named here, and
+// on the tab's labels, so nobody has to know the script's defaults.
+static constexpr const char* kRasterSlowAxis = "Y";
+static constexpr const char* kRasterFastAxis = "X";
 
 // Built-in XCAN target presets: the three product power classes (the
 // zone_low must sit AT the raster handoff level — see the micro-lobe field
@@ -2453,8 +2458,10 @@ void App::DrawXcanPresetModal()
 
 // Raster scan launcher: raster_scan.lua with the band's spans/steps + the
 // tab's active first-light target preset; feedback channel and Trace are
-// shared with the XCAN band. Axes stay at the script's defaults (slow = X
-// stepping down from start, fast = Y sweeping centered).
+// shared with the XCAN band. The axes are the hexapod's OWN (local) axes and
+// are passed explicitly, so the labels on the tab are the truth whatever the
+// script defaults say: slow = local Y stepping down from start, fast = local X
+// sweeping centered.
 void App::StartRasterScan(const std::string& device)
 {
     std::string script = "config/scripts/raster_scan.lua";
@@ -2465,6 +2472,9 @@ void App::StartRasterScan(const std::string& device)
     env.initialCtx = {
         {"raster_device", device},
         {"raster_topic", std::string(runXcanTopic_)},
+        {"raster_slow_axis", std::string(kRasterSlowAxis)},
+        {"raster_slow_dir", -1.0},
+        {"raster_fast_axis", std::string(kRasterFastAxis)},
         {"raster_slow_span_um", rasterSlowSpanUm_},
         {"raster_slow_step_um", rasterSlowStepUm_},
         {"raster_fast_span_um", rasterFastSpanUm_},
@@ -2485,8 +2495,13 @@ void App::DrawRunRasterBlock()
     const LuaEngine::Status st = orch_.lua.GetStatus();
     const bool running = orch_.lua.Running();
 
-    // Knob row: X- span/step, Y span/step (um).
-    ImGui::TextDisabled("X- span/step");
+    // Knob row: slow (rows, local Y-) span/step, fast (sweep, local X +/-)
+    // span/step, um.
+    ImGui::TextDisabled("Slow: local %s- span/step", kRasterSlowAxis);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Rows: the hexapod's OWN %s axis steps DOWN from where it\n"
+                          "stands, one row per step, over the span (one-sided).",
+                          kRasterSlowAxis);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(72.0f);
     ImGui::InputDouble("##rss", &rasterSlowSpanUm_, 0.0, 0.0, "%.0f");
@@ -2494,7 +2509,11 @@ void App::DrawRunRasterBlock()
     ImGui::SetNextItemWidth(64.0f);
     ImGui::InputDouble("##rsp", &rasterSlowStepUm_, 0.0, 0.0, "%.1f");
     ImGui::SameLine();
-    ImGui::TextDisabled("  Y+/- span/step");
+    ImGui::TextDisabled("  Fast: local %s+/- span/step", kRasterFastAxis);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Sweep: the hexapod's OWN %s axis sweeps each row CENTRED on\n"
+                          "where it stands, half the span each side, one sample per step.",
+                          kRasterFastAxis);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(72.0f);
     ImGui::InputDouble("##rfs", &rasterFastSpanUm_, 0.0, 0.0, "%.0f");
@@ -2569,7 +2588,9 @@ void App::DrawRunRasterBlock()
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
         }
     } else {
-        ImGui::TextDisabled("Serpentine area scan: X steps down from start, Y sweeps +/- half span.");
+        ImGui::TextDisabled("Serpentine area scan in the hexapod's local axes: %s steps down "
+                            "from start (rows), %s sweeps +/- half span (each row).",
+                            kRasterSlowAxis, kRasterFastAxis);
     }
 }
 

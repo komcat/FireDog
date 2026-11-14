@@ -405,14 +405,23 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"device", PT::DeviceHexapod, true, {}, 0, 0, {}, "hexapod to scan"},
                       {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
                        "feedback signal"},
+                      // The axes are the HEXAPOD'S OWN (local) X / Y / Z, named
+                      // here rather than left to the script's defaults, so the
+                      // step says which way the grid runs.
+                      {"slow_axis", PT::Enum, false, "Y", 0, 0, {"X", "Y", "Z"},
+                       "slow (row) axis - the hexapod's LOCAL axis that steps once per row"},
+                      {"slow_dir", PT::Enum, false, "-", 0, 0, {"-", "+"},
+                       "which way the slow axis steps from the start pose"},
                       {"slow_span_um", PT::Double, false, 40.0, 1.0, 2000.0, {},
-                       "slow-axis travel, one-sided from start (X- by default)"},
+                       "slow-axis travel, one-sided from start (local Y- by default)"},
                       {"slow_step_um", PT::Double, false, 4.0, 0.1, 500.0, {},
-                       "row pitch"},
+                       "row pitch (slow axis)"},
+                      {"fast_axis", PT::Enum, false, "X", 0, 0, {"X", "Y", "Z"},
+                       "fast (sweep) axis - the hexapod's LOCAL axis swept along each row"},
                       {"fast_span_um", PT::Double, false, 40.0, 1.0, 2000.0, {},
-                       "fast-axis width, centered on start (Y +/- half)"},
+                       "fast-axis width, centered on start (local X +/- half by default)"},
                       {"fast_step_um", PT::Double, false, 4.0, 0.1, 500.0, {},
-                       "sample pitch along a row"},
+                       "sample pitch along a row (fast axis)"},
                       {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},
                        "stop-and-stay when feedback reaches this (uA; 0 = full grid)"},
                       {"settle_min_ms", PT::Int, false, 0, 0, 5000, {},
@@ -426,8 +435,15 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   },
                   CommandSpec::Needs::None,
                   [rp](ExecutionContext& c, const ParamValues& p) {
+                      if (p.GetString("slow_axis") == p.GetString("fast_axis"))
+                          return CommandResult::Fail("raster_scan: slow and fast axis are "
+                                                     "both " + p.GetString("slow_axis") +
+                                                     " - a grid needs two axes");
                       c.CtxSet("raster_device", p.GetString("device"));
                       c.CtxSet("raster_topic", p.GetString("topic"));
+                      c.CtxSet("raster_slow_axis", p.GetString("slow_axis"));
+                      c.CtxSet("raster_slow_dir", p.GetString("slow_dir") == "+" ? 1.0 : -1.0);
+                      c.CtxSet("raster_fast_axis", p.GetString("fast_axis"));
                       c.CtxSet("raster_slow_span_um", p.GetDouble("slow_span_um"));
                       c.CtxSet("raster_slow_step_um", p.GetDouble("slow_step_um"));
                       c.CtxSet("raster_fast_span_um", p.GetDouble("fast_span_um"));

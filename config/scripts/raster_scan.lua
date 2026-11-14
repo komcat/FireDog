@@ -1,16 +1,18 @@
 -- Raster (area) scan: serpentine grid first-light search (bobcat GridScan port)
 --
--- The move, defined: the grid hangs off the STARTING pose. The slow axis
--- (default X) begins at its start position X0 and only steps DOWN
--- (raster_slow_dir = -1), one row per step, covering slow_span_um total.
--- The fast axis (default Y) sweeps CENTERED on its start position Y0, from
--- Y0 - fast_span_um/2 to Y0 + fast_span_um/2, sampling every fast_step_um.
--- Rows alternate sweep direction (serpentine / bobcat snakePattern - no
--- flyback move, less backlash):
+-- The move, defined: the grid hangs off the STARTING pose, in the hexapod's
+-- OWN (local) axes. The slow axis (default local Y) begins at its start
+-- position Y0 and only steps DOWN (raster_slow_dir = -1), one row per step,
+-- covering slow_span_um total. The fast axis (default local X) sweeps CENTERED
+-- on its start position X0, from X0 - fast_span_um/2 to X0 + fast_span_um/2,
+-- sampling every fast_step_um. Rows alternate sweep direction (serpentine /
+-- bobcat snakePattern - no flyback move, less backlash):
 --
---   X0        :  Y-half ->  ->  ->  ->  Y+half
---   X0-step   :  Y+half <-  <-  <-  <-  Y-half
---   X0-2*step :  Y-half ->  ->  ->  ->  Y+half   ... etc
+--   Y0        :  X-half ->  ->  ->  ->  X+half
+--   Y0-step   :  X+half <-  <-  <-  <-  X-half
+--   Y0-2*step :  X-half ->  ->  ->  ->  X+half   ... etc
+--
+-- (Until 2026-11-13 the defaults were the other way round: slow X, fast Y.)
 --
 -- Every node is an ABSOLUTE target computed from the start pose (no drift
 -- accumulation); one measurement per node (same fresh-sample settle as
@@ -34,11 +36,11 @@
 local P = {
   device         = fd.param("raster_device", "hex-left"),
   topic          = fd.param("raster_topic", "keithley/ch1"),  -- feedback signal
-  slow_axis      = fd.param("raster_slow_axis", "X"),
+  slow_axis      = fd.param("raster_slow_axis", "Y"),     -- hexapod LOCAL axis
   slow_dir       = fd.param("raster_slow_dir", -1),     -- -1 = step down from start
   slow_span_um   = fd.param("raster_slow_span_um", 40), -- one-sided total travel
   slow_step_um   = fd.param("raster_slow_step_um", 4),  -- row pitch
-  fast_axis      = fd.param("raster_fast_axis", "Y"),
+  fast_axis      = fd.param("raster_fast_axis", "X"),     -- hexapod LOCAL axis
   fast_span_um   = fd.param("raster_fast_span_um", 40), -- CENTERED: +/- half around start
   fast_step_um   = fd.param("raster_fast_step_um", 4),  -- sample pitch along a row
   settle_ms      = fd.param("raster_settle_ms", 300),   -- fresh-sample ceiling
