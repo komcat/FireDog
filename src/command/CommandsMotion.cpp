@@ -9,6 +9,7 @@
 #include "command/CommandRegistry.h"
 #include "command/ExecutionContext.h"
 #include "command/MotionWaits.h"
+#include "core/DataBus.h"   // direction_search reads its feedback topic
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"
 #include "workflow/Workflow.h"
@@ -654,6 +655,155 @@ CommandResult ExecMoveRelative(ExecutionContext& ctx, const ParamValues& p)
     const std::vector<std::pair<std::string, double>> targets = {
         {axis, it->second + delta}};
     return MoveWithApproach(ctx, m, idx, targets, p, "the relative target");
+}
+
+// ---- direction_search -------------------------------------------------------
+//
+// A one-axis, one-direction line search on a feedback signal: from where the
+// device stands, step the device's OWN axis by step_um, up to max_um, sampling
+// the topic after every step. It ends one of two ways:
+//
+//   * the signal reaches `threshold` (> 0)  -> stop and STAY there: the point
+//     that crossed it is the best one so far, or the search would have ended
+//     on an earlier one;
+//   * max_um is used up                     -> drive back to the PEAK (the best
+//     sample seen, the start included) when return_to_peak, else stay.
+//
+// Every step targets start + k*step ABSOLUTELY, never "current + step", so the
+// arrival tolerance does not accumulate into the travel. Each sample is taken
+// the way XCAN takes one (hexapod_align.lua's measure): after WaitArrive AND
+// WaitSettle, an optional mechanical floor, then `fresh_samples` NEW publishes
+// on the topic (its monotonic count), capped by settle_ms - so the value read
+// was integrated after the stage stopped, not during the move. The signal is
+// compared as published (no abs), as the XCAN exit threshold is.
+CommandResult ExecDirectionSearch(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    const std::string axis   = p.GetString("axis");
+    const double      sign   = p.GetString("direction") == "-" ? -1.0 : 1.0;
+    const double      stepMm = p.GetDouble("step_um") * 1e-3;
+    const double      maxMm  = p.GetDouble("max_um") * 1e-3;
+    const std::string topic  = p.GetString("topic");
+    const double      thr    = p.GetDouble("threshold");
+    const int         fresh  = p.GetInt("fresh_samples");
+    const int         settleMinMs = p.GetInt("settle_min_ms");
+    const int         settleMs    = p.GetInt("settle_ms");
+    const int         timeoutMs   = p.GetInt("timeout_ms");
+    const double      tolMm       = p.GetDouble("tol_mm");
+    const bool        trace       = p.GetBool("trace");
+    std::string prefix = p.GetString("ctx_prefix");
+    if (prefix.empty()) prefix = "dsearch";
+
+    if (stepMm <= 0.0) return CommandResult::Fail("step_um must be > 0");
+    if (maxMm < stepMm) return CommandResult::Fail("max_um must be at least one step_um");
+
+    m->RequestFastPoll();
+    const std::map<std::string, double> cur = m->Positions();
+    const auto it = cur.find(axis);
+    if (it == cur.end())
+        return CommandResult::Fail("device '" + device + "' does not report axis '" + axis + "'");
+    const double start = it->second;
+
+    DataStream& stream = DataBus::Instance().Stream(topic);
+    if (stream.Count() == 0)
+        return CommandResult::Fail("no data on topic '" + topic + "' - nothing to search on");
+
+    const CommandResult pre = ApplyPreMove(ctx, idx, p);
+    if (!pre.ok) return pre;
+
+    // One sample, taken after the move has stopped (see above).
+    bool warnedStale = false;
+    const auto measure = [&](double* v) -> CommandResult {
+        const std::size_t n0 = stream.Count();
+        if (settleMinMs > 0 && !ctx.Sleep(settleMinMs)) return CommandResult::Fail("stopped");
+        if (fresh > 0) {
+            const auto r = ctx.WaitUntil(
+                [&] { return stream.Count() >= n0 + static_cast<std::size_t>(fresh); },
+                settleMs, 5);
+            if (r == ExecutionContext::WaitResult::Stopped) return CommandResult::Fail("stopped");
+            if (r == ExecutionContext::WaitResult::Timeout && !warnedStale) {
+                warnedStale = true;
+                FD_WARN("recipe", "direction_search: only %zu/%d fresh samples on %s within "
+                                  "%d ms - using the latest",
+                        stream.Count() - n0, fresh, topic.c_str(), settleMs);
+            }
+        }
+        *v = stream.LatestValue();
+        return CommandResult::Success();
+    };
+    const auto moveTo = [&](double target, const char* what) -> CommandResult {
+        const std::vector<std::pair<std::string, double>> t = {{axis, target}};
+        if (!IssueMove(ctx, idx, t, p))
+            return CommandResult::Fail(std::string("move to ") + what + " rejected");
+        const auto r = WaitArrive(ctx, m, t, tolMm, timeoutMs);
+        if (r != ExecutionContext::WaitResult::Ok) {
+            ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
+            return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
+                                           ? std::string("stopped")
+                                           : std::string("timeout driving to ") + what);
+        }
+        return WaitSettle(ctx, m, idx);
+    };
+
+    double v = 0.0;
+    if (CommandResult r = measure(&v); !r.ok) return r;
+    double peak = v, peakPos = start, here = start;
+    int    samples = 1;
+    bool   found = thr > 0.0 && v >= thr;
+    if (trace)
+        FD_INFO("recipe", "dsrc,%s,%s,%d,%.6f,%.6g", device.c_str(), axis.c_str(), 0, start, v);
+
+    const int steps = static_cast<int>(std::floor(maxMm / stepMm + 1e-9));
+    for (int k = 1; k <= steps && !found; ++k) {
+        here = start + sign * stepMm * k;
+        char what[48];
+        std::snprintf(what, sizeof(what), "step %d", k);
+        if (CommandResult r = moveTo(here, what); !r.ok) return r;
+        if (CommandResult r = measure(&v); !r.ok) return r;
+        ++samples;
+        if (trace)
+            FD_INFO("recipe", "dsrc,%s,%s,%d,%.6f,%.6g", device.c_str(), axis.c_str(), k, here, v);
+        if (v > peak) { peak = v; peakPos = here; }
+        if (thr > 0.0 && v >= thr) found = true;
+    }
+
+    // Threshold: stay where it was crossed. Max distance: back to the peak.
+    bool returned = false;
+    double finalV = v;
+    if (!found && p.GetBool("return_to_peak") && std::fabs(here - peakPos) > 1e-9) {
+        if (CommandResult r = moveTo(peakPos, "the peak"); !r.ok) return r;
+        if (CommandResult r = measure(&finalV); !r.ok) return r;
+        here     = peakPos;
+        returned = true;
+    }
+
+    ctx.CtxSet(prefix + "_found", found);
+    ctx.CtxSet(prefix + "_peak", peak);
+    ctx.CtxSet(prefix + "_peak_pos", peakPos);
+    ctx.CtxSet(prefix + "_peak_offset_um", (peakPos - start) * 1e3);
+    ctx.CtxSet(prefix + "_final", finalV);
+    ctx.CtxSet(prefix + "_final_pos", here);
+    ctx.CtxSet(prefix + "_travel_um", std::fabs(here - start) * 1e3);
+    ctx.CtxSet(prefix + "_samples", static_cast<double>(samples));
+
+    FD_INFO("recipe", "direction_search %s %s%s: %s after %d sample(s) - peak %.4g at %.4f "
+                      "(%+.1f um from start)%s, now %.4g at %.4f",
+            device.c_str(), axis.c_str(), sign > 0 ? "+" : "-",
+            found ? "threshold reached" : "max distance used", samples, peak, peakPos,
+            (peakPos - start) * 1e3, returned ? ", returned to the peak" : "", finalV, here);
+
+    if (!found && thr > 0.0 && p.GetBool("require_threshold")) {
+        char b[160];
+        std::snprintf(b, sizeof(b), "threshold %.4g not reached within %.1f um (peak %.4g)",
+                      thr, maxMm * 1e3, peak);
+        return CommandResult::Fail(b);
+    }
+    return CommandResult::Success();
 }
 
 // "Z-" / "X+" (or "-Z" / "+X") -> axis name + sign. Empty = the device's
@@ -1433,6 +1583,73 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       PostDelayParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveRelative, kParallelByDevice});
+
+    // A line search on a feedback signal along ONE local axis, ONE direction.
+    // Not a parallel mover (it waits on a shared topic), no teach, not in the
+    // dry-run allowlist: a search with no signal behind it measures nothing.
+    {
+        CommandSpec ds{"direction_search", "Motion",
+                       "Step ONE local axis in ONE direction, sampling a feedback signal "
+                       "after each step; stop at the threshold, or at max distance and "
+                       "return to the peak",
+                       {
+                           {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
+                           {"axis", PT::Enum, true, {}, 0, 0, {"X", "Y", "Z", "U", "V", "W"},
+                            "the device's OWN (local) axis to search along"},
+                           {"direction", PT::Enum, false, "+", 0, 0, {"+", "-"},
+                            "which way along the axis from where the device stands"},
+                           {"step_um", PT::Double, false, 1.0, 0.01, 10000.0, {},
+                            "travel per step (um; mdeg on a rotation axis)"},
+                           {"max_um", PT::Double, false, 20.0, 0.01, 100000.0, {},
+                            "total travel budget from the start (um)"},
+                           {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
+                            "feedback signal"},
+                           {"threshold", PT::Double, false, 0.0, 0.0, 1e12, {},
+                            "stop and STAY when the signal reaches this, in the topic's own "
+                            "units (keithley topics are AMPS: 400 uA = 0.0004). 0 = no "
+                            "threshold, always the full distance"},
+                           {"return_to_peak", PT::Bool, false, true, 0, 0, {},
+                            "at max distance, drive back to the best sample seen (the start "
+                            "included); off stays at the end"},
+                           {"require_threshold", PT::Bool, false, false, 0, 0, {},
+                            "fail the step when a threshold is set and not reached (the "
+                            "device is still returned to the peak first)"},
+                           {"fresh_samples", PT::Int, false, 2, 0, 50, {},
+                            "NEW publishes to wait for after each step, so the sample was "
+                            "taken after the stage stopped; 0 = latest value"},
+                           {"settle_min_ms", PT::Int, false, 0, 0, 5000, {},
+                            "extra floor after each step before sampling (slow receivers)"},
+                           {"settle_ms", PT::Int, false, 300, 10, 10000, {},
+                            "ceiling on the fresh-sample wait; then the latest value is used"},
+                           {"timeout_ms", PT::Int, false, 30000, 100, 600000, {},
+                            "arrival timeout per step"},
+                           {"tol_mm", PT::Double, false, 0.001, 0.0001, 1.0, {},
+                            "arrival tolerance per step"},
+                           {"ctx_prefix", PT::String, false, "dsearch", 0, 0, {},
+                            "prefix for the result keys"},
+                           {"trace", PT::Bool, false, false, 0, 0, {},
+                            "one 'dsrc,' CSV line per sample (device,axis,k,pos,value)"},
+                           VelocityParam(),
+                           PreDelayParam(),
+                           PostDelayParam(),
+                       },
+                       CommandSpec::Needs::None, ExecDirectionSearch};
+        ds.outputs = [](const nlohmann::json& p) {
+            std::string pre = p.value("ctx_prefix", std::string("dsearch"));
+            if (pre.empty()) pre = "dsearch";
+            CommandOutputs o;
+            o.keys.push_back({pre + "_found", "bool", "the threshold was reached"});
+            o.keys.push_back({pre + "_peak", "number", "best signal seen"});
+            o.keys.push_back({pre + "_peak_pos", "mm", "axis position of the peak"});
+            o.keys.push_back({pre + "_peak_offset_um", "number", "peak - start (um)"});
+            o.keys.push_back({pre + "_final", "number", "signal where the device was left"});
+            o.keys.push_back({pre + "_final_pos", "mm", "axis position it was left at"});
+            o.keys.push_back({pre + "_travel_um", "number", "|final - start| (um)"});
+            o.keys.push_back({pre + "_samples", "number", "samples taken"});
+            return o;
+        };
+        reg.Register(std::move(ds));
+    }
 
     reg.Register({"move_lift_off", "Motion",
                   "Lift off along one local axis (default 2 mm; hexapod X+, gantry Z-), "
