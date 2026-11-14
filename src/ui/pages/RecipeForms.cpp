@@ -1237,13 +1237,21 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             if (o.where != 1) onlyLater = false;
         }
         const bool resolved = v.empty() || produced;
-        const std::string preview = v.empty() ? std::string("(pick a result)") : v;
+        // An OPTIONAL result param reads empty as "none" (the command says what
+        // that means), and must be clearable back to it.
+        const std::string preview = !v.empty()    ? v
+                                  : p.required    ? std::string("(pick a result)")
+                                                  : std::string("(none)");
         if (!resolved) pushStale();
         ImGui::SetNextItemWidth(fitW(preview));
         const bool open = ImGui::BeginCombo(label, preview.c_str());
         if (!resolved) ImGui::PopStyleColor(4);
         previewTip(preview);
         if (open) {
+            if (!p.required && ImGui::Selectable("(none)", v.empty())) {
+                params[p.name] = "";
+                changed = true;
+            }
             if (opts.empty())
                 ImGui::TextDisabled("(no step declares an object result on '%s')", dev.c_str());
             for (std::size_t i = 0; i < opts.size(); ++i) {

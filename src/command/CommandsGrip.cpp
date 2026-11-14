@@ -15,6 +15,11 @@
 //                         with that offset subtracted from the tip's target
 //   grip_camera_to_object the other direction: the CAMERA over the object,
 //                         move_camera_to_tool with that offset added to the tip
+//   grip_register_object  no profile: object - tip in XYZ, kept by name in
+//                         Workflow's store (core/GrippedObject.h), the Aux diamond
+//   grip_release_object   drop one (or every) registered object
+//   grip_object_to_camera put a REGISTERED object under the camera: tip target
+//                         = camera - (dx, dy, dz)
 //
 // TEACHING IS NOT HERE, for the reason it is not in the device-registration
 // family either: adopting a reference offset means an operator looking at a
@@ -35,7 +40,10 @@
 #include "command/RegApproach.h"   // PrepareRegMove / ApproachRefPoint
 #include "core/DeviceReg.h"
 #include "core/GripProfile.h"
+#include "core/GrippedObject.h"
 #include "core/Log.h"
+#include "core/ObjectResult.h"
+#include "core/Product.h"          // NowStamp
 #include "hardware/motion/IMotionController.h"
 #include "vision/HalconDetector.h"
 #include "workflow/Workflow.h"
@@ -696,6 +704,233 @@ CommandResult ExecGripCameraToObject(ExecutionContext& ctx, const ParamValues& p
                              "the gripped object");
 }
 
+namespace {
+
+// ---- grip_register_object --------------------------------------------------
+//
+// Register the object in the jaws to the gripper holding it: where it sits
+// relative to the gripper's registered tip, in X, Y AND Z. No profile, no
+// reference, no verdict, and nothing moves - the camera is already on the
+// object (detect_object's center_after, or any move before this step).
+//
+//     object = an object result's XY (or the camera centre) + the camera's Z
+//     tip    = DeviceRegTip(gripper)                    - right now
+//     d      = object - tip                             (camera device axis mm)
+//     h      = Solve(object) - Solve(tip)               (the gripper's axes)
+//
+// Z is a FOCUS height on both sides: the tip's reference Z is "the gantry Z
+// that focuses on it", so with the camera focused on the object, dz is the
+// difference between two focused heights. A camera that is not focused on the
+// object gives a dz that describes nothing - `use_z` off keeps the record XY.
+//
+// The record goes to Workflow's store (core/GrippedObject.h), where the Aux
+// window draws it as a diamond at the LIVE tip + (dx, dy).
+CommandResult ExecGripRegisterObject(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string name    = p.GetString("name");
+    const std::string gripper = p.GetString("gripper");
+    const std::string device  = p.GetString("device");
+    const std::string result  = p.GetString("result");
+    const bool        useZ    = p.GetBool("use_z");
+    if (name.empty()) return CommandResult::Fail("object name is empty");
+
+    const DeviceReg r = ctx.Wf().DeviceRegFor(gripper);
+    if (!r.valid)
+        return CommandResult::Fail(
+            "'" + gripper + "' has no registration, so nothing knows where its tool "
+            "is - and an object's position is only meaningful as an offset from that "
+            "tool. Teach it on the Registration page (F8) first.");
+    if (r.refDevice != device)
+        return CommandResult::Fail(
+            "'" + gripper + "' is registered against '" + r.refDevice + "', not '" +
+            device + "' - the object must be measured by the camera on the device the "
+            "tip is known in");
+
+    const int settle = p.GetInt("settle_ms");
+    if (settle > 0 && !ctx.Sleep(settle)) return CommandResult::Fail("stopped");
+
+    // Where the camera MEASURABLY stands, after settling.
+    std::map<std::string, double> cam;
+    if (!ctx.Wf().DevicePose(device, cam))
+        return CommandResult::Fail("'" + device + "' is not connected");
+    const auto cx = cam.find("X"), cy = cam.find("Y"), cz = cam.find("Z");
+    if (cx == cam.end() || cy == cam.end() || cz == cam.end())
+        return CommandResult::Fail("'" + device + "' does not report X/Y/Z");
+
+    // The object's XY: the detection itself when named (no centring error),
+    // else the camera centre the steps before this one put on it.
+    double ox = cx->second, oy = cy->second;
+    if (!result.empty()) {
+        ObjectResult res;
+        if (!ctx.Wf().ObjectResultFor(result, &res))
+            return CommandResult::Fail("no object result '" + result + "' - a detect_object "
+                                       "step must find it earlier in this program");
+        if (res.device != device)
+            return CommandResult::Fail("object result '" + result + "' is in '" + res.device +
+                                       "' axis space, not '" + device + "'");
+        if (!res.hasX || !res.hasY)
+            return CommandResult::Fail("object result '" + result + "' does not carry both "
+                                       "X and Y - tick both on its detect_object step");
+        ox = res.x;
+        oy = res.y;
+    }
+
+    // The tool, right now, through layer 2's one predictor and its refusals.
+    RegVec3     tip;
+    std::string why;
+    if (!ctx.Wf().DeviceRegTip(gripper, tip, &why))
+        return CommandResult::Fail("no tip for '" + gripper + "': " + why);
+
+    const double oz = useZ ? cz->second : tip.z;
+
+    GrippedObject o;
+    o.name    = name;
+    o.gripper = gripper;
+    o.device  = device;
+    o.ox = ox;     o.oy = oy;     o.oz = oz;
+    o.tx = tip.x;  o.ty = tip.y;  o.tz = tip.z;
+    o.dx = ox - tip.x;
+    o.dy = oy - tip.y;
+    o.dz = oz - tip.z;
+    o.hasZ = useZ;
+    // The same vector in the gripper's own axes: two solves and a subtraction,
+    // so `t` cancels and DeviceRegSolve stays the one matrix multiply.
+    const RegVec3 hObj = DeviceRegSolve(r, RegVec3{ox, oy, oz});
+    const RegVec3 hTip = DeviceRegSolve(r, tip);
+    o.hx = hObj.x - hTip.x;
+    o.hy = hObj.y - hTip.y;
+    o.hz = hObj.z - hTip.z;
+    {
+        std::map<std::string, double> gp;
+        if (ctx.Wf().DevicePose(gripper, gp))
+            if (const auto iu = gp.find("U"); iu != gp.end()) {
+                o.gripU = iu->second;
+                o.hasU  = true;
+            }
+    }
+    o.result = result;
+    o.at     = NowStamp();
+    ctx.Wf().SetGrippedObject(o);
+
+    std::string prefix = p.GetString("ctx_prefix");
+    if (prefix.empty()) prefix = name;
+    ctx.CtxSet(prefix + "_x", o.ox);
+    ctx.CtxSet(prefix + "_y", o.oy);
+    ctx.CtxSet(prefix + "_z", o.oz);
+    ctx.CtxSet(prefix + "_tip_x", o.tx);
+    ctx.CtxSet(prefix + "_tip_y", o.ty);
+    ctx.CtxSet(prefix + "_tip_z", o.tz);
+    ctx.CtxSet(prefix + "_dx", o.dx);
+    ctx.CtxSet(prefix + "_dy", o.dy);
+    ctx.CtxSet(prefix + "_dz", o.dz);
+    ctx.CtxSet(prefix + "_dist", std::sqrt(o.dx * o.dx + o.dy * o.dy + o.dz * o.dz));
+    ctx.CtxSet(prefix + "_hx", o.hx);
+    ctx.CtxSet(prefix + "_hy", o.hy);
+    ctx.CtxSet(prefix + "_hz", o.hz);
+
+    const std::string src = result.empty() ? std::string("camera centre")
+                                           : "result '" + result + "'";
+    FD_INFO("grip", "'%s' registered to '%s': object (%.4f, %.4f, %.4f) [%s%s] - tip "
+                    "(%.4f, %.4f, %.4f) = d (%+.4f, %+.4f, %+.4f) '%s' mm, h (%+.4f, %+.4f, "
+                    "%+.4f) '%s' axes",
+            name.c_str(), gripper.c_str(), o.ox, o.oy, o.oz, src.c_str(),
+            useZ ? ", camera Z" : ", Z not measured", o.tx, o.ty, o.tz, o.dx, o.dy, o.dz,
+            device.c_str(), o.hx, o.hy, o.hz, gripper.c_str());
+    return CommandResult::Success();
+}
+
+// ---- grip_release_object ---------------------------------------------------
+
+CommandResult ExecGripReleaseObject(ExecutionContext& ctx, const ParamValues& p)
+{
+    if (p.GetBool("all")) {
+        ctx.Wf().ClearGrippedObjects("grip_release_object all");
+        return CommandResult::Success();
+    }
+    const std::string name = p.GetString("name");
+    if (ctx.Wf().EraseGrippedObject(name)) {
+        FD_INFO("grip", "gripped object '%s' released", name.c_str());
+        return CommandResult::Success();
+    }
+    if (p.GetBool("must_exist"))
+        return CommandResult::Fail("no gripped object '" + name + "' to release");
+    FD_INFO("grip", "grip_release_object: no gripped object '%s' (nothing to do)",
+            name.c_str());
+    return CommandResult::Success();
+}
+
+// ---- grip_object_to_camera -------------------------------------------------
+//
+// move_tool_to_camera for a REGISTERED object: the camera is looking at a point
+// (focused there), and the gripper must put the thing it holds on it. The object
+// sits d from the tip, so the tip aims at the camera point MINUS d - in Z as
+// well when the registration measured it:
+//
+//     tip target = camera - (dx, dy, dz) + (0, 0, z_offset_mm)   (camera axis mm)
+//
+// With dz measured, z_offset 0 puts the OBJECT on the focused plane (not the
+// tip, as grip_move_to_camera does); z_offset stands it off. A record without Z
+// has dz = 0, which is grip_move_to_camera's assumption that the object sits at
+// the tip's height.
+//
+// The record is read from Workflow's store (grip_register_object, this part);
+// the move is the registration's approach - PrepareRegMove with the record's
+// device as the expected reference, then ApproachRefPoint - so the verified
+// gate, the ceiling and the two-speed approach are the ones every tool move
+// runs. A gripper turned in U since the registration is REFUSED: the object
+// swings about the tip, and d no longer says where it is.
+CommandResult ExecGripObjectToCamera(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string name = p.GetString("name");
+    GrippedObject     o;
+    if (!ctx.Wf().GrippedObjectFor(name, &o))
+        return CommandResult::Fail("no gripped object '" + name + "' - grip_register_object "
+                                   "it first (it is cleared at program start, DUT open "
+                                   "and product load)");
+
+    DeviceReg          r;
+    IMotionController* m   = nullptr;
+    int                idx = -1;
+    const CommandResult ready = PrepareRegMove(ctx, p, o.gripper, o.device, &r, &m, &idx, true);
+    if (!ready.ok) return ready;
+
+    if (o.hasU) {
+        const std::map<std::string, double> live = m->Positions();
+        const auto iu = live.find("U");
+        if (iu != live.end() && std::fabs(iu->second - o.gripU) > kDeviceRegRotTolDeg) {
+            char b[256];
+            std::snprintf(b, sizeof(b),
+                          "'%s' is at U %.4f but '%s' was registered at U %.4f - the object "
+                          "swung about the tip, so its offset is stale. Register it again "
+                          "at this rotation",
+                          o.gripper.c_str(), iu->second, o.name.c_str(), o.gripU);
+            return CommandResult::Fail(b);
+        }
+    }
+
+    // Where the camera stands, by the record's own device name.
+    std::map<std::string, double> cam;
+    if (!ctx.Wf().DevicePose(o.device, cam))
+        return CommandResult::Fail("'" + o.device + "' is not connected - there is no "
+                                   "camera point to move to");
+    const auto ix = cam.find("X"), iy = cam.find("Y"), iz = cam.find("Z");
+    if (ix == cam.end() || iy == cam.end() || iz == cam.end())
+        return CommandResult::Fail("'" + o.device + "' does not report X/Y/Z");
+
+    const double  zoff = p.GetDouble("z_offset_mm");
+    const RegVec3 target{ix->second - o.dx, iy->second - o.dy,
+                         iz->second - o.dz + zoff};
+    FD_INFO("grip", "'%s' to the camera point: '%s' at (%.4f, %.4f, %.4f), object offset "
+                    "(%+.4f, %+.4f, %+.4f)%s, so the '%s' tip aims at (%.4f, %.4f, %.4f), "
+                    "z_offset %+.4f",
+            o.name.c_str(), o.device.c_str(), ix->second, iy->second, iz->second, o.dx,
+            o.dy, o.dz, o.hasZ ? "" : " (Z not registered)", o.gripper.c_str(), target.x,
+            target.y, target.z, zoff);
+    return ApproachRefPoint(ctx, p, o.gripper, r, m, idx, target);
+}
+
+}   // namespace
+
 void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
 {
     (void)wf;   // every action goes through ExecutionContext::Wf() at run time
@@ -939,6 +1174,97 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                       return err.empty() ? CommandResult::Success()
                                          : CommandResult::Fail(err);
                   }});
+
+    // Register the object in the jaws to its gripper: object - tip in XYZ, kept
+    // in Workflow's store and drawn on the Aux view as a diamond. Standalone -
+    // no profile. The camera's device is the param named "device" so the
+    // result picker offers the results found on it.
+    CommandSpec regObj{"grip_register_object", "Grip",
+                       "Register the object in the jaws to its gripper: object minus the "
+                       "registered tip in X, Y and Z. Moves nothing - centre the camera on "
+                       "the object first (detect_object center_after)",
+                       {
+                           {"gripper", PT::DeviceMotion, true, {}, 0, 0, {},
+                            "the registered device holding the object"},
+                           {"device", PT::DeviceMotion, false, "gantry-main", 0, 0, {},
+                            "the CAMERA's motion device - the gripper's registration must "
+                            "be referenced to it"},
+                           {"name", PT::String, false, "lens", 0, 0, {},
+                            "the object's name; registering an existing name replaces it"},
+                           {"result", PT::ResultName, false, "", 0, 0, {},
+                            "the object's XY from this object result (a detect_object "
+                            "step's ctx_prefix). None = the camera centre, where "
+                            "center_after left it"},
+                           {"use_z", PT::Bool, false, true, 0, 0, {},
+                            "measure Z too: the camera's Z, which must be FOCUSED on the "
+                            "object, against the tip's focused Z. Off keeps the record XY "
+                            "(dz = 0)"},
+                           {"settle_ms", PT::Int, false, 200, 0, 10000, {},
+                            "wait before reading the poses"},
+                           {"ctx_prefix", PT::String, false, "", 0, 0, {},
+                            "ctx prefix for the mirrors; empty uses the name"},
+                       },
+                       CommandSpec::Needs::None, ExecGripRegisterObject};
+    regObj.outputs = [](const nlohmann::json& p) {
+        std::string pre = p.value("ctx_prefix", std::string());
+        if (pre.empty()) pre = p.value("name", std::string("lens"));
+        const std::string dev = p.value("device", std::string("gantry-main"));
+        const std::string grp = p.value("gripper", std::string());
+        CommandOutputs o;
+        for (const char* a : {"x", "y", "z"})
+            o.keys.push_back({pre + "_" + a, "mm", "the object, '" + dev + "' axis mm"});
+        for (const char* a : {"x", "y", "z"})
+            o.keys.push_back({pre + "_tip_" + a, "mm", "the gripper's tip, '" + dev + "' axis mm"});
+        for (const char* a : {"dx", "dy", "dz"})
+            o.keys.push_back({pre + "_" + a, "mm", "object - tip, '" + dev + "' axis mm"});
+        o.keys.push_back({pre + "_dist", "mm", "|object - tip|"});
+        for (const char* a : {"hx", "hy", "hz"})
+            o.keys.push_back({pre + "_" + a, "mm", "object - tip in '" + grp + "' axes"});
+        return o;
+    };
+    reg.Register(std::move(regObj));
+
+    reg.Register({"grip_release_object", "Grip",
+                  "Drop a registered gripped object (or every one) - after it is placed "
+                  "or let go",
+                  {
+                      {"name", PT::String, false, "lens", 0, 0, {},
+                       "the object to release"},
+                      {"all", PT::Bool, false, false, 0, 0, {},
+                       "release every registered object (name is ignored)"},
+                      {"must_exist", PT::Bool, false, false, 0, 0, {},
+                       "fail when there is no such object (default: nothing to do)"},
+                  },
+                  CommandSpec::Needs::None, ExecGripReleaseObject});
+
+    // The consuming move for a registered object: same parameters as
+    // grip_move_to_camera, with the object's name in place of the profile.
+    reg.Register({"grip_object_to_camera", "Grip",
+                  "APPROACH the point the camera is looking at with a REGISTERED object "
+                  "(grip_register_object): the tip aims at camera - (dx, dy, dz), so the "
+                  "object lands there",
+                  {
+                      {"name", PT::String, false, "lens", 0, 0, {},
+                       "the registered object; its gripper is what moves"},
+                      {"z_offset_mm", PT::Double, false, -2.0, -100.0, 100.0, {},
+                       "offset from the camera's focused Z, applied to the OBJECT when its "
+                       "Z was registered (else to the tip, as grip_move_to_camera). 0 "
+                       "puts it on the focused surface; NEGATIVE stands it off (higher) "
+                       "on this machine"},
+                      {"axes", PT::String, false, "XYZ", 0, 0, {},
+                       "which axes to command; the others are left where they are"},
+                      {"max_mm", PT::Double, false, 10.0, 0.0, 500.0, {},
+                       "refuse a move longer than this; 0 disables the ceiling"},
+                      {"allow_unverified", PT::Bool, false, false, 0, 0, {},
+                       "move through a registration whose check has not been run"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
+                      ToolVelocityParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                  },
+                  CommandSpec::Needs::None, ExecGripObjectToCamera});
 }
 
 } // namespace firedog

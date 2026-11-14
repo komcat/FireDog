@@ -887,6 +887,11 @@ private:
     // beacon, labelled with the minutes left; an edge arrow when off the image.
     // Draw only - reads Workflow::Beacons(), changes nothing.
     void DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS);
+    // Objects registered to a gripper (grip_register_object): a diamond at the
+    // gripper's LIVE tip + (dx, dy), in the gripper's colour, labelled with its
+    // height against the focused plane. Nothing when the tip cannot be
+    // predicted. Draw only - reads Workflow::GrippedObjects(), changes nothing.
+    void DrawAuxGrippedObjects(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS);
     void DrawSignalOverlay();  // Keithley readout + chart (floats over the image)
     // The Aux window's COMPACT chart: drawn straight onto `dl` with no plot
     // library and no child window - a trace over the picture that takes no

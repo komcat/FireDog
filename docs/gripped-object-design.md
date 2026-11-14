@@ -273,3 +273,68 @@ is. What this buys is that the loop starts from a **known** grip instead of an
 assumed one — which is the difference between landing on pass 1 and landing on
 pass 2, and, when the grip is bad enough, between a correction and a scrapped
 part.
+
+## 8. Registered objects: object − tip in XYZ, no profile
+
+*The record is `core/GrippedObject.h`; the commands are `grip_register_object`
+and `grip_release_object` in `command/CommandsGrip.cpp`; the drawing is
+`App::DrawAuxGrippedObjects` (`ui/windows/WndAux.cpp`).*
+
+A profile answers "is this grip good" against an adopted reference. The
+registered object answers a plainer question for a recipe that has already
+found the part with `detect_object`: **where is the thing in the jaws, relative
+to the tool, right now** — and it answers it in Z as well.
+
+```
+detect_object (center_after)   -> the camera centred on the lens
+[auto_focus]                   -> the camera FOCUSED on the lens
+grip_register_object           -> d = object - tip, stored by name
+```
+
+* **Object.** XY from the named object result when one is given (the detection
+  itself, no centring error), else the camera centre where `center_after` left
+  it. Z is the camera's Z (`use_z`, default on).
+* **Tip.** `Workflow::DeviceRegTip(gripper)` — the one predictor, refusals and
+  all. The gripper's registration must be referenced to the camera's device.
+* **Why Z is allowed here when §3 refuses it for a profile.** Both Z's are
+  FOCUS heights: the tip's reference Z is "the gantry Z that focuses on it", and
+  the camera is focused on the object. So `dz` is the difference of two focused
+  heights in the camera device's axis mm — gantry-main's Z is inverted, so read
+  it with `GantryAxisZUpSign`. A camera NOT focused on the object gives a `dz`
+  that describes nothing; `use_z` off keeps the record XY. Nothing judges it, so
+  a mis-focus cannot fail a grip — it can only report a wrong height.
+* **Gripper axes.** `h = DeviceRegSolve(object) − DeviceRegSolve(tip)`, as
+  `grip_apply` does: `t` cancels and there is still one matrix multiply.
+
+It is **standalone** — no profile, no reference, no verdict — and **part-scoped**,
+with an object result's lifetime: cleared at program start, DUT open, product
+load and app close (`ClearGrippedObjects` beside every `ClearObjectResults`), by
+`grip_release_object`, or by the Aux strip's *Clear gripped objects*. Registering
+a name again replaces it. The ctx keys (`<prefix>_dx/_dy/_dz/_dist/_hx/_hy/_hz`,
+the object and tip points) are mirrors for display and branching.
+
+**The diamond.** The Aux window draws every record on the picture's device as a
+diamond in the gripper's colour at the **live** tip + `(dx, dy)`, so it rides with
+the gripper and stays on the object as the camera moves; off the image it is an
+edge arrow. The label carries the object's height against the focused plane
+(live tip Z + `dz` − camera Z). A tip that cannot be predicted draws nothing.
+A U rotation since the registration is **not** compensated — the object swings
+about the tip — so the label says `U moved` instead.
+
+**The consumer: `grip_object_to_camera`.** The camera is focused on a point;
+the gripper puts the registered object on it:
+
+```
+tip target = camera − (dx, dy, dz) + (0, 0, z_offset_mm)    (camera axis mm)
+```
+
+With `dz` registered, `z_offset_mm = 0` puts the **object** on the focused
+surface — not the tip, as `grip_move_to_camera` does — and the default −2 stands
+it off. A record without Z has `dz = 0`, which is exactly `grip_move_to_camera`'s
+"the object sits at the tip's height". It is the registration's approach:
+`PrepareRegMove` with the record's device as the expected reference (the
+verified gate, `allow_unverified`), then `ApproachRefPoint` (the ceiling, the
+two-speed approach). A gripper turned in U since the registration is
+**refused** — the object swung about the tip and `d` no longer says where it is;
+register again at that rotation. It is no teach mover, no parallel mover and not
+dry-run allowed.

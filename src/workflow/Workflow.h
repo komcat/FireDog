@@ -9,6 +9,7 @@
 #include "core/DeviceReg.h"            // DeviceReg (a gripper tip in gantry space)
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
 #include "core/Beacon.h"               // Beacon (temporary camera-pose markers)
+#include "core/GrippedObject.h"        // GrippedObject (object registered to a gripper)
 #include "core/ObjectResult.h"         // ObjectResult (detected objects, live)
 #include "core/PivotDefaults.h"        // PivotDefault (restored after a controller restart)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
@@ -572,6 +573,18 @@ public:
     void ClearBeacons(const char* reason);
     void ExpireBeacons();
 
+    // ---- Gripped objects (grip_register_object -> the Aux diamond) ----------
+    // An object registered to the gripper holding it: object - tip in XYZ
+    // (core/GrippedObject.h). Part-scoped like the object results above, so it
+    // is cleared beside every ClearObjectResults (program start, DUT open,
+    // product load), and by grip_release_object or the Aux window's Clear.
+    // Mutex-guarded: engine workers write, the Aux window reads.
+    void SetGrippedObject(const GrippedObject& o);
+    bool EraseGrippedObject(const std::string& name);
+    bool GrippedObjectFor(const std::string& name, GrippedObject* out) const;
+    std::vector<GrippedObject> GrippedObjects() const;   // snapshot, by name
+    void ClearGrippedObjects(const char* reason);
+
     // ---- Waffle tray cursors (tray_next / tray_reset / the Waffle Tray page)
     // Which cells of a tray are USED (the cavity is empty), by tray uid. The
     // live, thread-safe mirror of WaffleTray::usedCells, which is the
@@ -845,6 +858,8 @@ private:
     std::map<std::string, ObjectResult>      objectResults_;
     mutable std::mutex                       beaconMu_;
     std::map<std::string, Beacon>            beacons_;
+    mutable std::mutex                       gripObjMu_;
+    std::map<std::string, GrippedObject>     grippedObjects_;
 
     // Used waffle-tray cells by tray uid (see TrayNext), and the worker->UI
     // queue that carries a run's changes to the document.

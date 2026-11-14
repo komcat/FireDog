@@ -171,8 +171,11 @@ struct CameraMark {
     // (~1.6 s), with the label on a dark pill: the one MOVING mark on the
     // picture, for a beacon (plant_beacon) - a place to come back to, so it
     // must be findable at a glance and never read as a tip or a detection.
-    // The off-screen arrow is the same for both.
-    enum class Glyph { Cross, Pulse };
+    // Diamond = an outlined rhombus with a centre dot, label on a dark pill:
+    // an object REGISTERED to a gripper (grip_register_object) - a thing the
+    // tool is holding, so it must not read as the tool's own cross.
+    // The off-screen arrow is the same for all.
+    enum class Glyph { Cross, Pulse, Diamond };
     Glyph glyph = Glyph::Cross;
     // Pulse only: seconds per beat (60 / bpm). The beacon beats faster as a
     // tool closes on its height - see App::DrawAuxBeacons.

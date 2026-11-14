@@ -502,6 +502,10 @@ void App::DrawAuxWindow()
         // operator should see where before it goes.
         if (haveImg) DrawAuxBeacons(dl, imgO, imgS);
 
+        // ---- Objects registered to a gripper: a diamond riding the tip ----
+        // Always on, like the beacons: it says what the tool is holding.
+        if (haveImg) DrawAuxGrippedObjects(dl, imgO, imgS);
+
         float tipsH = 0.0f;
         if (haveImg && showGripperMarks_)
             tipsH = DrawAuxGripperMarks(dl, origin, avail, imgO, imgS, gripPlateH);
@@ -634,6 +638,14 @@ void App::DrawAuxWindow()
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Drop the last grip measurement from the picture. It is\n"
                                   "a readout only - the profile keeps what was measured.");
+        }
+        if (!workflow_.GrippedObjects().empty()) {
+            if (ImGui::Button("Clear gripped objects"))
+                workflow_.ClearGrippedObjects("Aux clear");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Drop every object registered to a gripper\n"
+                                  "(grip_register_object) - the diamonds on the picture.\n"
+                                  "A recipe does the same with grip_release_object.");
         }
         if (ImGui::Checkbox("Positions", &showPosLabels_)) SaveUiSettings();
         if (ImGui::IsItemHovered())
@@ -1178,6 +1190,88 @@ float App::DrawAuxGripResult(ImDrawList* dl, const ImVec2& origin, const ImVec2&
     cm.col   = kGripObjCol;
     DrawWorldMark(dl, wv, cm, 14.0f);
     return plateH;
+}
+
+// Objects registered to a gripper (grip_register_object), each a DIAMOND at the
+// gripper's LIVE tip plus the registered (dx, dy) - so it rides with the gripper
+// as it moves, and stays on the object as the camera moves. Only objects whose
+// axis space is the device posing this picture, for the tips' reason.
+//
+// A tip that cannot be predicted draws NOTHING here, exactly as it gets no
+// cross: a diamond frozen at the last good place is a gripper looking placed.
+// A rotation since the registration is not compensated (the object swings
+// about the tip), so the label says "U moved" rather than hiding it.
+void App::DrawAuxGrippedObjects(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
+{
+    if (pixelToMmX_ <= 0.0f || pixelToMmY_ <= 0.0f) return;
+    const std::vector<GrippedObject> objs = workflow_.GrippedObjects();
+    if (objs.empty()) return;
+    double gx = 0.0, gy = 0.0;
+    if (!workflow_.GantryXY(gx, gy)) return;
+    const std::string refName = workflow_.GantryName();
+    if (refName.empty()) return;
+
+    double gz     = 0.0;
+    bool   haveGz = false;
+    {
+        std::map<std::string, double> refPose;
+        if (workflow_.DevicePose(refName, refPose))
+            if (const auto iz = refPose.find("Z"); iz != refPose.end()) {
+                gz     = iz->second;
+                haveGz = true;
+            }
+    }
+    const int upSign = workflow_.GantryAxisZUpSign();
+
+    WorldMarkView wv;
+    wv.view       = MakeCameraView(imgO, imgS, cameraW_, cameraH_,
+                                   static_cast<float>(cameraW_) * 0.5f,
+                                   static_cast<float>(cameraH_) * 0.5f, 1.0f);
+    wv.boxMin     = imgO;
+    wv.boxMax     = ImVec2(imgO.x + imgS.x, imgO.y + imgS.y);
+    wv.gx         = gx;
+    wv.gy         = gy;
+    wv.pixelToMmX = pixelToMmX_;
+    wv.pixelToMmY = pixelToMmY_;
+    wv.imgW       = cameraW_;
+    wv.imgH       = cameraH_;
+
+    for (const GrippedObject& o : objs) {
+        if (o.device != refName) continue;
+        RegVec3 tip{};
+        if (!workflow_.DeviceRegTip(o.gripper, tip, nullptr)) continue;
+
+        // The object's height against the focused plane, when Z was measured:
+        // the live tip's focused Z plus the registered dz, against the camera.
+        char hgt[48] = "";
+        if (o.hasZ && haveGz) {
+            const double dz = tip.z + o.dz - gz;
+            std::snprintf(hgt, sizeof(hgt), "  %s %+lld %s", upSign != 0 ? "h" : "dZ",
+                          GaugeUm(upSign != 0 ? upSign * dz : dz), kUm);
+        }
+        bool turned = false;
+        if (o.hasU) {
+            std::map<std::string, double> gp;
+            if (workflow_.DevicePose(o.gripper, gp))
+                if (const auto iu = gp.find("U"); iu != gp.end())
+                    turned = std::fabs(iu->second - o.gripU) > kDeviceRegRotTolDeg;
+        }
+        const std::string tl = AuxTipLabel(o.gripper);
+        char lbl[160];
+        std::snprintf(lbl, sizeof(lbl), "%s %s%s%s", o.name.c_str(),
+                      tl.empty() ? o.gripper.c_str() : tl.c_str(), hgt,
+                      turned ? "  U moved" : "");
+
+        CameraMark cm;
+        cm.wx           = tip.x + o.dx;
+        cm.wy           = tip.y + o.dy;
+        cm.have         = true;
+        cm.label        = lbl;
+        cm.col          = DeviceAccentColor(o.gripper, kGripObjCol);
+        cm.edgeDistance = true;
+        cm.glyph        = CameraMark::Glyph::Diamond;
+        DrawWorldMark(dl, wv, cm, 14.0f);
+    }
 }
 
 // The live beacons, projected through the CURRENT gantry pose so each stays on

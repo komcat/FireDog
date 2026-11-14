@@ -401,6 +401,7 @@ void App::Update(float dt)
             if (!key.empty()) {
                 workflow_.ClearLiveFrames("new DUT opened");
                 workflow_.ClearObjectResults("new DUT opened");
+                workflow_.ClearGrippedObjects("new DUT opened");
                 // And the picture, for the same reason: a still shows ONE
                 // physical part. Left up, last part's serial would sit over
                 // this part's run looking like a reading somebody just took.
@@ -748,6 +749,7 @@ void App::ResetDocumentSelections()
     // This also covers app start, since Run() calls us before the first frame.
     workflow_.ClearLiveFrames("product loaded");
     workflow_.ClearObjectResults("product loaded");
+    workflow_.ClearGrippedObjects("product loaded");
     // Beacons are not part-scoped (program start and DUT open keep them), but
     // a different product's locations mean nothing.
     workflow_.ClearBeacons("product loaded");

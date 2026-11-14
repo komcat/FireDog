@@ -160,6 +160,25 @@ void DrawPulse(ImDrawList* dl, const ImVec2& p, ImU32 col, float size, const cha
     }
 }
 
+// CameraMark::Glyph::Diamond: an outlined rhombus `size` from centre to tip,
+// a centre dot, and the label on the same dark pill as the pulse.
+void DrawDiamond(ImDrawList* dl, const ImVec2& p, ImU32 col, float size, const char* label)
+{
+    const float r = size * 0.75f;
+    dl->AddQuad(ImVec2(p.x, p.y - r), ImVec2(p.x + r, p.y), ImVec2(p.x, p.y + r),
+                ImVec2(p.x - r, p.y), col, 2.0f);
+    dl->AddCircleFilled(p, 3.0f, col);
+
+    if (label && label[0]) {
+        const ImVec2 ts = ImGui::CalcTextSize(label);
+        const ImVec2 lp(p.x + r + 8.0f, p.y + r * 0.5f);
+        dl->AddRectFilled(ImVec2(lp.x - 4.0f, lp.y - 2.0f),
+                          ImVec2(lp.x + ts.x + 4.0f, lp.y + ts.y + 2.0f),
+                          IM_COL32(0, 0, 0, 165), 3.0f);
+        dl->AddText(lp, col, label);
+    }
+}
+
 } // namespace
 
 bool LoadPngRGBA(const char* path, std::vector<unsigned char>* rgba,
@@ -289,6 +308,8 @@ void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
         s.y >= wv.boxMin.y - pad && s.y <= wv.boxMax.y + pad) {
         if (m.glyph == CameraMark::Glyph::Pulse)
             DrawPulse(dl, s, col, crossLen, m.label, m.pulsePeriodS);
+        else if (m.glyph == CameraMark::Glyph::Diamond)
+            DrawDiamond(dl, s, col, crossLen, m.label);
         else
             DrawCross(dl, s, col, crossLen, m.label);
         return;

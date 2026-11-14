@@ -824,6 +824,51 @@ void Workflow::ExpireBeacons()
                 kBeaconLifeMin);
 }
 
+// ---- Gripped objects -------------------------------------------------------
+
+void Workflow::SetGrippedObject(const GrippedObject& o)
+{
+    const std::lock_guard<std::mutex> lock(gripObjMu_);
+    grippedObjects_[o.name] = o;
+}
+
+bool Workflow::EraseGrippedObject(const std::string& name)
+{
+    const std::lock_guard<std::mutex> lock(gripObjMu_);
+    return grippedObjects_.erase(name) > 0;
+}
+
+bool Workflow::GrippedObjectFor(const std::string& name, GrippedObject* out) const
+{
+    const std::lock_guard<std::mutex> lock(gripObjMu_);
+    const auto it = grippedObjects_.find(name);
+    if (it == grippedObjects_.end()) return false;
+    if (out) *out = it->second;
+    return true;
+}
+
+std::vector<GrippedObject> Workflow::GrippedObjects() const
+{
+    const std::lock_guard<std::mutex> lock(gripObjMu_);
+    std::vector<GrippedObject> v;
+    v.reserve(grippedObjects_.size());
+    for (const auto& [name, o] : grippedObjects_) v.push_back(o);
+    return v;
+}
+
+void Workflow::ClearGrippedObjects(const char* reason)
+{
+    std::size_t n = 0;
+    {
+        const std::lock_guard<std::mutex> lock(gripObjMu_);
+        n = grippedObjects_.size();
+        grippedObjects_.clear();
+    }
+    if (n > 0)
+        FD_INFO("grip", "gripped object(s) cleared: %s (%zu dropped)",
+                reason ? reason : "reset", n);
+}
+
 // ---- Waffle tray cursors ---------------------------------------------------
 
 void Workflow::TrayConsume(const std::string& trayUid, int row, int col)
