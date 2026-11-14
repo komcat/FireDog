@@ -631,18 +631,38 @@ void App::DrawXcanOperatorWindow()
     ImGui::TextUnformatted(s.message.c_str());
     ImGui::PopTextWrapPos();
 
-    // The signal the scans climb, live, and the session's clock.
+    // The reading the spec is judged on, live and big, against the target -
+    // green once it meets it - and the session's clock.
+    const std::string topic = s.topic.empty() ? std::string(runXcanTopic_) : s.topic;
+    bool   haveSig = false, met = s.target <= 0.0;
+    double sig     = 0.0;
     {
-        std::vector<float> t, v;
-        DataBus::Instance().Stream(runXcanTopic_).Snapshot(t, v);
-        const bool amps = std::string(runXcanTopic_).compare(0, 9, "keithley/") == 0;
-        ImGui::TextDisabled("%s", runXcanTopic_);
+        DataStream& st = DataBus::Instance().Stream(topic);
+        haveSig = st.Count() > 0;
+        sig     = haveSig ? st.LatestValue() : 0.0;
+        if (s.target > 0.0) met = haveSig && sig >= s.target;
+        const bool amps = topic.compare(0, 9, "keithley/") == 0;
+        const char* unit = amps ? "A" : "";
+        ImGui::TextDisabled("%s", topic.c_str());
         ImGui::SameLine();
-        if (!v.empty())
-            ImGui::Text("= %s%s", FormatSI(static_cast<double>(v.back())).c_str(),
-                        amps ? "A" : "");
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * k * 1.3f);
+        const ImVec4 green(0.40f, 0.92f, 0.50f, 1.0f), amber(1.0f, 0.70f, 0.30f, 1.0f);
+        if (!haveSig)
+            ImGui::TextDisabled("(no data)");
+        else if (s.target > 0.0)
+            ImGui::TextColored(met ? green : amber, "%s%s", FormatSI(sig).c_str(), unit);
         else
-            ImGui::TextDisabled("= (no data)");
+            ImGui::Text("%s%s", FormatSI(sig).c_str(), unit);
+        ImGui::PopFont();
+        if (s.target > 0.0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("target >= %s%s%s", FormatSI(s.target).c_str(), unit,
+                                s.requireTarget ? "  (required for Done)" : "");
+            if (haveSig) {
+                ImGui::SameLine();
+                ImGui::TextColored(met ? green : amber, "%s", met ? "SPEC MET" : "below");
+            }
+        }
 
         const long long left = std::chrono::duration_cast<std::chrono::seconds>(
                                    s.deadline - std::chrono::steady_clock::now()).count();
@@ -697,15 +717,36 @@ void App::DrawXcanOperatorWindow()
         ImGui::TextDisabled("Press a preset to scan. Repeat until satisfied, then Done.");
         ImGui::TextDisabled(" ");
     }
+    if (!s.note.empty())
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "%s", s.note.c_str());
     ImGui::Separator();
 
+    // Done: green when the spec is met (or there is none), amber when it is
+    // not - still pressable unless the step REQUIRES the target, in which case
+    // it waits for the reading (the worker re-checks it at Done either way).
+    const bool doneBlocked = s.requireTarget && !met;
     ImGui::BeginDisabled(waiting);
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.42f, 0.20f, 1.00f));
-    if (ImGui::Button("Done (signal is good)", ImVec2(260.0f * k, ImGui::GetFrameHeight() * 1.5f)))
+    ImGui::BeginDisabled(doneBlocked);
+    if (met) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.42f, 0.20f, 1.00f));
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.60f, 0.36f, 0.10f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f, 0.44f, 0.14f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.82f, 0.50f, 0.16f, 1.00f));
+    }
+    const char* doneLbl = s.target <= 0.0 ? "Done (signal is good)###xopDone"
+                        : met             ? "Done (spec met)###xopDone"
+                        : doneBlocked     ? "Done (needs the target)###xopDone"
+                                          : "Done (BELOW spec)###xopDone";
+    if (ImGui::Button(doneLbl, ImVec2(260.0f * k, ImGui::GetFrameHeight() * 1.5f)))
         workflow_.AnswerXcanSession(s.id, true);
     ImGui::PopStyleColor(3);
+    ImGui::EndDisabled();
+    if (doneBlocked && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("This step requires the reading to reach the target before Done.\n"
+                          "Run another preset, or Cancel to fail the step.");
     ImGui::SameLine();
     if (ImGui::Button("Cancel (Fail Step)", ImVec2(200.0f * k, ImGui::GetFrameHeight() * 1.5f)))
         workflow_.AnswerXcanSession(s.id, false);

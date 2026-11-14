@@ -149,12 +149,17 @@ Workflow::OperatorNotice Workflow::PendingNotice() const
 
 // ---- Operator-driven XCAN (xcan_operator) -------------------------------------
 
-std::uint64_t Workflow::BeginXcanSession(const std::string& message, int timeoutMs)
+std::uint64_t Workflow::BeginXcanSession(const std::string& message, int timeoutMs,
+                                         double target, const std::string& topic,
+                                         bool requireTarget)
 {
     const std::scoped_lock lock(xcanSesMu_);
-    xcanSes_          = XcanSession{};
-    xcanSes_.id       = xcanSesNextId_++;
-    xcanSes_.message  = message;
+    xcanSes_               = XcanSession{};
+    xcanSes_.id            = xcanSesNextId_++;
+    xcanSes_.message       = message;
+    xcanSes_.target        = target;
+    xcanSes_.topic         = topic;
+    xcanSes_.requireTarget = requireTarget;
     xcanSes_.deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 0);
     xcanReq_    = XcanScanRequest{};
@@ -226,6 +231,14 @@ void Workflow::FinishXcanScan(std::uint64_t id, const std::string& error, bool h
     xcanSes_.haveBest  = haveBest;
     xcanSes_.lastBest  = best;
     ++xcanSes_.scans;
+}
+
+void Workflow::ReopenXcanSession(std::uint64_t id, const std::string& note)
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    if (xcanSes_.id != id) return;
+    xcanAnswer_   = 0;
+    xcanSes_.note = note;
 }
 
 void Workflow::EndXcanSession(std::uint64_t id)

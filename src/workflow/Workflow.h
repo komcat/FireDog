@@ -446,8 +446,20 @@ public:
         std::string   lastError;           // ... "" = it ran to its end
         bool          haveBest = false;    // ... and its align_best, when it set one
         double        lastBest = 0.0;
+        // The acceptance spec: the reading on `topic` must reach `target`
+        // (base units, 0 = no spec). With requireTarget, Done is only taken
+        // while it does - the window greys Done, and the worker re-checks the
+        // reading at Done and reopens the session (with `note`) if it fell.
+        double        target = 0.0;
+        std::string   topic;
+        bool          requireTarget = false;
+        std::string   note;
     };
-    std::uint64_t BeginXcanSession(const std::string& message, int timeoutMs);
+    std::uint64_t BeginXcanSession(const std::string& message, int timeoutMs, double target,
+                                   const std::string& topic, bool requireTarget);
+    // The worker: a Done it cannot accept (the reading fell below a required
+    // target) - back to waiting, with the reason shown in the window.
+    void ReopenXcanSession(std::uint64_t id, const std::string& note);
     XcanSession   PendingXcanSession() const;   // id 0 = nothing to show
     // The UI. RequestXcanScan is refused (false) while a scan waits or runs.
     bool RequestXcanScan(std::uint64_t id, XcanScanRequest req);

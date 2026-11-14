@@ -491,7 +491,7 @@ private:
     // A number typed with an SI prefix: a mantissa field + a prefix combo (p n
     // u m - k M), and "800u" / "0.8 mA" / "8e-4" all accepted in the field. The
     // stored value is the plain number (0.0008); the prefix is display only.
-    bool InputSiDouble(const char* label, double* v, float width);
+    bool InputSiDouble(const char* label, double* v, float width, const char* unit = "");
     void DrawRecipeRunStrip(float height);
     void DrawRecipePromptWindow();    // GLOBAL prompt (recipe + script) — non-modal, always on top
     // The operator's panel switches (core/PanelSwitches.h): edge-detects the

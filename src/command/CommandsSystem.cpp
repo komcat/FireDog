@@ -16,6 +16,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -238,9 +239,13 @@ CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
     const int timeoutMin      = p.GetInt("timeout_min");
     const auto deadline       = Clock::now() + std::chrono::minutes(timeoutMin);
     const std::string prefix  = p.GetString("ctx_prefix");
+    const double target       = p.GetDouble("target");      // base units, 0 = no spec
+    const std::string topic   = p.GetString("topic");
+    const bool requireTarget  = p.GetBool("require_target") && target > 0.0;
     Workflow& wf              = ctx.Wf();
 
-    const std::uint64_t id = wf.BeginXcanSession(msg, timeoutMin * 60 * 1000);
+    const std::uint64_t id =
+        wf.BeginXcanSession(msg, timeoutMin * 60 * 1000, target, topic, requireTarget);
     // Every exit closes the window: done, cancel, timeout, stop, a throw.
     struct EndSession {
         Workflow& wf;
@@ -273,8 +278,29 @@ CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
 
         const int answer = wf.XcanSessionAnswer(id);
         if (answer > 0) {
+            // The reading at Done, judged against the spec HERE - the window's
+            // colour is a guide, this is the record.
+            DataStream& s     = DataBus::Instance().Stream(topic);
+            const bool  have  = s.Count() > 0;
+            const double sig  = have ? s.LatestValue() : 0.0;
+            const bool  met   = target <= 0.0 || (have && sig >= target);
+            if (requireTarget && !met) {
+                char note[160];
+                std::snprintf(note, sizeof(note),
+                              "Done refused: %s read %.4g, below the target %.4g", topic.c_str(),
+                              sig, target);
+                FD_WARN("xcan", "xcan_operator: %s", note);
+                wf.ReopenXcanSession(id, note);
+                continue;
+            }
+            if (!prefix.empty()) {
+                ctx.CtxSet(prefix + "_signal", sig);
+                ctx.CtxSet(prefix + "_met", met);
+            }
             record("done");
-            FD_INFO("xcan", "xcan_operator: Done after %d scan%s", scans, scans == 1 ? "" : "s");
+            FD_INFO("xcan", "xcan_operator: Done after %d scan%s - %s %.4g%s", scans,
+                    scans == 1 ? "" : "s", topic.c_str(), sig,
+                    target <= 0.0 ? "" : (met ? " (target met)" : " (BELOW target)"));
             return CommandResult::Success();
         }
         if (answer < 0) {
@@ -730,6 +756,16 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                             {"message", PT::String, false,
                              "Run the XCAN presets until the signal is good, then press Done",
                              0, 0, {}, "instruction shown to the operator ({key} substitutes)"},
+                            {"target", PT::Double, false, 0.0, 0.0, 1e6, {},
+                             "the spec: the reading on `topic` the part must reach (e.g. "
+                             "6.8 mA). Shown in the window against the live reading; 0 = "
+                             "no spec"},
+                            {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
+                             "the reading the target is judged on"},
+                            {"require_target", PT::Bool, false, false, 0, 0, {},
+                             "Done is only accepted while the reading meets the target "
+                             "(Cancel still fails the step); off = Done always, and "
+                             "<prefix>_met records whether it was met"},
                             {"timeout_min", PT::Int, false, 30, 1, 480, {},
                              "fail the step when Done has not been pressed after this many "
                              "minutes (scans included)"},
@@ -742,12 +778,16 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                         [rp](ExecutionContext& c, const ParamValues& p) {
                             return ExecXcanOperator(c, p, *rp);
                         }};
+        for (ParamSpec& ps : xop.params)
+            if (ps.name == "target") ps.siUnit = "A";   // 6.8 m A in the form
         xop.outputs = [](const nlohmann::json& p) {
             const std::string pre = p.value("ctx_prefix", std::string("xop"));
             CommandOutputs o;
             if (!pre.empty()) {
                 o.keys.push_back({pre + "_scans", "number", "scans the operator ran"});
                 o.keys.push_back({pre + "_result", "text", "done / cancel / timeout"});
+                o.keys.push_back({pre + "_signal", "number", "the reading at Done (A)"});
+                o.keys.push_back({pre + "_met", "bool", "the reading at Done met the target"});
             }
             o.keys.push_back({"align_best", "number", "the last scan's best signal (A)"});
             return o;

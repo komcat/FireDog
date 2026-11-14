@@ -449,6 +449,19 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
     }
     case ParamType::Double: {
         double v = cur.is_number() ? cur.get<double>() : 0.0;
+        // A quantity with a unit (ParamSpec::siUnit): mantissa + prefix + unit,
+        // stored in the base unit. The range check is the same.
+        if (!p.siUnit.empty()) {
+            if (InputSiDouble(label, &v, 90.0f, p.siUnit.c_str())) {
+                if (p.minVal < p.maxVal) {
+                    if (v < p.minVal) v = p.minVal;
+                    if (v > p.maxVal) v = p.maxVal;
+                }
+                params[p.name] = v;
+                changed = true;
+            }
+            break;
+        }
         ImGui::SetNextItemWidth(w);
         if (ImGui::InputDouble(label, &v, 0.0, 0.0, "%g")) {
             if (p.minVal < p.maxVal) {
@@ -1413,7 +1426,7 @@ bool ParseSi(const char* s, double* mant, int* exp)
 
 } // namespace
 
-bool App::InputSiDouble(const char* label, double* v, float width)
+bool App::InputSiDouble(const char* label, double* v, float width, const char* unit)
 {
     ImGui::PushID(label);
     const ImGuiID id = ImGui::GetID("##si");
@@ -1476,6 +1489,10 @@ bool App::InputSiDouble(const char* label, double* v, float width)
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("SI prefix of the number on the left");
+    if (unit && *unit) {   // the base unit right after its prefix: "m" "A"
+        ImGui::SameLine(0.0f, 4.0f);
+        ImGui::TextUnformatted(unit);
+    }
 
     // The visible part of the label, as ImGui would have drawn it.
     const char* hash = std::strstr(label, "##");

@@ -134,6 +134,11 @@ struct ParamSpec {
     // every move step's form. Last field on purpose: every existing positional
     // brace-init, PinDir included, keeps working.
     std::string    group;
+    // Double only: the value is a physical quantity in this BASE unit ("A",
+    // "V"), and the form edits it with an SI prefix (6.8 + m + A = 0.0068).
+    // Stored plain, in the base unit - nothing but the form reads it. Set after
+    // construction (spec.params[i].siUnit = "A"), so no brace-init moves.
+    std::string    siUnit;
 };
 
 struct CommandResult {
