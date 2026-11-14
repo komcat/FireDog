@@ -22,10 +22,23 @@
 
 namespace firedog {
 
+// A LINKED MOVE on a node: another device's saved position that goes with this
+// node - "hex-left at lensPlace2 is watched by gantry-main at See Collimate
+// lens". When the map's own device ARRIVES at the node through the Mapped Path
+// page (Path here / Go / Move directly), each enabled link is driven to in
+// turn, a straight move, only after the arrival. Only the node a move STOPS at
+// fires; a route passing through does not. Recipes (move_path) ignore links.
+struct MotionMapLink {
+    std::string device;          // the other motion device ("gantry-main")
+    std::string uid;             // its saved-position uid
+    bool        enabled = true;  // false = kept, but not moved
+};
+
 struct MotionMapNode {
     std::string uid;        // saved-position uid this node represents
     float       x = 0.0f;   // editor canvas position (px)
     float       y = 0.0f;
+    std::vector<MotionMapLink> links;   // driven, in order, after arriving here
 };
 
 struct MotionMapEdge {

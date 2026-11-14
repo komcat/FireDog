@@ -92,6 +92,17 @@ MotionMapSet LoadMotionMapsFile(const std::string& path)
                         n.uid = nj.value("pos_uid", std::string());
                         n.x   = nj.value("x", 0.0f);
                         n.y   = nj.value("y", 0.0f);
+                        if (nj.contains("links") && nj["links"].is_array()) {
+                            for (const auto& lj : nj["links"]) {
+                                if (!lj.is_object()) continue;
+                                MotionMapLink l;
+                                l.device  = lj.value("device", std::string());
+                                l.uid     = lj.value("pos_uid", std::string());
+                                l.enabled = lj.value("enabled", true);
+                                if (!l.device.empty() && !l.uid.empty())
+                                    n.links.push_back(std::move(l));
+                            }
+                        }
                         if (!n.uid.empty()) m.nodes.push_back(std::move(n));
                     }
                 }
@@ -131,7 +142,17 @@ bool SaveMotionMaps(const MotionMapSet& maps)
             mj["name"] = m.name;
             nlohmann::json nodes = nlohmann::json::array();
             for (const MotionMapNode& n : m.nodes) {
-                nodes.push_back({{"pos_uid", n.uid}, {"x", n.x}, {"y", n.y}});
+                nlohmann::json nj = {{"pos_uid", n.uid}, {"x", n.x}, {"y", n.y}};
+                // Written only when there are any, so a map without links
+                // saves byte-identical to before.
+                if (!n.links.empty()) {
+                    nlohmann::json links = nlohmann::json::array();
+                    for (const MotionMapLink& l : n.links)
+                        links.push_back({{"device", l.device}, {"pos_uid", l.uid},
+                                         {"enabled", l.enabled}});
+                    nj["links"] = std::move(links);
+                }
+                nodes.push_back(std::move(nj));
             }
             mj["nodes"] = std::move(nodes);
             nlohmann::json edges = nlohmann::json::array();

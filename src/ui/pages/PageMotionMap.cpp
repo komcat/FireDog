@@ -237,7 +237,7 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
     // space", which clears the very selection the panel is showing.
     const ImVec2 mp = ImGui::GetIO().MousePos;
     const bool   selNodeValid = !mapSelNode_.empty() && map.FindNode(mapSelNode_) != nullptr;
-    const ImVec2 panelSize(230.0f, ImGui::GetFrameHeightWithSpacing() * 4.0f +
+    const ImVec2 panelSize(260.0f, ImGui::GetFrameHeightWithSpacing() * 5.0f +
                                        ImGui::GetStyle().WindowPadding.y * 2.0f);
     const ImVec2 panelPos(p1.x - panelSize.x - 8.0f, p0.y + 8.0f);
     const bool   overPanel = selNodeValid &&
@@ -468,7 +468,13 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
             mapLastPath_.push_back(leg.uid);
             wps.push_back({leg.label, leg.targets});
         }
-        workflow_.StartPathMove(devIdx, std::move(wps));
+        const MapRouteLeg dest = legs.back();
+        if (workflow_.StartPathMove(devIdx, std::move(wps))) {
+            // The destination's linked moves, after arrival. Only the node the
+            // route STOPS at: one it passes through is not where it was sent.
+            if (const MotionMapNode* n = map.FindNode(dest.uid))
+                ArmMapFollow(devIdx, *n, dest.targets, dest.label.c_str());
+        }
     };
 
     // ---- Side panel: the selected node, and how to get there ----
@@ -524,10 +530,39 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         if (ImGui::SmallButton("Stop")) {
             if (running) workflow_.CancelPathMove();
             else         workflow_.StopMotion(devIdx);
+            CancelMapFollow("stopped on the Mapped Path page");
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::SmallButton("Deselect")) mapSelNode_.clear();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Links...")) {
+            openMapLinks_ = true;
+            mapLinkDev_.clear();
+            mapLinkPos_.clear();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Other devices to move AFTER %s arrives at this node\n"
+                              "(Path here / Go / Move directly), one after another.",
+                              devName.c_str());
+        // What follows an arrival here, so the operator knows before pressing.
+        if (const MotionMapNode* sn = map.FindNode(mapSelNode_)) {
+            int on = 0;
+            const MotionMapLink* first = nullptr;
+            for (const MotionMapLink& l : sn->links)
+                if (l.enabled) { ++on; if (!first) first = &l; }
+            if (!first) {
+                ImGui::TextDisabled("then: nothing linked");
+            } else {
+                const char* pn = "(missing)";
+                const auto pit = session_.Positions().find(first->device);
+                if (pit != session_.Positions().end())
+                    for (const SavedPos& sp : pit->second)
+                        if (sp.uid == first->uid) { pn = sp.name; break; }
+                ImGui::TextColored(ImVec4(0.55f, 0.80f, 1.0f, 1.0f), "then: %s -> %s%s",
+                                   first->device.c_str(), pn, on > 1 ? " (+more)" : "");
+            }
+        }
         ImGui::EndChild();
         ImGui::SetCursorScreenPos(afterCanvas);   // back below the canvas
     }
@@ -564,12 +599,121 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
                     if (!workflow_.MoveToPosition(devIdx, targets))
                         FD_WARN("path", "%s: direct move to '%s' rejected",
                                 devName.c_str(), selPos->name);
+                    else if (const MotionMapNode* n = map.FindNode(mapSelNode_))
+                        ArmMapFollow(devIdx, *n, targets, selPos->name);
                 }
                 ImGui::CloseCurrentPopup();
             }
             ImGui::PopStyleColor(2);
             ImGui::SameLine();
             if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // ---- The selected node's linked moves ----
+    // Another device's saved position per link, driven (straight, one after
+    // another) once this device has arrived here from this page. One link per
+    // device: a device can only be in one place, so adding a device that is
+    // already linked re-points it. Saved with the map, like every map edit.
+    if (openMapLinks_) { ImGui::OpenPopup("Linked moves"); openMapLinks_ = false; }
+    if (ImGui::BeginPopup("Linked moves")) {
+        MotionMapNode* node = nullptr;
+        for (MotionMapNode& n : map.nodes)
+            if (n.uid == mapSelNode_) { node = &n; break; }
+        if (!node) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            const SavedPos* np = posOf(node->uid);
+            ImGui::Text("After %s arrives at '%s', move:", devName.c_str(),
+                        np ? np->name : "?");
+            ImGui::TextDisabled("Straight moves, in this order, only after the arrival.\n"
+                                "From this page only - a recipe's move_path ignores them.");
+            ImGui::Separator();
+
+            const auto linkPosName = [this](const std::string& dev,
+                                            const std::string& uid) -> const char* {
+                const auto pit = session_.Positions().find(dev);
+                if (pit == session_.Positions().end()) return nullptr;
+                for (const SavedPos& sp : pit->second)
+                    if (sp.uid == uid) return sp.name;
+                return nullptr;
+            };
+
+            int removeAt = -1;
+            bool changed = false;
+            if (node->links.empty()) ImGui::TextDisabled("(nothing linked)");
+            for (int i = 0; i < static_cast<int>(node->links.size()); ++i) {
+                MotionMapLink& l = node->links[static_cast<std::size_t>(i)];
+                ImGui::PushID(i);
+                if (ImGui::Checkbox("##on", &l.enabled)) changed = true;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Off keeps the link but does not move it");
+                ImGui::SameLine();
+                const char* pn = linkPosName(l.device, l.uid);
+                if (pn)
+                    ImGui::Text("%s -> %s", l.device.c_str(), pn);
+                else
+                    ImGui::TextColored(ImVec4(0.95f, 0.40f, 0.40f, 1.0f),
+                                       "%s -> (missing position)", l.device.c_str());
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove")) removeAt = i;
+                ImGui::PopID();
+            }
+            if (removeAt >= 0) {
+                node->links.erase(node->links.begin() + removeAt);
+                changed = true;
+            }
+
+            ImGui::Separator();
+            ImGui::SetNextItemWidth(140.0f);
+            if (ImGui::BeginCombo("##linkdev", mapLinkDev_.empty() ? "(device)"
+                                                                   : mapLinkDev_.c_str())) {
+                for (std::size_t i = 0; i < hardware_.MotionCount(); ++i) {
+                    const std::string d = hardware_.MotionName(i);
+                    if (d == devName) continue;   // the map's own device leads
+                    if (ImGui::Selectable(d.c_str(), d == mapLinkDev_)) {
+                        mapLinkDev_ = d;
+                        mapLinkPos_.clear();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(200.0f);
+            const char* curPn = mapLinkPos_.empty() ? nullptr
+                                                    : linkPosName(mapLinkDev_, mapLinkPos_);
+            ImGui::BeginDisabled(mapLinkDev_.empty());
+            if (ImGui::BeginCombo("##linkpos", curPn ? curPn : "(position)")) {
+                const auto pit = session_.Positions().find(mapLinkDev_);
+                if (pit != session_.Positions().end())
+                    for (const SavedPos& sp : pit->second) {
+                        if (sp.hidden) continue;
+                        if (ImGui::Selectable(sp.name, sp.uid == mapLinkPos_))
+                            mapLinkPos_ = sp.uid;
+                    }
+                ImGui::EndCombo();
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(mapLinkDev_.empty() || mapLinkPos_.empty());
+            if (ImGui::Button("Add")) {
+                bool replaced = false;
+                for (MotionMapLink& l : node->links)
+                    if (l.device == mapLinkDev_) {
+                        l.uid     = mapLinkPos_;
+                        l.enabled = true;
+                        replaced  = true;
+                    }
+                if (!replaced) node->links.push_back({mapLinkDev_, mapLinkPos_, true});
+                const char* addPn = linkPosName(mapLinkDev_, mapLinkPos_);
+                FD_INFO("map", "%s node '%s': linked %s -> '%s'", devName.c_str(),
+                        np ? np->name : "?", mapLinkDev_.c_str(), addPn ? addPn : "?");
+                mapLinkPos_.clear();
+                changed = true;
+            }
+            ImGui::EndDisabled();
+            if (changed) session_.SaveMaps();
         }
         ImGui::EndPopup();
     }
@@ -627,7 +771,10 @@ void App::DrawMotionMapTab(std::size_t devIdx, IMotionController* m)
         ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.40f, 1.0f), "driving to '%s' (%zu/%zu)",
                            pp.label.c_str(), pp.current + 1, pp.total);
         ImGui::SameLine();
-        if (ImGui::SmallButton("Cancel")) workflow_.CancelPathMove();
+        if (ImGui::SmallButton("Cancel")) {
+            workflow_.CancelPathMove();
+            CancelMapFollow("path cancelled");
+        }
     } else if (!mapLastPath_.empty()) {
         std::string line = "last path: ";
         for (size_t i = 0; i < mapLastPath_.size(); ++i) {

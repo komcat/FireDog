@@ -1105,6 +1105,31 @@ private:
     };
     MoveWatch moveWatch_;
 
+    // A node's LINKED moves (MotionMapNode::links), armed by the Mapped Path
+    // page when its device is sent to that node and fired by UpdateMapFollow
+    // once the device has ARRIVED: each enabled link a straight watched move,
+    // one after another. Dropped - never fired late - when the lead does not
+    // arrive, is stopped, or a run starts. Frame state, never persisted.
+    struct MapFollow {
+        bool        active = false;
+        bool        leadDone = false;   // the lead arrived; now driving the links
+        std::size_t leadIdx = 0;
+        std::string leadDev;
+        std::string nodeName;           // the node it was sent to, for the log
+        std::vector<std::pair<std::string, double>> leadTargets;
+        std::vector<MotionMapLink> pending;   // still to drive, in order
+        float       elapsed  = 0.0f;    // since armed
+        float       idleNotThere = 0.0f;   // lead settled, path idle, not arrived
+    };
+    MapFollow mapFollow_;
+    // Arm the follow for a move of `devIdx` to `node` (nothing when it has no
+    // enabled link). Called right after the lead move was commanded.
+    void ArmMapFollow(std::size_t devIdx, const MotionMapNode& node,
+                      const std::vector<std::pair<std::string, double>>& targets,
+                      const char* nodeName);
+    void CancelMapFollow(const char* why);
+    void UpdateMapFollow(float dt);   // from Update(), beside UpdateMoveWatch
+
     // ---- Users & access ---------------------------------------------------
     // The roster is UI-thread-only state, like the session document: it is read
     // once at startup and rewritten only by the User Manager. `user_` with role
@@ -1193,6 +1218,9 @@ private:
     ImVec2      mapAddAt_ = ImVec2(0.0f, 0.0f);   // canvas spot for "add node here"
     int  mapFrom_ = 0, mapTo_ = -1;    // Go combos (From index 0 = nearest node)
     std::vector<std::string> mapLastPath_;   // last computed path (canvas highlight)
+    bool        openMapLinks_ = false;   // the selected node's "Linked moves" popup
+    std::string mapLinkDev_;             // its Add row: device ...
+    std::string mapLinkPos_;             // ... and that device's position uid
     char mapNameBuf_[32] = "";
     bool openNewMap_ = false, openRenameMap_ = false, openDeleteMap_ = false;
 

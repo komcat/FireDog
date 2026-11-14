@@ -291,6 +291,7 @@ void App::Update(float dt)
     }
     UpdateKeithleyChartData(dt); // shared chart buffers (Aux + Keithley page)
     UpdateMoveWatch(dt);         // a UI move in flight (the frame's MOVING banner)
+    UpdateMapFollow(dt);         // a mapped-path node's linked moves, after arrival
     UpdatePanelSwitches();       // this frame's panel-switch presses (prompt, Execute, Stop)
 
     // Teach hand-backs from save_position steps: engine worker threads queue

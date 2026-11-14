@@ -131,6 +131,102 @@ void App::UpdateMoveWatch(float dt)
     }
 }
 
+// ---- A mapped-path node's linked moves ------------------------------------
+//
+// The Mapped Path page sends a device to a node; when that node carries LINKS
+// (another device's saved position - "hex-left at lensPlace2, gantry-main at
+// See Collimate lens"), each enabled one is driven to after the lead ARRIVES.
+// Never at the same time: the lead's own move is the one the map vouches for,
+// and the linked device moves into whatever space that leaves. Each link is a
+// plain StartWatchedMove (its refusals - untaught, disconnected, no shared
+// axes - included), one after another.
+
+void App::ArmMapFollow(std::size_t devIdx, const MotionMapNode& node,
+                       const std::vector<std::pair<std::string, double>>& targets,
+                       const char* nodeName)
+{
+    mapFollow_ = MapFollow{};
+    for (const MotionMapLink& l : node.links)
+        if (l.enabled) mapFollow_.pending.push_back(l);
+    if (mapFollow_.pending.empty() || targets.empty()) return;
+    mapFollow_.active      = true;
+    mapFollow_.leadIdx     = devIdx;
+    mapFollow_.leadDev     = hardware_.MotionName(devIdx);
+    mapFollow_.nodeName    = nodeName ? nodeName : "?";
+    mapFollow_.leadTargets = targets;
+    FD_INFO("path", "%s -> '%s': %zu linked move(s) will follow on arrival",
+            mapFollow_.leadDev.c_str(), mapFollow_.nodeName.c_str(),
+            mapFollow_.pending.size());
+}
+
+void App::CancelMapFollow(const char* why)
+{
+    if (!mapFollow_.active) return;
+    if (mapFollow_.pending.empty()) { mapFollow_ = MapFollow{}; return; }   // all issued
+    FD_WARN("path", "linked move(s) after %s -> '%s' dropped: %s (%zu not driven)",
+            mapFollow_.leadDev.c_str(), mapFollow_.nodeName.c_str(), why,
+            mapFollow_.pending.size());
+    mapFollow_ = MapFollow{};
+}
+
+void App::UpdateMapFollow(float dt)
+{
+    if (!mapFollow_.active) return;
+    // A run outranks a convenience: nothing the page queued moves under it.
+    // NOT orch_.Busy(): that also counts Workflow::PathActive(), which is the
+    // lead's own page path - the very move this follow is waiting on.
+    if (orch_.recipe.Running() || orch_.lua.Running() || orch_.programs.Active()) {
+        CancelMapFollow("a run started");
+        return;
+    }
+
+    if (!mapFollow_.leadDone) {
+        IMotionController* m = hardware_.MotionDevice(mapFollow_.leadIdx);
+        if (!m || !m->IsConnected()) { CancelMapFollow("the device disconnected"); return; }
+        mapFollow_.elapsed += dt;
+        const Workflow::PathProgress pp = workflow_.PathStatus();
+        const bool pathRunning = pp.active && pp.devIdx == mapFollow_.leadIdx;
+        m->RequestFastPoll();
+        if (!pathRunning && WatchArrived(m, mapFollow_.leadTargets)) {
+            mapFollow_.leadDone = true;
+            FD_INFO("path", "%s arrived at '%s' - driving its linked move(s)",
+                    mapFollow_.leadDev.c_str(), mapFollow_.nodeName.c_str());
+        } else {
+            // Standing still somewhere else with no path running: cancelled,
+            // stopped or rejected. A short grace covers the frames before a
+            // direct move reports that it has started.
+            if (!pathRunning && m->IsSettled()) mapFollow_.idleNotThere += dt;
+            else                                mapFollow_.idleNotThere = 0.0f;
+            if (mapFollow_.idleNotThere > 1.0f) {
+                CancelMapFollow("the device stopped short of the node");
+                return;
+            }
+            if (mapFollow_.elapsed > kWatchTimeout * 3.0f)
+                CancelMapFollow("the device did not arrive in time");
+            return;
+        }
+    }
+
+    // One linked move at a time: the next waits for the watched one to end.
+    if (moveWatch_.active) return;
+    if (mapFollow_.pending.empty()) { mapFollow_ = MapFollow{}; return; }
+
+    const MotionMapLink l = mapFollow_.pending.front();
+    mapFollow_.pending.erase(mapFollow_.pending.begin());
+    std::string posName = l.uid;
+    const auto pit = session_.Positions().find(l.device);
+    if (pit != session_.Positions().end())
+        for (const SavedPos& sp : pit->second)
+            if (sp.uid == l.uid) { posName = sp.name; break; }
+    const std::string what = "'" + posName + "' (linked to " + mapFollow_.leadDev + " at '" +
+                             mapFollow_.nodeName + "')";
+    if (!StartWatchedMove(l.device, l.uid, what))
+        FD_WARN("path", "linked move %s -> %s not started (missing or untaught position, "
+                        "device not connected, or no shared axis)",
+                l.device.c_str(), what.c_str());
+    if (mapFollow_.pending.empty() && !moveWatch_.active) mapFollow_ = MapFollow{};
+}
+
 // One line under the quick-access strip, on EVERY page — including the takeover
 // pages, which is the point: the teach page is opened by a move, and the
 // operator lands on it while the gantry is still travelling.
@@ -146,6 +242,8 @@ void App::DrawMoveStatusBar()
     if (ImGui::SmallButton("Stop##movewatch")) {
         workflow_.StopMotion(moveWatch_.devIdx);
         moveWatch_.active = false;
+        // A Stop is a Stop: the links still queued behind this move do not go.
+        CancelMapFollow("stopped from the MOVING banner");
     }
     ImGui::Separator();
 }
