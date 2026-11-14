@@ -1415,7 +1415,12 @@ void RegisterMotionCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   "arrival (optionally with a slower final approach)",
                   {
                       {"device", PT::DeviceMotion, true, {}, 0, 0, {}, "motion device name"},
-                      {"axis", PT::String, true, {}, 0, 0, {}, "local axis name (X, Y, Z, U...)"},
+                      // A pick, not a typed letter: a typo ("x", "Y ") used to
+                      // reach the controller. The six PI names; the gantry has
+                      // X / Y / Z only, and a letter the device lacks fails at
+                      // run time ("device does not report axis").
+                      {"axis", PT::Enum, true, {}, 0, 0, {"X", "Y", "Z", "U", "V", "W"},
+                       "the device's OWN (local) axis - hexapod X Y Z U V W, gantry X Y Z"},
                       {"delta_mm", PT::Double, true, {}, 0, 0, {}, "signed delta (mm or deg)"},
                       {"timeout_ms", PT::Int, false, 30000, 100, 600000, {}, "arrival timeout"},
                       {"tol_mm", PT::Double, false, kDefaultTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
