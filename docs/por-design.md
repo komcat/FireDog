@@ -2,8 +2,9 @@
 
 *Status: phases 1-3 are in (2026-11-13): the foundations, the compare engine
 (`src/por/`) and the read-only tool `FireDogPor` (`tools/por/`), released in v0.24.
-Phase 4 (deploy) is designed in §7; its first step, 4a (FireDog understands an
-untaught position and an untaught point, §7.8), is built. The deploy itself is not.
+Phase 4 (deploy) is designed in §7. Built: 4a (FireDog understands an untaught position
+and an untaught point, §7.8) and 4b (the deploy PLAN - `src/por/PorDeploy`, previewed in
+the tool's *Deploy plan* page, nothing written). Not built: writing it (4c onwards).
 Working name of the tool: `FireDogPor`.*
 
 ## 1. What it is for
@@ -340,9 +341,24 @@ written step. Where it does not, they are made **untaught**:
 - a `detect_object` model becomes `""` - creating one is a button in the Vision detect
   helper, and a step without one is refused at Start.
 
-The Fix list's own `Twin` heuristic (same type + `ctx_prefix` / nickname) is replaced by
-this `PorAlign` pairing first (phase 4b), so "teach this point" and "this point was
-carried" are one answer.
+**One pairing, three readers (built in 4b).** `PorPairSteps` (in `PorCompare`) is THE step
+pairing: the compare's `CompareSteps`, the Fix list's `Twin` (via `PorCollectTwins`; the old
+type + `ctx_prefix` / nickname heuristic is gone) and `PlanDeploy` all call it, so "teach
+this point" and "this point was carried" are one answer. The Fix list asks the same
+question the plan does: a point is carried only when the paired target step HOLDS a taught
+point under that name, and a master point that is `{}` is *the master itself is broken*.
+
+**Outside the deck (decided in 4b).** The deploy writes ALL the master's recipes, not just
+the deck's, but the Fix list - and so the preflight - walks only the deck. A recipe no
+program runs may name an alignment, grip, tray, model or nominal this machine lacks: it is
+written with the master's reference as it was and listed under the plan's *Warnings*
+(the Recipe Editor will show it unresolved). A POSITION it names becomes a placeholder like
+any other - placeholders are cheap and correct.
+
+**Order (decided in 4b).** The written files keep the TARGET's order: a replaced recipe or
+program stays where it was, new ones are appended in the master's order, target-only ones
+stay put (or go, with the strict mirror). Recipe and program `Same` vs `Replace` is the
+JSON of the written document against the target's.
 
 **Placeholders.** A required position the target lacks (from the Positions page's trace:
 deck positions and map nodes, and in 4d the private poses of created owners) is added
@@ -514,9 +530,14 @@ Each numbered item is its own commit; foundations change no behaviour.
 **Phase 4 - deploy** (§7). FireDog learns the placeholders before anything can make one.
 - 4a. FireDog: `SavedPos::untaught` (validation refusal, UI Go disabled, teach-in-place,
   journalled clearing) and the untaught point `{}` (§7.8).
-- 4b. The plan, read-only: the Fix list's twin check moves onto `PorAlign`; `PorDeploy`
-  translates both sides into the documents a deploy would write and the tool's Deploy
-  window previews them, with the blockers. Nothing is written yet.
+- 4b. *(built 2026-11-13)* The plan, read-only: `PorPairSteps` shared by the compare, the
+  Fix list and the plan; `PlanDeploy` (`src/por/PorDeploy`) translates the master onto the
+  target in memory - recipes, programs, positions + placeholders, product files - and the
+  tool's *Deploy plan* page previews it with the blockers (`PorFixItem::teachAfterDeploy`
+  says which teach items do NOT block) and the strict-mirror option. Nothing is written.
+  Left for 4c: a replaced target step's own detection model (`vdet_step_...`) that no
+  written step carries any more stays in the vision file until FireDog's next
+  `SyncStepDetectors` sweeps it - harmless, but 4c should sweep it itself.
 - 4c. Apply: process check, Admin sign-in against the target's roster, backup, temp +
   rename writes, journal, re-compare. *Restore backup*.
 - 4d. Design-only copies of missing alignments, grip profiles and trays (§7.5); first

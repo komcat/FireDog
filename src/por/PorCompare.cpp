@@ -85,6 +85,26 @@ std::vector<std::pair<int, int>> PorAlign(const std::vector<std::string>& a,
     return out;
 }
 
+std::vector<std::pair<int, int>> PorPairSteps(const std::vector<RecipeStep>& a,
+                                              const std::vector<RecipeStep>& b)
+{
+    std::vector<std::string> ka, kb, ta, tb;
+    for (const RecipeStep& s : a) { ka.push_back(s.type + '\x1f' + s.nickname); ta.push_back(s.type); }
+    for (const RecipeStep& s : b) { kb.push_back(s.type + '\x1f' + s.nickname); tb.push_back(s.type); }
+    return PorAlign(ka, kb, ta, tb);
+}
+
+void PorCollectTwins(const std::vector<RecipeStep>& a, const std::vector<RecipeStep>& b,
+                     PorStepTwins* out)
+{
+    for (const auto& [i, j] : PorPairSteps(a, b)) {
+        if (i < 0 || j < 0) continue;
+        (*out)[&a[i]] = &b[j];
+        PorCollectTwins(a[i].children, b[j].children, out);
+        PorCollectTwins(a[i].elseChildren, b[j].elseChildren, out);
+    }
+}
+
 const SavedPos* PorFindPosByUid(const SavedPosMap& m, const std::string& device,
                                 const std::string& uid)
 {
@@ -570,12 +590,8 @@ std::vector<PorRow> CompareSteps(Ctx& c, const std::vector<RecipeStep>* a,
     static const std::vector<RecipeStep> kNone;
     const std::vector<RecipeStep>& A = a ? *a : kNone;
     const std::vector<RecipeStep>& B = b ? *b : kNone;
-    std::vector<std::string> ka, kb, ta, tb;
-    for (const RecipeStep& s : A) { ka.push_back(s.type + '\x1f' + s.nickname); ta.push_back(s.type); }
-    for (const RecipeStep& s : B) { kb.push_back(s.type + '\x1f' + s.nickname); tb.push_back(s.type); }
-
     std::vector<PorRow> rows;
-    for (const auto& [i, j] : PorAlign(ka, kb, ta, tb)) {
+    for (const auto& [i, j] : PorPairSteps(A, B)) {
         if (i >= 0 && j >= 0) rows.push_back(PairedStep(c, A[i], B[j]));
         else if (i >= 0)      rows.push_back(OneSidedStep(c, A[i], true));
         else                  rows.push_back(OneSidedStep(c, B[j], false));

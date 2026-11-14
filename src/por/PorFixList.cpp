@@ -1,6 +1,8 @@
 // PorFixList.cpp : see PorFixList.h.
 #include "por/PorFixList.h"
 
+#include "por/PorCompare.h"            // PorCollectTwins
+
 #include "command/CommandRegistry.h"
 #include "command/CommandSpec.h"
 #include "command/ExecutionContext.h"   // IsSystemScript
@@ -57,6 +59,16 @@ const T* ByName(const std::vector<T>& v, const std::string& name)
     return nullptr;
 }
 
+// The step holds a taught point under `name`: {"X":..,"Y":..,"Z":..}.
+bool IsTaughtPoint(const nlohmann::json& params, const std::string& name)
+{
+    const auto it = params.find(name);
+    if (it == params.end() || !it->is_object()) return false;
+    for (const char* ax : {"X", "Y", "Z"})
+        if (!it->contains(ax) || !(*it)[ax].is_number()) return false;
+    return true;
+}
+
 std::string StepName(const RecipeStep& s)
 {
     if (!s.nickname.empty()) return s.nickname;
@@ -72,6 +84,7 @@ struct Builder {
     std::map<std::string, std::size_t> index;   // kind|what -> item
     std::vector<PorFixItem>            items;
     std::set<std::string>              stack;   // recipe uids being walked
+    std::map<std::string, PorStepTwins> twins;  // master recipe name -> its step pairing
 
     std::size_t Add(PorFixKind kind, const std::string& what, const std::string& fix,
              const std::string& use, PorFixJump jump = PorFixJump::None,
@@ -101,31 +114,22 @@ struct Builder {
         return !shipped.empty() && fs::is_regular_file(shipped + "/" + file, ec);
     }
 
-    // The target's step that a deploy would pair with `s` in the recipe of the
-    // same name: same type and the same ctx_prefix (a detection's identity in
-    // its recipe), else the same nickname. Null when it cannot be told.
-    const RecipeStep* Twin(const std::string& recipeName, const RecipeStep& s) const
+    // The target's step a deploy pairs with the master step `s` of `owner`:
+    // PorPairSteps over the recipe of the same name (the compare's and the
+    // deploy's own pairing), so "teach this" and "this was carried" are one
+    // answer. Null when the recipe is not on the target exactly once, or the
+    // step pairs with nothing.
+    const RecipeStep* Twin(const Recipe& owner, const RecipeStep& s)
     {
-        if (CountName(t.recipes, recipeName) != 1) return nullptr;
-        const Recipe* r = ByName(t.recipes, recipeName);
-        const std::string prefix = s.params.value("ctx_prefix", std::string());
-        if (prefix.empty() && s.nickname.empty()) return nullptr;
-        const RecipeStep* found = nullptr;
-        const auto visit = [&](const auto& self, const std::vector<RecipeStep>& steps) -> void {
-            for (const RecipeStep& x : steps) {
-                if (found) return;
-                if (x.type == s.type &&
-                    (prefix.empty() ? x.nickname == s.nickname
-                                    : x.params.value("ctx_prefix", std::string()) == prefix)) {
-                    found = &x;
-                    return;
-                }
-                self(self, x.children);
-                self(self, x.elseChildren);
-            }
-        };
-        visit(visit, r->steps);
-        return found;
+        auto it = twins.find(owner.name);
+        if (it == twins.end()) {
+            PorStepTwins map;
+            if (CountName(m.recipes, owner.name) == 1 && CountName(t.recipes, owner.name) == 1)
+                PorCollectTwins(owner.steps, ByName(t.recipes, owner.name)->steps, &map);
+            it = twins.emplace(owner.name, std::move(map)).first;
+        }
+        const auto jt = it->second.find(&s);
+        return jt == it->second.end() ? nullptr : jt->second;
     }
 
     void Hardware(const ParamSpec& p, const std::string& v, const nlohmann::json& merged,
@@ -230,8 +234,9 @@ struct Builder {
                 "the master's deck refers to something the master does not have", label,
                 PorFixJump::Recipe, owner.name);
         };
-        const auto teach = [&](const std::string& what, const std::string& fix) {
-            Add(PorFixKind::Teach, what, fix, label, PorFixJump::Recipe, owner.name);
+        const auto teach = [&](const std::string& what, const std::string& fix, bool afterDeploy) {
+            const std::size_t i = Add(PorFixKind::Teach, what, fix, label, PorFixJump::Recipe, owner.name);
+            items[i].teachAfterDeploy = afterDeploy;
         };
         const auto names = [&](const std::string& what) {
             Add(PorFixKind::Names, what, "rename one of them on this machine so the name points at one",
@@ -258,12 +263,21 @@ struct Builder {
                 const nlohmann::json& jv = merged[p.name];
 
                 // A point taught INTO the step is the master's coordinate. A
-                // deploy keeps the target's own where the step pairs up.
+                // deploy keeps the target's own where the step pairs with one
+                // that HAS a point there, and writes it untaught otherwise.
                 if (p.type == ParamType::PointXyz) {
-                    if (jv.is_object() && !jv.empty() && !Twin(owner.name, s))
+                    if (!jv.is_object() || !s.params.contains(p.name)) continue;
+                    if (jv.empty()) {
+                        broken("point '" + p.name + "' of step '" + StepName(s) + "' in recipe '" +
+                               owner.name + "' is untaught on the master");
+                        continue;
+                    }
+                    const RecipeStep* tw = Twin(owner, s);
+                    if (!tw || !IsTaughtPoint(tw->params, p.name))
                         teach("point '" + p.name + "' of step '" + StepName(s) + "' in recipe '" +
                                   owner.name + "'",
-                              "it is the master's coordinate: re-teach it with the step's Teach here");
+                              "it is the master's coordinate: teach it with the step's Teach here",
+                              true);
                     continue;
                 }
                 if (!jv.is_string()) continue;
@@ -276,11 +290,11 @@ struct Builder {
                         broken("detection model of step '" + StepName(s) + "' in '" + owner.name + "'");
                         continue;
                     }
-                    const RecipeStep* tw = Twin(owner.name, s);
+                    const RecipeStep* tw = Twin(owner, s);
                     const std::string tm = tw ? tw->params.value("model", std::string()) : std::string();
                     if (tm.empty() || !FindVisionModel(t.vision, tm))
                         teach("detection model of step '" + StepName(s) + "' in recipe '" + owner.name + "'",
-                              "teach it in the step's Vision detect helper on this machine");
+                              "teach it in the step's Vision detect helper on this machine", true);
                     continue;
                 }
 
@@ -291,7 +305,8 @@ struct Builder {
                     const int n = CountName(t.aligns, ap->name);
                     if (n == 0)
                         teach("alignment '" + ap->name + "'",
-                              "create it on the Alignment page and teach its stations and detectors here");
+                              "create it on the Alignment page and teach its stations and detectors here",
+                              false);
                     else if (n > 1)
                         names("alignment '" + ap->name + "' (twice here)");
                     break;
@@ -304,7 +319,7 @@ struct Builder {
                     if (CountName(t.aligns, ap->name) != 1) break;
                     if (!FindAlignNominal(*ByName(t.aligns, ap->name), nm->name))
                         teach("nominal '" + nm->name + "' of alignment '" + ap->name + "'",
-                              "teach it through a live frame on the Alignment page here");
+                              "teach it through a live frame on the Alignment page here", false);
                     break;
                 }
                 case ParamType::VisionUid: {
@@ -313,7 +328,8 @@ struct Builder {
                     if (vm->name.rfind("vdet_", 0) == 0) break;   // private: its owner is checked
                     const int n = CountName(t.vision, vm->name);
                     if (n == 0)
-                        teach("detection model '" + vm->name + "'", "teach it on this machine's camera");
+                        teach("detection model '" + vm->name + "'", "teach it on this machine's camera",
+                              false);
                     else if (n > 1)
                         names("detection model '" + vm->name + "' (twice here)");
                     break;
@@ -324,7 +340,8 @@ struct Builder {
                     const int n = CountName(t.grips, g->name);
                     if (n == 0)
                         teach("grip profile '" + g->name + "'",
-                              "create it on the Gripped Object page; teach its inspect pose and reference here");
+                              "create it on the Gripped Object page; teach its inspect pose and reference here",
+                              false);
                     else if (n > 1)
                         names("grip profile '" + g->name + "' (twice here)");
                     break;
@@ -335,7 +352,8 @@ struct Builder {
                     const int n = CountName(t.trays, tr->name);
                     if (n == 0)
                         teach("tray '" + tr->name + "'",
-                              "create it on the Waffle Tray page and teach its three corners here");
+                              "create it on the Waffle Tray page and teach its three corners here",
+                              false);
                     else if (n > 1)
                         names("tray '" + tr->name + "' (twice here)");
                     break;
@@ -456,11 +474,14 @@ PorFixList BuildFixList(const PorSide& master, const PorSide& target, const Comm
                           "untaught on the master itself - teach it there, then export again", "",
                           PorFixJump::Positions)].uses = r.uses;
         } else if (r.status == PorStatus::Missing) {
-            b.items[b.Add(PorFixKind::Teach, "position '" + r.name + "' on " + r.device + where,
-                          r.owner.empty() ? "teach it here: the Motion page, or the deck's Teach run once "
-                                            "the recipe is on this machine"
-                                          : r.note + " - teach it through its owner on this machine",
-                          "", PorFixJump::Positions)].uses = r.uses;
+            PorFixItem& it = b.items[b.Add(
+                PorFixKind::Teach, "position '" + r.name + "' on " + r.device + where,
+                r.owner.empty() ? "teach it here: the Motion page, or the deck's Teach run once "
+                                  "the recipe is on this machine"
+                                : r.note + " - teach it through its owner on this machine",
+                "", PorFixJump::Positions)];
+            it.uses             = r.uses;
+            it.teachAfterDeploy = true;   // a placeholder, or a pose of an owner the target has
         } else if (r.ambiguous) {
             b.items[b.Add(PorFixKind::Names,
                           "position '" + r.name + "' on " + r.device + " (name used twice)",

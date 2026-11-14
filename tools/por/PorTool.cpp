@@ -10,10 +10,12 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <utility>
 
 namespace firedog {
@@ -171,6 +173,7 @@ void PorTool::LoadSettings()
         diffOnly_     = j.value("diff_only", diffOnly_);
         allParams_    = j.value("all_params", allParams_);
         workingOnly_  = j.value("working_only", workingOnly_);
+        deployOpt_.removeTargetOnly = j.value("strict_mirror", false);
         explorerW_    = j.value("explorer_w", explorerW_);
         if (j.contains("window")) {
             const nlohmann::json& w = j["window"];
@@ -198,6 +201,7 @@ void PorTool::SaveSettings() const
     j["diff_only"]     = diffOnly_;
     j["all_params"]    = allParams_;
     j["working_only"]  = workingOnly_;
+    j["strict_mirror"] = deployOpt_.removeTargetOnly;
     j["explorer_w"]    = explorerW_;
     j["window"] = {{"x", placement_.x}, {"y", placement_.y}, {"w", placement_.w},
                    {"h", placement_.h}, {"maximized", placement_.maximized}};
@@ -223,6 +227,7 @@ void PorTool::Compare()
     positions_ = ComparePositions(master_, target_, reg_, mmThreshold_, degThreshold_);
     hardware_  = CompareHardware(master_, target_, reg_);
     fixes_     = BuildFixList(master_, target_, reg_, positions_, roots_.exeDir + "/config/scripts");
+    plan_      = PlanDeploy(master_, target_, reg_, fixes_, deployOpt_);
     compared_  = true;
     view_      = View::FixList;   // "can it run?" before "is it the same?"
     sel_ = sel2_ = -1;
@@ -248,6 +253,25 @@ void PorTool::Compare()
     summary_ = b;
     FD_INFO("por", "compared '%s': %s vs %s", product_.c_str(), masterRoot_, targetRoot_);
     SaveSettings();
+}
+
+void PorTool::Replan()
+{
+    if (compared_) plan_ = PlanDeploy(master_, target_, reg_, fixes_, deployOpt_);
+}
+
+// A deploy only ever writes into the root THIS machine resolves (§7.1).
+bool PorTool::TargetIsThisMachine() const
+{
+    std::error_code ec;
+    const std::filesystem::path a = std::filesystem::weakly_canonical(targetRoot_, ec);
+    const std::filesystem::path b = std::filesystem::weakly_canonical(roots_.root, ec);
+    std::string sa = a.generic_string(), sb = b.generic_string();
+    std::transform(sa.begin(), sa.end(), sa.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(sb.begin(), sb.end(), sb.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    while (!sa.empty() && sa.back() == '/') sa.pop_back();
+    while (!sb.empty() && sb.back() == '/') sb.pop_back();
+    return !sa.empty() && sa == sb;
 }
 
 void PorTool::ComparePositionsOnly()
@@ -502,6 +526,8 @@ void PorTool::DrawHelpWindow()
             "DIFFERENCES - is this machine the same as the master? Deck, Recipes, Positions, "
             "Hardware. A difference may be intended; a deploy can carry the structure across.");
         ImGui::BulletText("Fix list: Go jumps to the recipe, the Positions page or the Hardware section.");
+        ImGui::BulletText("Deploy plan: what a deploy would write here, and what blocks it. A preview - "
+                          "this version writes nothing.");
         ImGui::BulletText("Deck: programs > slots. Double-click a recipe row to open that recipe's compare.");
         ImGui::BulletText("Recipes: 'deck recipes only' hides the ones no program runs.");
         ImGui::BulletText("Positions: what the deck drives to, in first-use order - the teach order of a cycle.");
@@ -548,6 +574,12 @@ void PorTool::DrawExplorer()
     ExplorerItem(fixLabel.c_str(), view_ == View::FixList, true,
                  fixes_.items.empty() ? PorStatus::Same : PorStatus::Missing);
     if (clicked()) view_ = View::FixList;
+    const std::string depLabel = plan_.Blocked()
+        ? "Deploy plan (blocked: " + std::to_string(plan_.blockers.size()) + ")"
+        : "Deploy plan (ready)";
+    ExplorerItem(depLabel.c_str(), view_ == View::Deploy, true,
+                 plan_.Blocked() ? PorStatus::Missing : PorStatus::Same);
+    if (clicked()) view_ = View::Deploy;
     ImGui::Separator();
     ImGui::TextDisabled("Differences");
 
@@ -623,6 +655,7 @@ void PorTool::DrawContent()
         ImGui::TextDisabled(compared_ ? "Pick something in the explorer." : "");
         break;
     case View::FixList: DrawFixList(); break;
+    case View::Deploy:  DrawDeploy();  break;
     case View::Program:
         if (sel_ >= 0 && sel_ < (int)report_.deck.size()) {
             const PorRow& p = report_.deck[sel_];
@@ -809,31 +842,7 @@ void PorTool::DrawFixList()
                     }
                 }
                 ImGui::TableSetColumnIndex(3);
-                bool canGo = it.jump != PorFixJump::None;
-                if (it.jump == PorFixJump::Recipe) canGo = FindRecipe(it.recipe) >= 0;
-                if (canGo && ImGui::SmallButton("Go")) {
-                    switch (it.jump) {
-                    case PorFixJump::Recipe:
-                        jumpRecipe_ = FindRecipe(it.recipe);
-                        break;
-                    case PorFixJump::Positions:
-                        view_ = View::Positions;
-                        break;
-                    case PorFixJump::Hardware:
-                        for (std::size_t k = 0; k < hardware_.sections.size(); ++k)
-                            if (hardware_.sections[k].master == it.section) {
-                                view_ = View::Hardware;
-                                sel_  = static_cast<int>(k);
-                            }
-                        break;
-                    case PorFixJump::None:
-                        break;
-                    }
-                }
-                if (canGo && ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", it.jump == PorFixJump::Recipe   ? ("Open recipe '" + it.recipe + "'").c_str()
-                                            : it.jump == PorFixJump::Positions ? "Open the Positions page"
-                                                                               : "Open the Hardware section");
+                FixGoButton(it);
                 ImGui::PopID();
             }
             ImGui::EndTable();
@@ -841,6 +850,214 @@ void PorTool::DrawFixList()
             while (i < fixes_.items.size() && fixes_.items[i].kind == kind) ++i;
         }
         ImGui::PopID();
+    }
+}
+
+void PorTool::FixGoButton(const PorFixItem& it)
+{
+    bool canGo = it.jump != PorFixJump::None;
+    if (it.jump == PorFixJump::Recipe) canGo = FindRecipe(it.recipe) >= 0;
+    if (!canGo) return;
+    if (ImGui::SmallButton("Go")) {
+        switch (it.jump) {
+        case PorFixJump::Recipe:
+            jumpRecipe_ = FindRecipe(it.recipe);
+            break;
+        case PorFixJump::Positions:
+            view_ = View::Positions;
+            break;
+        case PorFixJump::Hardware:
+            for (std::size_t k = 0; k < hardware_.sections.size(); ++k)
+                if (hardware_.sections[k].master == it.section) {
+                    view_ = View::Hardware;
+                    sel_  = static_cast<int>(k);
+                }
+            break;
+        case PorFixJump::None:
+            break;
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", it.jump == PorFixJump::Recipe      ? ("Open recipe '" + it.recipe + "'").c_str()
+                                : it.jump == PorFixJump::Positions ? "Open the Positions page"
+                                                                   : "Open the Hardware section");
+}
+
+// ---- Deploy plan (phase 4b: a preview, nothing is written) -------------------------------
+
+namespace {
+
+ImVec4 ActionColor(PorPlanAction a)
+{
+    switch (a) {
+    case PorPlanAction::Add:     return StatusColor(PorStatus::OnlyMaster);
+    case PorPlanAction::Replace: return StatusColor(PorStatus::Changed);
+    case PorPlanAction::Same:    return ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+    case PorPlanAction::Keep:    return StatusColor(PorStatus::OnlyTarget);
+    case PorPlanAction::Remove:  return StatusColor(PorStatus::Missing);
+    }
+    return ImGui::GetStyleColorVec4(ImGuiCol_Text);
+}
+
+std::string CountsText(const std::vector<PorPlanItem>& items)
+{
+    int n[5] = {};
+    for (const PorPlanItem& i : items) ++n[static_cast<int>(i.action)];
+    std::string t;
+    const auto add = [&t](int c, const char* what) {
+        if (c) t += (t.empty() ? "" : ", ") + std::to_string(c) + " " + what;
+    };
+    add(n[static_cast<int>(PorPlanAction::Add)], "added");
+    add(n[static_cast<int>(PorPlanAction::Replace)], "replaced");
+    add(n[static_cast<int>(PorPlanAction::Same)], "unchanged");
+    add(n[static_cast<int>(PorPlanAction::Keep)], "kept");
+    add(n[static_cast<int>(PorPlanAction::Remove)], "removed");
+    return t.empty() ? "nothing" : t;
+}
+
+void ListLines(const std::vector<std::string>& v)
+{
+    ImGui::PushTextWrapPos(0.0f);
+    for (const std::string& s : v) ImGui::BulletText("%s", s.c_str());
+    ImGui::PopTextWrapPos();
+}
+
+} // namespace
+
+void PorTool::DrawDeploy()
+{
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("What a deploy would do to this machine's copy of '%s': the master's recipes, "
+                        "programs, scripts and prompt pictures, translated onto this machine's own "
+                        "objects by name. Taught points and detection models are kept from this "
+                        "machine's matching step; what this machine lacks is written UNTAUGHT, and "
+                        "FireDog refuses to run it until it is taught. Positions are only ever added "
+                        "(as untaught placeholders); nothing under config\\ is touched.",
+                        product_.c_str());
+    ImGui::TextColored(StatusColor(PorStatus::Changed),
+                       "Preview only: this version writes nothing. The deploy itself comes next.");
+    if (!TargetIsThisMachine())
+        ImGui::TextColored(StatusColor(PorStatus::OnlyMaster),
+                           "The target root is not this machine's root (%s). A deploy will only ever "
+                           "write into this machine's own root, on this machine.",
+                           roots_.root.c_str());
+    ImGui::PopTextWrapPos();
+
+    ImGui::Spacing();
+    if (plan_.Blocked()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, StatusColor(PorStatus::Missing));
+        ImGui::SeparatorText(("Blocked - fix these first (" + std::to_string(plan_.blockers.size()) + ")").c_str());
+        ImGui::PopStyleColor();
+        ImGui::TextDisabled("A deploy cannot translate these, or the deck it left behind could not run. "
+                            "Teach items that only need teaching after the deploy are not listed here.");
+        const ImGuiTableFlags f = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
+        if (ImGui::BeginTable("##blockers", 4, f)) {
+            ImGui::TableSetupColumn("group", ImGuiTableColumnFlags_WidthStretch, 0.6f);
+            ImGui::TableSetupColumn("what", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+            ImGui::TableSetupColumn("how to fix it", ImGuiTableColumnFlags_WidthStretch, 1.4f);
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+            ImGui::TableHeadersRow();
+            for (std::size_t i = 0; i < plan_.blockers.size(); ++i) {
+                const PorFixItem& it = plan_.blockers[i];
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextColored(FixColor(it.kind), "%s", PorFixKindTitle(it.kind));
+                ImGui::PopTextWrapPos();
+                ImGui::TableSetColumnIndex(1);
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextUnformatted(it.what.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::TableSetColumnIndex(2);
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextUnformatted(it.fix.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::TableSetColumnIndex(3);
+                FixGoButton(it);
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+    } else {
+        ImGui::TextColored(StatusColor(PorStatus::OnlyTarget),
+                           "Nothing blocks a deploy. Everything left afterwards is to teach on this machine.");
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Checkbox("Remove what the master does not have (strict mirror)", &deployOpt_.removeTargetOnly)) {
+        Replan();
+        SaveSettings();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Off: recipes and programs only this machine has are kept (a local\n"
+                          "experiment is work somebody did). On: they are removed. Positions,\n"
+                          "scripts and pictures are never removed.");
+
+    const auto table = [&](const char* id, const std::vector<PorPlanItem>& items) {
+        const ImGuiTableFlags f = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
+        if (!ImGui::BeginTable(id, 3, f)) return;
+        ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("deploy", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch, 1.4f);
+        for (const PorPlanItem& i : items) {
+            if (diffOnly_ && i.action == PorPlanAction::Same) continue;
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(i.name.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextColored(ActionColor(i.action), "%s", PorPlanActionName(i.action));
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextDisabled("%s", i.detail.c_str());
+        }
+        ImGui::EndTable();
+    };
+    const ImGuiTreeNodeFlags open = ImGuiTreeNodeFlags_DefaultOpen;
+    if (ImGui::CollapsingHeader(("Recipes: " + CountsText(plan_.recipeItems) + "###rec").c_str(), open))
+        table("##rec", plan_.recipeItems);
+    if (ImGui::CollapsingHeader(("Programs: " + CountsText(plan_.programItems) + "###prog").c_str(), open))
+        table("##prog", plan_.programItems);
+    if (ImGui::CollapsingHeader(("Product files: " + CountsText(plan_.fileItems) + "###files").c_str(), open))
+        table("##files", plan_.fileItems);
+    if (diffOnly_) ImGui::TextDisabled("('Differences only' hides what a deploy leaves unchanged.)");
+
+    char head[160];
+    std::snprintf(head, sizeof(head), "Positions added untaught: %zu###ph", plan_.placeholders.size());
+    if (ImGui::CollapsingHeader(head, open)) {
+        if (plan_.placeholders.empty()) ImGui::TextDisabled("(none: every position the recipes name is here)");
+        else if (ImGui::BeginTable("##ph", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
+            ImGui::TableSetupColumn("device", ImGuiTableColumnFlags_WidthFixed, 160.0f);
+            ImGui::TableSetupColumn("position", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("used", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+            ImGui::TableHeadersRow();
+            for (const PorPlaceholder& ph : plan_.placeholders) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(ph.device.c_str());
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(ph.name.c_str());
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%zu", ph.uses.size());
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    for (const std::string& u : ph.uses) ImGui::TextUnformatted(u.c_str());
+                    ImGui::EndTooltip();
+                }
+            }
+            ImGui::EndTable();
+        }
+    }
+    std::snprintf(head, sizeof(head), "Taught points: %d kept from this machine, %zu written untaught###pts",
+                  plan_.carriedPoints, plan_.untaughtPoints.size());
+    if (ImGui::CollapsingHeader(head)) ListLines(plan_.untaughtPoints);
+    std::snprintf(head, sizeof(head), "Detection models: %d kept from this machine, %zu written untaught###mdl",
+                  plan_.carriedModels, plan_.untaughtModels.size());
+    if (ImGui::CollapsingHeader(head)) ListLines(plan_.untaughtModels);
+    std::snprintf(head, sizeof(head), "Warnings: %zu###warn", plan_.warnings.size());
+    if (ImGui::CollapsingHeader(head, plan_.warnings.empty() ? 0 : open)) {
+        ImGui::TextDisabled("References in recipes no program runs that this machine cannot resolve: "
+                            "written as the master had them.");
+        ListLines(plan_.warnings);
     }
 }
 

@@ -13,6 +13,7 @@
 
 #include "core/Paths.h"   // RootsPreview
 #include "por/PorCompare.h"
+#include "por/PorDeploy.h"
 #include "por/PorFixList.h"
 #include "por/PorHardware.h"
 #include "por/PorPositions.h"
@@ -38,7 +39,7 @@ public:
     void Draw();
 
 private:
-    enum class View { None, FixList, Program, Slot, Recipe, Positions, Hardware, Notes };
+    enum class View { None, FixList, Deploy, Program, Slot, Recipe, Positions, Hardware, Notes };
 
     void DrawTopBar();
     void DrawExplorer();
@@ -54,6 +55,10 @@ private:
     void DrawParam(const PorParam& p);
     void DrawPositions();
     void DrawFixList();
+    void DrawDeploy();
+    void FixGoButton(const PorFixItem& it);   // the Go of a fix-list row
+    void Replan();
+    bool TargetIsThisMachine() const;
     void DrawNotes();
 
     void RefreshProducts();
@@ -92,6 +97,8 @@ private:
     PorPositionsReport positions_;
     PorHardwareReport  hardware_;
     PorFixList         fixes_;
+    PorDeployOptions   deployOpt_;
+    PorDeployPlan      plan_;
     std::string        summary_;
 
     View view_ = View::None;

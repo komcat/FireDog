@@ -16,6 +16,7 @@
 
 #include "por/PorSide.h"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -92,6 +93,20 @@ std::vector<std::pair<int, int>> PorAlign(const std::vector<std::string>& a,
                                           const std::vector<std::string>& b,
                                           const std::vector<std::string>& a2 = {},
                                           const std::vector<std::string>& b2 = {});
+
+// THE step pairing (§3): two step lists lined up by (type, nickname), then -
+// between those anchors - by type alone. The compare, the fix list and the
+// deploy all call it, so "this master step is that target step" has one answer
+// and the preview, the teach list and the written result cannot disagree.
+std::vector<std::pair<int, int>> PorPairSteps(const std::vector<RecipeStep>& a,
+                                              const std::vector<RecipeStep>& b);
+
+// Every step of `a` (children and else branches too) mapped to the step of `b`
+// PorPairSteps pairs it with; an unpaired step is absent from the map. The
+// pointers point into `a` and `b`, which must outlive the map.
+using PorStepTwins = std::map<const RecipeStep*, const RecipeStep*>;
+void PorCollectTwins(const std::vector<RecipeStep>& a, const std::vector<RecipeStep>& b,
+                     PorStepTwins* out);
 
 // A position's name, or nullptr. `count` (optional) receives how many
 // positions on that device carry the SAME name - more than one is ambiguous.

@@ -47,6 +47,12 @@ struct PorFixItem {
     PorFixJump               jump = PorFixJump::None;
     std::string              recipe;    // Recipe: the first recipe that uses it
     std::string              section;   // Hardware: the section title
+    // Teach only: a deploy can go ahead and leave this to be taught here - a
+    // position (it becomes an untaught placeholder), a point or a step's own
+    // detection model (written untaught), a private pose of an owner the target
+    // has. False for a missing alignment, nominal, named model, grip or tray: a
+    // deploy has nothing to translate the reference to (§7.2; phase 4d).
+    bool                     teachAfterDeploy = false;
 };
 
 struct PorFixList {
