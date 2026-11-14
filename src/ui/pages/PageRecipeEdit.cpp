@@ -1702,7 +1702,8 @@ void App::DrawRecipeRunStrip(float height)
     const float btnW  = 110.0f;
     const float chkW  = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x +
                         ImGui::CalcTextSize("Step").x;
-    const float ctrlW = btnW * 5.0f + chkW + style.ItemSpacing.x * 5.0f;
+    // Run / Run Step / Run From / Next / Stop / Save.
+    const float ctrlW = btnW * 6.0f + chkW + style.ItemSpacing.x * 6.0f;
     const float rightEdge =
         ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
 
@@ -1830,6 +1831,35 @@ void App::DrawRecipeRunStrip(float height)
                    "position does nothing.";
         ImGui::SetTooltip("%s", tip.c_str());
     }
+    ImGui::SameLine();
+    // Run the WHOLE recipe from the selected step down: the engine's own
+    // skip-until (StartOpts::startPath, the one Step mode already uses), so
+    // validation, the on-fail recipe, progress and Stop are a normal run's.
+    // Every step before the selection is skipped (counted, not executed); a
+    // group / loop holding it is entered at that step and its later steps
+    // follow, then everything below; a parallel block holding it runs whole.
+    // With Step ticked it pauses before each step, as Run does.
+    ImGui::BeginDisabled(!canRun || edStepSel_.empty());
+    if (ImGui::Button("Run From", ImVec2(btnW, 0.0f))) {
+        RecipeEngine::Env env = session_.MakeRecipeEnv();
+        RecipeEngine::StartOpts opts = RecipeStartOpts();   // carries teach
+        opts.stepMode  = edStepMode_;
+        opts.startPath = edStepSel_;
+        recipeStartErr_.clear();
+        const Recipe& r = session_.Recipes()[recipeSel_];
+        FD_INFO("recipe", "'%s': run from step %s", r.name.c_str(),
+                StepPathLabel(edStepSel_).c_str());
+        if (!orch_.recipe.Start(r, std::move(env), &recipeStartErr_, std::move(opts)))
+            FD_WARN("recipe", "run-from rejected: %s", recipeStartErr_.c_str());
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", edStepSel_.empty()
+            ? "Select a step to run the recipe from it"
+            : "Run the recipe from the selected step to the end: everything above is\n"
+              "skipped, the rest of its group and every step below it run.\n"
+              "Disabled steps stay skipped. Values earlier steps would have\n"
+              "written into ctx are missing - a step that needs one fails.");
     ImGui::SameLine();
     ImGui::BeginDisabled(!st.stepPaused || progRun);
     if (ImGui::Button("Next", ImVec2(btnW, 0.0f))) orch_.recipe.StepAdvance();
