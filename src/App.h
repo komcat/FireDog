@@ -864,6 +864,9 @@ private:
                             const std::function<void(const char*, int, const std::string&)>& onLaunch,
                             bool showStop);
     void DrawRunShotPanel();          // the image box above the DUT block
+    // Pause / Resume of the recipe engine (every recipe run and every program
+    // queue item runs on it). Shared by the Run strip and the Recipe Editor.
+    void DrawPauseButton(ImVec2 size);
     void DrainCapturedView();         // worker -> UI: the captured still -> a texture
     std::string XcanPresetScript() const;   // hexapod_align.lua, the product's copy if any
     std::vector<std::pair<std::string, CtxValue>> XcanPresetKeys(const std::string& device,
@@ -1536,6 +1539,11 @@ private:
     bool edOpenTagRecipe_     = false;
     char edNameBuf_[64]       = "";
     char edSearchBuf_[64]     = "";      // palette search filter
+    // Step tree filter: matching rows are tinted, the rest dimmed - nothing is
+    // hidden, so the tree keeps its shape and its numbers. Runtime only.
+    char edTreeFilter_[64]    = "";
+    int  edTreeHits_          = 0;       // matches drawn last frame
+    bool edTreeFilterScroll_  = false;   // the text changed: bring the first hit into view
     char edTagBuf_[160]       = "";      // Tag modal: comma-separated tags
     // The recipe list's filter (persisted in UiSettings, see there). A recipe
     // that fails it still draws while SELECTED, dimmed: the editor beside the

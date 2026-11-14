@@ -93,6 +93,14 @@ public:
     // here); on pauses before the NEXT leaf. Also arms/disarms nothing at
     // Idle — Start's opts decide the next run's mode.
     void SetStepMode(bool on);
+    // Pause: the step running now finishes, then the worker holds before the
+    // NEXT leaf (the step-mode gate) until SetPaused(false). Next grants one
+    // step and holds again. Unlike step mode it is not reset by Start: a
+    // program's next queue item starts paused, because the runner goes idle
+    // between items and a pause must survive that boundary. App::Update clears
+    // it once nothing is busy, and RequestStop clears it.
+    void SetPaused(bool on);
+    bool Paused() const { return pause_.load(); }
     // Resolves a blocking `prompt` / `prompt_input` step (text used by input).
     void AnswerPrompt(bool ok, std::string text = std::string());
     // Resolves a blocking custom-button prompt (ExecutionContext::AwaitChoice)
@@ -136,7 +144,8 @@ public:
         // Step mode: while stepPaused, nextStep/nextPath describe the leaf
         // that will run when StepAdvance() grants it.
         bool        stepMode   = false;
-        bool        stepPaused = false;
+        bool        stepPaused = false;   // HELD at the gate (step mode or pause)
+        bool        paused     = false;   // a pause is requested (held or not yet)
         std::string nextStep;
         std::vector<std::size_t> nextPath;
         bool        teach      = false;   // this run (or the last one) was a teach run
@@ -187,6 +196,7 @@ private:
     std::atomic<bool> stopReq_{false};
     std::atomic<bool> running_{false};
     std::atomic<bool> stepMode_{false};   // pause before every leaf while true
+    std::atomic<bool> pause_{false};      // operator Pause: hold before the next leaf
     std::atomic<bool> teach_{false};      // this run is a teach run (StartOpts)
     std::atomic<bool> dryRun_{false};     // this run is a dry run (StartOpts)
 

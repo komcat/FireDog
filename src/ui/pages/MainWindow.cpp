@@ -305,6 +305,9 @@ void App::DrawStripDog(float height)
         const bool waiting = OperatorWanted();
         mood = waiting ? FireDogMood::Waiting : FireDogMood::Running;
         what = waiting ? "waiting for you" : "running";
+        // A Pause holding the run is "waiting" too (the tower blinks yellow),
+        // but it was asked for - say so rather than call the operator over.
+        if (waiting && orch_.recipe.Paused()) what = "paused - press Resume";
     } else if (dogSad_) {
         mood = FireDogMood::Sad;
         what = "the last run failed - see the Run page";

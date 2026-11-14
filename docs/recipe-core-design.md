@@ -453,8 +453,23 @@ public:
   app.
 - Step results and errors also go to `firedog::Logger`, so the existing log
   viewer is the run log — no new UI needed to see what happened.
-- Pause/step-mode/breakpoints: not in v1, but the design point where they slot
-  in is the step-boundary check (a condition_variable wait, as bobcat does).
+- Step mode and Pause share ONE gate at the step boundary
+  (`RecipeEngine::AwaitStepInternal`, the `onBeforeLeaf` callback - a
+  condition_variable wait, as bobcat does). The gate holds while `stepMode_`
+  OR `pause_` is set; Next grants one leaf, Stop and the safety abort get
+  through either way. A parallel block is gated as one (its lanes cannot be
+  granted one at a time), the on-fail recipe is not gated at all, and a
+  `run_script` / xcan step is ONE step - a pause lands after it.
+- **Pause** (added 2026-11-14; the Run strip and the Recipe Editor, both
+  `App::DrawPauseButton`): the step running now FINISHES - a move is never cut
+  mid-way - then the worker holds before the next leaf until Resume. Unlike
+  step mode it is not reset by `Start`, so a program's next queue item starts
+  held (the runner goes idle between items and the pause must survive that);
+  `RequestStop` clears it, and `App::Update` drops it once `orch_.Busy()` is
+  false (after `programs.Tick()`), so a pause pressed during the last step
+  never holds the next, unrelated run. A held run counts as waiting on the
+  operator (tower blinks yellow) and stays Running for the OEE. Breakpoints:
+  not built; they would be a third condition at the same gate.
 
 ## 6.1 Teach mode — a recipe transform, not an engine mode
 

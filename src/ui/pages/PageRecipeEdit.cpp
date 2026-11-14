@@ -482,15 +482,53 @@ void App::DrawRecipeEditPanel()
         // inspector must not switch a step off behind the operator's back.
         const bool treeFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
         DrawRecipeTreeToolbar(r, !busy);
+        // The filter, pinned under the toolbar (outside the rows' scroll). It
+        // edits nothing, so it stays live during a run: matching rows are
+        // tinted, every other row dimmed - none hidden, so the numbers and the
+        // nesting read the same as without it. Matches the row's shown name
+        // and its command type, case-insensitive.
+        {
+            const float clearW = ImGui::GetFrameHeight();
+            const float sp     = ImGui::GetStyle().ItemInnerSpacing.x;
+            const bool  filt   = edTreeFilter_[0] != '\0';
+            char hits[32] = "";
+            if (filt)
+                std::snprintf(hits, sizeof(hits), "%d match%s", edTreeHits_,
+                              edTreeHits_ == 1 ? "" : "es");
+            const float hitsW = filt ? ImGui::CalcTextSize("000 matches").x + sp : 0.0f;
+            ImGui::SetNextItemWidth(-(clearW + sp + hitsW));
+            if (ImGui::InputTextWithHint("##edTreeFilter", "filter steps...", edTreeFilter_,
+                                         sizeof(edTreeFilter_)))
+                edTreeFilterScroll_ = true;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Highlight the steps whose name or command contains this\n"
+                                  "text; the others are dimmed. Rows inside a collapsed\n"
+                                  "group are not counted.");
+            ImGui::SameLine(0.0f, sp);
+            ImGui::BeginDisabled(!filt);
+            if (ImGui::Button("X##edTreeFilterClear", ImVec2(clearW, 0.0f)))
+                edTreeFilter_[0] = '\0';
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Clear the filter");
+            if (filt) {
+                ImGui::SameLine(0.0f, sp);
+                ImGui::AlignTextToFramePadding();
+                if (edTreeHits_ > 0) ImGui::TextUnformatted(hits);
+                else ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "no match");
+            }
+        }
         ImGui::Separator();
         // Rows scroll in their own child so the ^/v/Delete toolbar above
         // stays pinned (same pattern as the palette's ##palList).
         ImGui::BeginChild("##edTreeRows");
         edTreeRows_.clear();
+        edTreeHits_ = 0;
         std::vector<std::size_t> path;
         // While step-paused the gold row is the step ABOUT to run (Next).
         DrawRecipeTreeNodes(r.steps, path, false,
                             st.stepPaused ? st.nextPath : st.stepPath, running);
+        edTreeFilterScroll_ = false;   // no visible hit: do not jump at a later expand
         // Arrow keys walk the visible rows (Up/Down; Left jumps to the
         // parent). Skipped while a text field or popup owns the keyboard.
         // With Ctrl they EDIT instead: Up/Down move the selection, Right/Left
@@ -970,6 +1008,27 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
         const bool bad = !badWhy.empty() && !executing;
 
         const bool dim = !s.enabled && !executing;
+        // The tree filter: a match is tinted after the row is drawn, a miss is
+        // drawn at reduced alpha. The alpha is popped BEFORE a group's
+        // children, which judge themselves.
+        const bool filtering = edTreeFilter_[0] != '\0';
+        const bool hit = filtering && (PaletteMatch(shown, edTreeFilter_) ||
+                                       PaletteMatch(s.type, edTreeFilter_));
+        const bool fade = filtering && !hit && !executing;   // the running row stays lit
+        if (hit) ++edTreeHits_;
+        if (fade)
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.35f);
+        // Tint + left bar over a matching row (rect = the row's item).
+        const auto tintRow = [hit, this](ImVec2 a, ImVec2 b) {
+            if (!hit) return;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(a, b, IM_COL32(255, 196, 40, 48));
+            dl->AddRectFilled(a, ImVec2(a.x + 3.0f, b.y), IM_COL32(255, 196, 40, 220));
+            if (edTreeFilterScroll_) {   // the first hit after an edit
+                ImGui::SetScrollHereY(0.35f);
+                edTreeFilterScroll_ = false;
+            }
+        };
         if (executing)
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
         else if (bad)
@@ -991,6 +1050,7 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
             const float lblX = ImGui::GetCursorPosX() +
                                ImGui::GetTreeNodeToLabelSpacing();
             const bool open = ImGui::TreeNodeEx("##node", flags, "%zu", i + 1);
+            const ImVec2 rowA = ImGui::GetItemRectMin(), rowB = ImGui::GetItemRectMax();
             edTreeRows_.push_back(path);
             if (anchor && edScrollToSel_) {
                 ImGui::SetScrollHereY(0.35f);
@@ -1002,6 +1062,8 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
             ImGui::SetCursorPosX(lblX + numW);
             DrawStepIconInline(StepIcon(s.type.c_str()));
             ImGui::TextUnformatted(text);
+            tintRow(rowA, rowB);
+            if (fade) ImGui::PopStyleVar();
             if (open) {
                 DrawRecipeTreeNodes(s.children, path, false, runPath, running);
                 if (!s.elseChildren.empty()) {
@@ -1016,6 +1078,7 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
             const float x0 = ImGui::GetCursorPosX();
             if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowOverlap))
                 ClickStepRow(path);
+            const ImVec2 rowA = ImGui::GetItemRectMin(), rowB = ImGui::GetItemRectMax();
             edTreeRows_.push_back(path);
             if (anchor && edScrollToSel_) {
                 ImGui::SetScrollHereY(0.35f);
@@ -1034,6 +1097,8 @@ void App::DrawRecipeTreeNodes(const std::vector<RecipeStep>& steps,
             ImGui::TextUnformatted(text);
             if (bad && ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", badWhy.c_str());
+            tintRow(rowA, rowB);
+            if (fade) ImGui::PopStyleVar();
         }
         ImGui::PopID();
 
@@ -1702,8 +1767,8 @@ void App::DrawRecipeRunStrip(float height)
     const float btnW  = 110.0f;
     const float chkW  = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x +
                         ImGui::CalcTextSize("Step").x;
-    // Run / Run Step / Run From / Next / Stop / Save.
-    const float ctrlW = btnW * 6.0f + chkW + style.ItemSpacing.x * 6.0f;
+    // Run / Run Step / Run From / Next / Pause / Stop / Save.
+    const float ctrlW = btnW * 7.0f + chkW + style.ItemSpacing.x * 7.0f;
     const float rightEdge =
         ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
 
@@ -1721,7 +1786,13 @@ void App::DrawRecipeRunStrip(float height)
     if (st.stepPaused) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.16f, 1.0f),
-                           "| paused - next: %s", st.nextStep.c_str());
+                           st.paused && !st.stepMode ? "| PAUSED - next: %s"
+                                                     : "| paused - next: %s",
+                           st.nextStep.c_str());
+    } else if (st.paused && running) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.16f, 1.0f),
+                           "| pausing - after this step");
     }
     if (progRun) {
         ImGui::SameLine();
@@ -1866,6 +1937,8 @@ void App::DrawRecipeRunStrip(float height)
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Execute the paused step, then pause again");
+    ImGui::SameLine();
+    DrawPauseButton(ImVec2(btnW, 0.0f));
     ImGui::SameLine();
     ImGui::BeginDisabled(!running && !progRun);
     if (IconButton(UiIcon("Stop"), "Stop", ImVec2(btnW, 0.0f))) {

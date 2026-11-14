@@ -1144,6 +1144,78 @@ void App::DrawDeckNodes(std::vector<ProgramNode>& items, float rowH, bool runnin
     }
 }
 
+// Pause: the step running now FINISHES (a move is never cut mid-way, a scan
+// never left half-done), then the engine holds before the next step until
+// Resume. It is RecipeEngine's step-mode gate, so Stop, Next and the safety
+// abort all still work while held. Three faces, one button:
+//   Pause       (amber)  a run is going - press to hold after this step
+//   Pausing...  (amber)  requested, the current step is still running -
+//                        press again to cancel the pause
+//   Resume      (green)  held before the next step - press to continue
+// Greyed with nothing running, and in the Recipe Editor's Step mode, which
+// already holds before every step.
+void App::DrawPauseButton(ImVec2 size)
+{
+    const RecipeEngine::Status st = orch_.recipe.GetStatus();
+    const bool running = orch_.recipe.Running() || orch_.programs.Active();
+    const bool paused  = orch_.recipe.Paused();
+    const bool held    = paused && st.stepPaused;
+    const bool stepMode = orch_.recipe.Running() && st.stepMode;
+
+    const ImVec4 amb(0.62f, 0.44f, 0.08f, 1.0f), ambHov(0.78f, 0.56f, 0.12f, 1.0f),
+                 ambAct(0.50f, 0.35f, 0.06f, 1.0f);
+    const ImVec4 grn(0.16f, 0.52f, 0.24f, 1.0f), grnHov(0.22f, 0.68f, 0.32f, 1.0f),
+                 grnAct(0.11f, 0.40f, 0.18f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button,        held ? grn : amb);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, held ? grnHov : ambHov);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  held ? grnAct : ambAct);
+    ImGui::BeginDisabled(!running || stepMode);
+    // The glyph is drawn, not an icon file: the label's leading spaces leave
+    // room for it and it is painted where they start (the label is centred).
+    // The ### keeps one widget ID across the three faces.
+    const char* text = held ? "    Resume" : paused ? "    Pausing..." : "    Pause";
+    const std::string label = std::string(text) + "###runPause";
+    const bool clicked = ImGui::Button(label.c_str(), size);
+    {
+        const ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
+        const float  h  = ImGui::GetTextLineHeight() * 0.7f;
+        const float  pad = ImGui::GetStyle().FramePadding.x;
+        const float  tw = ImGui::CalcTextSize(text).x;
+        const float  x0 = std::max(r0.x + pad, r0.x + (r1.x - r0.x - tw) * 0.5f);
+        const float  cy = (r0.y + r1.y) * 0.5f;
+        ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (held) {   // play triangle
+            dl->AddTriangleFilled(ImVec2(x0, cy - h * 0.5f), ImVec2(x0, cy + h * 0.5f),
+                                  ImVec2(x0 + h * 0.85f, cy), col);
+        } else {      // two bars
+            const float bw = h * 0.28f;
+            dl->AddRectFilled(ImVec2(x0, cy - h * 0.5f), ImVec2(x0 + bw, cy + h * 0.5f), col);
+            dl->AddRectFilled(ImVec2(x0 + bw * 2.0f, cy - h * 0.5f),
+                              ImVec2(x0 + bw * 3.0f, cy + h * 0.5f), col);
+        }
+    }
+    if (clicked) orch_.recipe.SetPaused(!paused);
+    ImGui::EndDisabled();
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (stepMode)
+            ImGui::SetTooltip("Step mode already holds before every step - use Next");
+        else if (held)
+            ImGui::SetTooltip("PAUSED before: %s\nResume runs on from here; Stop ends the run.",
+                              st.nextStep.c_str());
+        else if (paused)
+            ImGui::SetTooltip("Pausing - the current step finishes first, then the run\n"
+                              "holds before the next one. Press again to cancel.");
+        else if (running)
+            ImGui::SetTooltip("Pause after the current step: it finishes (a move is not\n"
+                              "cut, a scan not abandoned), then the run waits for Resume.\n"
+                              "A program holds between its recipes too.");
+        else
+            ImGui::SetTooltip("Pause a running recipe or program after its current step");
+    }
+}
+
 void App::DrawRunPanel()
 {
     const ProgramRunner::Status& rs = orch_.programs.GetStatus();
@@ -1258,6 +1330,10 @@ void App::DrawRunPanel()
         }
         ImGui::EndDisabled();
     }
+    // Pause sits beside Execute / Stop ALWAYS - greyed with nothing running -
+    // so it is in the same place the moment a run starts and never jumps in.
+    ImGui::SameLine();
+    DrawPauseButton(ImVec2(220.0f, stripBtnH));
     ImGui::PopFont();
     ImGui::PopStyleColor(3);
     ImGui::SameLine();

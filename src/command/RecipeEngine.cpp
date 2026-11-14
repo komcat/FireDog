@@ -171,6 +171,7 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
 void RecipeEngine::RequestStop()
 {
     stopReq_.store(true);
+    pause_.store(false);   // a stopped run is not a paused one
     cv_.notify_all();   // release a blocked prompt / step pause
 }
 
@@ -188,6 +189,19 @@ void RecipeEngine::SetStepMode(bool on)
 {
     stepMode_.store(on);
     cv_.notify_all();   // off releases a pending pause (free-run resumes)
+}
+
+void RecipeEngine::SetPaused(bool on)
+{
+    if (pause_.exchange(on) == on) return;
+    if (on) {
+        const std::scoped_lock lock(mu_);
+        FD_INFO("recipe", "pause requested%s%s", currentStep_.empty() ? "" : " - holding after ",
+                currentStep_.c_str());
+    } else {
+        FD_INFO("recipe", "resumed");
+    }
+    cv_.notify_all();   // off releases the held step
 }
 
 void RecipeEngine::AnswerChoice(int index)
@@ -272,6 +286,7 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.teach              = teach_.load();
     s.dryRun             = dryRun_.load();
     s.stepPaused         = stepPaused_;
+    s.paused             = pause_.load();
     s.nextStep           = nextStep_;
     s.nextPath           = nextPath_;
     if (runCtx_) s.ctx = runCtx_->CtxSnapshot();   // its own mutex; no deadlock
@@ -380,13 +395,19 @@ bool RecipeEngine::AwaitPickInternal(const ExecutionContext::PickRequest& req,
 bool RecipeEngine::AwaitStepInternal(const std::string& label,
                                      const std::vector<std::size_t>& path)
 {
-    if (!stepMode_.load()) return true;   // free-running — no gate
+    // Held by step mode OR an operator Pause - one gate, so Next, Stop and the
+    // safety abort behave the same whichever put the run here.
+    const auto held = [this] { return stepMode_.load() || pause_.load(); };
+    if (!held()) return true;   // free-running — no gate
     std::unique_lock lock(mu_);
     stepPaused_ = true;
     nextStep_   = label;
     nextPath_   = path;
-    // Wait in slices so stop / safety / SetStepMode(false) always get through.
-    while (!stepGranted_ && stepMode_.load() && !stopReq_.load() &&
+    if (pause_.load() && !stepMode_.load())
+        FD_INFO("recipe", "paused before %s", label.c_str());
+    // Wait in slices so stop / safety / SetStepMode(false) / Resume always get
+    // through.
+    while (!stepGranted_ && held() && !stopReq_.load() &&
            !SafetyAborted()) {
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }

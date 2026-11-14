@@ -73,6 +73,13 @@ Inside the page, the familiar three-panel split (shared splitter sizes):
   (indent/outdent: a contiguous run of them) and keeps them selected; the
   editing keys need the tree focused, so a Space meant for the inspector cannot
   switch a step off.
+- **Step filter** (2026-11-14), pinned under the tree toolbar outside the rows'
+  scroll: case-insensitive on the row's shown name and its command type.
+  Matching rows are TINTED (amber band + left bar), the rest drawn at reduced
+  alpha - nothing is hidden, so numbering and nesting read as without it, and
+  the executing row is never dimmed. Editing the text scrolls to the first
+  visible match; rows in a collapsed group are not counted. Runtime only
+  (`App::edTreeFilter_`), live during a run - it edits nothing.
 - **Row icons.** A small picture sits after the step number in the tree and
   before the name in the palette — the SAME picture in both, from one lookup
   (`StepIconFile`, `ui/Widgets`), because the glyph learned while picking a

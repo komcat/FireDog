@@ -72,6 +72,10 @@ Stop():         // ONE stop, propagated:
     any Lua sub-run. One button, the whole chain dies.
 ```
 
+- **Pause** (always beside Execute / Stop in the strip, greyed when idle) holds the run after the current step,
+  through the engine's step gate; a pause pressed during a recipe's last step
+  holds the NEXT queue item before its first step. Resume continues, Stop
+  still ends everything. `docs/recipe-core-design.md` §6.
 - Between recipes the runner starts the next engine run with a fresh Env
   (positions/maps/recipes snapshot taken once at program start — a program
   runs against one consistent world).

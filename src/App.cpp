@@ -276,6 +276,11 @@ void App::Update(float dt)
     // recipe but the last. Ordering is the whole mechanism here.
     DrainCycleVars();
     orch_.programs.Tick();       // sequences program/slot runs between frames
+    // A Pause outlives one recipe on purpose (a program's next queue item must
+    // start held), so it is dropped HERE, once the whole run is over - AFTER
+    // Tick, which is what starts that next item. Otherwise a Pause pressed
+    // during the last step would hold the next, unrelated run.
+    if (!orch_.Busy() && orch_.recipe.Paused()) orch_.recipe.SetPaused(false);
     // The deck cycle, both halves of it. The marks are copied out of the
     // runner's per-item status every frame — which is what makes an accent
     // appear the moment a recipe finishes rather than only at the end of the
