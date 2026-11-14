@@ -40,7 +40,7 @@ namespace {
 // the id prefsCat_ holds. Add a page: a row here and a case in the switch.
 enum PrefsPage { kPrefDisplay = 0, kPrefChartCurrent = 1, kPrefMotionRegMove = 2,
                  kPrefToolMarkers = 3, kPrefXcanPresets = 4, kPrefXcanTargets = 5,
-                 kPrefQuickAlign = 6 };
+                 kPrefQuickAlign = 6, kPrefMarkLabels = 7 };
 
 struct PrefsGroup {
     const char* name;
@@ -54,7 +54,9 @@ const std::vector<PrefsGroup>& PrefsTree()
         {"Environment", {{"Display", kPrefDisplay, "Environment > Display"}}},
         {"Charts",      {{"Current (SMU)", kPrefChartCurrent, "Charts > Current (SMU)"}}},
         {"Motion",      {{"Tool -> cam", kPrefMotionRegMove, "Motion > Tool -> cam"}}},
-        {"Graphic view", {{"Tool markers", kPrefToolMarkers, "Graphic view > Tool markers"}}},
+        {"Graphic view", {{"Tool markers", kPrefToolMarkers, "Graphic view > Tool markers"},
+                          {"Beacons & objects", kPrefMarkLabels,
+                           "Graphic view > Beacons & objects"}}},
         {"Scanning",    {{"XCAN presets", kPrefXcanPresets, "Scanning > XCAN presets"},
                          {"XCAN targets", kPrefXcanTargets, "Scanning > XCAN targets"},
                          {"Quick align", kPrefQuickAlign, "Scanning > Quick align"}}},
@@ -159,6 +161,7 @@ AppPrefs App::CurrentPrefs() const
     p.chartYBandList = chartYBandList_;
     p.chartChDefault = chartChDef_;
     p.auxTipLabels   = auxTipLabels_;
+    p.auxMarks       = auxMarks_;
     p.jogRegZOff     = jogRegZOffDef_;
     p.jogRegUnver    = jogRegUnverDef_;
     for (int i = 0; i < kXcanPresetCount; ++i) {
@@ -207,6 +210,7 @@ void App::ApplyPreferences()
     // A changed default also resets the Jog window's live field now - the
     // operator applied it to see it, not to wait for a restart.
     if (e.auxTipLabels != b.auxTipLabels) auxTipLabels_ = e.auxTipLabels;
+    if (!(e.auxMarks == b.auxMarks)) auxMarks_ = e.auxMarks;
     if (e.chartChDefault != b.chartChDefault) {
         chartChDef_ = e.chartChDefault;
         chartCh_    = chartChDef_;   // show it now, as the Jog defaults below do
@@ -709,6 +713,39 @@ void App::DrawPreferencesWindow()
         ImGui::TextDisabled("Zone low should sit at the raster handoff level.\n"
                             "A slot switched off is no Target button, and a quick-align\n"
                             "button using it is disabled.");
+        break;
+    }
+    case kPrefMarkLabels: {
+        ImGui::TextWrapped("What the Aux view writes beside a planted BEACON (the pulse) and a "
+                           "registered GRIPPED OBJECT (the beating diamond), and whether each "
+                           "also appears on the height gauge. Only the text and the gauge "
+                           "marker are switched - the mark on the picture is always drawn.");
+        ImGui::Spacing();
+        AuxMarkLabels& a = e.auxMarks;
+        const auto row = [](const char* label, bool* v, const char* tip) {
+            ImGui::Checkbox(label, v);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+        };
+        ImGui::SeparatorText("Beacon");
+        row("Name##bn", &a.beaconName, "the beacon's name (b_focus)");
+        row("Minutes left##bt", &a.beaconTime, "how long it has left (9m), of its 30");
+        row("Nearest tool + height##bh", &a.beaconTool,
+            "the nearest registered tool and its height over the beacon (HL +383 um)");
+        row("Distance when off the picture##bd", &a.beaconDist,
+            "the mm figure on the edge arrow when the beacon is out of view");
+        row("On the height gauge##bg", &a.beaconGauge,
+            "a ring on the height gauge at the beacon's height against the focused plane");
+        ImGui::SeparatorText("Gripped object");
+        row("Name##on", &a.objName, "the object's name (CLens)");
+        row("Gripper##og", &a.objGripper, "the gripper's short label (HL, Tool markers page)");
+        row("Minutes left##ot", &a.objTime, "how long the registration has left (12m), of its 30");
+        row("Height##oh", &a.objHeight, "height against the focused plane (h -132 um)");
+        row("Distance when off the picture##od", &a.objDist,
+            "the mm figure on the edge arrow when the object is out of view");
+        row("On the height gauge##ogg", &a.objGauge,
+            "a diamond on the height gauge at the object's height against the focused plane");
+        ImGui::Spacing();
+        if (ImGui::Button("Reset to defaults##marks")) a = AuxMarkLabels{};
         break;
     }
     case kPrefQuickAlign: {

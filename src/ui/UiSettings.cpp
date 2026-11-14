@@ -114,6 +114,23 @@ UiSettings UiSettings::Load(const std::string& path)
                     s.auxTipLabels[it.key()] =
                         it.value().get<std::string>().substr(0, kAuxTipLabelMax);
         }
+        if (j.contains("aux_mark_labels") && j["aux_mark_labels"].is_object()) {
+            // Key by key over the defaults, so a newer build's extra switch
+            // starts ON rather than off.
+            const nlohmann::json& m = j["aux_mark_labels"];
+            AuxMarkLabels& a = s.auxMarks;
+            a.beaconName  = m.value("beacon_name", a.beaconName);
+            a.beaconTime  = m.value("beacon_time", a.beaconTime);
+            a.beaconTool  = m.value("beacon_tool", a.beaconTool);
+            a.beaconDist  = m.value("beacon_dist", a.beaconDist);
+            a.beaconGauge = m.value("beacon_gauge", a.beaconGauge);
+            a.objName     = m.value("obj_name", a.objName);
+            a.objGripper  = m.value("obj_gripper", a.objGripper);
+            a.objTime     = m.value("obj_time", a.objTime);
+            a.objHeight   = m.value("obj_height", a.objHeight);
+            a.objDist     = m.value("obj_dist", a.objDist);
+            a.objGauge    = m.value("obj_gauge", a.objGauge);
+        }
         if (j.contains("jog_reg_zoff_default") && j["jog_reg_zoff_default"].is_number())
             s.jogRegZOffDefault = j["jog_reg_zoff_default"].get<double>();
         if (j.contains("jog_reg_unverified_default"))
@@ -266,6 +283,14 @@ bool UiSettings::Save(const std::string& path) const
     nlohmann::json tl = nlohmann::json::object();
     for (const auto& kv : auxTipLabels) tl[kv.first] = kv.second;
     j["aux_tip_labels"] = tl;
+    j["aux_mark_labels"] = {
+        {"beacon_name", auxMarks.beaconName}, {"beacon_time", auxMarks.beaconTime},
+        {"beacon_tool", auxMarks.beaconTool}, {"beacon_dist", auxMarks.beaconDist},
+        {"beacon_gauge", auxMarks.beaconGauge},
+        {"obj_name", auxMarks.objName},       {"obj_gripper", auxMarks.objGripper},
+        {"obj_time", auxMarks.objTime},       {"obj_height", auxMarks.objHeight},
+        {"obj_dist", auxMarks.objDist},       {"obj_gauge", auxMarks.objGauge},
+    };
     j["jog_reg_zoff_default"]       = jogRegZOffDefault;
     j["jog_reg_unverified_default"] = jogRegUnverDefault;
     j["run_prog_uid"]  = runProgUid;

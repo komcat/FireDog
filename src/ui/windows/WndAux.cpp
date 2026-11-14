@@ -118,6 +118,16 @@ struct GaugeTip {
     bool        atFocus = false;
 };
 
+// Something else with a height on the tape: a planted beacon (a ring) or a
+// registered gripped object (a diamond), ON the tape itself rather than on a
+// pointer, its text on a small pill left of it. Same dz convention as a tip.
+struct GaugeMark {
+    std::string text;            // "" = the glyph alone
+    double      dz      = 0.0;
+    bool        diamond = false; // false = a beacon's ring
+    ImU32       col     = 0;
+};
+
 // Draws the gauge with its bottom at `bottom`, its right edge at `right`.
 // `left`/`rightTip` may be null (that side has no pointer). Returns the
 // height taken, plate included; 0 when the box is too short to hold it.
@@ -128,7 +138,8 @@ struct GaugeTip {
 // connects, and a pointer's position is the only thing on it that moves.
 constexpr float kGaugeTapeH = 200.0f;
 float DrawZGauge(ImDrawList* dl, float right, float bottom, float maxH, bool upKnown,
-                 const GaugeTip* left, const GaugeTip* rightTip)
+                 const GaugeTip* left, const GaugeTip* rightTip,
+                 const std::vector<GaugeMark>& marks)
 {
     const float fs = ImGui::GetFontSize();
     const float ss = fs * 0.8f;          // tick numbers, title
@@ -223,6 +234,28 @@ float DrawZGauge(ImDrawList* dl, float right, float bottom, float maxH, bool upK
                           IM_COL32(0, 0, 0, 200), 3.0f);
         dl->AddText(at, col, txt.c_str());
     };
+    // Beacons and gripped objects, ON the tape, under the pointers so a tip's
+    // arrow stays readable where they coincide. The text goes left of the
+    // glyph in the small font, on a pill, clipped to the plate.
+    for (const GaugeMark& gm : marks) {
+        const float y = yOf(gm.dz);
+        const float r = 5.5f;
+        if (gm.diamond) {
+            dl->AddQuadFilled(ImVec2(xT, y - r), ImVec2(xT + r, y), ImVec2(xT, y + r),
+                              ImVec2(xT - r, y), IM_COL32(0, 0, 0, 200));
+            dl->AddQuad(ImVec2(xT, y - r), ImVec2(xT + r, y), ImVec2(xT, y + r),
+                        ImVec2(xT - r, y), gm.col, 2.0f);
+        } else {
+            dl->AddCircleFilled(ImVec2(xT, y), r, IM_COL32(0, 0, 0, 200));
+            dl->AddCircle(ImVec2(xT, y), r, gm.col, 0, 2.0f);
+        }
+        if (gm.text.empty()) continue;
+        const float  tw2 = font->CalcTextSizeA(ss, FLT_MAX, 0.0f, gm.text.c_str()).x;
+        const ImVec2 at(fmaxf(plateL + 2.0f, xT - r - 6.0f - tw2), y - ss * 0.5f);
+        dl->AddRectFilled(ImVec2(at.x - 2.0f, at.y - 1.0f), ImVec2(at.x + tw2 + 2.0f, at.y + ss + 1.0f),
+                          IM_COL32(0, 0, 0, 200), 2.0f);
+        dl->AddText(font, ss, at, gm.col, gm.text.c_str());
+    }
     if (left)     pointer(*left, lTxt, lW, -1.0f);
     if (rightTip) pointer(*rightTip, rTxt, rW, +1.0f);
     return bottom - plateT;
@@ -1057,6 +1090,50 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
         DrawWorldMark(dl, wv, cm, 16.0f);
     }
 
+    // Beacons and gripped objects on the same tape, at their HEIGHT against the
+    // focused plane (Preferences > Graphic view > Beacons & objects):
+    //   beacon : its Z is the camera Z that focused where it was planted
+    //   object : the gripper's live tip Z + the registered dz (only when Z was
+    //            registered - without it the object IS at the tip's height,
+    //            already on the tape as the tip's pointer)
+    std::vector<GaugeMark> gaugeMarks;
+    if (haveGz) {
+        const auto height = [&](double axisDz) { return upSign != 0 ? upSign * axisDz : axisDz; };
+        if (auxMarks_.beaconGauge) {
+            for (const Beacon& b : workflow_.Beacons()) {
+                if (b.device != refName) continue;
+                GaugeMark gm;
+                gm.dz  = height(b.z - gz);
+                gm.col = kBeaconFarCol;
+                char t[96];
+                if (auxMarks_.beaconName)
+                    std::snprintf(t, sizeof(t), "%s %+lld", b.name.c_str(), GaugeUm(gm.dz));
+                else
+                    std::snprintf(t, sizeof(t), "%+lld", GaugeUm(gm.dz));
+                gm.text = t;
+                gaugeMarks.push_back(std::move(gm));
+            }
+        }
+        if (auxMarks_.objGauge) {
+            for (const GrippedObject& o : workflow_.GrippedObjects()) {
+                if (o.device != refName || !o.hasZ) continue;
+                RegVec3 tip{};
+                if (!workflow_.DeviceRegTip(o.gripper, tip, nullptr)) continue;   // no tip, no object
+                GaugeMark gm;
+                gm.dz      = height(tip.z + o.dz - gz);
+                gm.diamond = true;
+                gm.col     = DeviceAccentColor(o.gripper, kGripObjCol);
+                char t[96];
+                if (auxMarks_.objName)
+                    std::snprintf(t, sizeof(t), "%s %+lld", o.name.c_str(), GaugeUm(gm.dz));
+                else
+                    std::snprintf(t, sizeof(t), "%+lld", GaugeUm(gm.dz));
+                gm.text = t;
+                gaugeMarks.push_back(std::move(gm));
+            }
+        }
+    }
+
     // Bottom-right, stacked upward: the opposite corner from the position plate,
     // and out of the way of a mark that is on screen. The Z gauge first
     // (nearest the corner - it is read most often), then any tip it could not
@@ -1064,13 +1141,13 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
     const float lineH = ImGui::GetTextLineHeightWithSpacing();
     const float yBase = origin.y + avail.y - 8.0f - bottomInset;
     float       y     = yBase;
-    if (haveLeft || haveRight) {
+    if (haveLeft || haveRight || !gaugeMarks.empty()) {
         // Fixed size: drawn whole whenever it fits under the top control
         // plate's band (~3 lines), else the plain lines below.
         const float gh = DrawZGauge(dl, origin.x + avail.x - 12.0f, y,
                                     y - origin.y - lineH * 3.0f, upSign != 0,
                                     haveLeft ? &gLeft : nullptr,
-                                    haveRight ? &gRight : nullptr);
+                                    haveRight ? &gRight : nullptr, gaugeMarks);
         if (gh > 0.0f) {
             y -= gh + 4.0f;
         } else {
@@ -1244,9 +1321,9 @@ void App::DrawAuxGrippedObjects(ImDrawList* dl, const ImVec2& imgO, const ImVec2
         // The object's height against the focused plane, when Z was measured:
         // the live tip's focused Z plus the registered dz, against the camera.
         char hgt[48] = "";
-        if (o.hasZ && haveGz) {
+        if (auxMarks_.objHeight && o.hasZ && haveGz) {
             const double dz = tip.z + o.dz - gz;
-            std::snprintf(hgt, sizeof(hgt), "  %s %+lld %s", upSign != 0 ? "h" : "dZ",
+            std::snprintf(hgt, sizeof(hgt), "%s %+lld %s", upSign != 0 ? "h" : "dZ",
                           GaugeUm(upSign != 0 ? upSign * dz : dz), kUm);
         }
         bool turned = false;
@@ -1256,16 +1333,30 @@ void App::DrawAuxGrippedObjects(ImDrawList* dl, const ImVec2& imgO, const ImVec2
                 if (const auto iu = gp.find("U"); iu != gp.end())
                     turned = std::fabs(iu->second - o.gripU) > kDeviceRegRotTolDeg;
         }
-        const std::string tl = AuxTipLabel(o.gripper);
-        // Minutes left, as a beacon shows them: it goes on its own at 0.
-        const double left = GrippedObjectMinutesLeft(o);
-        char ttl[16];
-        if (left >= 1.0) std::snprintf(ttl, sizeof(ttl), "%dm", static_cast<int>(left));
-        else             std::snprintf(ttl, sizeof(ttl), "<1m");
-        char lbl[176];
-        std::snprintf(lbl, sizeof(lbl), "%s %s  %s%s%s", o.name.c_str(),
-                      tl.empty() ? o.gripper.c_str() : tl.c_str(), ttl, hgt,
-                      turned ? "  U moved" : "");
+        // The text, part by part as Preferences > Graphic view > Beacons &
+        // objects asks. "U moved" is a warning, not information, and stays.
+        std::string lblS;
+        const auto part = [&lblS](const std::string& t) {
+            if (t.empty()) return;
+            if (!lblS.empty()) lblS += "  ";
+            lblS += t;
+        };
+        if (auxMarks_.objName) part(o.name);
+        if (auxMarks_.objGripper) {
+            const std::string tl = AuxTipLabel(o.gripper);
+            part(tl.empty() ? o.gripper : tl);
+        }
+        if (auxMarks_.objTime) {
+            // Minutes left, as a beacon shows them: it goes on its own at 0.
+            const double left = GrippedObjectMinutesLeft(o);
+            char ttl[16];
+            if (left >= 1.0) std::snprintf(ttl, sizeof(ttl), "%dm", static_cast<int>(left));
+            else             std::snprintf(ttl, sizeof(ttl), "<1m");
+            part(ttl);
+        }
+        part(hgt);
+        if (turned) part("U moved");
+        const char* lbl = lblS.c_str();
 
         CameraMark cm;
         cm.wx           = tip.x + o.dx;
@@ -1273,7 +1364,7 @@ void App::DrawAuxGrippedObjects(ImDrawList* dl, const ImVec2& imgO, const ImVec2
         cm.have         = true;
         cm.label        = lbl;
         cm.col          = DeviceAccentColor(o.gripper, kGripObjCol);
-        cm.edgeDistance = true;
+        cm.edgeDistance = auxMarks_.objDist;
         cm.glyph        = CameraMark::Glyph::Diamond;
         cm.pulsePeriodS = 60.0f / 72.0f;   // a resting human heart, 72 bpm
         DrawWorldMark(dl, wv, cm, 14.0f);
@@ -1344,16 +1435,28 @@ void App::DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
             else if (a <= kBeaconMidMm) { col = kBeaconMidCol;  bpm = kBeaconMidBpm;  }
         }
 
+        // The text, part by part as Preferences > Graphic view > Beacons &
+        // objects asks; the pulse itself is always drawn.
         const double left = BeaconMinutesLeft(b, now);
-        char ttl[16];
-        if (left >= 1.0) std::snprintf(ttl, sizeof(ttl), "%dm", static_cast<int>(left));
-        else             std::snprintf(ttl, sizeof(ttl), "<1m");
-        char lbl[96];
-        if (nearest)
-            std::snprintf(lbl, sizeof(lbl), "%s  %s  %s %+lld", b.name.c_str(), ttl,
-                          nearest->label.c_str(), GaugeUm(hgtMm));
-        else
-            std::snprintf(lbl, sizeof(lbl), "%s  %s", b.name.c_str(), ttl);
+        std::string lblS;
+        const auto part = [&lblS](const std::string& t) {
+            if (t.empty()) return;
+            if (!lblS.empty()) lblS += "  ";
+            lblS += t;
+        };
+        if (auxMarks_.beaconName) part(b.name);
+        if (auxMarks_.beaconTime) {
+            char ttl[16];
+            if (left >= 1.0) std::snprintf(ttl, sizeof(ttl), "%dm", static_cast<int>(left));
+            else             std::snprintf(ttl, sizeof(ttl), "<1m");
+            part(ttl);
+        }
+        if (auxMarks_.beaconTool && nearest) {
+            char tl[64];
+            std::snprintf(tl, sizeof(tl), "%s %+lld", nearest->label.c_str(), GaugeUm(hgtMm));
+            part(tl);
+        }
+        const char* lbl = lblS.c_str();
 
         CameraMark cm;
         cm.wx           = b.x;
@@ -1361,7 +1464,7 @@ void App::DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
         cm.have         = true;
         cm.label        = lbl;
         cm.col          = col;
-        cm.edgeDistance = true;
+        cm.edgeDistance = auxMarks_.beaconDist;
         cm.glyph        = CameraMark::Glyph::Pulse;
         cm.pulsePeriodS = 60.0f / bpm;
         DrawWorldMark(dl, wv, cm, 16.0f);

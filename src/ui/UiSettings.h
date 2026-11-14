@@ -75,6 +75,28 @@ inline std::map<std::string, std::string> DefaultAuxTipLabels()
     return {{"hex-left", "HL"}, {"hex-right", "HR"}};
 }
 
+// What the Aux view writes beside a beacon's pulse and a gripped object's
+// diamond, part by part, and whether each kind is also drawn on the height
+// gauge. Presentation only: hiding a part hides text, never the mark - an
+// absent mark is how a refusal reads (no tip, an expired beacon).
+struct AuxMarkLabels {
+    // Beacon: "b_focus  9m  HL +383 um  4.83 mm"
+    bool beaconName  = true;   // its name
+    bool beaconTime  = true;   // minutes left
+    bool beaconTool  = true;   // the nearest tool and its height over the beacon
+    bool beaconDist  = true;   // off the picture: the distance on the edge arrow
+    bool beaconGauge = true;   // a marker on the height gauge
+    // Gripped object: "CLens  HL  12m  h -132 um"
+    bool objName    = true;    // its name
+    bool objGripper = true;    // the gripper's short label
+    bool objTime    = true;    // minutes left
+    bool objHeight  = true;    // height against the focused plane
+    bool objDist    = true;    // off the picture: the distance on the edge arrow
+    bool objGauge   = true;    // a marker on the height gauge
+
+    bool operator==(const AuxMarkLabels&) const = default;
+};
+
 struct UiSettings {
     int   fontIndex  = 0;     // index into App's kFonts table
     float fontSize   = 26.0f;   // UI font size in px
@@ -207,6 +229,11 @@ struct UiSettings {
     // (Preferences > Graphic view). "" = the mark alone. A device not listed
     // shows its full name.
     std::map<std::string, std::string> auxTipLabels = DefaultAuxTipLabels();
+
+    // Aux view: what the BEACON pulses and the GRIPPED-OBJECT diamonds say,
+    // and whether they appear on the height gauge (Preferences > Graphic view >
+    // Beacons & objects). The marks themselves are always drawn.
+    AuxMarkLabels auxMarks;
 
     // Jog window "Tool -> cam": what its Z off field and unverified checkbox
     // start at (Preferences > Motion). The fields themselves are not kept -

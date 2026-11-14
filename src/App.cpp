@@ -122,6 +122,7 @@ int App::Run()
         chartYBands_     = ui.chartYBands;
         chartYBandList_  = ui.chartYBandList;
         auxTipLabels_    = ui.auxTipLabels;
+        auxMarks_        = ui.auxMarks;
         chartChDef_      = ui.chartChDefault;
         chartCh_         = chartChDef_;       // every start shows the chosen channel(s)
         jogRegZOffDef_   = std::clamp(ui.jogRegZOffDefault, -100.0, 100.0);
@@ -674,6 +675,7 @@ void App::SaveUiSettings()
     s.chartYBandList = chartYBandList_;
     s.chartChDefault     = chartChDef_;
     s.auxTipLabels       = auxTipLabels_;
+    s.auxMarks           = auxMarks_;
     s.jogRegZOffDefault  = jogRegZOffDef_;
     s.jogRegUnverDefault = jogRegUnverDef_;
     s.runProgUid  = runLastProgUid_;

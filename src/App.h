@@ -220,6 +220,7 @@ struct AppPrefs {
     std::vector<ChartYBand> chartYBandList;
     int   chartChDefault = 2;    // chart channel(s) at startup: 0 Ch1, 1 Ch2, 2 both
     std::map<std::string, std::string> auxTipLabels;   // Aux tool-tip text by device
+    AuxMarkLabels auxMarks;                            // beacon / object mark text
     double jogRegZOff  = 0.0;    // Jog "Tool -> cam" defaults
     bool   jogRegUnver = true;
     // Scanning > XCAN: machine state in scan_presets.local.json, not
@@ -1049,6 +1050,10 @@ private:
     // gives the device's entry, else its full name; "" = the mark alone.
     std::map<std::string, std::string> auxTipLabels_ = DefaultAuxTipLabels();
     std::string AuxTipLabel(const std::string& device) const;
+    // ...and what the beacon / gripped-object marks say, plus whether they ride
+    // the height gauge (UiSettings aux_mark_labels, Preferences > Graphic view
+    // > Beacons & objects).
+    AuxMarkLabels auxMarks_;
     bool                      chartScope_ = true;  // scope look vs classic axes
     std::vector<float>        kT1_, kV1_, kT2_, kV2_;
     std::vector<float>        kX1_, kX2_;      // X shifted to relative time (t - now)
