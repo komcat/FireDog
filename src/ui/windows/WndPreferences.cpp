@@ -827,18 +827,8 @@ void App::DrawPreferencesWindow()
     // ---- OK / Cancel / Apply (bottom right) ----
     std::string err = BandListError(e.chartYBandList);
     if (err.empty()) err = XcanPrefsError(e);
-    const bool        dirty = !(e.themeIndex == prefsBase_.themeIndex &&
-                                e.fontIndex == prefsBase_.fontIndex &&
-                                e.fontSize == prefsBase_.fontSize &&
-                                e.chartYBands == prefsBase_.chartYBands &&
-                                e.chartYBandList == prefsBase_.chartYBandList &&
-                                e.chartChDefault == prefsBase_.chartChDefault &&
-                                e.auxTipLabels == prefsBase_.auxTipLabels &&
-                                e.jogRegZOff == prefsBase_.jogRegZOff &&
-                                e.jogRegUnver == prefsBase_.jogRegUnver &&
-                                e.xcanPresets == prefsBase_.xcanPresets &&
-                                e.xcanTargets == prefsBase_.xcanTargets &&
-                                e.quickAlign == prefsBase_.quickAlign);
+    // The whole struct (AppPrefs::operator==), never a hand list of fields.
+    const bool        dirty = !(e == prefsBase_);
     ImGui::Spacing();
     const float bw    = ImGui::CalcTextSize("Cancel").x + st.FramePadding.x * 2.0f + 24.0f;
     const float total = bw * 3.0f + st.ItemSpacing.x * 2.0f;

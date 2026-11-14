@@ -228,6 +228,11 @@ struct AppPrefs {
     std::array<XcanPreset, kXcanPresetCount> xcanPresets{};
     std::array<XcanTarget, kXcanPresetCount> xcanTargets{};
     QuickAlignSlots quickAlign;
+
+    // The Preferences window's "anything to apply?" test compares the WHOLE
+    // struct, so a field added here can never be left out of it - a hand list
+    // once missed three, and their checkboxes silently did nothing.
+    bool operator==(const AppPrefs&) const = default;
 };
 
 // Hysteresis state for one chart's fixed Y range: the band indices it showed
