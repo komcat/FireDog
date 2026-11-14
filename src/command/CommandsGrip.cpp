@@ -1294,8 +1294,9 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                       {"z_offset_mm", PT::Double, false, -2.0, -100.0, 100.0, {},
                        "offset from the camera's focused Z, applied to the OBJECT when its "
                        "Z was registered (else to the tip, as grip_move_to_camera). 0 "
-                       "puts it on the focused surface; NEGATIVE stands it off (higher) "
-                       "on this machine"},
+                       "puts it ON the focused surface. POSITIVE (Z+) moves it LOWER, "
+                       "toward / into the ground - careful; NEGATIVE stands it off "
+                       "(higher) on this machine"},
                       {"axes", PT::String, false, "XYZ", 0, 0, {},
                        "which axes to command; the others are left where they are"},
                       {"max_mm", PT::Double, false, 10.0, 0.0, 500.0, {},
@@ -1326,7 +1327,8 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                       {"z_offset_mm", PT::Double, false, -2.0, -100.0, 100.0, {},
                        "offset from the beacon's Z (the camera Z that FOCUSED there), "
                        "applied to the OBJECT when its Z was registered (else to the tip). "
-                       "0 puts it on that surface; NEGATIVE stands it off (higher) on "
+                       "0 puts it ON that surface. POSITIVE (Z+) moves it LOWER, toward / "
+                       "into the ground - careful; NEGATIVE stands it off (higher) on "
                        "this machine"},
                       {"axes", PT::String, false, "XYZ", 0, 0, {},
                        "which axes to command; the others are left where they are"},
