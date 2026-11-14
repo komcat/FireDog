@@ -1416,9 +1416,18 @@ std::size_t App::DeleteSelectedSteps(Recipe& r)
 void App::DrawRecipePalette(Recipe& r, bool canEdit)
 {
     ImGui::BeginDisabled(!canEdit);
-    ImGui::SetNextItemWidth(-1.0f);
+    // The clear button sits on the field's line; clicking it takes focus off
+    // the InputText, so emptying the buffer is not overwritten by its edit state.
+    const float clearW = ImGui::GetFrameHeight();
+    ImGui::SetNextItemWidth(-(clearW + ImGui::GetStyle().ItemInnerSpacing.x));
     ImGui::InputTextWithHint("##palSearch", "search...", edSearchBuf_,
                              sizeof(edSearchBuf_));
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::BeginDisabled(edSearchBuf_[0] == '\0');
+    if (ImGui::Button("X##palSearchClear", ImVec2(clearW, 0.0f))) edSearchBuf_[0] = '\0';
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Clear search");
 
     const RecipeStep* sel =
         edStepSel_.empty() ? nullptr : FindStepByPath(&r.steps, edStepSel_);
