@@ -395,8 +395,6 @@ void App::StartDeckRun(RunScope scope, const std::set<std::string>* teachOnly)
     // Object results have no "keep": each was measured on the part that was on
     // the machine then, and nothing yet says the next part sits where it did.
     workflow_.ClearObjectResults("program start");
-    // A registered gripped object is one lens in the jaws - the same footing.
-    workflow_.ClearGrippedObjects("program start");
 
     // A queue that is dry from end to end (a dry-run folder, or a recipe in
     // one) is a motion soak, not a part: like a teach run it leaves the cycle

@@ -20,6 +20,7 @@
 //   grip_release_object   drop one (or every) registered object
 //   grip_object_to_camera put a REGISTERED object under the camera: tip target
 //                         = camera - (dx, dy, dz)
+//   grip_object_to_beacon the same, with a beacon as the camera point
 //
 // TEACHING IS NOT HERE, for the reason it is not in the device-registration
 // family either: adopting a reference offset means an operator looking at a
@@ -38,6 +39,7 @@
 #include "command/LuaEngine.h"     // RunLuaFile (the grip_measure launcher)
 #include "command/MotionWaits.h"   // ResolveMotion, kMoveTolMM, the approach params
 #include "command/RegApproach.h"   // PrepareRegMove / ApproachRefPoint
+#include "core/Beacon.h"
 #include "core/DeviceReg.h"
 #include "core/GripProfile.h"
 #include "core/GrippedObject.h"
@@ -48,6 +50,7 @@
 #include "vision/HalconDetector.h"
 #include "workflow/Workflow.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -808,8 +811,9 @@ CommandResult ExecGripRegisterObject(ExecutionContext& ctx, const ParamValues& p
                 o.hasU  = true;
             }
     }
-    o.result = result;
-    o.at     = NowStamp();
+    o.result       = result;
+    o.at           = NowStamp();
+    o.registeredAt = std::chrono::steady_clock::now();
     ctx.Wf().SetGrippedObject(o);
 
     std::string prefix = p.GetString("ctx_prefix");
@@ -832,10 +836,10 @@ CommandResult ExecGripRegisterObject(ExecutionContext& ctx, const ParamValues& p
                                            : "result '" + result + "'";
     FD_INFO("grip", "'%s' registered to '%s': object (%.4f, %.4f, %.4f) [%s%s] - tip "
                     "(%.4f, %.4f, %.4f) = d (%+.4f, %+.4f, %+.4f) '%s' mm, h (%+.4f, %+.4f, "
-                    "%+.4f) '%s' axes",
+                    "%+.4f) '%s' axes - good for %d min",
             name.c_str(), gripper.c_str(), o.ox, o.oy, o.oz, src.c_str(),
             useZ ? ", camera Z" : ", Z not measured", o.tx, o.ty, o.tz, o.dx, o.dy, o.dz,
-            device.c_str(), o.hx, o.hy, o.hz, gripper.c_str());
+            device.c_str(), o.hx, o.hy, o.hz, gripper.c_str(), kGrippedObjectLifeMin);
     return CommandResult::Success();
 }
 
@@ -879,14 +883,19 @@ CommandResult ExecGripReleaseObject(ExecutionContext& ctx, const ParamValues& p)
 // gate, the ceiling and the two-speed approach are the ones every tool move
 // runs. A gripper turned in U since the registration is REFUSED: the object
 // swings about the tip, and d no longer says where it is.
-CommandResult ExecGripObjectToCamera(ExecutionContext& ctx, const ParamValues& p)
+// The one body both object movers share: resolve the record, the
+// registration's refusals with the record's device as the expected reference,
+// the U guard, then the tip at `point - d + z_offset`. `point` is a place in
+// that device's axis space a camera FOCUSED on - the live camera pose, or a
+// beacon - and `what` names it for the log.
+CommandResult MoveGrippedObjectTo(ExecutionContext& ctx, const ParamValues& p,
+                                  const GrippedObject& o, const std::string& pointDevice,
+                                  const RegVec3& point, const std::string& what)
 {
-    const std::string name = p.GetString("name");
-    GrippedObject     o;
-    if (!ctx.Wf().GrippedObjectFor(name, &o))
-        return CommandResult::Fail("no gripped object '" + name + "' - grip_register_object "
-                                   "it first (it is cleared at program start, DUT open "
-                                   "and product load)");
+    if (pointDevice != o.device)
+        return CommandResult::Fail("'" + o.name + "' was registered in '" + o.device +
+                                   "' axis space, but " + what + " is on '" + pointDevice +
+                                   "' - a point on one device is a different place on another");
 
     DeviceReg          r;
     IMotionController* m   = nullptr;
@@ -908,6 +917,24 @@ CommandResult ExecGripObjectToCamera(ExecutionContext& ctx, const ParamValues& p
         }
     }
 
+    const double  zoff = p.GetDouble("z_offset_mm");
+    const RegVec3 target{point.x - o.dx, point.y - o.dy, point.z - o.dz + zoff};
+    FD_INFO("grip", "'%s' to %s: (%.4f, %.4f, %.4f) on '%s', object offset "
+                    "(%+.4f, %+.4f, %+.4f)%s, so the '%s' tip aims at (%.4f, %.4f, %.4f), "
+                    "z_offset %+.4f",
+            o.name.c_str(), what.c_str(), point.x, point.y, point.z, o.device.c_str(), o.dx,
+            o.dy, o.dz, o.hasZ ? "" : " (Z not registered)", o.gripper.c_str(), target.x,
+            target.y, target.z, zoff);
+    return ApproachRefPoint(ctx, p, o.gripper, r, m, idx, target);
+}
+
+CommandResult ExecGripObjectToCamera(ExecutionContext& ctx, const ParamValues& p)
+{
+    GrippedObject o;
+    std::string   why;
+    if (!ctx.Wf().GrippedObjectFor(p.GetString("name"), &o, &why))
+        return CommandResult::Fail(why);
+
     // Where the camera stands, by the record's own device name.
     std::map<std::string, double> cam;
     if (!ctx.Wf().DevicePose(o.device, cam))
@@ -916,17 +943,34 @@ CommandResult ExecGripObjectToCamera(ExecutionContext& ctx, const ParamValues& p
     const auto ix = cam.find("X"), iy = cam.find("Y"), iz = cam.find("Z");
     if (ix == cam.end() || iy == cam.end() || iz == cam.end())
         return CommandResult::Fail("'" + o.device + "' does not report X/Y/Z");
+    return MoveGrippedObjectTo(ctx, p, o, o.device,
+                               RegVec3{ix->second, iy->second, iz->second},
+                               "the camera point");
+}
 
-    const double  zoff = p.GetDouble("z_offset_mm");
-    const RegVec3 target{ix->second - o.dx, iy->second - o.dy,
-                         iz->second - o.dz + zoff};
-    FD_INFO("grip", "'%s' to the camera point: '%s' at (%.4f, %.4f, %.4f), object offset "
-                    "(%+.4f, %+.4f, %+.4f)%s, so the '%s' tip aims at (%.4f, %.4f, %.4f), "
-                    "z_offset %+.4f",
-            o.name.c_str(), o.device.c_str(), ix->second, iy->second, iz->second, o.dx,
-            o.dy, o.dz, o.hasZ ? "" : " (Z not registered)", o.gripper.c_str(), target.x,
-            target.y, target.z, zoff);
-    return ApproachRefPoint(ctx, p, o.gripper, r, m, idx, target);
+// ---- grip_object_to_beacon -------------------------------------------------
+//
+// grip_object_to_camera with a BEACON as the camera point: a recipe looks at
+// the place (plant_beacon / plant_beacon_here), moves the camera on, and still
+// puts the object where it looked. A beacon's Z is the camera Z that FOCUSED
+// there, so with dz registered z_offset 0 sets the OBJECT on that surface.
+// Both records must be in the same device's axis space; an expired or missing
+// beacon or object fails before anything moves.
+CommandResult ExecGripObjectToBeacon(ExecutionContext& ctx, const ParamValues& p)
+{
+    GrippedObject o;
+    std::string   why;
+    if (!ctx.Wf().GrippedObjectFor(p.GetString("name"), &o, &why))
+        return CommandResult::Fail(why);
+
+    const std::string bname = p.GetString("beacon");
+    Beacon            b;
+    if (!ctx.Wf().BeaconFor(bname, &b, &why)) return CommandResult::Fail(why);
+
+    char what[96];
+    std::snprintf(what, sizeof(what), "beacon '%s' (%.1f min left)", bname.c_str(),
+                  BeaconMinutesLeft(b));
+    return MoveGrippedObjectTo(ctx, p, o, b.device, RegVec3{b.x, b.y, b.z}, what);
 }
 
 }   // namespace
@@ -1190,7 +1234,8 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                             "the CAMERA's motion device - the gripper's registration must "
                             "be referenced to it"},
                            {"name", PT::String, false, "lens", 0, 0, {},
-                            "the object's name; registering an existing name replaces it"},
+                            "the object's name; registering an existing name replaces it (and "
+                            "restarts its 30 min)"},
                            {"result", PT::ResultName, false, "", 0, 0, {},
                             "the object's XY from this object result (a detect_object "
                             "step's ctx_prefix). None = the camera centre, where "
@@ -1265,6 +1310,38 @@ void RegisterGripCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& h
                       ApproachPctParam(),
                   },
                   CommandSpec::Needs::None, ExecGripObjectToCamera});
+
+    // The same move with a beacon as the camera point: move_tool_to_beacon for
+    // the OBJECT, so its parameters are that command's with the object's name
+    // in place of the device.
+    reg.Register({"grip_object_to_beacon", "Grip",
+                  "APPROACH a beacon with a REGISTERED object (grip_register_object): the "
+                  "tip aims at beacon - (dx, dy, dz), so the object lands on the beacon",
+                  {
+                      {"name", PT::String, false, "lens", 0, 0, {},
+                       "the registered object; its gripper is what moves"},
+                      {"beacon", PT::String, false, "beacon1", 0, 0, {},
+                       "the beacon (plant_beacon / plant_beacon_here, under 30 min old), "
+                       "planted on the device the object was registered in"},
+                      {"z_offset_mm", PT::Double, false, -2.0, -100.0, 100.0, {},
+                       "offset from the beacon's Z (the camera Z that FOCUSED there), "
+                       "applied to the OBJECT when its Z was registered (else to the tip). "
+                       "0 puts it on that surface; NEGATIVE stands it off (higher) on "
+                       "this machine"},
+                      {"axes", PT::String, false, "XYZ", 0, 0, {},
+                       "which axes to command; the others are left where they are"},
+                      {"max_mm", PT::Double, false, 10.0, 0.0, 500.0, {},
+                       "refuse a move longer than this; 0 disables the ceiling"},
+                      {"allow_unverified", PT::Bool, false, false, 0, 0, {},
+                       "move through a registration whose check has not been run"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {}, "arrival tolerance"},
+                      ToolVelocityParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                  },
+                  CommandSpec::Needs::None, ExecGripObjectToBeacon});
 }
 
 } // namespace firedog

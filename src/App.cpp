@@ -389,6 +389,7 @@ void App::Update(float dt)
     // A beacon is good for kBeaconLifeMin: drop and log the expired ones here,
     // once, rather than leaving the first reader to discover it.
     workflow_.ExpireBeacons();
+    workflow_.ExpireGrippedObjects();   // same lifetime, same once-only log
 
     // A NEW DUT is a new physical part, so any taught frame stops meaning
     // anything. Edge-detected off DutSession's own state rather than hooked
@@ -402,7 +403,6 @@ void App::Update(float dt)
             if (!key.empty()) {
                 workflow_.ClearLiveFrames("new DUT opened");
                 workflow_.ClearObjectResults("new DUT opened");
-                workflow_.ClearGrippedObjects("new DUT opened");
                 // And the picture, for the same reason: a still shows ONE
                 // physical part. Left up, last part's serial would sit over
                 // this part's run looking like a reading somebody just took.
@@ -750,6 +750,8 @@ void App::ResetDocumentSelections()
     // This also covers app start, since Run() calls us before the first frame.
     workflow_.ClearLiveFrames("product loaded");
     workflow_.ClearObjectResults("product loaded");
+    // Like the beacons below: not part-scoped, but a different product's
+    // object means nothing.
     workflow_.ClearGrippedObjects("product loaded");
     // Beacons are not part-scoped (program start and DUT open keep them), but
     // a different product's locations mean nothing.

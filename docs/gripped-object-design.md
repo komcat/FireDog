@@ -306,18 +306,22 @@ grip_register_object           -> d = object - tip, stored by name
 * **Gripper axes.** `h = DeviceRegSolve(object) − DeviceRegSolve(tip)`, as
   `grip_apply` does: `t` cancels and there is still one matrix multiply.
 
-It is **standalone** — no profile, no reference, no verdict — and **part-scoped**,
-with an object result's lifetime: cleared at program start, DUT open, product
-load and app close (`ClearGrippedObjects` beside every `ClearObjectResults`), by
-`grip_release_object`, or by the Aux strip's *Clear gripped objects*. Registering
-a name again replaces it. The ctx keys (`<prefix>_dx/_dy/_dz/_dist/_hx/_hy/_hz`,
+It is **standalone** — no profile, no reference, no verdict — and has a
+**beacon's lifetime** (`docs/beacon-design.md`), not an object result's: good for
+`kGrippedObjectLifeMin` (30 min) after registering, and gone at
+`grip_release_object`, the Aux strip's *Clear gripped objects*, product load and
+app close. **Program start and DUT open keep it**, so a lens registered by one
+program can be placed by the next. An expired record reads as absent everywhere
+(`GrippedObjectFor` refuses with "expired", `GrippedObjects()` skips it) and
+`App::Update` → `ExpireGrippedObjects` erases and logs it once. Registering a
+name again replaces it and restarts its 30 minutes. The ctx keys (`<prefix>_dx/_dy/_dz/_dist/_hx/_hy/_hz`,
 the object and tip points) are mirrors for display and branching.
 
 **The diamond.** The Aux window draws every record on the picture's device as a
 diamond in the gripper's colour at the **live** tip + `(dx, dy)`, so it rides with
 the gripper and stays on the object as the camera moves; off the image it is an
-edge arrow. The label carries the object's height against the focused plane
-(live tip Z + `dz` − camera Z). A tip that cannot be predicted draws nothing.
+edge arrow. The label carries the minutes left (as a beacon's does) and the
+object's height against the focused plane (live tip Z + `dz` − camera Z). A tip that cannot be predicted draws nothing.
 A U rotation since the registration is **not** compensated — the object swings
 about the tip — so the label says `U moved` instead.
 
@@ -338,3 +342,20 @@ two-speed approach). A gripper turned in U since the registration is
 **refused** — the object swung about the tip and `d` no longer says where it is;
 register again at that rotation. It is no teach mover, no parallel mover and not
 dry-run allowed.
+
+**`grip_object_to_beacon`** is the same move with a **beacon** as the camera
+point (`docs/beacon-design.md`): look at the place (`plant_beacon` /
+`plant_beacon_here`), move the camera on, and still set the object down where it
+looked — `tip target = beacon − (dx, dy, dz) + z_offset_mm`. A beacon's Z is the
+camera Z that focused there, so with `dz` registered `z_offset_mm = 0` puts the
+object on that surface. The beacon must be planted on the device the object was
+registered in, and an expired or missing beacon or object fails before anything
+moves. Both commands go through ONE body, `MoveGrippedObjectTo`, so the
+refusals, the U guard and the arithmetic cannot drift apart.
+
+```
+grip_register_object  name=CLens            (camera on the lens, focused)
+plant_beacon          name=place  position=<see the target>
+grip_object_to_beacon name=CLens  beacon=place  z_offset_mm=-2   (approach)
+grip_object_to_beacon name=CLens  beacon=place  z_offset_mm=0    (set down)
+```

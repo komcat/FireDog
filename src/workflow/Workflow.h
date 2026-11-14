@@ -575,15 +575,20 @@ public:
 
     // ---- Gripped objects (grip_register_object -> the Aux diamond) ----------
     // An object registered to the gripper holding it: object - tip in XYZ
-    // (core/GrippedObject.h). Part-scoped like the object results above, so it
-    // is cleared beside every ClearObjectResults (program start, DUT open,
-    // product load), and by grip_release_object or the Aux window's Clear.
-    // Mutex-guarded: engine workers write, the Aux window reads.
+    // (core/GrippedObject.h). A BEACON's lifetime: program start and DUT open
+    // keep it; it goes at grip_release_object, the Aux window's Clear, product
+    // load (ClearGrippedObjects) or kGrippedObjectLifeMin after registering.
+    // An expired one reads as absent everywhere; ExpireGrippedObjects
+    // (App::Update) erases it and logs that once. Mutex-guarded: engine
+    // workers write, the Aux window reads.
     void SetGrippedObject(const GrippedObject& o);
     bool EraseGrippedObject(const std::string& name);
-    bool GrippedObjectFor(const std::string& name, GrippedObject* out) const;
-    std::vector<GrippedObject> GrippedObjects() const;   // snapshot, by name
+    // false + *why ("no gripped object 'x'" / "... expired") when unusable.
+    bool GrippedObjectFor(const std::string& name, GrippedObject* out,
+                          std::string* why) const;
+    std::vector<GrippedObject> GrippedObjects() const;   // the unexpired, by name
     void ClearGrippedObjects(const char* reason);
+    void ExpireGrippedObjects();
 
     // ---- Waffle tray cursors (tray_next / tray_reset / the Waffle Tray page)
     // Which cells of a tray are USED (the cavity is empty), by tray uid. The

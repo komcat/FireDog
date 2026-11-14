@@ -27,6 +27,7 @@
 #include <cstring>
 #include <filesystem>
 #include <initializer_list>
+#include <utility>
 
 namespace firedog {
 
@@ -162,12 +163,50 @@ void DrawPulse(ImDrawList* dl, const ImVec2& p, ImU32 col, float size, const cha
 
 // CameraMark::Glyph::Diamond: an outlined rhombus `size` from centre to tip,
 // a centre dot, and the label on the same dark pill as the pulse.
-void DrawDiamond(ImDrawList* dl, const ImVec2& p, ImU32 col, float size, const char* label)
+//
+// It BEATS like a resting heart: once every `periodS` (60 / bpm) a "lub" and,
+// kHeartDubPhase of a beat later, a softer "dub" - each a brief swell of the
+// diamond plus an outline that grows from it and fades. Driven by
+// ImGui::GetTime(), so it keeps nothing between frames. A heartbeat rather than
+// the beacon's even pulse, so the two never read as the same kind of mark.
+void DrawDiamond(ImDrawList* dl, const ImVec2& p, ImU32 col, float size, const char* label,
+                 float periodS)
 {
+    constexpr float kHeartDubPhase = 0.30f;   // dub after lub, fraction of a beat
+    constexpr float kRingLife      = 0.35f;   // a ring's life, fraction of a beat
+    const double period = periodS > 0.05f ? static_cast<double>(periodS) : 60.0 / 72.0;
+    const float  ph     = static_cast<float>(std::fmod(ImGui::GetTime(), period) / period);
+    const ImU32  a0     = (col >> IM_COL32_A_SHIFT) & 0xFF;
+
+    // One beat's contribution at phase `start` with strength `gain`: how far
+    // into its ring life it is (0..1), or -1 when it is not running.
+    const auto age = [&](float start) {
+        const float t = (ph - start) / kRingLife;
+        return (t >= 0.0f && t <= 1.0f) ? t : -1.0f;
+    };
+    const float lub = age(0.0f), dub = age(kHeartDubPhase);
+
+    // The swell: a quick rise and fall on each beat, the dub weaker.
+    float swell = 0.0f;
+    if (lub >= 0.0f) swell += 0.18f * (1.0f - lub) * (1.0f - lub);
+    if (dub >= 0.0f) swell += 0.10f * (1.0f - dub) * (1.0f - dub);
+
+    const auto diamond = [&](float rr, ImU32 c, float thick) {
+        dl->AddQuad(ImVec2(p.x, p.y - rr), ImVec2(p.x + rr, p.y), ImVec2(p.x, p.y + rr),
+                    ImVec2(p.x - rr, p.y), c, thick);
+    };
     const float r = size * 0.75f;
-    dl->AddQuad(ImVec2(p.x, p.y - r), ImVec2(p.x + r, p.y), ImVec2(p.x, p.y + r),
-                ImVec2(p.x - r, p.y), col, 2.0f);
-    dl->AddCircleFilled(p, 3.0f, col);
+    // The rings first, so the diamond itself stays on top of them.
+    for (const auto& [t, gain] : {std::pair<float, float>{lub, 1.0f},
+                                  std::pair<float, float>{dub, 0.6f}}) {
+        if (t < 0.0f) continue;
+        const ImU32 fade = static_cast<ImU32>(static_cast<float>(a0) * 0.85f * gain * (1.0f - t));
+        if (fade == 0) continue;
+        diamond(r + size * 0.9f * t, (col & ~IM_COL32_A_MASK) | (fade << IM_COL32_A_SHIFT),
+                2.0f);
+    }
+    diamond(r * (1.0f + swell), col, 2.0f);
+    dl->AddCircleFilled(p, 3.0f * (1.0f + swell), col);
 
     if (label && label[0]) {
         const ImVec2 ts = ImGui::CalcTextSize(label);
@@ -309,7 +348,7 @@ void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
         if (m.glyph == CameraMark::Glyph::Pulse)
             DrawPulse(dl, s, col, crossLen, m.label, m.pulsePeriodS);
         else if (m.glyph == CameraMark::Glyph::Diamond)
-            DrawDiamond(dl, s, col, crossLen, m.label);
+            DrawDiamond(dl, s, col, crossLen, m.label, m.pulsePeriodS);
         else
             DrawCross(dl, s, col, crossLen, m.label);
         return;

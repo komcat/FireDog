@@ -1257,9 +1257,14 @@ void App::DrawAuxGrippedObjects(ImDrawList* dl, const ImVec2& imgO, const ImVec2
                     turned = std::fabs(iu->second - o.gripU) > kDeviceRegRotTolDeg;
         }
         const std::string tl = AuxTipLabel(o.gripper);
-        char lbl[160];
-        std::snprintf(lbl, sizeof(lbl), "%s %s%s%s", o.name.c_str(),
-                      tl.empty() ? o.gripper.c_str() : tl.c_str(), hgt,
+        // Minutes left, as a beacon shows them: it goes on its own at 0.
+        const double left = GrippedObjectMinutesLeft(o);
+        char ttl[16];
+        if (left >= 1.0) std::snprintf(ttl, sizeof(ttl), "%dm", static_cast<int>(left));
+        else             std::snprintf(ttl, sizeof(ttl), "<1m");
+        char lbl[176];
+        std::snprintf(lbl, sizeof(lbl), "%s %s  %s%s%s", o.name.c_str(),
+                      tl.empty() ? o.gripper.c_str() : tl.c_str(), ttl, hgt,
                       turned ? "  U moved" : "");
 
         CameraMark cm;
@@ -1270,6 +1275,7 @@ void App::DrawAuxGrippedObjects(ImDrawList* dl, const ImVec2& imgO, const ImVec2
         cm.col          = DeviceAccentColor(o.gripper, kGripObjCol);
         cm.edgeDistance = true;
         cm.glyph        = CameraMark::Glyph::Diamond;
+        cm.pulsePeriodS = 60.0f / 72.0f;   // a resting human heart, 72 bpm
         DrawWorldMark(dl, wv, cm, 14.0f);
     }
 }

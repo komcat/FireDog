@@ -12,17 +12,27 @@
 // camera device's axis space, so the origin cancels and what is kept is a
 // vector. It is standalone: no GripProfile, no reference, no verdict.
 //
-// It describes ONE PART in the jaws, so it has an object result's lifetime:
-// cleared at program start, DUT open, product load and app close, and by
-// grip_release_object or the Aux window's Clear. grip_object_to_camera moves by
+// It has a BEACON's lifetime (core/Beacon.h), not an object result's: good for
+// kGrippedObjectLifeMin minutes after registering, then gone - and gone too at
+// grip_release_object, the Aux window's Clear, product load and app close.
+// Program start and DUT open KEEP it, so a lens registered in one program can
+// be placed by the next. An expired object reads as absent everywhere;
+// ExpireGrippedObjects (App::Update) erases it and logs that once.
+// grip_object_to_camera moves by
 // it (tip target = camera - d); the Aux window draws it as a diamond at the
 // LIVE tip plus (dx, dy), so it rides with the gripper.
 // docs/gripped-object-design.md §8.
 #pragma once
 
+#include <chrono>
 #include <string>
 
 namespace firedog {
+
+// The same 30 minutes a beacon gets, and for the same reason: long enough for a
+// pick-and-place cycle, short enough that a forgotten record does not outlive
+// the part.
+inline constexpr int kGrippedObjectLifeMin = 30;
 
 struct GrippedObject {
     std::string name;      // "lens" - the step's name for it
@@ -46,6 +56,24 @@ struct GrippedObject {
 
     std::string result;   // the object result it came from ("" = camera centre)
     std::string at;       // wall clock, for the log and the label
+    std::chrono::steady_clock::time_point registeredAt{};
 };
+
+// Minutes this object has left (negative = expired), against `now`.
+inline double GrippedObjectMinutesLeft(const GrippedObject& o,
+                                       std::chrono::steady_clock::time_point now =
+                                           std::chrono::steady_clock::now())
+{
+    const double age =
+        std::chrono::duration<double, std::ratio<60>>(now - o.registeredAt).count();
+    return static_cast<double>(kGrippedObjectLifeMin) - age;
+}
+
+inline bool GrippedObjectExpired(const GrippedObject& o,
+                                 std::chrono::steady_clock::time_point now =
+                                     std::chrono::steady_clock::now())
+{
+    return GrippedObjectMinutesLeft(o, now) <= 0.0;
+}
 
 } // namespace firedog

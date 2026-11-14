@@ -12,6 +12,7 @@ would have to stay where it is.
 | `plant_beacon_here` | The same record without a move: waits `settle_ms` and stores where the camera stands NOW. The steps before it (a move, a detection's `center_after`) put it there. |
 | `remove_beacon` | Removes `name`, or every beacon with `all`. A missing name is a no-op unless `must_exist` is set. |
 | `move_tool_to_beacon` | `move_tool_to_camera` with the beacon as the camera point: same params, same refusals, same approach. |
+| `grip_object_to_beacon` | the same for a REGISTERED gripped object (`grip_register_object`): the tip aims at beacon − (dx, dy, dz) so the object lands on it. `docs/gripped-object-design.md` §8. |
 
 Code: `core/Beacon.h` (the record and its lifetime), `Workflow::SetBeacon` /
 `BeaconFor` / `Beacons` / `ClearBeacons` / `ExpireBeacons` (the store),

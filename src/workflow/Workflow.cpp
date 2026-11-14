@@ -838,22 +838,59 @@ bool Workflow::EraseGrippedObject(const std::string& name)
     return grippedObjects_.erase(name) > 0;
 }
 
-bool Workflow::GrippedObjectFor(const std::string& name, GrippedObject* out) const
+bool Workflow::GrippedObjectFor(const std::string& name, GrippedObject* out,
+                                std::string* why) const
 {
     const std::lock_guard<std::mutex> lock(gripObjMu_);
     const auto it = grippedObjects_.find(name);
-    if (it == grippedObjects_.end()) return false;
+    if (it == grippedObjects_.end()) {
+        if (why) *why = "no gripped object '" + name + "' - grip_register_object it first";
+        return false;
+    }
+    if (GrippedObjectExpired(it->second)) {
+        if (why) {
+            char buf[192];
+            std::snprintf(buf, sizeof(buf),
+                          "gripped object '%s' expired (registered %s, good for %d min) - "
+                          "register it again",
+                          name.c_str(), it->second.at.c_str(), kGrippedObjectLifeMin);
+            *why = buf;
+        }
+        return false;
+    }
     if (out) *out = it->second;
     return true;
 }
 
 std::vector<GrippedObject> Workflow::GrippedObjects() const
 {
+    const auto now = std::chrono::steady_clock::now();
     const std::lock_guard<std::mutex> lock(gripObjMu_);
     std::vector<GrippedObject> v;
     v.reserve(grippedObjects_.size());
-    for (const auto& [name, o] : grippedObjects_) v.push_back(o);
+    for (const auto& [name, o] : grippedObjects_)
+        if (!GrippedObjectExpired(o, now)) v.push_back(o);
     return v;
+}
+
+void Workflow::ExpireGrippedObjects()
+{
+    std::vector<std::string> gone;
+    {
+        const auto now = std::chrono::steady_clock::now();
+        const std::lock_guard<std::mutex> lock(gripObjMu_);
+        for (auto it = grippedObjects_.begin(); it != grippedObjects_.end();) {
+            if (GrippedObjectExpired(it->second, now)) {
+                gone.push_back(it->first);
+                it = grippedObjects_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const std::string& name : gone)
+        FD_INFO("grip", "gripped object '%s' expired after %d min - removed", name.c_str(),
+                kGrippedObjectLifeMin);
 }
 
 void Workflow::ClearGrippedObjects(const char* reason)
