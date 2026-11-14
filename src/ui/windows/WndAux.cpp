@@ -78,9 +78,14 @@ constexpr double kTipAtFocusMM = 0.050;
 constexpr ImU32 kTipGoneCol = IM_COL32(200, 170, 110, 220);
 
 // ---- The Z gauge: where each registered tip stands against the focus plane ----
-// One vertical tape, the camera's focused plane across its middle, one pointer
-// per hexapod (the LEFT one on the left of the tape, the RIGHT one on the
-// right). Read like an aircraft's vertical-speed tape: the scale is
+// A grid of COLUMNS sharing one height scale, the camera's focused plane across
+// all of them: left to right, the LEFT hexapod's tip, the objects it holds,
+// the beacons, the objects the RIGHT one holds, its tip (2026-11-14 - one tape
+// with everything stacked on it read as a pile once a beacon and an object sat
+// near a tip). Each column is named at its top and carries its glyph at its
+// height with the number beside it; a tip's level runs across its own half of
+// the grid in its colour, so its objects and the beacons read against it. The
+// scale is that of an aircraft's vertical-speed tape:
 // LOGARITHMIC away from focus, so the last 0.1 mm of an approach gets as much
 // height as the 5 mm before it, and a tip 30 mm off still lands on the scale
 // (pinned at the end, in its own colour, with the true number beside it).
@@ -113,151 +118,195 @@ long long GaugeUm(double mm) { return std::llround(mm * 1000.0); }
 
 struct GaugeTip {
     std::string name;            // the SHORT label (AuxTipLabel: "HL" / "HR")
+    std::string device;          // its motion device - which objects sit beside it
     double      dz      = 0.0;   // what the tape plots and prints: height when
                                  // the up sign is known, else the axis dZ
     bool        atFocus = false;
+    ImU32       col     = 0;     // the device's colour (DeviceAccentColor)
 };
 
-// Something else with a height on the tape: a planted beacon (a ring) or a
-// registered gripped object (a diamond), ON the tape itself rather than on a
-// pointer, its text on a small pill left of it. Same dz convention as a tip.
+// Something else with a height: a planted beacon (a ring) or a registered
+// gripped object (a diamond), each in a column of its own. Same dz convention
+// as a tip. `side` puts the column beside the gripper that holds it (-1 the
+// left tip's, +1 the right's) or among the beacons in the middle (0).
 struct GaugeMark {
-    std::string text;            // "" = the glyph alone
+    std::string name;            // the column's header; "" = none (Preferences)
     double      dz      = 0.0;
     bool        diamond = false; // false = a beacon's ring
     ImU32       col     = 0;
+    int         side    = 0;
 };
 
 // Draws the gauge with its bottom at `bottom`, its right edge at `right`.
-// `left`/`rightTip` may be null (that side has no pointer). Returns the
-// height taken, plate included; 0 when the box is too short to hold it.
+// `left`/`rightTip` may be null (that side has no tip). Returns the height
+// taken, plate included; 0 when the box is too short to hold it.
 //
-// FIXED SIZE: the tape is kGaugeTapeH tall whatever the window, and each side
-// reserves a label slot for its name plus a worst-case number, both sides
-// always - so the plate never breathes as a value changes length or a hexapod
-// connects, and a pointer's position is the only thing on it that moves.
+// The tape is kGaugeTapeH tall whatever the window, and every column is the
+// same width - one worst-case number wide - so a value changing length never
+// moves anything. The gauge grows a column per beacon or object, which is the
+// point: nothing is stacked on anything else.
 constexpr float kGaugeTapeH = 200.0f;
 float DrawZGauge(ImDrawList* dl, float right, float bottom, float maxH, bool upKnown,
                  const GaugeTip* left, const GaugeTip* rightTip,
                  const std::vector<GaugeMark>& marks)
 {
-    const float fs = ImGui::GetFontSize();
-    const float ss = fs * 0.8f;          // tick numbers, title
-    ImFont*     font = ImGui::GetFont();
-    const float H = kGaugeTapeH;
-    if (H + ss + 22.0f > maxH) return 0.0f;
+    const float fs    = ImGui::GetFontSize();
+    const float ss    = fs * 0.8f;           // numbers, names, scale, title
+    ImFont*     font  = ImGui::GetFont();
+    const float H     = kGaugeTapeH;
+    const float headH = ss + 6.0f;           // the column names' row
+    if (H + headH + ss * 2.0f + 30.0f > maxH) return 0.0f;
+    const auto textW = [&](const char* t) { return font->CalcTextSizeA(ss, FLT_MAX, 0.0f, t).x; };
+
+    // The columns, left to right.
+    struct Col {
+        const GaugeTip*  tip  = nullptr;
+        const GaugeMark* mark = nullptr;
+    };
+    std::vector<Col> cols;
+    if (left) cols.push_back({left, nullptr});
+    for (const int side : {-1, 0, +1})
+        for (const GaugeMark& m : marks)
+            if (m.side == side) cols.push_back({nullptr, &m});
+    if (rightTip) cols.push_back({rightTip, nullptr});
+    const int n = static_cast<int>(cols.size());
+    if (n == 0) return 0.0f;
+
+    const char* topEnd = upKnown ? "above" : "+Z";
+    const char* botEnd = upKnown ? "below" : "-Z";
+    const float colW   = textW("-00000") + 16.0f;
+    const float scaleW = fmaxf(fmaxf(textW("10k"), textW("focus")),
+                               fmaxf(textW(topEnd), textW(botEnd))) + 12.0f;
+    const float gridR  = right;
+    const float gridL  = gridR - colW * static_cast<float>(n);
+    const float gridM  = (gridL + gridR) * 0.5f;
+
+    char title[48];
+    std::snprintf(title, sizeof(title), "%s, %s (reg)", upKnown ? "height" : "dZ", kUm);
+    const float tw     = textW(title);
+    const float plateL = fminf(gridL - scaleW - 4.0f, right - tw - 4.0f);
+
+    const float yB     = bottom - ss - 10.0f;        // room for "below" under the grid
+    const float yT     = yB - H;
+    const float yC     = (yT + yB) * 0.5f;
+    const float half   = H * 0.5f;
+    const float plateT = yT - headH - ss - 8.0f;
+    const auto  yOf    = [&](double dz) { return yC - GaugeFrac(dz) * half; };
+
+    dl->AddRectFilled(ImVec2(plateL, plateT), ImVec2(right + 6.0f, bottom),
+                      IM_COL32(0, 0, 0, 150), 4.0f);
+    // Title: what the numbers are, and that they are a BELIEF (reg).
+    dl->AddText(font, ss, ImVec2(fmaxf(plateL + 4.0f, (gridL + gridR - tw) * 0.5f), plateT + 3.0f),
+                kTipGoneCol, title);
+
+    // The grid: a faint band per labelled tick across every column, the column
+    // rules, the frame.
+    const ImU32 ruleCol = IM_COL32(200, 205, 215, 70);
+    struct Tick { double v; const char* txt; };
+    static constexpr Tick kTicks[] = {
+        {0.1, nullptr}, {0.5, nullptr}, {1.0, "1k"}, {2.0, nullptr}, {5.0, "5k"}, {10.0, "10k"}};
+    for (const Tick& t : kTicks) {
+        for (const double sg : {1.0, -1.0}) {
+            const float y   = yOf(sg * t.v);
+            const float len = t.txt ? 7.0f : 4.0f;
+            dl->AddLine(ImVec2(gridL - len, y), ImVec2(gridL, y), kGaugeTapeCol, 1.0f);
+            if (!t.txt) continue;
+            dl->AddLine(ImVec2(gridL, y), ImVec2(gridR, y), ruleCol, 1.0f);
+            dl->AddText(font, ss, ImVec2(gridL - 9.0f - textW(t.txt), y - ss * 0.5f),
+                        kGaugeTapeCol, t.txt);
+        }
+    }
+    for (int i = 1; i < n; ++i) {
+        const float x = gridL + colW * static_cast<float>(i);
+        dl->AddLine(ImVec2(x, yT), ImVec2(x, yB), ruleCol, 1.0f);
+    }
+    dl->AddRect(ImVec2(gridL, yT), ImVec2(gridR, yB), kGaugeTapeCol, 0.0f, 0, 1.0f);
+    dl->AddText(font, ss, ImVec2(gridL - 4.0f - textW(topEnd), yT - headH), kGaugeTapeCol, topEnd);
+    dl->AddText(font, ss, ImVec2(gridL - 4.0f - textW(botEnd), yB + 3.0f), kGaugeTapeCol, botEnd);
+
+    // The focus plane: across the scale and every column.
+    dl->AddLine(ImVec2(plateL + 4.0f, yC), ImVec2(gridR, yC), kGaugeFocusCol, 1.5f);
+    dl->AddText(font, ss, ImVec2(gridL - 9.0f - textW("focus"), yC - ss - 1.0f), kGaugeFocusCol,
+                "focus");
 
     // In focus reads as ZERO on the number and on the tape: within
     // kTipAtFocusMM the residual is below what the label means, and a pointer
     // twitching about the line reads as motion that is not there.
     const auto shown = [](const GaugeTip* t) { return t->atFocus ? 0.0 : t->dz; };
-    const auto label = [&](const GaugeTip* t) {
-        char b[96];
-        if (t->atFocus) std::snprintf(b, sizeof(b), "%s  0", t->name.c_str());
-        else            std::snprintf(b, sizeof(b), "%s  %+lld", t->name.c_str(), GaugeUm(shown(t)));
-        return std::string(b);
-    };
-    const std::string lTxt = left ? label(left) : std::string();
-    const std::string rTxt = rightTip ? label(rightTip) : std::string();
-    // The slot: the widest of the labels on screen and a stand-in, each with a
-    // worst-case number (5 digits: a pinned tip 10+ mm off); the same width on
-    // both sides.
-    float slotW = ImGui::CalcTextSize("HR  -00000").x;
-    for (const GaugeTip* t : {left, rightTip})
-        if (t) slotW = fmaxf(slotW, ImGui::CalcTextSize((t->name + "  -00000").c_str()).x);
-    const float lW  = left ? ImGui::CalcTextSize(lTxt.c_str()).x : 0.0f;
-    const float rW  = rightTip ? ImGui::CalcTextSize(rTxt.c_str()).x : 0.0f;
-    const char* topEnd = upKnown ? "above" : "+Z";
-    const char* botEnd = upKnown ? "below" : "-Z";
-    const float tlW = font->CalcTextSizeA(ss, FLT_MAX, 0.0f, "10k").x;
-    const float endW = fmaxf(font->CalcTextSizeA(ss, FLT_MAX, 0.0f, topEnd).x,
-                             font->CalcTextSizeA(ss, FLT_MAX, 0.0f, botEnd).x);
 
-    // Right to left: [left label][leader]|tape|[tick numbers + leader][right label]
-    const float xRL = right - slotW - 6.0f;                      // right leader's outer end
-    const float xT  = xRL - (tlW + 14.0f);                       // the tape
-    const float xLL = xT - 16.0f;                                // left leader's outer end
-    char title[48];
-    std::snprintf(title, sizeof(title), "%s, %s (reg)", upKnown ? "height" : "dZ", kUm);
-    const float tw    = font->CalcTextSizeA(ss, FLT_MAX, 0.0f, title).x;
-    const float plateL = fminf(fminf(xLL - 6.0f - slotW - 6.0f, xT - endW - 12.0f),
-                               right - tw - 4.0f);
-
-    const float yB = bottom - 8.0f;
-    const float yT = yB - H;
-    const float yC = (yT + yB) * 0.5f;
-    const float half = H * 0.5f;
-    const float plateT = yT - ss - 10.0f;
-    const auto yOf = [&](double dz) { return yC - GaugeFrac(dz) * half; };
-
-    dl->AddRectFilled(ImVec2(plateL, plateT), ImVec2(right + 6.0f, bottom),
-                      IM_COL32(0, 0, 0, 150), 4.0f);
-    // Title: what the numbers are, and that they are a BELIEF (reg), as the
-    // corner lines this replaced said.
-    dl->AddText(font, ss,
-                ImVec2(fmaxf(plateL + 4.0f, fminf(xT - tw * 0.5f, right - tw)), plateT + 4.0f),
-                kTipGoneCol, title);
-
-    // The tape, its ends, its ticks.
-    dl->AddLine(ImVec2(xT, yT), ImVec2(xT, yB), kGaugeTapeCol, 1.5f);
-    dl->AddText(font, ss, ImVec2(xT - endW - 6.0f, yT - ss * 0.5f), kGaugeTapeCol, topEnd);
-    dl->AddText(font, ss, ImVec2(xT - endW - 6.0f, yB - ss * 0.5f), kGaugeTapeCol, botEnd);
-    struct Tick { double v; const char* txt; };
-    static constexpr Tick kTicks[] = {
-        {0.1, nullptr}, {0.5, nullptr}, {1.0, "1k"}, {2.0, nullptr}, {5.0, "5k"}, {10.0, "10k"}};
-    for (const Tick& t : kTicks) {
-        for (const double s : {1.0, -1.0}) {
-            const float y   = yOf(s * t.v);
-            const float len = t.txt ? 7.0f : 4.0f;
-            dl->AddLine(ImVec2(xT - len, y), ImVec2(xT + len, y), kGaugeTapeCol, 1.0f);
-            if (t.txt)
-                dl->AddText(font, ss, ImVec2(xT + 9.0f, y - ss * 0.5f), kGaugeTapeCol, t.txt);
-        }
+    // Each tip's LEVEL across its own half, under every glyph: what its
+    // objects and the beacons are read against.
+    for (const GaugeTip* t : {left, rightTip}) {
+        if (!t) continue;
+        const float y  = yOf(shown(t));
+        const float x0 = t == left ? gridL : gridM;
+        const float x1 = t == left ? gridM : gridR;
+        dl->AddLine(ImVec2(x0, y), ImVec2(x1, y), (t->col & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 170),
+                    1.0f);
     }
-    // The focus plane: across the whole gauge, as on the sketch.
-    dl->AddLine(ImVec2(plateL + 4.0f, yC), ImVec2(right + 2.0f, yC), kGaugeFocusCol, 1.5f);
-    dl->AddText(font, ss, ImVec2(plateL + 4.0f, yC - ss - 1.0f), kGaugeFocusCol, "focus");
 
-    // A pointer: arrowhead on the tape, a leader out to its label. `dir` is -1
-    // for the left side, +1 for the right.
-    const auto pointer = [&](const GaugeTip& t, const std::string& txt, float labW, float dir) {
-        const bool  pinned = std::fabs(t.dz) > kGaugeRangeMM;
-        const ImU32 col = t.atFocus ? kGaugeFocusCol : (pinned ? kGaugePinnedCol : kTipCol);
-        const float y   = yOf(shown(&t));
-        const float tip = xT + dir * 1.0f;
-        const float base = xT + dir * 11.0f;
-        dl->AddTriangleFilled(ImVec2(tip, y), ImVec2(base, y - 6.0f), ImVec2(base, y + 6.0f), col);
-        const float outer = dir < 0.0f ? xLL : xRL;
-        dl->AddLine(ImVec2(base, y), ImVec2(outer, y), col, 2.0f);
-        const ImVec2 at(dir < 0.0f ? outer - 4.0f - labW : outer + 4.0f, y - fs * 0.5f);
-        dl->AddRectFilled(ImVec2(at.x - 3.0f, at.y - 1.0f), ImVec2(at.x + labW + 3.0f, at.y + fs + 1.0f),
-                          IM_COL32(0, 0, 0, 200), 3.0f);
-        dl->AddText(at, col, txt.c_str());
-    };
-    // Beacons and gripped objects, ON the tape, under the pointers so a tip's
-    // arrow stays readable where they coincide. The text goes left of the
-    // glyph in the small font, on a pill, clipped to the plate.
-    for (const GaugeMark& gm : marks) {
-        const float y = yOf(gm.dz);
-        const float r = 5.5f;
-        if (gm.diamond) {
-            dl->AddQuadFilled(ImVec2(xT, y - r), ImVec2(xT + r, y), ImVec2(xT, y + r),
-                              ImVec2(xT - r, y), IM_COL32(0, 0, 0, 200));
-            dl->AddQuad(ImVec2(xT, y - r), ImVec2(xT + r, y), ImVec2(xT, y + r),
-                        ImVec2(xT - r, y), gm.col, 2.0f);
+    // The columns: name on top (clipped to the column), glyph at its height,
+    // the number beside it on a pill - under the glyph, or over it near the
+    // bottom.
+    for (int i = 0; i < n; ++i) {
+        const Col&  c   = cols[static_cast<std::size_t>(i)];
+        const float cx0 = gridL + colW * static_cast<float>(i);
+        const float cx  = cx0 + colW * 0.5f;
+        const std::string& name = c.tip ? c.tip->name : c.mark->name;
+        const double dz   = c.tip ? shown(c.tip) : c.mark->dz;
+        const bool pinned = std::fabs(dz) > kGaugeRangeMM;
+        const ImU32 col   = c.tip ? (c.tip->atFocus ? kGaugeFocusCol
+                                                    : (pinned ? kGaugePinnedCol : c.tip->col))
+                                  : (pinned ? kGaugePinnedCol : c.mark->col);
+        const float y = yOf(dz);
+
+        if (!name.empty()) {
+            dl->PushClipRect(ImVec2(cx0 + 1.0f, yT - headH - 2.0f), ImVec2(cx0 + colW - 1.0f, yT), true);
+            const float nw = textW(name.c_str());
+            dl->AddText(font, ss, ImVec2(fmaxf(cx0 + 2.0f, cx - nw * 0.5f), yT - headH + 1.0f),
+                        c.tip ? c.tip->col : c.mark->col, name.c_str());
+            dl->PopClipRect();
+        }
+
+        // The glyph. A tip is a triangle POINTING AT FOCUS from the side it is
+        // on (the way it has to go), its apex at its height; in focus, a bar.
+        float below = 8.0f, above = 8.0f;   // how far the glyph reaches either way
+        if (c.tip) {
+            if (c.tip->atFocus) {
+                dl->AddRectFilled(ImVec2(cx - 9.0f, y - 2.5f), ImVec2(cx + 9.0f, y + 2.5f), col);
+            } else if (dz > 0.0) {   // above focus: points down
+                dl->AddTriangleFilled(ImVec2(cx, y), ImVec2(cx - 8.0f, y - 12.0f),
+                                      ImVec2(cx + 8.0f, y - 12.0f), col);
+                above = 14.0f;
+            } else {                 // below focus: points up
+                dl->AddTriangleFilled(ImVec2(cx, y), ImVec2(cx + 8.0f, y + 12.0f),
+                                      ImVec2(cx - 8.0f, y + 12.0f), col);
+                below = 14.0f;
+            }
         } else {
-            dl->AddCircleFilled(ImVec2(xT, y), r, IM_COL32(0, 0, 0, 200));
-            dl->AddCircle(ImVec2(xT, y), r, gm.col, 0, 2.0f);
+            const float r = 6.0f;
+            if (c.mark->diamond) {
+                dl->AddQuadFilled(ImVec2(cx, y - r), ImVec2(cx + r, y), ImVec2(cx, y + r),
+                                  ImVec2(cx - r, y), col);
+                dl->AddQuad(ImVec2(cx, y - r), ImVec2(cx + r, y), ImVec2(cx, y + r),
+                            ImVec2(cx - r, y), IM_COL32(0, 0, 0, 220), 1.0f);
+            } else {
+                dl->AddCircleFilled(ImVec2(cx, y), r, IM_COL32(0, 0, 0, 200));
+                dl->AddCircle(ImVec2(cx, y), r, col, 0, 2.0f);
+            }
         }
-        if (gm.text.empty()) continue;
-        const float  tw2 = font->CalcTextSizeA(ss, FLT_MAX, 0.0f, gm.text.c_str()).x;
-        const ImVec2 at(fmaxf(plateL + 2.0f, xT - r - 6.0f - tw2), y - ss * 0.5f);
-        dl->AddRectFilled(ImVec2(at.x - 2.0f, at.y - 1.0f), ImVec2(at.x + tw2 + 2.0f, at.y + ss + 1.0f),
+
+        char num[32];
+        if (c.tip && c.tip->atFocus) std::snprintf(num, sizeof(num), "0");
+        else                         std::snprintf(num, sizeof(num), "%+lld", GaugeUm(dz));
+        const float nw2 = textW(num);
+        float ny = y + below + 1.0f;
+        if (ny + ss > yB - 1.0f) ny = y - above - 1.0f - ss;
+        const ImVec2 at(cx - nw2 * 0.5f, ny);
+        dl->AddRectFilled(ImVec2(at.x - 2.0f, at.y - 1.0f), ImVec2(at.x + nw2 + 2.0f, at.y + ss + 1.0f),
                           IM_COL32(0, 0, 0, 200), 2.0f);
-        dl->AddText(font, ss, at, gm.col, gm.text.c_str());
+        dl->AddText(font, ss, at, col, num);
     }
-    if (left)     pointer(*left, lTxt, lW, -1.0f);
-    if (rightTip) pointer(*rightTip, rTxt, rW, +1.0f);
     return bottom - plateT;
 }
 
@@ -1044,9 +1093,11 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
         const int side = haveGz ? GaugeSide(name, haveLeft, haveRight) : 0;
         if (side != 0) {
             GaugeTip& g = side < 0 ? gLeft : gRight;
-            g.name    = lbl.empty() ? name : lbl;   // "HL" / "HR" keeps the gauge narrow
+            g.name    = lbl.empty() ? name : lbl;   // "HL" / "HR" keeps the column narrow
+            g.device  = name;
             g.dz      = upSign != 0 ? upSign * dz : dz;
             g.atFocus = atFocus;
+            g.col     = tipCol;
             (side < 0 ? haveLeft : haveRight) = true;
         } else {
             char line[128];
@@ -1115,14 +1166,10 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
             for (const Beacon& b : workflow_.Beacons()) {
                 if (b.device != refName) continue;
                 GaugeMark gm;
-                gm.dz  = height(b.z - gz);
-                gm.col = BeaconColor(b);
-                char t[96];
-                if (auxMarks_.beaconName)
-                    std::snprintf(t, sizeof(t), "%s %+lld", b.name.c_str(), GaugeUm(gm.dz));
-                else
-                    std::snprintf(t, sizeof(t), "%+lld", GaugeUm(gm.dz));
-                gm.text = t;
+                gm.dz   = height(b.z - gz);
+                gm.col  = BeaconColor(b);
+                gm.side = 0;   // the beacons sit in the middle columns
+                if (auxMarks_.beaconName) gm.name = b.name;
                 gaugeMarks.push_back(std::move(gm));
             }
         }
@@ -1135,12 +1182,11 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
                 gm.dz      = height(tip.z + o.dz - gz);
                 gm.diamond = true;
                 gm.col     = DeviceAccentColor(o.gripper, kGripObjCol);
-                char t[96];
-                if (auxMarks_.objName)
-                    std::snprintf(t, sizeof(t), "%s %+lld", o.name.c_str(), GaugeUm(gm.dz));
-                else
-                    std::snprintf(t, sizeof(t), "%+lld", GaugeUm(gm.dz));
-                gm.text = t;
+                // Beside the gripper holding it; among the beacons when that
+                // gripper has no column.
+                gm.side    = (haveLeft && o.gripper == gLeft.device)    ? -1
+                           : (haveRight && o.gripper == gRight.device) ? +1 : 0;
+                if (auxMarks_.objName) gm.name = o.name;
                 gaugeMarks.push_back(std::move(gm));
             }
         }

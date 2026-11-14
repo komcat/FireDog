@@ -403,10 +403,18 @@ where it was taught) draws **no position**, and a tip registered against a
 different reference is not drawn at all, since a point in another origin
 projected through this pose is off by the whole distance between the two.
 
-The Z half is a **gauge** in the bottom-right corner, not a line of text: one
-vertical tape with the camera's focused plane across its middle, the left
-hexapod's pointer on the left of the tape and the right one's on the right
-(by name; an unnamed device takes a free side, a third one keeps a text line).
+The Z half is a **gauge** in the bottom-right corner, not a line of text: a
+grid of COLUMNS on one height scale, the camera's focused plane across all of
+them. Left to right: the left hexapod's tip, the objects it holds, the beacons,
+the objects the right one holds, its tip (by name; an unnamed device takes a
+free side, a third one keeps a text line; an object whose gripper has no
+column sits among the beacons). Each column is named at its top and carries
+its glyph at its height with the µm number beside it - a tip is a triangle
+pointing AT focus from the side it is on, an object a diamond, a beacon a
+ring - and each tip's level runs across its own half of the grid in its
+colour, so what it holds and the beacons read against it (2026-11-14: one tape
+with everything on it stacked into a pile once a beacon and an object sat near
+a tip).
 The reading is the tip's **height above focus** — `dZ` times
 `Workflow::GantryAxisZUpSign()`, global Z+ (the Jog window's Up; the global
 frame is Z-up) pushed through the gantry's transform — on gantry-main
@@ -418,9 +426,9 @@ scale is logarithmic (bends at 0.1 mm, ends at 10 mm): the last tenth of an
 approach gets as much tape as the 5 mm before it, and a tip further off pins at
 the end in red with its true number beside it. Within 0.05 mm it turns green
 and reads **0.000**, pointer ON the focus line — a residual below what the
-label means would only make the pointer twitch. The gauge is a **fixed size**
-(a 200 px tape; each side reserves a label slot for its name and a worst-case
-number), so nothing on it moves but the pointers. Like the cross, it is a
+label means would only make the pointer twitch. The tape is a **fixed height**
+(200 px) and every column one worst-case number wide, so nothing moves as a
+value changes length; the gauge widens by a column per beacon or object. Like the cross, it is a
 belief, and its title says `reg`.
 
 What a refusal *does* draw is one dim `no tip: <reason>` line in the corner.
