@@ -466,6 +466,11 @@ void App::Update(float dt)
 bool App::OperatorWanted() const
 {
     if (workflow_.PendingNotice().id != 0) return true;   // notify_operator
+    // xcan_operator: waiting for a press or Done - not while its scan runs,
+    // when the machine is working and nobody needs to be called over.
+    if (const Workflow::XcanSession xs = workflow_.PendingXcanSession();
+        xs.id != 0 && !xs.requested && !xs.scanning)
+        return true;
     if (orch_.recipe.Running()) {
         const RecipeEngine::Status s = orch_.recipe.GetStatus();
         if (!s.pendingPrompt.empty() || s.pendingAdjust || s.pendingPick || s.stepPaused)

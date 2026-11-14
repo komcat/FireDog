@@ -612,6 +612,7 @@ void App::DrawMainWindow()
         DrawRecipePromptWindow(); // global recipe prompt (any page, any time)
         DrawManualAdjustWindow(); // global manual_adjust jog window
         DrawOperatorNoticeWindow(); // global notify_operator window (yellow, OK only)
+        DrawXcanOperatorWindow();   // global xcan_operator window (Quick align, Done)
         DrawAlignPickWindow();    // global align_station crosshair pick
 
         // ---- Editor pages (View menu) replace the whole panel layout until

@@ -5,6 +5,7 @@
 
 #include <array>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -487,6 +488,10 @@ private:
     // pose. In place — the uid survives, so every reference to it survives.
     bool TeachPositionByUid(const std::string& device, const std::string& uid);
     bool DrawConditionEditor(nlohmann::json& cond);   // if / loop-while / wait_until
+    // A number typed with an SI prefix: a mantissa field + a prefix combo (p n
+    // u m - k M), and "800u" / "0.8 mA" / "8e-4" all accepted in the field. The
+    // stored value is the plain number (0.0008); the prefix is display only.
+    bool InputSiDouble(const char* label, double* v, float width);
     void DrawRecipeRunStrip(float height);
     void DrawRecipePromptWindow();    // GLOBAL prompt (recipe + script) — non-modal, always on top
     // The operator's panel switches (core/PanelSwitches.h): edge-detects the
@@ -497,6 +502,7 @@ private:
     void UpdatePanelSwitches();
     void DrawManualAdjustWindow();    // GLOBAL manual_adjust jog window — non-modal, always on top
     void DrawOperatorNoticeWindow();  // GLOBAL notify_operator window — yellow, OK only, non-modal, on top
+    void DrawXcanOperatorWindow();    // GLOBAL xcan_operator window — Quick align buttons, Done / Cancel
     void DrawAlignPickWindow();       // GLOBAL align_station crosshair pick — non-modal, always on top
     // Alignment page (View menu, full-page): teach a local frame (O1) from two
     // operator-marked features. The capture itself runs through the engines, so
@@ -851,8 +857,16 @@ private:
     void DrawRunScanBlock();          // shared channel/Target/Trace header + Raster|Climb|XCAN tabs
     void DrawRunXcanBlock();          // XCAN tab: hex-left/right launch presets
     void DrawRunQuickAlign();         // operator band: 5 one-press target+ladder launches
+    // The band itself, shared with the xcan_operator window: `blocked` greys
+    // every launch, `onLaunch(dev, presetIdx, label)` is the hand-off.
+    void DrawQuickAlignBand(bool blocked,
+                            const std::function<void(const char*, int, const std::string&)>& onLaunch,
+                            bool showStop);
     void DrawRunShotPanel();          // the image box above the DUT block
     void DrainCapturedView();         // worker -> UI: the captured still -> a texture
+    std::string XcanPresetScript() const;   // hexapod_align.lua, the product's copy if any
+    std::vector<std::pair<std::string, CtxValue>> XcanPresetKeys(const std::string& device,
+                                                                 int presetIdx) const;
     void StartXcanPreset(const std::string& device, int presetIdx);
     void DrawXcanPresetModal();       // right-click settings for a launch preset
     void DrawXcanTargetModal();       // right-click settings for a target preset
@@ -2052,6 +2066,26 @@ private:
     // so a small feature is legible; kept across picks so a chosen zoom serves
     // both stations of a procedure. Wheel over the image, or the footer slider.
     float pickZoom_ = 1.5f;
+    // InputSiDouble: the prefix a field shows. While a field is being edited
+    // its multiplier is FROZEN (siEditId_/siEditExp_), so typing "5" under u
+    // means 5 u however the value moves; siPrefixPick_ remembers a prefix the
+    // author picked (or typed) per field, so 0 under u still shows u.
+    ImGuiID                siEditId_  = 0;
+    int                    siEditExp_ = 0;
+    std::map<ImGuiID, int> siPrefixPick_;
+    // The pick window on a detection FALLBACK shows the picture the detector
+    // was given: its pre-process chain over its ROI (`pickFilt*`, the plane's
+    // full-frame origin and size; rebuilt per new frame, throttled), the rest
+    // of the frame dimmed. `pickShowFilt_` puts the raw picture back - the
+    // operator may need it to see the part at all. `pickViewTex_` is the
+    // step's taught-view thumbnail, drawn top-right as the example.
+    unsigned int pickFiltTex_ = 0;
+    int          pickFiltX_ = 0, pickFiltY_ = 0, pickFiltW_ = 0, pickFiltH_ = 0;
+    unsigned long long pickFiltSeq_ = 0;
+    double       pickFiltAt_ = 0.0;
+    std::string  pickFiltErr_;
+    bool         pickShowFilt_ = true;
+    PatchTex     pickViewTex_;
     // Set once the operator confirmed Exit; lets the intercepted GLFW
     // should-close flag through so the run loop actually ends.
     bool exitConfirmed_ = false;

@@ -147,6 +147,96 @@ Workflow::OperatorNotice Workflow::PendingNotice() const
     return notice_;
 }
 
+// ---- Operator-driven XCAN (xcan_operator) -------------------------------------
+
+std::uint64_t Workflow::BeginXcanSession(const std::string& message, int timeoutMs)
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    xcanSes_          = XcanSession{};
+    xcanSes_.id       = xcanSesNextId_++;
+    xcanSes_.message  = message;
+    xcanSes_.deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 0);
+    xcanReq_    = XcanScanRequest{};
+    xcanAnswer_ = 0;
+    return xcanSes_.id;
+}
+
+Workflow::XcanSession Workflow::PendingXcanSession() const
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    if (xcanSes_.id != 0 && xcanAnswer_ != 0) return {};   // answered: hide now
+    return xcanSes_;
+}
+
+bool Workflow::RequestXcanScan(std::uint64_t id, XcanScanRequest req)
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    if (id == 0 || xcanSes_.id != id || xcanAnswer_ != 0) return false;   // ended
+    if (xcanSes_.requested || xcanSes_.scanning) return false;           // one at a time
+    xcanSes_.requested = true;
+    xcanSes_.current   = req.label;
+    xcanReq_           = std::move(req);
+    return true;
+}
+
+void Workflow::AnswerXcanSession(std::uint64_t id, bool done)
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    if (id == 0 || xcanSes_.id != id || xcanAnswer_ != 0) return;
+    // Not while a scan runs: the window disables both buttons then, and a
+    // Done that landed mid-scan would end the step on a position still moving.
+    if (xcanSes_.scanning) return;
+    xcanAnswer_        = done ? 1 : -1;
+    xcanSes_.requested = false;   // an unclaimed press dies with the session
+}
+
+bool Workflow::XcanSessionWants(std::uint64_t id) const
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    return xcanSes_.id == id && (xcanAnswer_ != 0 || xcanSes_.requested);
+}
+
+int Workflow::XcanSessionAnswer(std::uint64_t id) const
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    return xcanSes_.id == id ? xcanAnswer_ : 0;
+}
+
+bool Workflow::TakeXcanScan(std::uint64_t id, XcanScanRequest* out)
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    if (xcanSes_.id != id || !xcanSes_.requested || xcanAnswer_ != 0) return false;
+    if (out) *out = std::move(xcanReq_);
+    xcanReq_           = XcanScanRequest{};
+    xcanSes_.requested = false;
+    xcanSes_.scanning  = true;
+    return true;
+}
+
+void Workflow::FinishXcanScan(std::uint64_t id, const std::string& error, bool haveBest,
+                              double best)
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    if (xcanSes_.id != id) return;
+    xcanSes_.scanning  = false;
+    xcanSes_.lastLabel = xcanSes_.current;
+    xcanSes_.current.clear();
+    xcanSes_.lastError = error;
+    xcanSes_.haveBest  = haveBest;
+    xcanSes_.lastBest  = best;
+    ++xcanSes_.scans;
+}
+
+void Workflow::EndXcanSession(std::uint64_t id)
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    if (xcanSes_.id != id) return;   // a newer session owns the slot
+    xcanSes_    = XcanSession{};
+    xcanReq_    = XcanScanRequest{};
+    xcanAnswer_ = 0;
+}
+
 // The needle lever arm is read from disk, not from the hardware config: it is
 // measured on the machine and rewritten by a calibration run, so it follows the
 // xxx.local.json -> xxx.json rule rather than living in hardware.json.
@@ -773,7 +863,10 @@ void Workflow::ClearObjectResults(const char* reason)
 void Workflow::SetBeacon(const Beacon& b)
 {
     const std::lock_guard<std::mutex> lock(beaconMu_);
-    beacons_[b.name] = b;
+    Beacon nb = b;
+    const auto it = beacons_.find(b.name);
+    nb.colorIdx = it != beacons_.end() ? it->second.colorIdx : beaconColorNext_++;
+    beacons_[b.name] = std::move(nb);
 }
 
 bool Workflow::EraseBeacon(const std::string& name)
@@ -822,6 +915,7 @@ void Workflow::ClearBeacons(const char* reason)
         const std::lock_guard<std::mutex> lock(beaconMu_);
         n = beacons_.size();
         beacons_.clear();
+        beaconColorNext_ = 0;   // an emptied store starts the colour cycle over
     }
     if (n > 0)
         FD_INFO("beacon", "beacon(s) cleared: %s (%zu dropped)",

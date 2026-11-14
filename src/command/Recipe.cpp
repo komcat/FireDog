@@ -56,6 +56,29 @@ nlohmann::json StepToJson(const RecipeStep& s)
     return j;
 }
 
+// Step params whose SPELLING changed meaning, rewritten as the step is read,
+// so one string has one meaning everywhere after load (the editor, the run,
+// the next save, a POR compare - both sides load through here).
+//
+// xcan / xcan_to_target / xcan_two_lens `axes` (2026-11-14): the old values
+// were a SET scanned in a fixed Z, Y, X order; the new ones are an ORDER
+// ("Z>X>Y" = Z first). Each old set becomes the ordered form it always ran
+// as. Nothing else is touched: an unknown value is left for validation to
+// refuse, never guessed at.
+static void MigrateStepParams(RecipeStep& s)
+{
+    if (s.type == "xcan" || s.type == "xcan_to_target" || s.type == "xcan_two_lens") {
+        const auto it = s.params.find("axes");
+        if (it != s.params.end() && it->is_string()) {
+            static const std::pair<const char*, const char*> kOld[] = {
+                {"XYZ", "Z>Y>X"}, {"XY", "Y>X"}, {"XZ", "Z>X"}, {"YZ", "Z>Y"}};
+            const std::string v = it->get<std::string>();
+            for (const auto& [from, to] : kOld)
+                if (v == from) { *it = to; break; }
+        }
+    }
+}
+
 RecipeStep StepFromJson(const nlohmann::json& j)
 {
     RecipeStep s;
@@ -63,6 +86,7 @@ RecipeStep StepFromJson(const nlohmann::json& j)
     s.nickname = j.value("nickname", std::string());
     s.enabled  = j.value("enabled", true);
     if (j.contains("params") && j["params"].is_object()) s.params = j["params"];
+    MigrateStepParams(s);
     if (j.contains("on_error")) {
         const nlohmann::json& e = j["on_error"];
         if (e.is_string() && e.get<std::string>() == "continue") {

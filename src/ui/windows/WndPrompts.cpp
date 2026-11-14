@@ -14,6 +14,7 @@
 
 #include "ui/Widgets.h"
 #include "ui/Theme.h"   // kTeachOrange (the teach prompt's Save row)
+#include "core/DataBus.h"   // the live signal in the xcan_operator window
 #include "core/Log.h"
 #include "vision/VisionModel.h"   // FindVisionModel — the fallback's taught patch
 
@@ -22,6 +23,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <vector>
@@ -200,9 +202,18 @@ void App::DrawRecipePromptWindow()
          ImVec4(0.72f, 0.45f, 0.00f, 1.00f), ImVec4(1.00f, 0.76f, 0.25f, 1.00f)},
         {"Error###Recipe Prompt", "ERROR",
          ImVec4(0.62f, 0.10f, 0.10f, 1.00f), ImVec4(1.00f, 0.38f, 0.32f, 1.00f)},
+        // Violet: none of the others, and nothing else on the machine wears it.
+        {"Check###Recipe Prompt", "CHECK",
+         ImVec4(0.38f, 0.20f, 0.62f, 1.00f), ImVec4(0.78f, 0.60f, 1.00f, 1.00f)},
     };
+    static_assert(sizeof(kLooks) / sizeof(kLooks[0]) == kPromptLevelCount,
+                  "one look per PromptLevel");
     const int li = static_cast<int>(level);
-    const LevelLook& look = kLooks[(li >= 0 && li < 4) ? li : 0];
+    const LevelLook& look = kLooks[(li >= 0 && li < kPromptLevelCount) ? li : 0];
+    // A check is answered "it is right" / "it is not": the same two answers
+    // as every prompt (Not OK fails the step like Cancel), worded for what
+    // the operator was asked to do. The ###ids keep each button one widget.
+    const bool isCheck = level == PromptLevel::Check;
     const ImVec4 sep(look.accent.x, look.accent.y, look.accent.z, 0.60f);
 
     const float promptFont = ImGui::GetStyle().FontSizeBase * 1.5f;
@@ -417,9 +428,11 @@ void App::DrawRecipePromptWindow()
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.42f, 0.20f, 1.00f));
-    char okLabel[32] = "OK";
+    char okLabel[48];
+    std::snprintf(okLabel, sizeof(okLabel), "%s###OK", isCheck ? "OK - checked" : "OK");
     if (autoOkMs > 0)   // "###OK" keeps the ID steady while the number counts down
-        std::snprintf(okLabel, sizeof(okLabel), "OK (%d)###OK", (autoOkMs + 999) / 1000);
+        std::snprintf(okLabel, sizeof(okLabel), "%s (%d)###OK",
+                      isCheck ? "OK - checked" : "OK", (autoOkMs + 999) / 1000);
     // The confirm switch is the OK button, input prompts included: it submits
     // whatever is in the box, exactly as a click would.
     const bool ok = ImGui::Button(okLabel, btn) || submit || swOk;
@@ -427,7 +440,8 @@ void App::DrawRecipePromptWindow()
     if (ok) answer(true);
     ImGui::SameLine();
     // Cancel keeps the grey pushed for the whole window above.
-    const bool cancel = ImGui::Button("Cancel", btn) || swCancel;
+    const bool cancel =
+        ImGui::Button(isCheck ? "Not OK###Cancel" : "Cancel###Cancel", btn) || swCancel;
     if (cancel && !ok) answer(false);
     if (swOk || swCancel)
         FD_INFO("panel", "prompt answered %s by panel switch %s (%s)", swOk ? "OK" : "Cancel",
@@ -583,6 +597,121 @@ void App::DrawOperatorNoticeWindow()
 
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(9);
+    ImGui::PopFont();
+}
+
+// The xcan_operator window: manual_adjust's shape with the Run page's Quick
+// align buttons in place of the jog. The step's worker waits on Workflow's slot;
+// a press here becomes a SCAN REQUEST (the script + its keys, built by
+// XcanPresetKeys exactly as the Run page's buttons build them) that the worker
+// runs inline, then waits again. So the window never starts an engine - the run
+// already owns orch_.Busy() - and the run's Stop reaches the scan.
+//
+// One scan at a time: while one waits or runs, every launch and both answers
+// are greyed. Done is "the signal is good, go on"; Cancel fails the step; the
+// countdown is the command's own timeout, shown only. Non-modal and kept on top
+// like the prompt; no App state - the slot lives on Workflow and the window
+// goes when the command ends the session.
+void App::DrawXcanOperatorWindow()
+{
+    const Workflow::XcanSession s = workflow_.PendingXcanSession();
+    if (s.id == 0) return;
+    const bool waiting = s.requested || s.scanning;
+
+    const float k = 1.4f;   // read from a step back, like Manual Adjust
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * k);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::Begin("XCAN - Operator Adjust", nullptr,
+                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());   // always on top
+
+    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 740.0f * k);
+    ImGui::TextUnformatted(s.message.c_str());
+    ImGui::PopTextWrapPos();
+
+    // The signal the scans climb, live, and the session's clock.
+    {
+        std::vector<float> t, v;
+        DataBus::Instance().Stream(runXcanTopic_).Snapshot(t, v);
+        const bool amps = std::string(runXcanTopic_).compare(0, 9, "keithley/") == 0;
+        ImGui::TextDisabled("%s", runXcanTopic_);
+        ImGui::SameLine();
+        if (!v.empty())
+            ImGui::Text("= %s%s", FormatSI(static_cast<double>(v.back())).c_str(),
+                        amps ? "A" : "");
+        else
+            ImGui::TextDisabled("= (no data)");
+
+        const long long left = std::chrono::duration_cast<std::chrono::seconds>(
+                                   s.deadline - std::chrono::steady_clock::now()).count();
+        const long long sec = left > 0 ? left : 0;
+        char clock[64];
+        std::snprintf(clock, sizeof(clock), "%lld:%02lld left", sec / 60, sec % 60);
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(clock).x);
+        // Red in the last five minutes: the step FAILS at zero.
+        if (sec < 5 * 60) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f), "%s", clock);
+        else              ImGui::TextDisabled("%s", clock);
+    }
+    ImGui::Separator();
+
+    // The buttons: the Run page's band, handing the press to the step's worker.
+    // The band activates the pressed button's target before it calls back, so
+    // the keys are built from what was pressed.
+    ImGui::BeginChild("xopband", ImVec2(740.0f * k, 0.0f),
+                      ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
+    DrawQuickAlignBand(waiting,
+                       [this, &s](const char* dev, int presetIdx, const std::string& label) {
+                           Workflow::XcanScanRequest req;
+                           req.label  = std::string(dev) + "  " + label;
+                           req.script = XcanPresetScript();
+                           req.keys   = XcanPresetKeys(dev, presetIdx);
+                           if (!workflow_.RequestXcanScan(s.id, std::move(req)))
+                               FD_WARN("xcan", "xcan_operator: press ignored - a scan is "
+                                               "already waiting or the step ended");
+                       },
+                       false);
+    ImGui::EndChild();
+    ImGui::Separator();
+
+    // What is happening, then what happened last.
+    if (waiting) {
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.20f, 1.0f), "%s  %s",
+                           s.scanning ? "Scanning:" : "Starting:", s.current.c_str());
+        ImGui::TextDisabled("wait for it to finish - Stop on the run strip ends the whole run");
+    } else if (s.scans > 0) {
+        if (s.lastError.empty()) {
+            if (s.haveBest)
+                ImGui::Text("Last: %s  -  best %sA", s.lastLabel.c_str(),
+                            FormatSI(s.lastBest).c_str());
+            else
+                ImGui::Text("Last: %s  -  finished", s.lastLabel.c_str());
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.25f, 1.0f), "Last: %s  -  %s",
+                               s.lastLabel.c_str(), s.lastError.c_str());
+        }
+        ImGui::TextDisabled("%d scan%s run - press another, or Done when the signal is good",
+                            s.scans, s.scans == 1 ? "" : "s");
+    } else {
+        ImGui::TextDisabled("Press a preset to scan. Repeat until satisfied, then Done.");
+        ImGui::TextDisabled(" ");
+    }
+    ImGui::Separator();
+
+    ImGui::BeginDisabled(waiting);
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.42f, 0.20f, 1.00f));
+    if (ImGui::Button("Done (signal is good)", ImVec2(260.0f * k, ImGui::GetFrameHeight() * 1.5f)))
+        workflow_.AnswerXcanSession(s.id, true);
+    ImGui::PopStyleColor(3);
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel (Fail Step)", ImVec2(200.0f * k, ImGui::GetFrameHeight() * 1.5f)))
+        workflow_.AnswerXcanSession(s.id, false);
+    ImGui::EndDisabled();
+
+    ImGui::End();
     ImGui::PopFont();
 }
 
@@ -836,6 +965,55 @@ void App::DrawAlignPickWindow()
     if (newPick) {   // start dead centre: OK with no click means "no offset"
         pickPx_ = haveImg ? static_cast<float>(cameraW_) * 0.5f : 0.0f;
         pickPy_ = haveImg ? static_cast<float>(cameraH_) * 0.5f : 0.0f;
+        // A filtered plane from the previous pick belongs to another model.
+        pickFiltSeq_ = 0;
+        pickFiltW_ = pickFiltH_ = 0;
+        pickFiltErr_.clear();
+    }
+
+    // The model that missed, on the auto->manual FALLBACK only. Resolved once:
+    // the banner, the detector's view of the picture and the example all read
+    // it. Null on a pick that was manual by design.
+    const VisionModel* fbModel =
+        (req.autoError.empty() || req.detectorUid.empty())
+            ? nullptr
+            : FindVisionModel(session_.VisionModels(), req.detectorUid);
+    const std::string fbChain = fbModel ? VisionFilterSummary(*fbModel) : std::string();
+    const bool filtOn = haveImg && fbModel && !fbChain.empty() && pickShowFilt_;
+
+    // The picture the detector was given: its pre-process chain over its ROI,
+    // through the SAME Workflow::PreprocessPreview the teach page uses (one
+    // implementation of the chain - CLAUDE.md, Vision). Per new frame, at most
+    // ~5 Hz: a canny over a large ROI is not free, and the worker is blocked on
+    // this pick, so nothing else is waiting for detectMu_.
+    if (filtOn) {
+        const unsigned long long seq = workflow_.CameraFrameSeq();
+        const double now = ImGui::GetTime();
+        if (seq != pickFiltSeq_ && (pickFiltSeq_ == 0 || now - pickFiltAt_ >= 0.2)) {
+            pickFiltSeq_ = seq;
+            pickFiltAt_  = now;
+            std::vector<unsigned char> gray;
+            FocusRoi    used;
+            std::string err;
+            if (workflow_.PreprocessPreview(*fbModel, &gray, &used, &err) && used.w > 0 &&
+                used.h > 0) {
+                const std::size_t n = static_cast<std::size_t>(used.w) *
+                                      static_cast<std::size_t>(used.h);
+                std::vector<unsigned char> rgb(n * 3);
+                for (std::size_t i = 0; i < n; ++i)
+                    rgb[i * 3 + 0] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = gray[i];
+                pickFiltTex_ = host_.EnsureTextureRGB(pickFiltTex_, used.w, used.h, rgb.data());
+                pickFiltX_ = used.x;
+                pickFiltY_ = used.y;
+                pickFiltW_ = used.w;
+                pickFiltH_ = used.h;
+                pickFiltErr_.clear();
+            } else {
+                // No picture rather than a stale one: the raw frame shows instead.
+                pickFiltW_ = pickFiltH_ = 0;
+                pickFiltErr_ = err.empty() ? std::string("no filtered picture") : err;
+            }
+        }
     }
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
@@ -881,10 +1059,29 @@ void App::DrawAlignPickWindow()
         ImGui::SameLine();
         ImGui::TextWrapped("%s", req.autoError.c_str());
 
-        const VisionModel* fbModel =
-            req.detectorUid.empty()
-                ? nullptr
-                : FindVisionModel(session_.VisionModels(), req.detectorUid);
+        // The miss in numbers: the best candidate's score against the model's
+        // floor, big - "0.66 of 0.70" says re-try or nudge the light, "0.12"
+        // says the part is not where the model looks. Only for the methods
+        // that HAVE a score floor (pattern match, two-edge corner); a blob
+        // method misses on its shape filters and has no such number.
+        double minScore = -1.0;
+        if (fbModel) {
+            if (fbModel->method == "ncc") minScore = fbModel->ncc.minScore;
+            else if (fbModel->method == "corner" && fbModel->corner.mode == 1)
+                minScore = fbModel->corner.minScore;
+        }
+        if (req.autoScore >= 0.0 && minScore >= 0.0) {
+            ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.35f);
+            const ImVec4 scoreCol(1.0f, 0.55f, 0.30f, 1.0f);
+            if (req.autoScore > 0.0)
+                ImGui::TextColored(scoreCol, "score %.2f", req.autoScore);
+            else
+                ImGui::TextColored(scoreCol, "score < 0.10");
+            ImGui::SameLine();
+            ImGui::TextDisabled("needs %.2f", minScore);
+            ImGui::PopFont();
+        }
+
         if (fbModel && EnsurePatchTex(pickTmpl_, *fbModel)) {
             ImGui::BeginGroup();
             DrawPatchThumb(pickTmpl_, 110.0f, 110.0f);
@@ -903,13 +1100,35 @@ void App::DrawAlignPickWindow()
                                 fbModel->method == "circle" ? "centre of the circle"
                                                             : "corner of the square");
         }
+
+        // What the picture below is. The filtered view is DISPLAY ONLY: the
+        // mark is a camera pixel either way, so toggling it never moves the
+        // answer - it only changes what the operator can see to place it.
+        if (fbModel && !fbChain.empty()) {
+            ImGui::Checkbox("Show as the detector sees it", &pickShowFilt_);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("On: the search window is drawn through the model's\n"
+                                  "pre-process filter, the picture the detector judged.\n"
+                                  "Off: the raw camera picture. The mark is the same\n"
+                                  "camera pixel either way.");
+            ImGui::SameLine();
+            if (pickShowFilt_ && !pickFiltErr_.empty())
+                ImGui::TextDisabled("filter %s - not shown: %s", fbChain.c_str(),
+                                    pickFiltErr_.c_str());
+            else
+                ImGui::TextDisabled("filter %s", fbChain.c_str());
+        }
+        if (fbModel && fbModel->roi.enabled)
+            ImGui::TextDisabled("The blue box is the detector's search window (ROI); "
+                                "outside it is dimmed.");
     }
     ImGui::Separator();
 
-    // Footer height reserved so the image never pushes the buttons off-window.
-    // The button row is twice as tall when it leads with the step diagrams.
-    const float footerH = ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f +
-                          (req.stepIcons ? ImGui::GetFrameHeight() : 0.0f) +
+    // Footer height reserved so the image never pushes the buttons off-window:
+    // the separator, the zoom/arm row, then the tall answer row (which also
+    // holds the step diagrams, no taller than the buttons).
+    const float pickBtnH = ImGui::GetFrameHeight() * 2.2f;
+    const float footerH = ImGui::GetFrameHeightWithSpacing() * 2.0f + pickBtnH + 8.0f +
                           // the guard band's two readout lines, when there is one
                           (req.band.have ? ImGui::GetTextLineHeightWithSpacing() * 2.0f
                                          : 0.0f) +
@@ -945,11 +1164,41 @@ void App::DrawAlignPickWindow()
         ImGui::Dummy(avail);
     }
 
+    // ---- The example, top-right: the step's taught view --------------------
+    // What the camera saw when the step was taught (the helper's Teach here
+    // snapped the centre half of the frame), so the operator compares the part
+    // in front of them with the part the model was taught on. Placed before the
+    // input so a click ON it is not taken as a mark.
+    bool   haveEx = false, exMark = false, exSameFrame = false;
+    ImVec2 exMin, exMax, exBgMin, exBgMax;
+    const char* exCap = "";
+    if (haveImg && fbModel && EnsureViewThumbTex(pickViewTex_, *fbModel)) {
+        // The thumbnail is the centre half of a frame this size, or it is from
+        // another camera and nothing can be placed on it.
+        exSameFrame = std::abs(pickViewTex_.w - cameraW_ / 2) <= 1 &&
+                      std::abs(pickViewTex_.h - cameraH_ / 2) <= 1;
+        exMark = exSameFrame && fbModel->rel.ok > 0;
+        exCap  = exMark ? "example - mark this point" : "example - taught view";
+        const ImVec2 capSz = ImGui::CalcTextSize(exCap);
+
+        const float side = std::clamp(avail.x * 0.28f, 120.0f, 260.0f);
+        const float sc   = std::min(side / static_cast<float>(pickViewTex_.w),
+                                    side / static_cast<float>(pickViewTex_.h));
+        const ImVec2 sz(static_cast<float>(pickViewTex_.w) * sc,
+                        static_cast<float>(pickViewTex_.h) * sc);
+        exMax   = ImVec2(origin.x + avail.x - 10.0f, origin.y + 10.0f + sz.y);
+        exMin   = ImVec2(exMax.x - sz.x, origin.y + 10.0f);
+        exBgMin = ImVec2(std::min(exMin.x, exMax.x - capSz.x) - 4.0f, exMin.y - 4.0f);
+        exBgMax = ImVec2(exMax.x + 4.0f, exMax.y + capSz.y + 6.0f);
+        haveEx  = sz.x < avail.x * 0.6f && exBgMax.y < origin.y + avail.y;   // room for it
+    }
+    const bool overEx = haveEx && ImGui::IsMouseHoveringRect(exBgMin, exBgMax);
+
     ImGui::SetCursorScreenPos(origin);
     const bool imgClicked = ImGui::InvisibleButton("##pickInput", avail);
-    const bool imgHovered = ImGui::IsItemHovered();
+    const bool imgHovered = ImGui::IsItemHovered() && !overEx;
 
-    if (haveImg && imgClicked)
+    if (haveImg && imgClicked && !overEx)
         view.ToCamera(ImGui::GetIO().MousePos, &pickPx_, &pickPy_);
 
     // RIGHT click drives the gantry so the clicked feature lands under the
@@ -1044,6 +1293,40 @@ void App::DrawAlignPickWindow()
         // reference can sit outside the visible window entirely.
         dl->PushClipRect(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), true);
 
+        // The detector's picture first, under every mark: the filtered plane
+        // over exactly the pixels it was computed from (its own full-frame
+        // origin), then the ROI - outside dimmed, the window outlined.
+        if (filtOn && pickFiltTex_ && pickFiltW_ > 0 && pickFiltH_ > 0)
+            dl->AddImage((ImTextureID)(intptr_t)pickFiltTex_,
+                         toScreen(static_cast<float>(pickFiltX_), static_cast<float>(pickFiltY_)),
+                         toScreen(static_cast<float>(pickFiltX_ + pickFiltW_),
+                                  static_cast<float>(pickFiltY_ + pickFiltH_)));
+        if (fbModel && fbModel->roi.enabled && fbModel->roi.w > 0 && fbModel->roi.h > 0) {
+            const VisionRoi& r = fbModel->roi;
+            const float rx0 = std::clamp(static_cast<float>(r.x), 0.0f, static_cast<float>(cameraW_));
+            const float ry0 = std::clamp(static_cast<float>(r.y), 0.0f, static_cast<float>(cameraH_));
+            const float rx1 = std::clamp(static_cast<float>(r.x + r.w), 0.0f, static_cast<float>(cameraW_));
+            const float ry1 = std::clamp(static_cast<float>(r.y + r.h), 0.0f, static_cast<float>(cameraH_));
+            const ImVec2 s0 = toScreen(rx0, ry0), s1 = toScreen(rx1, ry1);
+            const float  bx0 = origin.x, by0 = origin.y;
+            const float  bx1 = origin.x + avail.x, by1 = origin.y + avail.y;
+            const ImU32  dim = IM_COL32(0, 0, 0, 120);
+            // Four bands around the window, each clamped to the box so none is
+            // ever inverted when the window runs off screen at a zoom.
+            const auto band = [&](float x0, float y0, float x1, float y1) {
+                x0 = std::clamp(x0, bx0, bx1); x1 = std::clamp(x1, bx0, bx1);
+                y0 = std::clamp(y0, by0, by1); y1 = std::clamp(y1, by0, by1);
+                if (x1 > x0 && y1 > y0) dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), dim);
+            };
+            band(bx0, by0, bx1, s0.y);    // above
+            band(bx0, s1.y, bx1, by1);    // below
+            band(bx0, s0.y, s0.x, s1.y);  // left
+            band(s1.x, s0.y, bx1, s1.y);  // right
+            dl->AddRect(s0, s1, IM_COL32(90, 190, 255, 230), 0.0f, 0, 1.5f);
+            dl->AddText(ImVec2(s0.x + 4.0f, s0.y + 2.0f), IM_COL32(90, 190, 255, 230),
+                        "search window");
+        }
+
         // Everything drawn from MACHINE mm goes through this: the guard band
         // and the run's reference points alike. Built once, because two copies
         // of the pose and calibration is how they start disagreeing.
@@ -1084,12 +1367,22 @@ void App::DrawAlignPickWindow()
         dl->AddLine(ImVec2(ctr.x, origin.y), ImVec2(ctr.x, origin.y + avail.y),
                     IM_COL32(80, 230, 120, 140), 1.0f);
 
+        // The mark: a yellow crosshair across the whole picture, open at the
+        // centre so the pixel being marked stays visible. Each hair sits on a
+        // dark shadow - a filtered picture is often white where the part is.
         const ImVec2 mk = toScreen(pickPx_, pickPy_);
-        const ImU32 markCol = IM_COL32(255, 200, 60, 255);
-        const float mh = 22.0f;
-        dl->AddLine(ImVec2(mk.x - mh, mk.y), ImVec2(mk.x + mh, mk.y), markCol, 2.0f);
-        dl->AddLine(ImVec2(mk.x, mk.y - mh), ImVec2(mk.x, mk.y + mh), markCol, 2.0f);
-        dl->AddCircle(mk, 5.0f, markCol, 0, 2.0f);
+        const ImU32 markCol = IM_COL32(255, 235, 0, 255);
+        const ImU32 hairShadow = IM_COL32(0, 0, 0, 170);
+        const float gap = 6.0f;
+        const auto hair = [&](ImVec2 a, ImVec2 b) {
+            dl->AddLine(a, b, hairShadow, 4.0f);
+            dl->AddLine(a, b, markCol, 1.5f);
+        };
+        hair(ImVec2(origin.x, mk.y), ImVec2(mk.x - gap, mk.y));
+        hair(ImVec2(mk.x + gap, mk.y), ImVec2(origin.x + avail.x, mk.y));
+        hair(ImVec2(mk.x, origin.y), ImVec2(mk.x, mk.y - gap));
+        hair(ImVec2(mk.x, mk.y + gap), ImVec2(mk.x, origin.y + avail.y));
+        dl->AddCircleFilled(mk, 1.5f, markCol);
 
         char lbl[128];
         std::snprintf(lbl, sizeof(lbl), "px %.1f, %.1f   dX %+.4f mm   dY %+.4f mm",
@@ -1098,6 +1391,16 @@ void App::DrawAlignPickWindow()
         ImVec2 lp(mk.x + 16.0f, mk.y + 10.0f);
         lp.x = fminf(lp.x, origin.x + avail.x - lts.x - 8.0f);
         lp.y = fminf(lp.y, origin.y + avail.y - lts.y - 6.0f);
+        // Under the example? Then to the mark's LEFT, and below the example if
+        // even that does not clear it - the readout is what OK will capture.
+        if (haveEx) {
+            const auto hits = [&](const ImVec2& q) {
+                return q.x - 4.0f < exBgMax.x && q.x + lts.x + 4.0f > exBgMin.x &&
+                       q.y - 2.0f < exBgMax.y && q.y + lts.y + 2.0f > exBgMin.y;
+            };
+            if (hits(lp)) lp.x = fmaxf(origin.x + 8.0f, mk.x - 16.0f - lts.x);
+            if (hits(lp)) lp.y = exBgMax.y + 6.0f;
+        }
         dl->AddRectFilled(ImVec2(lp.x - 4.0f, lp.y - 2.0f),
                           ImVec2(lp.x + lts.x + 4.0f, lp.y + lts.y + 2.0f),
                           IM_COL32(0, 0, 0, 170), 3.0f);
@@ -1122,6 +1425,58 @@ void App::DrawAlignPickWindow()
                                                       : IM_COL32(120, 200, 255, 255);
                 DrawWorldMark(dl, wv, cm, 18.0f);
             }
+        }
+
+        // The example, LAST so no mark covers it. On the thumbnail: the ROI and
+        // a yellow crosshair where the detector found the object in the model's
+        // reliability test - the point a correct mark sits on. Both are
+        // full-frame pixels, mapped through the centre-half crop Teach here
+        // took ({w/4, h/4, w/2, h/2}); a thumbnail of another frame size (a
+        // different camera) gets neither rather than a misplaced one.
+        if (haveEx) {
+            dl->AddRectFilled(exBgMin, exBgMax, IM_COL32(0, 0, 0, 200), 4.0f);
+            dl->AddImage((ImTextureID)(intptr_t)pickViewTex_.tex, exMin, exMax);
+
+            const int   ox = cameraW_ / 4, oy = cameraH_ / 4;
+            const float ts = (exMax.x - exMin.x) / static_cast<float>(pickViewTex_.w);
+            const auto  thumbPt = [&](double px, double py) {
+                return ImVec2(exMin.x + static_cast<float>(px - ox) * ts,
+                              exMin.y + static_cast<float>(py - oy) * ts);
+            };
+            const VisionReliability& rel = fbModel->rel;
+            dl->PushClipRect(exMin, exMax, true);
+            if (exSameFrame && fbModel->roi.enabled && fbModel->roi.w > 0 && fbModel->roi.h > 0)
+                dl->AddRect(thumbPt(fbModel->roi.x, fbModel->roi.y),
+                            thumbPt(fbModel->roi.x + fbModel->roi.w,
+                                    fbModel->roi.y + fbModel->roi.h),
+                            IM_COL32(90, 190, 255, 230), 0.0f, 0, 1.0f);
+            if (exMark) {
+                const ImVec2 em = thumbPt(rel.meanXPx, rel.meanYPx);
+                const float  eg = 3.0f;
+                const auto   exHair = [&](ImVec2 a, ImVec2 b) {
+                    dl->AddLine(a, b, hairShadow, 3.0f);
+                    dl->AddLine(a, b, markCol, 1.0f);
+                };
+                exHair(ImVec2(exMin.x, em.y), ImVec2(em.x - eg, em.y));
+                exHair(ImVec2(em.x + eg, em.y), ImVec2(exMax.x, em.y));
+                exHair(ImVec2(em.x, exMin.y), ImVec2(em.x, em.y - eg));
+                exHair(ImVec2(em.x, em.y + eg), ImVec2(em.x, exMax.y));
+            }
+            dl->PopClipRect();
+            dl->AddRect(exMin, exMax, IM_COL32(255, 235, 0, 200), 0.0f, 0, 1.0f);
+            // Right-aligned under the picture, so it stays inside the box.
+            dl->AddText(ImVec2(exMax.x - ImGui::CalcTextSize(exCap).x, exMax.y + 2.0f),
+                        IM_COL32(255, 235, 150, 255), exCap);
+
+            if (overEx)
+                ImGui::SetTooltip(
+                    exMark ? "What the camera saw when this step was taught.\n"
+                             "The yellow cross is where the detector found the object\n"
+                             "in the model's reliability test: put your crosshair on\n"
+                             "the same point of the part in front of you."
+                           : "What the camera saw when this step was taught.\n"
+                             "Put your crosshair on the point the detector reports\n"
+                             "(no example point: the model has no reliability test).");
         }
         dl->PopClipRect();
     }
@@ -1218,45 +1573,8 @@ void App::DrawAlignPickWindow()
         if (fromScript) orch_.lua.AnswerPick(ok, r);
         else            orch_.recipe.AnswerPick(ok, r);
     };
-    // The step diagrams lead the button row, and ONLY when an object is being
-    // marked: they draw two corners of a part, which is what place_mark asks
-    // for and is not what E1/E2 are (two features that fix an axis, anywhere on
-    // the part). The CALLER says so — a non-empty label used to imply it, until
-    // a pick that was neither case (one needle imprint) inherited the wrong
-    // picture along with its title.
-    if (req.stepIcons) {
-        EnsureMarkIcons();
-        const MarkIcon icons[2] = {markIcons_[0], markIcons_[1]};
-        DrawMarkIconsInline(icons, req.station - 1, ImGui::GetFrameHeight() * 2.0f);
-    }
-    // Out of band, OK changes its NAME rather than disappearing. The band is a
-    // sanity check, not an interlock: the person at the machine can see the
-    // part and the software cannot, so refusing them would only teach them to
-    // switch the band off. What it must not do is let the accept pass for an
-    // ordinary OK — hence the label, the colour, and the warning in the log,
-    // which is what a run that comes out 200 um wrong is read back from.
-    const bool outOfBand = bandOn && !bandOk;
-    ImGui::BeginDisabled(!haveImg);
-    if (outOfBand) {
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.60f, 0.36f, 0.10f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f, 0.44f, 0.14f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.82f, 0.50f, 0.16f, 1.0f));
-    }
-    if (ImGui::Button(outOfBand ? "Accept out of band" : "OK (Mark here)",
-                      ImVec2(outOfBand ? 200.0f : 160.0f, 0.0f))) {
-        if (outOfBand) {
-            FD_WARN("align", "'%s': %s accepted OUT OF BAND - span %.4f (%.4f +/- %.4f), "
-                             "theta %.3f (%.3f +/- %.3f)",
-                    req.alignName.c_str(), what, bandSpan, req.band.spanRef,
-                    req.band.spanTol, bandTheta, req.band.thetaRef, req.band.thetaTol);
-        }
-        answer(true);
-    }
-    if (outOfBand) ImGui::PopStyleColor(3);
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel (Fail Step)", ImVec2(160.0f, 0.0f))) answer(false);
-    ImGui::SameLine();
+    // The view controls first, on their own row, so the answers below can be
+    // as big as the window allows.
     ImGui::TextUnformatted("zoom");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(120.0f);
@@ -1275,6 +1593,62 @@ void App::DrawAlignPickWindow()
                           "moves anything.");
     ImGui::SameLine();
     ImGui::TextDisabled("%.5f / %.5f mm per px", pixelToMmX_, pixelToMmY_);
+
+    // The step diagrams lead the answer row, and ONLY when an object is being
+    // marked: they draw two corners of a part, which is what place_mark asks
+    // for and is not what E1/E2 are (two features that fix an axis, anywhere on
+    // the part). The CALLER says so — a non-empty label used to imply it, until
+    // a pick that was neither case (one needle imprint) inherited the wrong
+    // picture along with its title.
+    if (req.stepIcons) {
+        EnsureMarkIcons();
+        const MarkIcon icons[2] = {markIcons_[0], markIcons_[1]};
+        DrawMarkIconsInline(icons, req.station - 1, ImGui::GetFrameHeight() * 2.0f);
+    }
+    // The two answers: tall, wide, GREEN to accept and RED to fail - told
+    // apart before the label is read, pressed with a glove on. Out of band,
+    // OK changes its NAME and goes amber rather than disappearing. The band is
+    // a sanity check, not an interlock: the person at the machine can see the
+    // part and the software cannot, so refusing them would only teach them to
+    // switch the band off. What it must not do is let the accept pass for an
+    // ordinary OK — hence the label, the colour, and the warning in the log,
+    // which is what a run that comes out 200 um wrong is read back from.
+    const bool  outOfBand = bandOn && !bandOk;
+    const float rowAvail  = ImGui::GetContentRegionAvail().x;
+    const float btnW = fminf(fmaxf((rowAvail - ImGui::GetStyle().ItemSpacing.x) * 0.5f, 160.0f),
+                             360.0f);
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.3f);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::BeginDisabled(!haveImg);
+    if (outOfBand) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.60f, 0.36f, 0.10f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f, 0.44f, 0.14f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.82f, 0.50f, 0.16f, 1.0f));
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.42f, 0.20f, 1.0f));
+    }
+    if (ImGui::Button(outOfBand ? "Accept out of band###pickOk" : "OK (Mark here)###pickOk",
+                      ImVec2(btnW, pickBtnH))) {
+        if (outOfBand) {
+            FD_WARN("align", "'%s': %s accepted OUT OF BAND - span %.4f (%.4f +/- %.4f), "
+                             "theta %.3f (%.3f +/- %.3f)",
+                    req.alignName.c_str(), what, bandSpan, req.band.spanRef,
+                    req.band.spanTol, bandTheta, req.band.thetaRef, req.band.thetaTol);
+        }
+        answer(true);
+    }
+    ImGui::PopStyleColor(3);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.62f, 0.14f, 0.14f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.76f, 0.20f, 0.20f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.48f, 0.10f, 0.10f, 1.0f));
+    if (ImGui::Button("Cancel (Fail Step)###pickCancel", ImVec2(btnW, pickBtnH)))
+        answer(false);
+    ImGui::PopStyleColor(4);   // the three button colours + the white text
+    ImGui::PopFont();
     ImGui::End();
 }
 

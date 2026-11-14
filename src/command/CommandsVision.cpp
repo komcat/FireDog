@@ -587,6 +587,7 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
         req.message     = "The detector found nothing (" + d.error + "). Put the "
                           "crosshair on the object, then OK - that point is the result.";
         req.autoError   = d.error;
+        req.autoScore   = d.score;
         req.detectorUid = m->uid;
         if (!ctx.AwaitPick(req, &pick)) return CommandResult::Fail("cancelled by operator");
         manual = true;

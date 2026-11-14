@@ -542,6 +542,7 @@ const char* StepIconFile(const char* type)
         {"xcan",                      "mo_scan"},
         {"raster_scan",               "mo_scan"},
         {"climb_raster",              "mo_scan"},
+        {"xcan_operator",             "mo_scan"},
         {"read_position",             "mo_read_position"},
         {"check_position",            "mo_read_position"},
         {"set_velocity",              "mo_velocity"},

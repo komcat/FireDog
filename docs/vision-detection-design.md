@@ -627,6 +627,17 @@ button, never a side effect of opening the window. Teaching is Admin
    through the same `CaptureWorldPoint` and IS the result — `manual = true`,
    **P = 0** (agreed 2026-11-07: a crosshair has no rotation), score 0. Off,
    `require` decides between a failed step and `<prefix>_ok = false`.
+   On any detection fallback (this, `align_station`, `grip_measure`) the pick
+   window shows the picture the detector was given (2026-11-14): the model's
+   pre-process chain over its ROI through `Workflow::PreprocessPreview` (the
+   teach page's call, ~5 Hz, a checkbox back to raw; no HALCON → raw, reason
+   shown), outside the ROI dimmed and the ROI outlined. DISPLAY ONLY — the mark
+   is a camera pixel either way. The mark is a full-span yellow crosshair. A
+   step model with a view thumbnail (`ViewThumbFile`) draws it top-right as the
+   example, with the ROI and a yellow cross at the reliability test's mean
+   point (`rel.meanXPx/Y`, full-frame px through the centre-half crop) — only
+   when the model has a test and the thumbnail is the centre half of a frame
+   this size; never a guessed point.
 3. **Post-detection** (`center_after`): after `pre_center_ms` (default 100),
    the camera X/Y onto the result, Z unchanged, refused past `center_max_mm`, through **`MoveToObjectResult`**
    (`command/MotionWaits.h`) — the same drive `move_to_result` uses.

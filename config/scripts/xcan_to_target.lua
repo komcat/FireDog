@@ -17,7 +17,8 @@
 -- before its run_script step, or leaves the defaults):
 --   xcan_device          hexapod to scan                     (default "hex-left")
 --   xcan_topic           feedback signal                     (default "keithley/ch1")
---   xcan_axes            XYZ | XY | XZ | YZ                  (default "XYZ")
+--   xcan_axes            Z>Y>X | Z>X>Y | ... | Z | Y | X     (default "Z>Y>X";
+--                        first letter = first axis, handed to fd.xcan)
 --   xcan_target_ua       exit threshold, uA                  (default 800)
 --   xcan_steps_um        pass-1 ladder, coarse -> fine       (default "10,5,2,1")
 --   xcan_adaptive        pass-1 signal-zoned ladder, 1/0     (default 1)
@@ -41,7 +42,7 @@ local function flag(v) return (v == true) or ((tonumber(v) or 0) ~= 0) end
 local P = {
   device         = fd.param("xcan_device", "hex-left"),
   topic          = fd.param("xcan_topic", "keithley/ch1"),
-  axes           = fd.param("xcan_axes", "XYZ"),
+  axes           = fd.param("xcan_axes", "Z>Y>X"),
   target_ua      = fd.param("xcan_target_ua", 800),
   steps_um       = fd.param("xcan_steps_um", "10,5,2,1"),
   adaptive       = flag(fd.param("xcan_adaptive", 1)),

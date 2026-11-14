@@ -117,19 +117,23 @@ std::string LocateShippedScript(const std::string& path);
 // How an OK/Cancel prompt is dressed: the window's title, accent colour and
 // banner. Presentation only - every level blocks and answers exactly the same
 // way. Info is the default, so a prompt written before levels existed looks
-// as it always did.
-enum class PromptLevel : int { Info, Instruction, Warning, Error };
+// as it always did. Check (appended, so the numbers of the others never move)
+// is "the operator must LOOK at something and confirm it" - its buttons read
+// "OK - checked" / "Not OK", and Not OK fails the step exactly like Cancel.
+enum class PromptLevel : int { Info, Instruction, Warning, Error, Check };
 inline constexpr const char* kPromptLevelNames[] = {"info", "instruction", "warning",
-                                                    "error"};
+                                                    "error", "check"};
+inline constexpr int kPromptLevelCount =
+    static_cast<int>(sizeof(kPromptLevelNames) / sizeof(kPromptLevelNames[0]));
 inline const char* PromptLevelName(PromptLevel l)
 {
     const int i = static_cast<int>(l);
-    return (i >= 0 && i < 4) ? kPromptLevelNames[i] : kPromptLevelNames[0];
+    return (i >= 0 && i < kPromptLevelCount) ? kPromptLevelNames[i] : kPromptLevelNames[0];
 }
 // Unknown spellings fall back to Info (a typo must not refuse a prompt).
 inline PromptLevel PromptLevelFromName(const std::string& s)
 {
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < kPromptLevelCount; ++i)
         if (s == kPromptLevelNames[i]) return static_cast<PromptLevel>(i);
     return PromptLevel::Info;
 }
@@ -235,6 +239,10 @@ public:
         // model and shows its taught patch with the reported point crossed on it.
         std::string detectorUid;
         std::string autoError;
+        // The missed detection's best score (0..1), when the caller has it; -1 =
+        // not given. Shown big beside the model's minimum, so "just under" and
+        // "nothing like it" read differently. Display only.
+        double      autoScore = -1.0;
         PickBand    band;
         PickTarget  target;
     };

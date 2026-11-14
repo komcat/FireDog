@@ -58,19 +58,22 @@ Code: `core/Beacon.h` (the record and its lifetime), `Workflow::SetBeacon` /
     (`CameraMark::Glyph::Pulse`): a dot, a fixed ring, and a second ring that grows
     and fades. It is the only moving mark on the picture, so it is never mistaken for
     a tip or a detection.
-  - Its colour and beat show how close the tool is in Z. They come from the
-    registered tool whose predicted tip (`DeviceRegTip`) is nearest the beacon in XY,
-    by that tip's |dZ| from the beacon's Z:
-
-    | Tool's distance from the beacon in Z | Colour | Beat |
-    |---|---|---|
-    | 0.3 mm or less | green | 127 bpm |
-    | 0.3 to 1 mm | yellow | 80 bpm |
-    | more than 1 mm, or no tool predictable | pink | 30 bpm |
-
-  - The label, on a dark pill, is `<name>  <N>m  <tool> <height µm>`: N is the
-    minutes left, and the height is the tool above the beacon. Display only; nothing
-    acts on it.
+  - Its COLOUR is the beacon's own (2026-11-14): `Workflow::SetBeacon` hands out
+    `Beacon::colorIdx` one after another as beacons are planted - pink, sky blue,
+    orange, violet, coral red, teal, then round again - so two beacons on one
+    picture are told apart at a glance, and the same colour marks it on the Z
+    tape. Re-planting a live name keeps its colour (the same marker, moved); an
+    emptied store (`ClearBeacons`) starts the cycle over. No yellow or green in
+    the cycle: those are the crosshair, the tool tips and the centre lines.
+  - It says NOTHING about tools (2026-11-14): no nearest tool, no height, one
+    calm 30 bpm beat. Which tool goes to which beacon is the engineer's call -
+    `move_tool_to_beacon` names both - and a view that picked the nearest tip
+    would be guessing at a pairing the recipe already states. (It once coloured
+    and paced the pulse by the nearest registered tip's |dZ|; removed with the
+    label's tool part and its Preferences switch.)
+  - The label, on a dark pill, is `<name>  <N>m` (each part switchable in
+    Preferences > Graphic view > Beacons & objects, off by default): N is the
+    minutes left. Display only; nothing acts on it.
   - It is projected through the current gantry pose by `DrawWorldMark`, so it stays
     on its spot as the camera moves. Off the picture it becomes an edge arrow with
     the distance.

@@ -33,6 +33,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "hardware/io/SafetyWatch.h"
@@ -416,6 +417,49 @@ public:
     bool           NoticeAcked(std::uint64_t id) const;
     void           ClearNotice(std::uint64_t id);   // the poster ends it (ack/timeout/stop)
     OperatorNotice PendingNotice() const;           // id 0 = nothing to show
+
+    // ---- Operator-driven XCAN (xcan_operator) ----------------------------------
+    // ONE slot, like the notice. The command's worker opens a SESSION and stays
+    // in it; the window (App::DrawXcanOperatorWindow) draws the Run page's Quick
+    // align buttons and hands a press back as a SCAN REQUEST, which the worker
+    // runs inline (RunLuaFile: the run's own ctx, Stop and safety abort) before
+    // it waits again. The UI never starts an engine mid-run and the worker never
+    // reads a preset: the request carries the script and its keys, built by the
+    // same App::XcanPresetKeys the Run page's buttons launch with. One request
+    // at a time - a press while one is waiting or running is refused. Ids make
+    // a late press or answer on an ended session a no-op. Any thread.
+    using XcanKeyValue = std::variant<bool, double, std::string>;   // == CtxValue
+    struct XcanScanRequest {
+        std::string label;    // what the operator pressed, for the window and the log
+        std::string script;   // the resolved hexapod_align.lua
+        std::vector<std::pair<std::string, XcanKeyValue>> keys;   // align_* ctx keys
+    };
+    struct XcanSession {
+        std::uint64_t id = 0;   // 0 = none
+        std::string   message;
+        std::chrono::steady_clock::time_point deadline{};
+        bool          requested = false;   // a press is waiting for the worker
+        bool          scanning  = false;   // the worker is running it
+        std::string   current;             // label of the waiting / running scan
+        int           scans = 0;           // scans finished in this session
+        std::string   lastLabel;           // the last finished scan ...
+        std::string   lastError;           // ... "" = it ran to its end
+        bool          haveBest = false;    // ... and its align_best, when it set one
+        double        lastBest = 0.0;
+    };
+    std::uint64_t BeginXcanSession(const std::string& message, int timeoutMs);
+    XcanSession   PendingXcanSession() const;   // id 0 = nothing to show
+    // The UI. RequestXcanScan is refused (false) while a scan waits or runs.
+    bool RequestXcanScan(std::uint64_t id, XcanScanRequest req);
+    void AnswerXcanSession(std::uint64_t id, bool done);   // Done = true, Cancel = false
+    // The worker. Wants = an answer or a request is waiting (the wait's predicate);
+    // Answer = 0 none, 1 Done, -1 Cancel; Take moves the request into `out` and
+    // marks the session scanning; Finish records how it ended.
+    bool XcanSessionWants(std::uint64_t id) const;
+    int  XcanSessionAnswer(std::uint64_t id) const;
+    bool TakeXcanScan(std::uint64_t id, XcanScanRequest* out);
+    void FinishXcanScan(std::uint64_t id, const std::string& error, bool haveBest, double best);
+    void EndXcanSession(std::uint64_t id);   // every exit of the command
 
     void StopAllMotion();   // hard stop on every motion device
 
@@ -877,6 +921,7 @@ private:
     std::map<std::string, ObjectResult>      objectResults_;
     mutable std::mutex                       beaconMu_;
     std::map<std::string, Beacon>            beacons_;
+    int                                      beaconColorNext_ = 0;   // SetBeacon's colour cycle
     mutable std::mutex                       gripObjMu_;
     std::map<std::string, GrippedObject>     grippedObjects_;
 
@@ -887,6 +932,12 @@ private:
     OperatorNotice     notice_;
     std::uint64_t      noticeNextId_ = 1;
     std::uint64_t      noticeAcked_  = 0;   // id of the last acked notice
+    // Operator-driven XCAN slot (BeginXcanSession ... EndXcanSession).
+    mutable std::mutex xcanSesMu_;
+    XcanSession        xcanSes_;
+    XcanScanRequest    xcanReq_;
+    int                xcanAnswer_    = 0;   // 0 none, 1 Done, -1 Cancel
+    std::uint64_t      xcanSesNextId_ = 1;
 
     mutable std::mutex                       trayMu_;
     std::map<std::string, std::set<TrayCell>> trayConsumed_;

@@ -483,7 +483,7 @@ std::string RunLuaFile(const std::string& requested, const CommandRegistry& reg,
         });
         // Optional second argument: answer OK by itself after that many ms
         // (0 = wait). Optional third: the level that dresses the window -
-        // "info" (default) / "instruction" / "warning" / "error". Optional
+        // "info" (default) / "instruction" / "warning" / "error" / "check". Optional
         // fourth: a table of up to two picture file names (prompt_images/).
         fd.set_function("prompt", [&ctx](const std::string& msg,
                                          sol::optional<double> autoOkMs,

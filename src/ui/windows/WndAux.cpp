@@ -286,21 +286,29 @@ constexpr ImU32 kGripOkCol    = IM_COL32(120, 240, 150, 255);
 constexpr ImU32 kGripBadCol   = IM_COL32(245, 120, 100, 255);
 constexpr ImU32 kGripPlateCol = IM_COL32(220, 225, 235, 255);
 
-// A planted beacon (plant_beacon), coloured and paced by how far the nearest
-// registered tool's tip is from the beacon's HEIGHT - a tale-tell for the Z
-// approach, read without reading a number:
-//   |dZ| <= 0.3 mm  green, 127 bpm  (there)
-//   |dZ| <= 1.0 mm  yellow, 80 bpm  (close)
-//   further / no tool  pink, 30 bpm (a place the camera WAS, nothing near it)
-// Display only; nothing acts on it.
-constexpr double kBeaconNearMm  = 0.3;
-constexpr double kBeaconMidMm   = 1.0;
-constexpr ImU32  kBeaconNearCol = IM_COL32(110, 235, 130, 255);
-constexpr ImU32  kBeaconMidCol  = IM_COL32(245, 215, 80, 255);
-constexpr ImU32  kBeaconFarCol  = IM_COL32(240, 110, 230, 255);
-constexpr float  kBeaconNearBpm = 127.0f;
-constexpr float  kBeaconMidBpm  = 80.0f;
-constexpr float  kBeaconFarBpm  = 30.0f;
+// A planted beacon (plant_beacon): a place the camera WAS, and nothing more.
+// Its COLOUR is its own (Beacon::colorIdx), handed out one after another as
+// beacons are planted, so two beacons on one picture are told apart at a
+// glance - and the same colour marks it on the Z tape. No yellow or green in
+// the cycle: those are the crosshair, the tool tips and the centre lines. It
+// says nothing about tools: which tool goes to which beacon is the engineer's
+// call (move_tool_to_beacon names both), not something the view guesses from
+// whichever tip is nearest. One calm beat. Display only; nothing acts on it.
+constexpr ImU32  kBeaconPalette[] = {
+    IM_COL32(240, 110, 230, 255),   // pink (the first beacon keeps the old colour)
+    IM_COL32( 80, 210, 255, 255),   // sky blue
+    IM_COL32(255, 145,  50, 255),   // orange
+    IM_COL32(170, 125, 255, 255),   // violet
+    IM_COL32(255,  95, 110, 255),   // coral red
+    IM_COL32( 60, 225, 200, 255),   // teal
+};
+constexpr int kBeaconPaletteN = static_cast<int>(sizeof(kBeaconPalette) / sizeof(kBeaconPalette[0]));
+inline ImU32 BeaconColor(const Beacon& b)
+{
+    const int i = b.colorIdx % kBeaconPaletteN;
+    return kBeaconPalette[i < 0 ? i + kBeaconPaletteN : i];
+}
+constexpr float  kBeaconBpm = 30.0f;
 
 // The tool's own footprint around that tip. Same amber, dimmer than the cross:
 // it is the SAME claim - one registration - drawn at the size the operator
@@ -1108,7 +1116,7 @@ float App::DrawAuxGripperMarks(ImDrawList* dl, const ImVec2& origin, const ImVec
                 if (b.device != refName) continue;
                 GaugeMark gm;
                 gm.dz  = height(b.z - gz);
-                gm.col = kBeaconFarCol;
+                gm.col = BeaconColor(b);
                 char t[96];
                 if (auxMarks_.beaconName)
                     std::snprintf(t, sizeof(t), "%s %+lld", b.name.c_str(), GaugeUm(gm.dz));
@@ -1589,42 +1597,10 @@ void App::DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
     wv.imgW       = cameraW_;
     wv.imgH       = cameraH_;
 
-    // Every tool tip predictable in this picture's frame, once per frame: the
-    // same DeviceRegTip the tip marks use, so the beacon and the tip agree.
-    struct ToolTip { std::string label; RegVec3 tip; };
-    std::vector<ToolTip> tools;
-    for (const auto& [name, r] : workflow_.DeviceRegs()) {
-        if (!r.valid || r.refDevice != refName) continue;
-        RegVec3 tip{};
-        if (!workflow_.DeviceRegTip(name, tip, nullptr)) continue;
-        const std::string l = AuxTipLabel(name);
-        tools.push_back({l.empty() ? name : l, tip});
-    }
-    const int upSign = workflow_.GantryAxisZUpSign();
-
     const auto now = std::chrono::steady_clock::now();
     for (const Beacon& b : beacons) {
         if (b.device != refName) continue;
-
-        // The tool this beacon is talking to: the one whose tip is nearest it
-        // in XY (the one being brought to it). Its height above the beacon
-        // sets the colour and the beat - a tale-tell for the Z approach.
-        const ToolTip* nearest = nullptr;
-        double         best    = 0.0;
-        for (const ToolTip& t : tools) {
-            const double d = std::hypot(t.tip.x - b.x, t.tip.y - b.y);
-            if (!nearest || d < best) { nearest = &t; best = d; }
-        }
-        ImU32 col    = kBeaconFarCol;
-        float bpm    = kBeaconFarBpm;
-        double hgtMm = 0.0;
-        if (nearest) {
-            const double dz = nearest->tip.z - b.z;   // gantry axis
-            hgtMm = upSign != 0 ? upSign * dz : dz;
-            const double a = std::fabs(dz);
-            if (a <= kBeaconNearMm)     { col = kBeaconNearCol; bpm = kBeaconNearBpm; }
-            else if (a <= kBeaconMidMm) { col = kBeaconMidCol;  bpm = kBeaconMidBpm;  }
-        }
+        const ImU32 col = BeaconColor(b);   // which beacon - nothing about tools
 
         // The text, part by part as Preferences > Graphic view > Beacons &
         // objects asks; the pulse itself is always drawn.
@@ -1642,11 +1618,6 @@ void App::DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
             else             std::snprintf(ttl, sizeof(ttl), "<1m");
             part(ttl);
         }
-        if (auxMarks_.beaconTool && nearest) {
-            char tl[64];
-            std::snprintf(tl, sizeof(tl), "%s %+lld", nearest->label.c_str(), GaugeUm(hgtMm));
-            part(tl);
-        }
         const char* lbl = lblS.c_str();
 
         CameraMark cm;
@@ -1657,7 +1628,7 @@ void App::DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
         cm.col          = col;
         cm.edgeDistance = auxMarks_.beaconDist;
         cm.glyph        = CameraMark::Glyph::Pulse;
-        cm.pulsePeriodS = 60.0f / bpm;
+        cm.pulsePeriodS = 60.0f / kBeaconBpm;
         DrawWorldMark(dl, wv, cm, 16.0f);
     }
 }

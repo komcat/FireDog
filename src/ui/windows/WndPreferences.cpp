@@ -737,8 +737,6 @@ void App::DrawPreferencesWindow()
         ImGui::SeparatorText("Beacon");
         row("Name##bn", &a.beaconName, "the beacon's name (b_focus)");
         row("Minutes left##bt", &a.beaconTime, "how long it has left (9m), of its 30");
-        row("Nearest tool + height##bh", &a.beaconTool,
-            "the nearest registered tool and its height over the beacon (HL +383 um)");
         row("Distance when off the picture##bd", &a.beaconDist,
             "the mm figure on the edge arrow when the beacon is out of view");
         row("On the height gauge##bg", &a.beaconGauge,

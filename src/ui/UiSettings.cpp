@@ -127,7 +127,6 @@ UiSettings UiSettings::Load(const std::string& path)
             AuxMarkLabels& a = s.auxMarks;
             a.beaconName  = m.value("beacon_name", a.beaconName);
             a.beaconTime  = m.value("beacon_time", a.beaconTime);
-            a.beaconTool  = m.value("beacon_tool", a.beaconTool);
             a.beaconDist  = m.value("beacon_dist", a.beaconDist);
             a.beaconGauge = m.value("beacon_gauge", a.beaconGauge);
             a.objName     = m.value("obj_name", a.objName);
@@ -293,7 +292,7 @@ bool UiSettings::Save(const std::string& path) const
     j["raster_map_cmap"]   = rasterMapCmap;
     j["aux_mark_labels"] = {
         {"beacon_name", auxMarks.beaconName}, {"beacon_time", auxMarks.beaconTime},
-        {"beacon_tool", auxMarks.beaconTool}, {"beacon_dist", auxMarks.beaconDist},
+        {"beacon_dist", auxMarks.beaconDist},
         {"beacon_gauge", auxMarks.beaconGauge},
         {"obj_name", auxMarks.objName},       {"obj_gripper", auxMarks.objGripper},
         {"obj_time", auxMarks.objTime},       {"obj_height", auxMarks.objHeight},

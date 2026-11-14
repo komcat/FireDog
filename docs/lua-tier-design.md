@@ -122,7 +122,7 @@ fd.sleep(500)                  -- interruptible; raises on stop
 fd.log("aligned, pd=%.3g", pd) -- printf-style to the Logger ("script" source)
 print(...)                     -- redirected to the Logger too
 fd.prompt("Continue?")         -- same operator modal; returns false on Cancel
-fd.prompt("Close the lid", 0, "warning")  -- level: info | instruction | warning | error
+fd.prompt("Close the lid", 0, "warning")  -- level: info | instruction | warning | error | check
 fd.prompt("Fit the lens", 0, "instruction", {"lens_a.jpg", "lens_b.jpg"})
                                -- up to two pictures from <product>/prompt_images/
 fd.choose("Dot ok?", {"Lift off", "Shot +100 ms", "Cancel"}, "instruction")

@@ -28,6 +28,13 @@ struct Beacon {
     double x = 0.0, y = 0.0, z = 0.0;   // device axis mm, measured after settling
     std::string positionUid;   // the saved position it was planted from (record only)
     std::string at;            // wall clock, for the log
+    // The beacon's COLOUR on the Aux view, an index into its palette. Handed
+    // out by Workflow::SetBeacon, one after another as beacons are planted, so
+    // two beacons on one picture never share a colour (until the palette
+    // wraps). Re-planting a live name keeps its colour - it is the same marker,
+    // moved. Restarts at the first colour when the store is cleared. Display
+    // only; nothing reads it but the drawing.
+    int colorIdx = 0;
     std::chrono::steady_clock::time_point plantedAt{};
 };
 

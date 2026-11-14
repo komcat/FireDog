@@ -23,7 +23,8 @@
 --   xtl_left             left hexapod                        (default "hex-left")
 --   xtl_right            right hexapod                       (default "hex-right")
 --   xtl_topic            feedback signal                     (default "keithley/ch1")
---   xtl_axes             XYZ | XY | XZ | YZ                  (default "XYZ")
+--   xtl_axes             Z>Y>X | Z>X>Y | ... | Z | Y | X     (default "Z>Y>X";
+--                        first letter = first axis, handed to fd.xcan)
 --   xtl_target_ua        exit threshold, uA                  (default 6800)
 --   xtl_zone_low_ua      adaptive zone lower limit, uA       (default 200)
 --   xtl_zone_high_ua     adaptive zone upper limit, uA       (default 0 = the target)
@@ -47,7 +48,7 @@ local P = {
   left           = fd.param("xtl_left", "hex-left"),
   right          = fd.param("xtl_right", "hex-right"),
   topic          = fd.param("xtl_topic", "keithley/ch1"),
-  axes           = fd.param("xtl_axes", "XYZ"),
+  axes           = fd.param("xtl_axes", "Z>Y>X"),
   target_ua      = fd.param("xtl_target_ua", 6800),
   zone_low_ua    = fd.param("xtl_zone_low_ua", 200),
   zone_high_ua   = fd.param("xtl_zone_high_ua", 0),

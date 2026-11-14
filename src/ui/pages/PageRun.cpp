@@ -1880,16 +1880,26 @@ void App::SaveScanPresets() const
 // the pressed launch preset (step ladder + tunables, right-click to edit) +
 // the ACTIVE target preset (exit threshold + adaptive zone range). Uses the
 // same product-script override and Env wiring as the Scanning tab.
-void App::StartXcanPreset(const std::string& device, int presetIdx)
+//
+// Split in three so the xcan_operator window launches EXACTLY what these
+// buttons launch: the script (XcanPresetScript) and its keys (XcanPresetKeys)
+// are built here once, and only the hand-off differs - an engine Start here, a
+// scan request to the waiting step's worker there.
+std::string App::XcanPresetScript() const
 {
     std::string script = "config/scripts/hexapod_align.lua";
     for (const ScriptInfo& si : session_.Scripts()) {
         if (si.name == "hexapod_align") { script = si.path; break; }
     }
+    return script;
+}
+
+std::vector<std::pair<std::string, CtxValue>> App::XcanPresetKeys(const std::string& device,
+                                                                 int presetIdx) const
+{
     const XcanPreset& p  = xcanPresets_[presetIdx];
     const XcanTarget& tp = xcanTargets_[xcanPresetSel_];
-    LuaEngine::Env env = session_.MakeLuaEnv();
-    env.initialCtx = {
+    return {
         {"align_device", device},
         {"align_topic", std::string(runXcanTopic_)},
         {"align_steps_um", p.stepsUm},
@@ -1917,6 +1927,14 @@ void App::StartXcanPreset(const std::string& device, int presetIdx)
         {"align_zone_low", tp.zoneLowUa * 1e-6},
         {"align_zone_high", tp.zoneHighUa * 1e-6},
     };
+}
+
+void App::StartXcanPreset(const std::string& device, int presetIdx)
+{
+    const std::string script = XcanPresetScript();
+    const XcanPreset& p = xcanPresets_[presetIdx];
+    LuaEngine::Env env = session_.MakeLuaEnv();
+    env.initialCtx = XcanPresetKeys(device, presetIdx);
     if (xcanTargetMax_)
         FD_INFO("script", "xcan preset '%s' on %s: MAX (no exit threshold)", p.label.c_str(),
                 device.c_str());
@@ -2059,11 +2077,28 @@ static IMotionController* MotionByName(const HardwareManager& hw, const char* na
 
 void App::DrawRunQuickAlign()
 {
-    const ImGuiStyle& style = ImGui::GetStyle();
     // Gate on the WHOLE orchestrator, not orch_.lua: the program runner goes
     // momentarily idle between queue items, so a lua-only check would let a
     // press slip an align in between two recipes of a running program.
-    const bool busy = orch_.Busy();
+    DrawQuickAlignBand(orch_.Busy(),
+                       [this](const char* dev, int presetIdx, const std::string&) {
+                           StartXcanPreset(dev, presetIdx);
+                       },
+                       true);
+}
+
+// The band itself, shared by the Run page and the xcan_operator window. Only
+// the gate and the hand-off differ: `blocked` disables every launch (the Run
+// page: orch_.Busy(); the window: a scan already waiting or running), and
+// `onLaunch` receives the pressed hexapod, the step preset and a label
+// ("Left Coarse @ 6800 uA") AFTER the band has activated the button's target,
+// so XcanPresetKeys - which reads the active target - builds what was pressed.
+void App::DrawQuickAlignBand(bool blocked,
+                             const std::function<void(const char*, int, const std::string&)>& onLaunch,
+                             bool showStop)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const bool busy = blocked;
 
     const float gap  = style.ItemSpacing.x;
     const float btnH = ImGui::GetFrameHeight() * 1.8f;
@@ -2095,7 +2130,9 @@ void App::DrawRunQuickAlign()
                 xcanPresetSel_ = targetIdx;
                 xcanTargetMax_ = false;   // this button names a target
             }
-            StartXcanPreset(dev, presetIdx);
+            onLaunch(dev, presetIdx,
+                     std::string(label) + " @ " +
+                         (isMax ? std::string("MAX") : XcanTargetLabel(t)));
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -2201,7 +2238,10 @@ void App::DrawRunQuickAlign()
     ImGui::PopID();
 
     // Stop rides in the band too: the operator who pressed a button here must
-    // not have to find the XCAN tab to call it off.
+    // not have to find the XCAN tab to call it off. Not in the xcan_operator
+    // window: its scans run on the step's worker, and the run's own Stop is
+    // the one that reaches them.
+    if (!showStop) return;
     ImGui::SameLine(0.0f, gap);
     ImGui::BeginGroup();
     ImGui::TextDisabled(" ");

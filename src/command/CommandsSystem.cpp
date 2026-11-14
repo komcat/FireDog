@@ -14,6 +14,7 @@
 #include "workflow/Workflow.h"          // the operator-notice slot (notify_operator)
 
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <initializer_list>
 #include <string>
@@ -23,26 +24,45 @@ namespace firedog {
 
 namespace {
 
-// The xcan "axes" choice -> hexapod_align.lua's align_axes descent order.
-// The set is a choice, the ORDER is not: coordinate descent on this machine
-// has always run Z, then Y, then X (the gap axis first, so the transverse
-// scans happen at a coupling that is already close), and a subset must not
-// silently reorder what a full scan does.
-//
-// "XYZ" returns "" — the step is not restricting anything, and the script's
-// own default is already Z,Y,X. Injecting it anyway would overwrite an
-// align_axes a recipe ctx_set beforehand, which is the one escape hatch these
-// typed wrappers promise for every align_* key they do not carry. An unknown
-// label lands here too: a full triad is recoverable, a scan that skips the
-// axis the recipe meant is not.
-const char* XcanAxisOrder(const std::string& choice)
+// The xcan "axes" choice: WHICH axes the coordinate descent scans AND in what
+// order, written first-to-last - "Z>X>Y" scans Z, then X, then Y (2026-11-14;
+// before that the order was fixed at Z, Y, X and the choice was only a set).
+// The ">" is load-bearing: the old set spellings ("XYZ", "XY", "XZ", "YZ")
+// meant Z-first, so a bare "XYZ" can never be read as X-first - saved steps
+// are rewritten to the ordered form at load (MigrateStepParams, Recipe.cpp),
+// and a script still passing an old spelling is refused by validation rather
+// than silently scanning in another order. Shared by xcan, xcan_to_target and
+// xcan_two_lens (the last two hand it straight to fd.xcan).
+const std::vector<std::string>& XcanAxisChoices()
 {
-    if (choice == "XY") return "Y,X";
-    if (choice == "XZ") return "Z,X";
-    if (choice == "YZ") return "Z,Y";
-    if (choice == "Z")  return "Z";
-    if (choice == "Y")  return "Y";
-    if (choice == "X")  return "X";
+    static const std::vector<std::string> k = {
+        "Z>Y>X", "Z>X>Y", "Y>Z>X", "Y>X>Z", "X>Z>Y", "X>Y>Z",
+        "Z>Y",   "Y>Z",   "Z>X",   "X>Z",   "Y>X",   "X>Y",
+        "Z",     "Y",     "X",
+    };
+    return k;
+}
+constexpr const char* kXcanAxesHelp =
+    "which axes the coordinate descent scans, IN ORDER - the first letter is the "
+    "first axis worked on (Z>X>Y = Z, then X, then Y); one letter is a one-axis "
+    "line scan";
+
+// The choice -> hexapod_align.lua's align_axes ("Z,X,Y").
+//
+// "Z>Y>X" returns "": it is the script's own default, and injecting it anyway
+// would overwrite an align_axes a recipe ctx_set beforehand - the one escape
+// hatch these typed wrappers promise for every align_* key they do not carry.
+// Anything that is not one of the choices lands there too: a full triad is
+// recoverable, a scan that skips the axis the recipe meant is not.
+std::string XcanAxisOrder(const std::string& choice)
+{
+    if (choice == "Z>Y>X") return "";
+    for (const std::string& c : XcanAxisChoices()) {
+        if (c != choice) continue;
+        std::string out;
+        for (const char ch : c) out += ch == '>' ? ',' : ch;
+        return out;
+    }
     return "";
 }
 
@@ -196,6 +216,87 @@ CommandResult ExecManualAdjust(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// xcan_operator: the operator runs the Quick align XCAN presets by hand until
+// they are satisfied with the signal, then Done. The step only HOSTS the
+// session: it opens Workflow's slot, and every press in the window comes back
+// here as a request this worker runs inline - RunLuaFile on the run's own ctx,
+// so the run's Stop and safety abort reach the scan exactly as they reach an
+// xcan step, and orch_.Busy() stays the one owner. The presets themselves are
+// the UI's (machine state in scan_presets.local.json), which is why the request
+// carries the script and its keys rather than a preset number.
+//
+// A scan that ends in an error is REPORTED, not fatal: the operator is the
+// judge here, and an error on one pass (a stall, a missed target) is exactly
+// what they will answer with the next press. Only Cancel, Stop and the
+// timeout fail the step. The timeout is the whole session, scans included - a
+// scan is never cut short by it; the check runs when the scan returns.
+CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
+                               const CommandRegistry& reg)
+{
+    using Clock = std::chrono::steady_clock;
+    const std::string msg     = ctx.Substitute(p.GetString("message"));
+    const int timeoutMin      = p.GetInt("timeout_min");
+    const auto deadline       = Clock::now() + std::chrono::minutes(timeoutMin);
+    const std::string prefix  = p.GetString("ctx_prefix");
+    Workflow& wf              = ctx.Wf();
+
+    const std::uint64_t id = wf.BeginXcanSession(msg, timeoutMin * 60 * 1000);
+    // Every exit closes the window: done, cancel, timeout, stop, a throw.
+    struct EndSession {
+        Workflow& wf;
+        std::uint64_t id;
+        ~EndSession() { wf.EndXcanSession(id); }
+    } endSession{wf, id};
+    FD_INFO("xcan", "xcan_operator: waiting for the operator (%d min)", timeoutMin);
+
+    int scans = 0;
+    const auto record = [&](const char* how) {
+        if (prefix.empty()) return;
+        ctx.CtxSet(prefix + "_scans", static_cast<double>(scans));
+        ctx.CtxSet(prefix + "_result", std::string(how));
+    };
+    for (;;) {
+        const long long leftMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     deadline - Clock::now()).count();
+        ExecutionContext::WaitResult r = ExecutionContext::WaitResult::Timeout;
+        if (leftMs > 0)
+            r = ctx.WaitUntil([&] { return wf.XcanSessionWants(id); },
+                              static_cast<int>(leftMs), 100);
+        if (r == ExecutionContext::WaitResult::Stopped) return CommandResult::Fail("stopped");
+        if (r != ExecutionContext::WaitResult::Ok) {
+            record("timeout");
+            FD_WARN("xcan", "xcan_operator: no Done in %d min (%d scans) - failing the step",
+                    timeoutMin, scans);
+            return CommandResult::Fail("xcan_operator: no Done from the operator in " +
+                                       std::to_string(timeoutMin) + " min");
+        }
+
+        const int answer = wf.XcanSessionAnswer(id);
+        if (answer > 0) {
+            record("done");
+            FD_INFO("xcan", "xcan_operator: Done after %d scan%s", scans, scans == 1 ? "" : "s");
+            return CommandResult::Success();
+        }
+        if (answer < 0) {
+            record("cancel");
+            return CommandResult::Fail("cancelled by operator");
+        }
+
+        Workflow::XcanScanRequest req;
+        if (!wf.TakeXcanScan(id, &req)) continue;   // answered between the two reads
+        for (const auto& [key, value] : req.keys) ctx.CtxSet(key, value);
+        FD_INFO("xcan", "xcan_operator: operator runs '%s'", req.label.c_str());
+        const std::string err = RunLuaFile(req.script, reg, ctx, {}, false, nullptr);
+        if (ctx.ShouldStop()) return CommandResult::Fail("stopped");
+        ++scans;
+        bool   haveBest = false;
+        const double best = err.empty() ? CtxNumber(ctx, "align_best", &haveBest) : 0.0;
+        if (!err.empty())
+            FD_WARN("xcan", "xcan_operator: '%s' ended with: %s", req.label.c_str(), err.c_str());
+        wf.FinishXcanScan(id, err, haveBest, best);
+    }
+}
+
 } // namespace
 
 void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
@@ -262,8 +363,10 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                        "0 = wait for the operator"},
                       // Last, so a positional reader of the older params is unmoved.
                       {"level", PT::Enum, false, "info", 0, 0,
-                       {"info", "instruction", "warning", "error"},
-                       "how the window looks: info (blue), instruction (green), "
+                       {"info", "instruction", "warning", "error", "check"},
+                       "how the window looks: check (violet: the operator confirms "
+                       "something they looked at - OK - checked / Not OK), "
+                       "info (blue), instruction (green), "
                        "warning (amber), error (red) - it answers the same way"},
                       {"image1", PT::ImageFile, false, "", 0, 0, {},
                        "optional picture shown above the buttons as a visual aid (a "
@@ -353,10 +456,8 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"device", PT::DeviceHexapod, true, {}, 0, 0, {}, "hexapod to scan"},
                       {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
                        "feedback signal"},
-                      {"axes", PT::Enum, false, "XYZ", 0, 0,
-                       {"XYZ", "XY", "XZ", "YZ", "Z", "Y", "X"},
-                       "which axes the coordinate descent scans (order is always Z, "
-                       "then Y, then X; a single axis is a one-axis line scan)"},
+                      {"axes", PT::Enum, false, "Z>Y>X", 0, 0, XcanAxisChoices(),
+                       kXcanAxesHelp},
                       {"steps_um", PT::String, false, "10,5,2,1", 0, 0, {},
                        "coarse -> fine step ladder (um); adaptive mode: the zone steps, far -> near"},
                       {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},
@@ -381,8 +482,8 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   [rp](ExecutionContext& c, const ParamValues& p) {
                       c.CtxSet("align_device", p.GetString("device"));
                       c.CtxSet("align_topic", p.GetString("topic"));
-                      if (const char* ax = XcanAxisOrder(p.GetString("axes")); *ax)
-                          c.CtxSet("align_axes", std::string(ax));
+                      if (const std::string ax = XcanAxisOrder(p.GetString("axes")); !ax.empty())
+                          c.CtxSet("align_axes", ax);
                       c.CtxSet("align_steps_um", p.GetString("steps_um"));
                       c.CtxSet("align_exit_threshold",
                                p.GetDouble("exit_target_ua") * 1e-6);
@@ -561,8 +662,8 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"device", PT::DeviceHexapod, true, {}, 0, 0, {}, "hexapod to scan"},
                       {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
                        "feedback signal"},
-                      {"axes", PT::Enum, false, "XYZ", 0, 0, {"XYZ", "XY", "XZ", "YZ"},
-                       "which axes every pass scans (order is always Z, then Y, then X)"},
+                      {"axes", PT::Enum, false, "Z>Y>X", 0, 0, XcanAxisChoices(),
+                       kXcanAxesHelp},
                       {"target_ua", PT::Double, false, 800.0, 0.0001, 1e9, {},
                        "stop-and-stay when feedback reaches this (uA); judged after "
                        "every pass"},
@@ -619,6 +720,41 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                                          : CommandResult::Fail(err);
                   }});
 
+    // xcan_operator: manual_adjust's shape with the Quick align XCAN buttons in
+    // place of the jog - the operator runs presets until satisfied, then Done.
+    {
+        CommandSpec xop{"xcan_operator", "Motion",
+                        "Pause while the operator runs the Quick align XCAN presets until "
+                        "satisfied (Done continues, Cancel or the timeout fails)",
+                        {
+                            {"message", PT::String, false,
+                             "Run the XCAN presets until the signal is good, then press Done",
+                             0, 0, {}, "instruction shown to the operator ({key} substitutes)"},
+                            {"timeout_min", PT::Int, false, 30, 1, 480, {},
+                             "fail the step when Done has not been pressed after this many "
+                             "minutes (scans included)"},
+                            {"ctx_prefix", PT::String, false, "xop", 0, 0, {},
+                             "if set, <prefix>_scans (how many ran) and <prefix>_result "
+                             "(done / cancel / timeout); the last scan's align_* keys are "
+                             "in ctx either way"},
+                        },
+                        CommandSpec::Needs::None,
+                        [rp](ExecutionContext& c, const ParamValues& p) {
+                            return ExecXcanOperator(c, p, *rp);
+                        }};
+        xop.outputs = [](const nlohmann::json& p) {
+            const std::string pre = p.value("ctx_prefix", std::string("xop"));
+            CommandOutputs o;
+            if (!pre.empty()) {
+                o.keys.push_back({pre + "_scans", "number", "scans the operator ran"});
+                o.keys.push_back({pre + "_result", "text", "done / cancel / timeout"});
+            }
+            o.keys.push_back({"align_best", "number", "the last scan's best signal (A)"});
+            return o;
+        };
+        reg.Register(std::move(xop));
+    }
+
     // xcan_two_lens: the Run page's "6800 uA" sequence as a step. A FIXED
     // order - left coarse, left coarse again, left fine, right coarse - that
     // exits the moment any pass reaches the target, else exits as is after the
@@ -631,8 +767,8 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"right", PT::DeviceHexapod, true, {}, 0, 0, {}, "right hexapod"},
                       {"topic", PT::TopicName, false, "keithley/ch1", 0, 0, {},
                        "feedback signal"},
-                      {"axes", PT::Enum, false, "XYZ", 0, 0, {"XYZ", "XY", "XZ", "YZ"},
-                       "which axes every pass scans (order is always Z, then Y, then X)"},
+                      {"axes", PT::Enum, false, "Z>Y>X", 0, 0, XcanAxisChoices(),
+                       kXcanAxesHelp},
                       {"target_ua", PT::Double, false, 6800.0, 0.0001, 1e9, {},
                        "stop-and-stay when feedback reaches this (uA); judged after "
                        "every pass"},

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -542,8 +543,35 @@ struct HalconDetector::Impl {
                              &row, &col, &angle, &score);
 
             out->count = static_cast<int>(score.Length());
-            if (out->count <= 0)
-                return Miss(out, "no match above the minimum score");
+            if (out->count <= 0) {
+                // HOW far below: one more search, floor kMissProbeScore, so the
+                // miss says "best 0.52 < 0.70" and `score` carries the best
+                // candidate (ok stays false - it is a number to judge the model
+                // by, never a hit). "Not even close" and "just under" call for
+                // different fixes, and nobody can tell them apart from a bare
+                // miss. Only on a miss, so a hit costs nothing extra.
+                constexpr double kMissProbeScore = 0.1;
+                char why[128];
+                if (p.minScore > kMissProbeScore) {
+                    HTuple r2, c2, a2, s2;
+                    ncc.FindNccModel(img, aStart, aExtent, kMissProbeScore, 1, 0.5, "false",
+                                     static_cast<Hlong>(p.numLevels), &r2, &c2, &a2, &s2);
+                    if (s2.Length() > 0) {
+                        out->score = s2[0].D();
+                        std::snprintf(why, sizeof(why),
+                                      "no match above the minimum score (best %.2f < %.2f)",
+                                      out->score, p.minScore);
+                    } else {
+                        std::snprintf(why, sizeof(why),
+                                      "no match above the minimum score (best < %.2f, min %.2f)",
+                                      kMissProbeScore, p.minScore);
+                    }
+                } else {
+                    std::snprintf(why, sizeof(why),
+                                  "no match above the minimum score (min %.2f)", p.minScore);
+                }
+                return Miss(out, why);
+            }
 
             // find_ncc_model returns matches best-first, so index 0 is the one.
             const double a  = angle[0].D();          // radians

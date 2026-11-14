@@ -178,9 +178,8 @@ struct CameraMark {
     // The off-screen arrow is the same for all.
     enum class Glyph { Cross, Pulse, Diamond };
     Glyph glyph = Glyph::Cross;
-    // Pulse and Diamond: seconds per beat (60 / bpm). The beacon beats faster
-    // as a tool closes on its height - see App::DrawAuxBeacons; the diamond
-    // keeps a resting 72 bpm.
+    // Pulse and Diamond: seconds per beat (60 / bpm). A beacon beats a calm
+    // 30 bpm (App::DrawAuxBeacons); the diamond keeps a resting 72 bpm.
     float pulsePeriodS = 1.6f;
 };
 

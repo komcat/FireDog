@@ -21,6 +21,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <initializer_list>
 #include <map>
@@ -559,8 +561,7 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             if (ImGui::Checkbox(label, &v)) { params[p.name] = v; changed = true; }
         } else if (t == 1) {
             double v = cur.is_number() ? cur.get<double>() : 0.0;
-            ImGui::SetNextItemWidth(120.0f);
-            if (ImGui::InputDouble(label, &v, 0.0, 0.0, "%g")) {
+            if (InputSiDouble(label, &v, 90.0f)) {
                 params[p.name] = v;
                 changed = true;
             }
@@ -1346,6 +1347,147 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
     return changed;
 }
 
+// ---- Numbers with an SI prefix ------------------------------------------------
+// A photocurrent threshold is 0.0008 A; nobody should have to count the zeros.
+// The field holds a MANTISSA and a combo beside it the prefix, so 800 + u is
+// stored as 0.0008 - the plain number every condition and ctx value already
+// is. The field also takes the prefix typed in: "800u", "0.8 mA", "8e-4". A
+// unit after the prefix ("A", "V") is accepted and ignored: the number has no
+// unit, the recipe author knows which key they are comparing.
+
+namespace {
+
+struct SiPrefix {
+    int         exp;
+    const char* sym;    // "" = none; "u" for micro (the font has no mu)
+    const char* name;
+};
+constexpr SiPrefix kSiPrefixes[] = {
+    {-15, "f", "femto"}, {-12, "p", "pico"}, {-9, "n", "nano"}, {-6, "u", "micro"},
+    {-3, "m", "milli"},  {0, "", "none"},    {3, "k", "kilo"},  {6, "M", "mega"},
+    {9, "G", "giga"},
+};
+constexpr int kNoSiPrefix = -1000;
+
+double Pow10(int e) { return std::pow(10.0, static_cast<double>(e)); }
+
+// The engineering exponent that puts |v| in [1, 1000).
+int SiExpFor(double v)
+{
+    if (v == 0.0 || !std::isfinite(v)) return 0;
+    const int e = static_cast<int>(std::floor(std::log10(std::fabs(v)) / 3.0)) * 3;
+    return std::clamp(e, -15, 9);
+}
+
+const char* SiSym(int e)
+{
+    for (const SiPrefix& p : kSiPrefixes)
+        if (p.exp == e) return p.sym;
+    return "?";
+}
+
+// "800u" -> 800 and -6; "8e-4" -> 8e-4 and kNoSiPrefix; "0.8 mA" -> 0.8, -3.
+// False on anything that is not a number, a prefix and an optional unit.
+bool ParseSi(const char* s, double* mant, int* exp)
+{
+    char* end = nullptr;
+    const double d = std::strtod(s, &end);
+    if (end == s || !std::isfinite(d)) return false;
+    const char* c = end;
+    while (*c == ' ') ++c;
+    int e = kNoSiPrefix;
+    if (static_cast<unsigned char>(c[0]) == 0xC2 && static_cast<unsigned char>(c[1]) == 0xB5) {
+        e = -6;   // a typed mu (UTF-8)
+        c += 2;
+    } else if (*c) {
+        for (const SiPrefix& p : kSiPrefixes)
+            if (*p.sym && *c == *p.sym) { e = p.exp; ++c; break; }
+    }
+    // Whatever follows is a unit: letters (and spaces) only.
+    for (; *c; ++c)
+        if (*c != ' ' && !std::isalpha(static_cast<unsigned char>(*c))) return false;
+    *mant = d;
+    *exp  = e;
+    return true;
+}
+
+} // namespace
+
+bool App::InputSiDouble(const char* label, double* v, float width)
+{
+    ImGui::PushID(label);
+    const ImGuiID id = ImGui::GetID("##si");
+
+    // The prefix shown: frozen while this field is being typed in, else the
+    // author's pick when it still reads sensibly, else engineering notation.
+    int exp = SiExpFor(*v);
+    if (siEditId_ == id) {
+        exp = siEditExp_;
+    } else if (const auto it = siPrefixPick_.find(id); it != siPrefixPick_.end()) {
+        const double m = std::fabs(*v) / Pow10(it->second);
+        if (*v == 0.0 || (m >= 1e-3 && m < 1e6)) exp = it->second;
+    }
+
+    bool changed = false;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.6g", *v / Pow10(exp));
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::InputText("##si", buf, sizeof(buf))) {
+        double mant = 0.0;
+        int    pe   = kNoSiPrefix;
+        if (ParseSi(buf, &mant, &pe)) {
+            if (pe != kNoSiPrefix) {
+                // A typed prefix wins and sticks, for the rest of this edit
+                // and afterwards.
+                *v = mant * Pow10(pe);
+                siPrefixPick_[id] = pe;
+                if (siEditId_ == id) siEditExp_ = pe;
+            } else {
+                *v = mant * Pow10(exp);
+            }
+            changed = true;
+        }
+    }
+    if (ImGui::IsItemActivated()) {
+        siEditId_  = id;
+        siEditExp_ = exp;
+    }
+    if (ImGui::IsItemDeactivated() && siEditId_ == id) siEditId_ = 0;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("= %.9g\nType a number for the prefix beside it, or with its own\n"
+                          "prefix: 800u, 0.8m, 0.8 mA, 8e-4 (all = 0.0008).",
+                          *v);
+
+    ImGui::SameLine(0.0f, 2.0f);
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("mm").x + ImGui::GetFrameHeight() +
+                            ImGui::GetStyle().FramePadding.x * 2.0f);
+    const char* cur = SiSym(exp);
+    if (ImGui::BeginCombo("##sip", *cur ? cur : "-")) {
+        for (const SiPrefix& p : kSiPrefixes) {
+            char row[32];
+            std::snprintf(row, sizeof(row), "%-2s %s", *p.sym ? p.sym : "-", p.name);
+            if (ImGui::Selectable(row, p.exp == exp) && p.exp != exp) {
+                // The digits stay, the prefix changes: 800 u -> 800 m.
+                *v = (*v / Pow10(exp)) * Pow10(p.exp);
+                siPrefixPick_[id] = p.exp;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("SI prefix of the number on the left");
+
+    // The visible part of the label, as ImGui would have drawn it.
+    const char* hash = std::strstr(label, "##");
+    const std::string shown = hash ? std::string(label, hash) : std::string(label);
+    if (!shown.empty()) {
+        ImGui::SameLine();
+        ImGui::TextUnformatted(shown.c_str());
+    }
+    ImGui::PopID();
+    return changed;
+}
+
 // Shared editor for {key|topic, op, value} condition objects (an if step's
 // params, a loop's "while"). Normalizes the object in place so a fresh
 // condition is immediately valid.
@@ -1412,8 +1554,7 @@ bool App::DrawConditionEditor(nlohmann::json& cond)
             }
         } else {
             double d = v.is_number() ? v.get<double>() : 0.0;
-            ImGui::SetNextItemWidth(130.0f);
-            if (ImGui::InputDouble("value", &d, 0.0, 0.0, "%g")) {
+            if (InputSiDouble("value", &d, 90.0f)) {
                 cond["value"] = d;
                 changed = true;
             }
