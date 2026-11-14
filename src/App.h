@@ -1575,6 +1575,18 @@ private:
     std::string edTagFilter_;
     bool        edTagHide_    = false;
     bool RecipeListed(const Recipe& r) const;   // passes the filter above
+    // The list's groups (persisted): recently OPENED recipe uids, newest
+    // first, kept to kEdRecentKeep across products (another product's uids
+    // simply do not resolve) and shown up to kEdRecentShow; plus which group
+    // headers are open. edRecentSeen_ is the uid the list last noted, so a
+    // selection made ANYWHERE (click, New, Paste, another page) is recorded.
+    std::vector<std::string> edRecent_;
+    std::string edRecentSeen_;
+    bool        edRecentOpen_  = true;
+    bool        edWorkingOpen_ = true;
+    bool        edLooseOpen_   = true;
+    static constexpr int kEdRecentShow = 10;
+    static constexpr int kEdRecentKeep = 30;
 
     // Alignment page UI state — the procedures themselves live in session_.
     int  alignSel_      = -1;    // selected procedure

@@ -86,6 +86,10 @@ int App::Run()
         edTuneMm_      = ui.edTuneMm;
         edTagFilter_  = ui.edTagFilter;
         edTagHide_    = ui.edTagHide;
+        edRecent_      = ui.edRecent;
+        edRecentOpen_  = ui.edRecentOpen;
+        edWorkingOpen_ = ui.edWorkingOpen;
+        edLooseOpen_   = ui.edLooseOpen;
         if (ui.runDeckW      > 0.0f) runDeckW_      = ui.runDeckW;
         if (ui.runDutW       > 0.0f) runDutW_       = ui.runDutW;
         if (ui.runScanH      > 0.0f) runScanH_      = ui.runScanH;
@@ -659,6 +663,10 @@ void App::SaveUiSettings()
     s.edTuneMm      = edTuneMm_;
     s.edTagFilter   = edTagFilter_;
     s.edTagHide     = edTagHide_;
+    s.edRecent      = edRecent_;
+    s.edRecentOpen  = edRecentOpen_;
+    s.edWorkingOpen = edWorkingOpen_;
+    s.edLooseOpen   = edLooseOpen_;
     s.runDeckW      = runDeckW_;
     s.runDutW       = runDutW_;
     s.runScanH      = runScanH_;

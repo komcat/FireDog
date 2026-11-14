@@ -59,6 +59,12 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("ed_tune_mm")) s.edTuneMm = j["ed_tune_mm"].get<double>();
         if (j.contains("ed_tag_filter"))  s.edTagFilter  = j["ed_tag_filter"].get<std::string>();
         if (j.contains("ed_tag_hide"))    s.edTagHide    = j["ed_tag_hide"].get<bool>();
+        if (j.contains("ed_recent") && j["ed_recent"].is_array())
+            for (const auto& v : j["ed_recent"])
+                if (v.is_string()) s.edRecent.push_back(v.get<std::string>());
+        if (j.contains("ed_recent_open"))  s.edRecentOpen  = j["ed_recent_open"].get<bool>();
+        if (j.contains("ed_working_open")) s.edWorkingOpen = j["ed_working_open"].get<bool>();
+        if (j.contains("ed_loose_open"))   s.edLooseOpen   = j["ed_loose_open"].get<bool>();
         if (j.contains("run_deck_w")) s.runDeckW = j["run_deck_w"].get<float>();
         if (j.contains("run_dut_w"))  s.runDutW  = j["run_dut_w"].get<float>();
         if (j.contains("run_scan_h")) s.runScanH = j["run_scan_h"].get<float>();
@@ -251,6 +257,10 @@ bool UiSettings::Save(const std::string& path) const
     j["ed_tune_mm"]      = edTuneMm;
     j["ed_tag_filter"]   = edTagFilter;
     j["ed_tag_hide"]     = edTagHide;
+    j["ed_recent"]       = edRecent;
+    j["ed_recent_open"]  = edRecentOpen;
+    j["ed_working_open"] = edWorkingOpen;
+    j["ed_loose_open"]   = edLooseOpen;
     j["run_deck_w"]      = runDeckW;
     j["run_dut_w"]       = runDutW;
     j["run_scan_h"]      = runScanH;

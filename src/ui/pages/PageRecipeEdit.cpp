@@ -364,33 +364,90 @@ void App::DrawRecipeEditPanel()
     ImGui::BeginChild("##edRecipeRows");
     if (session_.Recipes().empty())
         ImGui::TextWrapped("No recipes yet - New creates one, or Reload from disk.");
-    // Two groups, WORKING (a program deck reaches it) on top, then LOOSE. The
-    // display order only: recipeSel_ stays an index into the library, which
-    // keeps its own order on disk.
+    // Note the OPENED recipe: whatever put it in recipeSel_ (a click here,
+    // New, Paste, another page) moves it to the front of the Recent group.
+    // View state, not the document - a list of uids in UiSettings.
+    if (haveSel) {
+        const std::string& uid = session_.Recipes()[recipeSel_].uid;
+        if (!uid.empty() && uid != edRecentSeen_) {
+            edRecentSeen_ = uid;
+            if (edRecent_.empty() || edRecent_.front() != uid) {
+                std::erase(edRecent_, uid);
+                edRecent_.insert(edRecent_.begin(), uid);
+                if (edRecent_.size() > static_cast<std::size_t>(kEdRecentKeep))
+                    edRecent_.resize(kEdRecentKeep);
+                SaveUiSettings();
+            }
+        }
+    }
+    // Three groups: RECENT (the last kEdRecentShow opened, newest first - a
+    // recipe there is ALSO in its own group below), WORKING (a program deck
+    // reaches it), then LOOSE. Each header collapses (persisted). The display
+    // order only: recipeSel_ stays an index into the library, which keeps its
+    // own order on disk.
     int listed = 0;
     const MarkIcon* workIcon = UiIcon("run_execute");
     const ImVec4 workText = Theme::IsLight() ? kWorkingTextLt : kWorkingText;
-    for (int group = 0; group < 2; ++group) {
-        const bool groupWorking = group == 0;
+    // A collapsible group header holding its count; the open state is the
+    // App member, persisted when the header is clicked.
+    const auto groupHeader = [&](const char* name, const char* id, int count, bool& open) {
+        char label[64];
+        std::snprintf(label, sizeof(label), "%s (%d)###%s", name, count, id);
+        ImGui::SetNextItemOpen(open, ImGuiCond_Always);
+        const bool now = ImGui::CollapsingHeader(label);
+        if (now != open) {
+            open = now;
+            SaveUiSettings();
+        }
+        return now;
+    };
+    // Recent: resolved by uid; another product's uids simply do not resolve.
+    // The list filter does not apply - it is a history, not a view of the
+    // library - but a hidden recipe still reads dimmed.
+    std::vector<int> recent;
+    for (const std::string& uid : edRecent_) {
+        if (static_cast<int>(recent.size()) >= kEdRecentShow) break;
+        for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
+            if (session_.Recipes()[i].uid == uid) {
+                recent.push_back(i);
+                break;
+            }
+        }
+    }
+    for (int group = 0; group < 3; ++group) {
+        const bool groupRecent  = group == 0;
+        const bool groupWorking = group == 1;
         // "loose only" drops the working group like any other filter: a
         // selected working recipe still shows, dimmed.
         const bool groupPasses = !(groupWorking && edLooseOnly_);
-        // Count first so an empty group draws no header.
-        int inGroup = 0;
-        for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
-            const Recipe& r = session_.Recipes()[i];
-            if ((workingWhy(r) != nullptr) != groupWorking) continue;
-            if ((groupPasses && RecipeListed(r)) || recipeSel_ == i) ++inGroup;
+        // The group's rows, in display order: (library index, passes filter).
+        std::vector<std::pair<int, bool>> rows;
+        if (groupRecent) {
+            for (const int i : recent) rows.push_back({i, true});
+        } else {
+            for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
+                const Recipe& r = session_.Recipes()[i];
+                if ((workingWhy(r) != nullptr) != groupWorking) continue;
+                const bool passes = groupPasses && RecipeListed(r);
+                if (passes || recipeSel_ == i) rows.push_back({i, passes});
+            }
         }
-        if (inGroup == 0) continue;
-        ImGui::SeparatorText(groupWorking ? "Working" : "Loose");
-        for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
+        // An empty group draws no header.
+        if (rows.empty()) continue;
+        const bool open = groupRecent    ? groupHeader("Recent", "edgRecent",
+                                                       static_cast<int>(rows.size()), edRecentOpen_)
+                        : groupWorking   ? groupHeader("Working", "edgWorking",
+                                                       static_cast<int>(rows.size()), edWorkingOpen_)
+                                         : groupHeader("Loose", "edgLoose",
+                                                       static_cast<int>(rows.size()), edLooseOpen_);
+        if (!groupRecent) listed += static_cast<int>(rows.size());
+        if (!open) continue;
+        ImGui::PushID(group);   // a recipe can be in Recent AND its own group
+        for (const auto& [i, passes] : rows) {
             const Recipe& r = session_.Recipes()[i];
             const std::string* why = workingWhy(r);
-            if ((why != nullptr) != groupWorking) continue;
-            const bool passes = groupPasses && RecipeListed(r);
-            if (!passes && recipeSel_ != i) continue;
-            ++listed;
+            // A recent recipe wears its own group's colours and icon.
+            const bool rowWorking = why != nullptr;
             ImGui::PushID(i);
             // Hidden recipes read as hidden even when the filter lets them through;
             // a selected recipe the filter would drop reads the same way.
@@ -403,7 +460,7 @@ void App::DrawRecipeEditPanel()
             // The working band, under the Selectable so its hover/selection
             // highlight still draws on top.
             const ImVec2 rowP = ImGui::GetCursorScreenPos();
-            if (groupWorking)
+            if (rowWorking)
                 ImGui::GetWindowDrawList()->AddRectFilled(
                     rowP,
                     ImVec2(rowP.x + ImGui::GetContentRegionAvail().x,
@@ -419,15 +476,15 @@ void App::DrawRecipeEditPanel()
             ImGui::SetCursorPosX(x0);
             // The icon column is reserved on every row, so working and loose
             // names start at the same x.
-            DrawStepIconInline(groupWorking ? workIcon : nullptr);
+            DrawStepIconInline(rowWorking ? workIcon : nullptr);
             if (dirty)
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
             else if (dim)
                 ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
-            else if (groupWorking)
+            else if (rowWorking)
                 ImGui::PushStyleColor(ImGuiCol_Text, workText);
             ImGui::TextUnformatted(r.name.c_str());
-            if (dirty || dim || groupWorking) ImGui::PopStyleColor();
+            if (dirty || dim || rowWorking) ImGui::PopStyleColor();
             if (hovered && (why || dirty || r.hidden || !r.tags.empty())) {
                 std::string tip = why ? "working - " + *why : "";
                 if (dirty) tip += (tip.empty() ? "" : "\n") + std::string("unsaved changes");
@@ -438,6 +495,7 @@ void App::DrawRecipeEditPanel()
             }
             ImGui::PopID();
         }
+        ImGui::PopID();   // group
     }
     if (listed == 0 && !session_.Recipes().empty())
         ImGui::TextDisabled("(all %zu filtered out)", session_.Recipes().size());
@@ -1965,8 +2023,12 @@ void App::DrawRecipeRunStrip(float height)
     if (st.leafTotal > 0) {
         // Time-based once this recipe version has history, else steps
         // (docs/cycle-time-design.md); the overlay always counts steps.
+        // Kept to the LEFT column, under the state line: it ends where the
+        // controls start (the Step checkbox), never under the buttons.
         const std::string overlay = RecipeRunBarText(st.leafDone, st.leafTotal);
-        ImGui::ProgressBar(RecipeRunBarFrac(st.leafDone, st.leafTotal), ImVec2(-1.0f, 0.0f),
+        const float barW = fmaxf(120.0f, rightEdge - ctrlW - style.ItemSpacing.x -
+                                             ImGui::GetCursorPosX());
+        ImGui::ProgressBar(RecipeRunBarFrac(st.leafDone, st.leafTotal), ImVec2(barW, 0.0f),
                            overlay.c_str());
         DrawRecipeTimeLine();
     }

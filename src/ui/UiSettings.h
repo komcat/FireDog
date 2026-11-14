@@ -136,6 +136,13 @@ struct UiSettings {
     double      edTuneMm      = 0.01;    // the Tune step on relative-move deltas
     std::string edTagFilter;             // "" = every tag
     bool        edTagHide     = false;   // false = show only that tag, true = hide it
+    // The recipe list's groups: recently OPENED recipe uids, newest first
+    // (uids of other products are kept and simply not shown), and which of
+    // the three group headers are open.
+    std::vector<std::string> edRecent;
+    bool        edRecentOpen  = true;
+    bool        edWorkingOpen = true;
+    bool        edLooseOpen   = true;
 
     // Run page: widths of its deck (left) and DUT (right) columns in px
     // (0 = default). Same reasoning again — a takeover page with its own layout.
