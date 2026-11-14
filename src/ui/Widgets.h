@@ -189,6 +189,10 @@ struct CameraMark {
 // hex-right orange. `fallback` for any other device.
 unsigned int DeviceAccentColor(const std::string& device, unsigned int fallback);
 
+// A reading with an SI prefix and no unit: 2.09e-05 -> "20.888u". The caller
+// appends the unit ("A") when it knows one.
+std::string FormatSI(double v);
+
 // Everything needed to put a MACHINE-mm point on screen: the view, the box it
 // is clipped to, and the pose + calibration the projection goes through.
 struct WorldMarkView {

@@ -4,26 +4,44 @@
 -- OWN (local) axes. The slow axis (default local X - the laser's TOP) begins
 -- at its start position X0 and only steps DOWN (raster_slow_dir = -1), one row
 -- per step, covering slow_span_um total. The fast axis (default local Y - the
--- laser's SIDE) sweeps CENTERED on its start position Y0, from
--- Y0 - fast_span_um/2 to Y0 + fast_span_um/2, sampling every fast_step_um.
--- Rows alternate sweep direction (serpentine / bobcat snakePattern - no
--- flyback move, less backlash):
+-- laser's SIDE) sweeps each row, one node every fast_step_um, in one of two
+-- shapes (raster_fast_mode), and the FIRST sweep always leaves FROM the start
+-- point - the scan never opens with a jump away from where the operator put it:
 --
---   X0        :  Y-half ->  ->  ->  ->  Y+half
---   X0-step   :  Y+half <-  <-  <-  <-  Y-half
---   X0-2*step :  Y-half ->  ->  ->  ->  Y+half   ... etc
+--   center (default): the rows span fast_span_um CENTRED on Y0, half each
+--     side. Row 0 is a HALF row - from Y0 out to the raster_fast_dir edge -
+--     then every row is the full width, alternating:
+--
+--       X0        :            Y0 ->  ->  ->  Y+half
+--       X0-step   :  Y-half <- <-  <-  <-  <- Y+half
+--       X0-2*step :  Y-half -> ->  ->  ->  -> Y+half   ... etc
+--
+--   corner: the rows span fast_span_um on ONE side of Y0 (raster_fast_dir),
+--     the start being a corner of the grid; every row is the full width:
+--
+--       X0        :  Y0     ->  ->  ->  Y0+span
+--       X0-step   :  Y0     <-  <-  <-  Y0+span   ... etc
+--
+-- Serpentine (bobcat snakePattern): no flyback move, less backlash. Every node
+-- sits a whole number of fast_step_um from Y0, so the start is always a node
+-- and centre mode's edges are +/- half rounded down to a step.
 --
 -- (2026-11-13 briefly had it the other way round - slow Y, fast X; on this
 -- rig X is the laser's top and Y its side, so rows sweep Y and step down X.)
 --
 -- Every node is an ABSOLUTE target computed from the start pose (no drift
 -- accumulation); one measurement per node (same fresh-sample settle as
--- hexapod_align). If raster_exit_threshold > 0 the scan stops-and-stays the
--- moment a sample reaches it (first light found - run XCAN next); otherwise
--- the scan runs and the stage returns to the best node seen.
+-- hexapod_align). If raster_exit_threshold > 0 the scan stops-and-stays ONLY
+-- when the signal reaches it, CONFIRMED by a second fresh reading at the same
+-- node (one noisy sample is not first light); anything below the target is
+-- just a node, however peak-like. Short of the target the whole grid is
+-- searched to the end of both spans and the stage returns to the best node
+-- seen - which is also what happens with no target at all.
 --
--- Two cycle-time cuts (both gated on REAL signal - a row peak reaching
--- baseline * raster_signal_factor - so they can't fire on dark noise):
+-- Two cycle-time cuts, for a scan WITHOUT an exit target only (with one, the
+-- target is the only early exit - a cut would end the search on a local bump
+-- below it). Both gated on REAL signal - a row peak reaching
+-- baseline * raster_signal_factor - so they can't fire on dark noise:
 --   row stop  - a single spot means row peaks rise -> max -> fall as the slow
 --               axis walks past it; after raster_row_stop consecutive rows
 --               raster_row_drop_pct below the best row, the rest are dark and
@@ -43,7 +61,9 @@ local P = {
   slow_span_um   = fd.param("raster_slow_span_um", 40), -- one-sided total travel
   slow_step_um   = fd.param("raster_slow_step_um", 4),  -- row pitch
   fast_axis      = fd.param("raster_fast_axis", "Y"),     -- hexapod LOCAL axis
-  fast_span_um   = fd.param("raster_fast_span_um", 40), -- CENTERED: +/- half around start
+  fast_mode      = fd.param("raster_fast_mode", "center"),  -- center | corner
+  fast_dir       = fd.param("raster_fast_dir", 1),        -- +1 / -1: first sweep's way
+  fast_span_um   = fd.param("raster_fast_span_um", 40), -- total width: +/- half (center) or one side (corner)
   fast_step_um   = fd.param("raster_fast_step_um", 4),  -- sample pitch along a row
   settle_ms      = fd.param("raster_settle_ms", 300),   -- fresh-sample ceiling
   settle_min_ms  = fd.param("raster_settle_min_ms", 0), -- floor for slow receivers
@@ -70,6 +90,8 @@ local P = {
 assert(P.slow_step_um > 0, "raster_slow_step_um must be > 0")
 assert(P.fast_step_um > 0, "raster_fast_step_um must be > 0")
 P.slow_dir = ((tonumber(P.slow_dir) or -1) >= 0) and 1 or -1   -- normalize to +/-1
+P.fast_dir = ((tonumber(P.fast_dir) or 1) >= 0) and 1 or -1
+P.fast_mode = (P.fast_mode == "corner") and "corner" or "center"
 
 local exit_hit = false
 
@@ -117,13 +139,7 @@ local function measure()
   local t0 = fd.clock()
   while true do
     local v = fd.read(P.topic)
-    if v ~= nil then
-      if P.exit_threshold ~= 0 and v >= P.exit_threshold and not exit_hit then
-        exit_hit = true
-        fd.logf("exit threshold reached: %.4g >= %.4g", v, P.exit_threshold)
-      end
-      return v
-    end
+    if v ~= nil then return v end
     if fd.clock() - t0 > 5.0 then error("no signal on " .. P.topic) end
     fd.sleep(50)
   end
@@ -155,12 +171,29 @@ local s0 = pos(P.slow_axis)   -- start pose = grid origin
 local f0 = pos(P.fast_axis)
 
 local rows = math.floor(P.slow_span_um / P.slow_step_um + 0.5)   -- rows beyond row 0
-local cols = math.floor(P.fast_span_um / P.fast_step_um + 0.5)   -- steps per sweep
-local half = P.fast_span_um / 2.0
 
-fd.logf("raster_scan: %s on %s, %s %s%g um (dir %+d, %d rows) x %s +/-%g um (%d cols), step %g/%g um = up to %d points",
+-- The fast-axis grid as NODE INDICES k (offset = k * fast_step_um from the
+-- start): kLo..kHi. Centre mode is symmetric about the start; corner mode runs
+-- from the start (k = 0) to the fast_dir side.
+local kLo, kHi
+if P.fast_mode == "corner" then
+  local n = math.floor(P.fast_span_um / P.fast_step_um + 1e-9)
+  if P.fast_dir > 0 then kLo, kHi = 0, n else kLo, kHi = -n, 0 end
+else
+  local n = math.floor(P.fast_span_um / 2.0 / P.fast_step_um + 1e-9)
+  kLo, kHi = -n, n
+end
+local cols = kHi - kLo                                           -- steps per full sweep
+local function fOff(k) return k * P.fast_step_um end             -- um from the start
+
+-- Row r's sweep direction: row 0 leaves the start toward fast_dir, then each
+-- row turns back (serpentine).
+local function rowDir(r) return (r % 2 == 0) and P.fast_dir or -P.fast_dir end
+
+fd.logf("raster_scan: %s on %s, %s %s%g um (dir %+d, %d rows) x %s %s %+g..%+g um (%d cols, first sweep %s), step %g/%g um = up to %d points",
         P.device, P.topic, P.slow_axis, P.slow_dir < 0 and "-" or "+",
-        P.slow_span_um, P.slow_dir, rows + 1, P.fast_axis, half, cols + 1,
+        P.slow_span_um, P.slow_dir, rows + 1, P.fast_axis, P.fast_mode,
+        fOff(kLo), fOff(kHi), cols + 1, P.fast_dir > 0 and "+" or "-",
         P.slow_step_um, P.fast_step_um, (rows + 1) * (cols + 1))
 if TRACE then
   fd.logf("rast,header: seq,t_s,row,col,%s,%s,value,dv,note", P.slow_axis, P.fast_axis)
@@ -177,15 +210,48 @@ for i = 1, P.avg_count do
 end
 local baseline = sum / P.avg_count
 fd.logf("baseline = %.4g", baseline)
+local TARGET = tonumber(P.exit_threshold) or 0
+if TARGET > 0 and baseline >= TARGET then
+  exit_hit = true
+  fd.logf("exit target already met at the start: baseline %.4g >= %.4g - staying", baseline, TARGET)
+end
 
 -- The start pose is itself a valid grid node (its value = the baseline), so
 -- seed best with it: a scan that finds nothing better returns to the start.
 local best   = { v = baseline, s = s0, f = f0, row = 0, col = 0 }
 local points = 0
 
+-- The Aux window's heatmap, LIVE: opened here with the planned grid, one
+-- fd.raster_point per node as it is measured, closed at the end with the
+-- summary. Guarded: an older exe has no fd.raster_map, and a missing picture
+-- must never fail the scan.
+local HEAT = (fd.raster_map ~= nil) and (fd.raster_point ~= nil)
+local function heat_header(live)
+  return {
+    device = P.device, topic = P.topic,
+    slow_axis = P.slow_axis, fast_axis = P.fast_axis, slow_dir = P.slow_dir,
+    slow_span_um = P.slow_span_um, slow_step_um = P.slow_step_um,
+    fast_span_um = P.fast_span_um, fast_step_um = P.fast_step_um,
+    fast_lo_um = fOff(kLo), fast_hi_um = fOff(kHi),
+    baseline = baseline, best = best.v,
+    best_s_um = (best.s - s0) * 1000.0, best_f_um = (best.f - f0) * 1000.0,
+    threshold = P.exit_threshold, exit_hit = exit_hit, live = live,
+  }
+end
+if HEAT then
+  local h = heat_header(true)
+  h.points = {}                -- a fresh map: the previous scan's nodes go
+  fd.raster_map(h)
+end
+
 -- "Real signal" arming level for row-stop and tracking. A non-positive
 -- baseline would let pure noise arm them, so both stay off in that case.
 local TRACK    = (P.track == true) or ((tonumber(P.track) or 0) ~= 0)
+if TARGET > 0 and (TRACK or P.row_stop > 0) then
+  fd.logf("  exit target %.4g set: row-stop and tracking OFF - the whole grid is searched "
+          .. "until the target is reached", TARGET)
+  TRACK, P.row_stop = false, 0
+end
 local armLevel = baseline > 0 and baseline * P.signal_factor or math.huge
 if armLevel == math.huge and (TRACK or P.row_stop > 0) then
   fd.logf("  baseline <= 0: row-stop / tracking disarmed (signal_factor gate unusable)")
@@ -201,24 +267,46 @@ for r = 0, rows do
   local sTgt = s0 + P.slow_dir * r * P.slow_step_um / 1000.0
   move_abs(P.slow_axis, sTgt)
 
-  -- Fast window: full span, or - once the previous row saw real signal -
-  -- a narrow window centered on that row's peak, clamped to the span.
-  local lo, hi = -half, half                     -- offsets from f0, um
-  if TRACK and prevArmed then
-    local center = (prevPeakF - f0) * 1000.0
-    lo = math.max(-half, center - P.track_span_um / 2.0)
-    hi = math.min(half, center + P.track_span_um / 2.0)
+  -- This row's window of node indices: the full grid, except
+  --   * row 0 in centre mode - a HALF row, from the start (k = 0) out to the
+  --     fast_dir edge, so the scan leaves from where it was started;
+  --   * once the previous row saw real signal (tracking) - a narrow window
+  --     centred on that row's peak, clamped to the grid.
+  local a, b = kLo, kHi
+  if r == 0 and P.fast_mode == "center" then
+    if P.fast_dir > 0 then a = 0 else b = 0 end
+  elseif TRACK and prevArmed then
+    local pk = math.floor((prevPeakF - f0) * 1000.0 / P.fast_step_um + 0.5)
+    local tw = math.floor(P.track_span_um / 2.0 / P.fast_step_um + 1e-9)
+    a, b = math.max(kLo, pk - tw), math.min(kHi, pk + tw)
   end
-  local nCols = math.floor((hi - lo) / P.fast_step_um + 1e-9)
+  local d = rowDir(r)
+  local nCols = b - a
 
   local rowV, rowF = -math.huge, f0
   for c = 0, nCols do
-    -- Serpentine: even rows sweep lo -> hi, odd rows come back.
-    local k    = (r % 2 == 0) and c or (nCols - c)
-    local fTgt = f0 + (lo + k * P.fast_step_um) / 1000.0
+    -- Serpentine: this row runs a -> b when it goes +, b -> a when it goes -.
+    local k    = (d > 0) and (a + c) or (b - c)
+    local fTgt = f0 + fOff(k) / 1000.0
     move_abs(P.fast_axis, fTgt)
     local v = measure()
     points = points + 1
+    -- Reaching the target ends the scan only if a second fresh reading at
+    -- this node agrees: one spike above it is noise, not first light. The
+    -- node keeps the confirming value (it is where the stage will stay).
+    if TARGET > 0 and v >= TARGET then
+      local v2 = measure()
+      if v2 >= TARGET then
+        exit_hit = true
+        fd.logf("exit target reached: %.4g then %.4g >= %.4g - staying", v, v2, TARGET)
+        v = v2
+      else
+        fd.logf("  %.4g >= target %.4g not confirmed (re-read %.4g) - searching on",
+                v, TARGET, v2)
+        v = v2
+      end
+    end
+    if HEAT then fd.raster_point((sTgt - s0) * 1000.0, (fTgt - f0) * 1000.0, v) end
     if v > rowV then rowV, rowF = v, fTgt end
     if v > best.v then
       best = { v = v, s = sTgt, f = fTgt, row = r, col = k }
@@ -269,6 +357,8 @@ fd.ctx.raster_points       = points
 fd.ctx.raster_exit_hit     = exit_hit
 fd.ctx.raster_best_slow_um = (best.s - s0) * 1000.0   -- offset from start, um
 fd.ctx.raster_best_fast_um = (best.f - f0) * 1000.0
+-- Close the live heatmap with the summary (its nodes are already there).
+if HEAT then fd.raster_map(heat_header(false)) end
 fd.logf("raster_scan done: %d points, baseline=%.4g best=%.4g at %s%+.1fum %s%+.1fum%s",
         points, baseline, best.v, P.slow_axis, fd.ctx.raster_best_slow_um,
         P.fast_axis, fd.ctx.raster_best_fast_um,

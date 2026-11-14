@@ -6,6 +6,7 @@
 #include "core/DataBus.h"
 #include "core/DutSession.h"
 #include "core/Log.h"
+#include "core/Product.h"   // NowStamp (fd.raster_map)
 #include "core/ScanLog.h"
 #include "core/Topics.h"
 #include "hardware/HardwareManager.h"
@@ -148,6 +149,15 @@ const std::vector<LuaFdBuiltin>& LuaFdBuiltins()
         {"run_recipe", "run_recipe(",
          "fd.run_recipe(uid_or_name) : run a library recipe inline on this worker "
          "(not available to a script a recipe's run_script started)"},
+        {"raster_map", "raster_map{",
+         "fd.raster_map{device, topic, slow_axis, fast_axis, slow_dir, slow_span_um, "
+         "slow_step_um, fast_span_um, fast_step_um, baseline, best, best_s_um, best_f_um, "
+         "threshold, exit_hit, live, [points = {{s=, f=, v=}, ...}]} : open (live = true) "
+         "or close the Aux window's raster heatmap; without points the ones already "
+         "added are kept (display only)"},
+        {"raster_point", "raster_point(",
+         "fd.raster_point(s_um, f_um, v) : add one measured node to the live raster "
+         "heatmap (offsets from the start, um)"},
     };
     return k;
 }
@@ -416,6 +426,52 @@ std::string RunLuaFile(const std::string& requested, const CommandRegistry& reg,
             sol::object       cnt = sol::make_object(ts, static_cast<double>(n));
             if (n == 0) return {sol::make_object(ts, sol::lua_nil), cnt};
             return {sol::make_object(ts, s.LatestValue()), cnt};
+        });
+        // A finished raster scan's grid, for the Aux window's heatmap. The
+        // worker never touches the UI: the record goes into Workflow's slot and
+        // App::Update takes it. Display only - a malformed point is skipped,
+        // never an error, because a picture must not fail a scan.
+        fd.set_function("raster_map", [&ctx](sol::table t) {
+            RasterMap m;
+            m.device     = t.get_or<std::string>("device", "");
+            m.topic      = t.get_or<std::string>("topic", "");
+            m.slowAxis   = t.get_or<std::string>("slow_axis", "");
+            m.fastAxis   = t.get_or<std::string>("fast_axis", "");
+            m.slowDir    = t.get_or("slow_dir", -1.0) >= 0.0 ? 1 : -1;
+            m.slowSpanUm = t.get_or("slow_span_um", 0.0);
+            m.slowStepUm = t.get_or("slow_step_um", 0.0);
+            m.fastSpanUm = t.get_or("fast_span_um", 0.0);
+            m.fastStepUm = t.get_or("fast_step_um", 0.0);
+            m.fastLoUm   = t.get_or("fast_lo_um", 0.0);
+            m.fastHiUm   = t.get_or("fast_hi_um", 0.0);
+            m.baseline   = t.get_or("baseline", 0.0);
+            m.best       = t.get_or("best", 0.0);
+            m.bestSUm    = t.get_or("best_s_um", 0.0);
+            m.bestFUm    = t.get_or("best_f_um", 0.0);
+            m.threshold  = t.get_or("threshold", 0.0);
+            m.exitHit    = t.get_or("exit_hit", false);
+            m.live       = t.get_or("live", false);
+            const sol::optional<sol::table> pts = t["points"];
+            if (pts) {
+                m.points.reserve(pts->size());
+                for (std::size_t i = 1; i <= pts->size(); ++i) {
+                    const sol::optional<sol::table> p = (*pts)[i];
+                    if (!p) continue;
+                    m.points.push_back({p->get_or("s", 0.0), p->get_or("f", 0.0),
+                                        p->get_or("v", 0.0)});
+                }
+            }
+            m.at = NowStamp();
+            if (!m.live)
+                FD_INFO("script", "raster_map: %s finished, %zu point(s) for the Aux heatmap",
+                        m.device.c_str(), pts ? m.points.size() : std::size_t{0});
+            // No points table = keep what fd.raster_point added during the scan.
+            ctx.Wf().SetRasterMap(std::move(m), pts.has_value());
+        });
+        // One node as it is measured, for the live heatmap. Silent: it runs
+        // once per raster sample.
+        fd.set_function("raster_point", [&ctx](double sUm, double fUm, double v) {
+            ctx.Wf().AddRasterPoint(RasterMapPoint{sUm, fUm, v});
         });
         // Takes double: ctx-injected numbers are Lua floats (150.0), and sol's
         // safeties reject float->int even when integral.

@@ -20,6 +20,7 @@
 #include "App.h"
 
 #include "imgui.h"
+#include "implot.h"   // the raster heatmap's colour themes (ImPlot colormaps)
 
 #include "ui/Theme.h"
 #include "ui/UiSettings.h"
@@ -40,7 +41,7 @@ namespace {
 // the id prefsCat_ holds. Add a page: a row here and a case in the switch.
 enum PrefsPage { kPrefDisplay = 0, kPrefChartCurrent = 1, kPrefMotionRegMove = 2,
                  kPrefToolMarkers = 3, kPrefXcanPresets = 4, kPrefXcanTargets = 5,
-                 kPrefQuickAlign = 6, kPrefMarkLabels = 7 };
+                 kPrefQuickAlign = 6, kPrefMarkLabels = 7, kPrefRasterMap = 8 };
 
 struct PrefsGroup {
     const char* name;
@@ -56,7 +57,9 @@ const std::vector<PrefsGroup>& PrefsTree()
         {"Motion",      {{"Tool -> cam", kPrefMotionRegMove, "Motion > Tool -> cam"}}},
         {"Graphic view", {{"Tool markers", kPrefToolMarkers, "Graphic view > Tool markers"},
                           {"Beacons & objects", kPrefMarkLabels,
-                           "Graphic view > Beacons & objects"}}},
+                           "Graphic view > Beacons & objects"},
+                          {"Raster heatmap", kPrefRasterMap,
+                           "Graphic view > Raster heatmap"}}},
         {"Scanning",    {{"XCAN presets", kPrefXcanPresets, "Scanning > XCAN presets"},
                          {"XCAN targets", kPrefXcanTargets, "Scanning > XCAN targets"},
                          {"Quick align", kPrefQuickAlign, "Scanning > Quick align"}}},
@@ -162,6 +165,8 @@ AppPrefs App::CurrentPrefs() const
     p.chartChDefault = chartChDef_;
     p.auxTipLabels   = auxTipLabels_;
     p.auxMarks       = auxMarks_;
+    p.rasterMapLifeS = rasterMapLifeS_;
+    p.rasterMapCmap  = rasterMapCmap_;
     p.jogRegZOff     = jogRegZOffDef_;
     p.jogRegUnver    = jogRegUnverDef_;
     for (int i = 0; i < kXcanPresetCount; ++i) {
@@ -211,6 +216,9 @@ void App::ApplyPreferences()
     // operator applied it to see it, not to wait for a restart.
     if (e.auxTipLabels != b.auxTipLabels) auxTipLabels_ = e.auxTipLabels;
     if (!(e.auxMarks == b.auxMarks)) auxMarks_ = e.auxMarks;
+    if (e.rasterMapLifeS != b.rasterMapLifeS)
+        rasterMapLifeS_ = std::clamp(e.rasterMapLifeS, 0.5, kRasterMapLifeMaxS);
+    if (e.rasterMapCmap != b.rasterMapCmap) rasterMapCmap_ = e.rasterMapCmap;
     if (e.chartChDefault != b.chartChDefault) {
         chartChDef_ = e.chartChDefault;
         chartCh_    = chartChDef_;   // show it now, as the Jog defaults below do
@@ -746,6 +754,50 @@ void App::DrawPreferencesWindow()
             "a diamond on the height gauge at the object's height against the focused plane");
         ImGui::Spacing();
         if (ImGui::Button("Reset to defaults##marks")) a = AuxMarkLabels{};
+        break;
+    }
+    case kPrefRasterMap: {
+        ImGui::TextWrapped("When a raster scan finishes, the Aux window shows its samples as a "
+                           "small heatmap on the left of the picture: one cell per node, the "
+                           "best one outlined. It stays this many seconds, and for as long as "
+                           "the mouse is over it.");
+        ImGui::Spacing();
+        const float labelW = ImGui::CalcTextSize("Colour theme").x + st.ItemSpacing.x * 4.0f;
+        FormLabel("Stays for", labelW, "seconds after the scan finishes (0.5 - 600)");
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::InputDouble("s##rmlife", &e.rasterMapLifeS, 1.0, 10.0, "%.1f");
+        e.rasterMapLifeS = std::clamp(e.rasterMapLifeS, 0.5, kRasterMapLifeMaxS);
+
+        FormLabel("Colour theme", labelW, "low values at the left of the strip, high at the right");
+        int cur = ImPlot::GetColormapIndex(e.rasterMapCmap.c_str());
+        if (cur < 0) cur = ImPlotColormap_Viridis;
+        ImGui::SetNextItemWidth(200.0f);
+        if (ImGui::BeginCombo("##rmcmap", ImPlot::GetColormapName(cur))) {
+            for (int i = 0; i < ImPlot::GetColormapCount(); ++i)
+                if (ImGui::Selectable(ImPlot::GetColormapName(i), i == cur))
+                    e.rasterMapCmap = ImPlot::GetColormapName(i);
+            ImGui::EndCombo();
+        }
+        // The theme as a strip, low -> high, so the choice is seen, not named.
+        {
+            const ImVec2 o(ImGui::GetCursorScreenPos().x + labelW, ImGui::GetCursorScreenPos().y);
+            const float  w = 260.0f, h = ImGui::GetFrameHeight();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            constexpr int kN = 64;
+            for (int i = 0; i < kN; ++i) {
+                const ImU32 c = ImGui::GetColorU32(
+                    ImPlot::SampleColormap(static_cast<float>(i) / (kN - 1), cur));
+                dl->AddRectFilled(ImVec2(o.x + w * i / kN, o.y),
+                                  ImVec2(o.x + w * (i + 1) / kN + 0.5f, o.y + h), c);
+            }
+            dl->AddRect(o, ImVec2(o.x + w, o.y + h), ImGui::GetColorU32(ImGuiCol_Border));
+            ImGui::Dummy(ImVec2(labelW + w, h));
+        }
+        ImGui::Spacing();
+        if (ImGui::Button("Reset to defaults##rmap")) {
+            e.rasterMapLifeS = kRasterMapLifeDefaultS;
+            e.rasterMapCmap  = "Viridis";
+        }
         break;
     }
     case kPrefQuickAlign: {

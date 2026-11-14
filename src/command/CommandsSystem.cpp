@@ -420,8 +420,17 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       {"fast_axis", PT::Enum, false, "Y", 0, 0, {"X", "Y", "Z"},
                        "fast (sweep) axis - the hexapod's LOCAL axis swept along each row "
                        "(default Y, the laser's side)"},
+                      {"fast_mode", PT::Enum, false, "center", 0, 0, {"center", "corner"},
+                       "center: the sweeps span the width CENTRED on the start, and the "
+                       "first row is a half row from the start out to fast_dir's edge. "
+                       "corner: the start is a corner - every sweep covers the width on "
+                       "the fast_dir side only"},
+                      {"fast_dir", PT::Enum, false, "+", 0, 0, {"+", "-"},
+                       "which way the FIRST sweep leaves the start (center), or which side "
+                       "the grid lies on (corner)"},
                       {"fast_span_um", PT::Double, false, 40.0, 1.0, 2000.0, {},
-                       "fast-axis width, centered on start (local Y +/- half by default)"},
+                       "fast-axis total width: +/- half around the start (center) or all "
+                       "on one side (corner)"},
                       {"fast_step_um", PT::Double, false, 4.0, 0.1, 500.0, {},
                        "sample pitch along a row (fast axis)"},
                       {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},
@@ -446,6 +455,8 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       c.CtxSet("raster_slow_axis", p.GetString("slow_axis"));
                       c.CtxSet("raster_slow_dir", p.GetString("slow_dir") == "+" ? 1.0 : -1.0);
                       c.CtxSet("raster_fast_axis", p.GetString("fast_axis"));
+                      c.CtxSet("raster_fast_mode", p.GetString("fast_mode"));
+                      c.CtxSet("raster_fast_dir", p.GetString("fast_dir") == "-" ? -1.0 : 1.0);
                       c.CtxSet("raster_slow_span_um", p.GetDouble("slow_span_um"));
                       c.CtxSet("raster_slow_step_um", p.GetDouble("slow_step_um"));
                       c.CtxSet("raster_fast_span_um", p.GetDouble("fast_span_um"));

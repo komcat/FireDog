@@ -258,23 +258,6 @@ static bool PresetButton(const char* label, bool active, const ImVec2& size)
     return clicked;
 }
 
-// SI-prefixed reading for the scan header (bobcat FormatSI: 2.09e-05 -> 20.888u).
-static std::string FormatSI(double v)
-{
-    if (v == 0.0) return "0";
-    const double a = std::fabs(v);
-    const char*  suf;
-    double       s;
-    if      (a < 1e-9) { suf = "p"; s = v * 1e12; }
-    else if (a < 1e-6) { suf = "n"; s = v * 1e9;  }
-    else if (a < 1e-3) { suf = "u"; s = v * 1e6;  }
-    else if (a < 1.0)  { suf = "m"; s = v * 1e3;  }
-    else               { suf = "";  s = v;        }
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.3f%s", s, suf);
-    return buf;
-}
-
 // ---- Deck selection: one program, one slot ---------------------------------
 // The deck shows exactly ONE slot, and the pair (program, slot) is what the
 // operator comes back to after a restart — so every place that moves it goes
@@ -2537,6 +2520,10 @@ void App::StartRasterScan(const std::string& device)
         {"raster_slow_axis", std::string(kRasterSlowAxis)},
         {"raster_slow_dir", -1.0},
         {"raster_fast_axis", std::string(kRasterFastAxis)},
+        // Centre mode, first sweep toward +: row 0 leaves the start for the
+        // + edge, then full rows - the drawing the script's header carries.
+        {"raster_fast_mode", std::string("center")},
+        {"raster_fast_dir", 1.0},
         {"raster_slow_span_um", rasterSlowSpanUm_},
         {"raster_slow_step_um", rasterSlowStepUm_},
         {"raster_fast_span_um", rasterFastSpanUm_},

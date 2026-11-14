@@ -114,6 +114,12 @@ UiSettings UiSettings::Load(const std::string& path)
                     s.auxTipLabels[it.key()] =
                         it.value().get<std::string>().substr(0, kAuxTipLabelMax);
         }
+        if (j.contains("raster_map_life_s") && j["raster_map_life_s"].is_number()) {
+            const double l = j["raster_map_life_s"].get<double>();
+            s.rasterMapLifeS = (l > 0.0 && l <= kRasterMapLifeMaxS) ? l : kRasterMapLifeDefaultS;
+        }
+        if (j.contains("raster_map_cmap") && j["raster_map_cmap"].is_string())
+            s.rasterMapCmap = j["raster_map_cmap"].get<std::string>();
         if (j.contains("aux_mark_labels") && j["aux_mark_labels"].is_object()) {
             // Key by key over the defaults, so a newer build's extra switch
             // starts ON rather than off.
@@ -283,6 +289,8 @@ bool UiSettings::Save(const std::string& path) const
     nlohmann::json tl = nlohmann::json::object();
     for (const auto& kv : auxTipLabels) tl[kv.first] = kv.second;
     j["aux_tip_labels"] = tl;
+    j["raster_map_life_s"] = rasterMapLifeS;
+    j["raster_map_cmap"]   = rasterMapCmap;
     j["aux_mark_labels"] = {
         {"beacon_name", auxMarks.beaconName}, {"beacon_time", auxMarks.beaconTime},
         {"beacon_tool", auxMarks.beaconTool}, {"beacon_dist", auxMarks.beaconDist},

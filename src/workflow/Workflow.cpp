@@ -552,6 +552,30 @@ bool Workflow::TakeCapturedView(CapturedView* out)
     return true;
 }
 
+void Workflow::SetRasterMap(RasterMap m, bool replacePoints)
+{
+    const std::lock_guard<std::mutex> lock(rasterMu_);
+    if (!replacePoints) m.points = std::move(rasterMap_.points);   // keep what was added
+    rasterMap_ = std::move(m);
+    ++rasterSeq_;
+}
+
+void Workflow::AddRasterPoint(const RasterMapPoint& p)
+{
+    const std::lock_guard<std::mutex> lock(rasterMu_);
+    rasterMap_.points.push_back(p);
+    ++rasterSeq_;
+}
+
+bool Workflow::RasterMapSince(unsigned long long* seq, RasterMap* out) const
+{
+    const std::lock_guard<std::mutex> lock(rasterMu_);
+    if (!seq || !out || rasterSeq_ == 0 || rasterSeq_ == *seq) return false;
+    *out = rasterMap_;
+    *seq = rasterSeq_;
+    return true;
+}
+
 void Workflow::QueueMosaicTile(MosaicTileEvent ev)
 {
     const std::lock_guard<std::mutex> lock(mosaicMu_);

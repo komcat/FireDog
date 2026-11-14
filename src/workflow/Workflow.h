@@ -10,6 +10,7 @@
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
 #include "core/Beacon.h"               // Beacon (temporary camera-pose markers)
 #include "core/GrippedObject.h"        // GrippedObject (object registered to a gripper)
+#include "core/RasterMap.h"            // RasterMap (raster scan -> Aux heatmap)
 #include "core/ObjectResult.h"         // ObjectResult (detected objects, live)
 #include "core/PivotDefaults.h"        // PivotDefault (restored after a controller restart)
 #include "core/SavedPositions.h"       // SavedPos (teach hand-back queue)
@@ -471,6 +472,16 @@ public:
     void SetCapturedView(CapturedView v);
     bool TakeCapturedView(CapturedView* out);   // false = nothing new
 
+    // ---- Raster heatmap hand-back (raster_scan.lua -> the Aux window) -------
+    // The current / last raster scan (core/RasterMap.h), filled LIVE: Set
+    // replaces the header (and the points only when `replacePoints`), Add
+    // appends one node; every change bumps a counter. The UI copies the map
+    // when the counter differs from the one it last saw (RasterMapSince) - a
+    // few hundred points, cheap, and never more than once a frame.
+    void SetRasterMap(RasterMap m, bool replacePoints);
+    void AddRasterPoint(const RasterMapPoint& p);
+    bool RasterMapSince(unsigned long long* seq, RasterMap* out) const;
+
     // ---- Mosaic hand-back (mosaic_capture) ----------------------------------
     // Each tile as it is filed, so the Mosaic page fills its picture in while
     // the gantry walks. A QUEUE this time, not a slot: every tile is a
@@ -841,6 +852,9 @@ private:
     // vector's capacity behind for the next capture to reuse.
     std::mutex   shotMu_;
     CapturedView shot_;
+    mutable std::mutex rasterMu_;
+    RasterMap          rasterMap_;
+    unsigned long long rasterSeq_ = 0;   // 0 = never set
     bool         shotPending_ = false;
 
     // The live-view filter slot (SetLiveViewFilter / TakeLiveViewFilter).

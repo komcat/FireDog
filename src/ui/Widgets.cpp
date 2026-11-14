@@ -320,6 +320,24 @@ void DrawWorldBox(ImDrawList* dl, const WorldMarkView& wv, double ax, double ay,
     dl->PopClipRect();
 }
 
+// SI-prefixed reading (bobcat FormatSI: 2.09e-05 -> 20.888u). Moved here from
+// PageRun.cpp when the Aux raster heatmap became its second user.
+std::string FormatSI(double v)
+{
+    if (v == 0.0) return "0";
+    const double a = std::fabs(v);
+    const char*  suf;
+    double       s;
+    if      (a < 1e-9) { suf = "p"; s = v * 1e12; }
+    else if (a < 1e-6) { suf = "n"; s = v * 1e9;  }
+    else if (a < 1e-3) { suf = "u"; s = v * 1e6;  }
+    else if (a < 1.0)  { suf = "m"; s = v * 1e3;  }
+    else               { suf = "";  s = v;        }
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.3f%s", s, suf);
+    return buf;
+}
+
 unsigned int DeviceAccentColor(const std::string& device, unsigned int fallback)
 {
     // Sampled from the badge circle of each shipped device picture, so the tip

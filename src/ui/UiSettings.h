@@ -99,6 +99,9 @@ struct AuxMarkLabels {
     bool operator==(const AuxMarkLabels&) const = default;
 };
 
+inline constexpr double kRasterMapLifeDefaultS = 3.0;
+inline constexpr double kRasterMapLifeMaxS     = 600.0;
+
 struct UiSettings {
     int   fontIndex  = 0;     // index into App's kFonts table
     float fontSize   = 26.0f;   // UI font size in px
@@ -236,6 +239,14 @@ struct UiSettings {
     // and whether they appear on the height gauge (Preferences > Graphic view >
     // Beacons & objects). The marks themselves are always drawn.
     AuxMarkLabels auxMarks;
+
+    // Aux view: the raster heatmap a finished raster_scan leaves on the left
+    // of the picture (Preferences > Graphic view > Raster heatmap): how long it
+    // stays, in seconds (it also stays while the mouse is over it), and its
+    // colour theme, by ImPlot colormap NAME ("Viridis", "Jet", ...; an unknown
+    // name falls back to Viridis).
+    double      rasterMapLifeS = kRasterMapLifeDefaultS;
+    std::string rasterMapCmap  = "Viridis";
 
     // Jog window "Tool -> cam": what its Z off field and unverified checkbox
     // start at (Preferences > Motion). The fields themselves are not kept -

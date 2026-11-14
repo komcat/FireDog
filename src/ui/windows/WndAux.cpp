@@ -539,6 +539,10 @@ void App::DrawAuxWindow()
         // Always on, like the beacons: it says what the tool is holding.
         if (haveImg) DrawAuxGrippedObjects(dl, imgO, imgS);
 
+        // ---- The last raster scan as a heatmap, left of the picture ----
+        // For Preferences' life seconds after the scan, longer while hovered.
+        if (haveImg) DrawAuxRasterMap(dl, imgO, imgS);
+
         float tipsH = 0.0f;
         if (haveImg && showGripperMarks_)
             tipsH = DrawAuxGripperMarks(dl, origin, avail, imgO, imgS, gripPlateH);
@@ -1368,6 +1372,193 @@ void App::DrawAuxGrippedObjects(ImDrawList* dl, const ImVec2& imgO, const ImVec2
         cm.glyph        = CameraMark::Glyph::Diamond;
         cm.pulsePeriodS = 60.0f / 72.0f;   // a resting human heart, 72 bpm
         DrawWorldMark(dl, wv, cm, 14.0f);
+    }
+}
+
+// ---- The raster heatmap ------------------------------------------------------
+// The current / last raster_scan, LIVE: copied from Workflow whenever its
+// counter moves (the scan opens the map at its start and adds every node), so
+// the panel appears when the scan starts and fills in as it runs. It is held
+// while the scan is live and something is running - a stopped or failed scan
+// never closes its map, so "live" alone would hold it forever - then for
+// rasterMapLifeS_ seconds; the clock restarts while the mouse is over the
+// panel, so a reading being looked at never vanishes under the cursor. The
+// hover flag is the previous frame's (set by the Draw, consumed here), so a
+// closed Aux window cannot leave it stuck on.
+void App::UpdateAuxRaster()
+{
+    const double now = ImGui::GetTime();
+    if (workflow_.RasterMapSince(&auxRasterSeq_, &auxRaster_)) {
+        auxRasterHave_ = true;
+        auxRasterT0_   = now;
+    }
+    const bool hovered = auxRasterHover_;
+    auxRasterHover_    = false;
+    if (!auxRasterHave_) return;
+    if (hovered || (auxRaster_.live && orch_.Busy())) auxRasterT0_ = now;
+    else if (now - auxRasterT0_ > rasterMapLifeS_) auxRasterHave_ = false;
+}
+
+// A small panel on the LEFT of the picture, vertically centred: one cell per
+// grid node, rows top to bottom in the order they were scanned (the slow axis
+// stepping away from the start), the fast axis left (-half) to right (+half).
+// On this rig that is X+ up and Y+ right, the operator's own view of the laser.
+// Unsampled nodes (tracking windows, an early stop) stay dark; the best node is
+// outlined white, the start node dotted. Colour = the value between this scan's
+// own min and max, in the Preferences theme. Display only.
+void App::DrawAuxRasterMap(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
+{
+    if (!auxRasterHave_) return;
+    const RasterMap& m = auxRaster_;
+    if (m.slowStepUm <= 0.0 || m.fastStepUm <= 0.0) return;   // no grid to draw
+
+    const int nRows = std::max(1, static_cast<int>(std::lround(m.slowSpanUm / m.slowStepUm)) + 1);
+    // The fast grid as the script laid it out (centre or corner); an older
+    // script sent no range and was always centred.
+    double fLo = m.fastLoUm, fHi = m.fastHiUm;
+    if (fLo == 0.0 && fHi == 0.0) { fLo = -m.fastSpanUm * 0.5; fHi = m.fastSpanUm * 0.5; }
+    const int nCols = std::max(1, static_cast<int>(std::lround((fHi - fLo) / m.fastStepUm)) + 1);
+    const auto rowOf = [&](double sUm) {
+        return std::clamp(static_cast<int>(std::lround(std::fabs(sUm) / m.slowStepUm)), 0, nRows - 1);
+    };
+    const auto colOf = [&](double fUm) {
+        return std::clamp(static_cast<int>(std::lround((fUm - fLo) / m.fastStepUm)), 0, nCols - 1);
+    };
+
+    // The grid, last sample per node wins (a node is visited once normally).
+    // The best node is found HERE from the points, so it is right while the
+    // scan is still live (the record's own best arrives only at the end).
+    std::vector<double> val(static_cast<std::size_t>(nRows) * nCols, 0.0);
+    std::vector<char>   has(val.size(), 0);
+    double vmin = 0.0, vmax = 0.0;
+    const RasterMapPoint* bestP = nullptr;
+    for (const RasterMapPoint& p : m.points) {
+        const std::size_t k = static_cast<std::size_t>(rowOf(p.sUm)) * nCols + colOf(p.fUm);
+        val[k] = p.v;
+        has[k] = 1;
+        if (!bestP) { vmin = vmax = p.v; }
+        vmin = std::min(vmin, p.v);
+        vmax = std::max(vmax, p.v);
+        if (!bestP || p.v > bestP->v) bestP = &p;
+    }
+    const double span = vmax - vmin;
+
+    int cmap = ImPlot::GetColormapIndex(rasterMapCmap_.c_str());
+    if (cmap < 0) cmap = ImPlotColormap_Viridis;
+    const bool amps = m.topic.compare(0, 9, "keithley/") == 0;
+    const auto fmtV = [amps](double v) { return FormatSI(v) + (amps ? "A" : ""); };
+
+    // Layout: header, grid (cells square-ish, at most kGridMax px), colour bar,
+    // footer. Shrinks to the picture, never past kCellMin a cell.
+    constexpr float kGridMax = 190.0f, kCellMin = 2.0f, kPad = 6.0f;
+    const float lineH  = ImGui::GetTextLineHeight();
+    const float availH = imgS.y - lineH * 4.0f - kPad * 6.0f - 10.0f;
+    const float gridMax = std::min(kGridMax, std::max(40.0f, availH));
+    const float cell   = std::max(kCellMin, std::min(gridMax / nCols, gridMax / nRows));
+    const float gw = cell * nCols, gh = cell * nRows;
+
+    char h1[96], h2[128], foot[96];
+    std::snprintf(h1, sizeof(h1), "raster  %s%s", m.device.c_str(),
+                  m.live ? "  scanning" : "");
+    if (!bestP)
+        std::snprintf(h2, sizeof(h2), "%d x %d, waiting for the first sample", nRows, nCols);
+    else if (m.live)
+        std::snprintf(h2, sizeof(h2), "%zu / %d   best %s", m.points.size(), nRows * nCols,
+                      fmtV(bestP->v).c_str());
+    else
+        std::snprintf(h2, sizeof(h2), "best %s%s", fmtV(bestP->v).c_str(),
+                      m.exitHit ? "  (target hit)" : "");
+    std::snprintf(foot, sizeof(foot), "rows %s%s   sweep %s", m.slowAxis.c_str(),
+                  m.slowDir < 0 ? "-" : "+", m.fastAxis.c_str());
+    const float textW = std::max({ImGui::CalcTextSize(h1).x, ImGui::CalcTextSize(h2).x,
+                                  ImGui::CalcTextSize(foot).x});
+    const float panelW = std::max(gw, textW) + kPad * 2.0f;
+    const float panelH = lineH * 2.0f + kPad + gh + kPad + 8.0f + lineH + kPad + lineH + kPad * 2.0f;
+    if (panelW > imgS.x * 0.6f || panelH > imgS.y) return;   // the picture is too small
+
+    const ImVec2 p0(imgO.x + 8.0f, imgO.y + (imgS.y - panelH) * 0.5f);
+    const ImVec2 p1(p0.x + panelW, p0.y + panelH);
+    dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 190), 5.0f);
+    dl->AddRect(p0, p1, IM_COL32(120, 125, 135, 200), 5.0f);
+
+    float y = p0.y + kPad;
+    dl->AddText(ImVec2(p0.x + kPad, y), IM_COL32(230, 232, 238, 255), h1);
+    y += lineH;
+    dl->AddText(ImVec2(p0.x + kPad, y), IM_COL32(200, 205, 215, 255), h2);
+    y += lineH + kPad;
+
+    const ImVec2 g0(p0.x + (panelW - gw) * 0.5f, y);
+    for (int r = 0; r < nRows; ++r) {
+        for (int c = 0; c < nCols; ++c) {
+            const std::size_t k = static_cast<std::size_t>(r) * nCols + c;
+            const ImVec2 a(g0.x + c * cell, g0.y + r * cell);
+            const ImVec2 b(a.x + cell, a.y + cell);
+            ImU32 col = IM_COL32(28, 28, 32, 255);
+            if (has[k]) {
+                const float t = span > 0.0 ? static_cast<float>((val[k] - vmin) / span) : 0.5f;
+                col = ImGui::GetColorU32(ImPlot::SampleColormap(t, cmap));
+            }
+            dl->AddRectFilled(a, b, col);
+        }
+    }
+    dl->AddRect(g0, ImVec2(g0.x + gw, g0.y + gh), IM_COL32(90, 95, 105, 255));
+    // The start node (row 0, the column at offset 0), the best one, and - while
+    // the scan runs - the node just measured, so the sweep is seen moving.
+    {
+        const int sc = colOf(0.0);
+        const ImVec2 sc0(g0.x + (sc + 0.5f) * cell, g0.y + 0.5f * cell);
+        dl->AddCircleFilled(sc0, std::max(1.5f, cell * 0.18f), IM_COL32(255, 255, 255, 220));
+        if (bestP) {
+            const int br = rowOf(bestP->sUm), bc = colOf(bestP->fUm);
+            const ImVec2 b0(g0.x + bc * cell, g0.y + br * cell);
+            dl->AddRect(ImVec2(b0.x - 1.0f, b0.y - 1.0f),
+                        ImVec2(b0.x + cell + 1.0f, b0.y + cell + 1.0f),
+                        IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+        }
+        if (m.live && !m.points.empty()) {
+            const RasterMapPoint& cur = m.points.back();
+            const ImVec2 c0(g0.x + (colOf(cur.fUm) + 0.5f) * cell,
+                            g0.y + (rowOf(cur.sUm) + 0.5f) * cell);
+            dl->AddCircle(c0, std::max(3.0f, cell * 0.6f), IM_COL32(255, 230, 90, 255), 0, 2.0f);
+        }
+    }
+    y += gh + kPad;
+
+    // The colour bar, min -> max, with its two ends written under it.
+    {
+        constexpr int kN = 48;
+        for (int i = 0; i < kN; ++i) {
+            const ImU32 c = ImGui::GetColorU32(ImPlot::SampleColormap(static_cast<float>(i) / (kN - 1), cmap));
+            dl->AddRectFilled(ImVec2(g0.x + gw * i / kN, y), ImVec2(g0.x + gw * (i + 1) / kN + 0.5f, y + 8.0f), c);
+        }
+        y += 8.0f;
+        const std::string lo = bestP ? fmtV(vmin) : std::string("-");
+        const std::string hi = bestP ? fmtV(vmax) : std::string("-");
+        dl->AddText(ImVec2(g0.x, y), IM_COL32(190, 195, 205, 255), lo.c_str());
+        const float hw = ImGui::CalcTextSize(hi.c_str()).x;
+        dl->AddText(ImVec2(std::max(g0.x, g0.x + gw - hw), y), IM_COL32(190, 195, 205, 255), hi.c_str());
+        y += lineH + kPad;
+    }
+    dl->AddText(ImVec2(p0.x + kPad, y), IM_COL32(150, 155, 165, 255), foot);
+
+    // Hover: hold it on screen (UpdateAuxRaster), and name the node under the mouse.
+    if (ImGui::IsMouseHoveringRect(p0, p1, false) &&
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows)) {
+        auxRasterHover_ = true;
+        const ImVec2 mp = ImGui::GetIO().MousePos;
+        const int c = static_cast<int>((mp.x - g0.x) / cell);
+        const int r = static_cast<int>((mp.y - g0.y) / cell);
+        if (r >= 0 && r < nRows && c >= 0 && c < nCols && mp.x >= g0.x && mp.y >= g0.y) {
+            const std::size_t k = static_cast<std::size_t>(r) * nCols + c;
+            const double sUm = m.slowDir * r * m.slowStepUm;
+            const double fUm = fLo + c * m.fastStepUm;
+            if (has[k])
+                ImGui::SetTooltip("%s %+.1f um, %s %+.1f um\n%s", m.slowAxis.c_str(), sUm,
+                                  m.fastAxis.c_str(), fUm, fmtV(val[k]).c_str());
+            else
+                ImGui::SetTooltip("%s %+.1f um, %s %+.1f um\nnot sampled", m.slowAxis.c_str(),
+                                  sUm, m.fastAxis.c_str(), fUm);
+        }
     }
 }
 

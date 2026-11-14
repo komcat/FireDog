@@ -221,6 +221,8 @@ struct AppPrefs {
     int   chartChDefault = 2;    // chart channel(s) at startup: 0 Ch1, 1 Ch2, 2 both
     std::map<std::string, std::string> auxTipLabels;   // Aux tool-tip text by device
     AuxMarkLabels auxMarks;                            // beacon / object mark text
+    double      rasterMapLifeS = kRasterMapLifeDefaultS;   // Aux raster heatmap
+    std::string rasterMapCmap  = "Viridis";
     double jogRegZOff  = 0.0;    // Jog "Tool -> cam" defaults
     bool   jogRegUnver = true;
     // Scanning > XCAN: machine state in scan_presets.local.json, not
@@ -1059,6 +1061,21 @@ private:
     // the height gauge (UiSettings aux_mark_labels, Preferences > Graphic view
     // > Beacons & objects).
     AuxMarkLabels auxMarks_;
+    // The raster heatmap: the current / last raster_scan's samples, LIVE
+    // (copied from Workflow::RasterMapSince in Update whenever it changes),
+    // shown on the left of the Aux picture from the scan's start, for as long
+    // as it runs, then rasterMapLifeS_ seconds - restarted while the mouse is
+    // over it - in the rasterMapCmap_ ImPlot colormap. Frame state, never
+    // persisted; the two settings are UiSettings.
+    double      rasterMapLifeS_ = kRasterMapLifeDefaultS;
+    std::string rasterMapCmap_  = "Viridis";
+    RasterMap   auxRaster_;
+    bool        auxRasterHave_  = false;
+    unsigned long long auxRasterSeq_ = 0;  // Workflow's counter last copied
+    bool        auxRasterHover_ = false;   // set by the Draw, read by Update
+    double      auxRasterT0_    = 0.0;     // ImGui time it was (re)started
+    void UpdateAuxRaster();                // drain + expiry, from Update()
+    void DrawAuxRasterMap(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS);
     bool                      chartScope_ = true;  // scope look vs classic axes
     std::vector<float>        kT1_, kV1_, kT2_, kV2_;
     std::vector<float>        kX1_, kX2_;      // X shifted to relative time (t - now)

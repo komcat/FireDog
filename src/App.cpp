@@ -123,6 +123,8 @@ int App::Run()
         chartYBandList_  = ui.chartYBandList;
         auxTipLabels_    = ui.auxTipLabels;
         auxMarks_        = ui.auxMarks;
+        rasterMapLifeS_  = ui.rasterMapLifeS;
+        rasterMapCmap_   = ui.rasterMapCmap;
         chartChDef_      = ui.chartChDefault;
         chartCh_         = chartChDef_;       // every start shows the chosen channel(s)
         jogRegZOffDef_   = std::clamp(ui.jogRegZOffDefault, -100.0, 100.0);
@@ -391,6 +393,7 @@ void App::Update(float dt)
     // once, rather than leaving the first reader to discover it.
     workflow_.ExpireBeacons();
     workflow_.ExpireGrippedObjects();   // same lifetime, same once-only log
+    UpdateAuxRaster();                  // a finished raster's heatmap, and its expiry
 
     // A NEW DUT is a new physical part, so any taught frame stops meaning
     // anything. Edge-detected off DutSession's own state rather than hooked
@@ -676,6 +679,8 @@ void App::SaveUiSettings()
     s.chartChDefault     = chartChDef_;
     s.auxTipLabels       = auxTipLabels_;
     s.auxMarks           = auxMarks_;
+    s.rasterMapLifeS     = rasterMapLifeS_;
+    s.rasterMapCmap      = rasterMapCmap_;
     s.jogRegZOffDefault  = jogRegZOffDef_;
     s.jogRegUnverDefault = jogRegUnverDef_;
     s.runProgUid  = runLastProgUid_;
