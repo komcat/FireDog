@@ -108,10 +108,13 @@ XcanTarget DefaultXcanTarget(int i);
 // Which slots the Run page's quick-align band presses: the first-light pass
 // (one button, `targetLo`) and the four production passes (`targetHi`), each
 // with the `coarse` or `fine` launch preset. Indices into xcanTargets_ /
-// xcanPresets_, persisted in scan_presets.local.json beside them.
+// xcanPresets_, persisted in scan_presets.local.json beside them. A target of
+// kQuickTargetMax is MAX (no exit threshold, the whole ladder) rather than a
+// slot - picked by right-clicking a band button, or in Preferences.
+inline constexpr int kQuickTargetMax = -1;
 struct QuickAlignSlots {
-    int targetLo = 1;   // 400 uA by default
-    int targetHi = 2;   // 3400 uA by default
+    int targetLo = 1;   // 400 uA by default; kQuickTargetMax = MAX
+    int targetHi = 2;   // 3400 uA by default; kQuickTargetMax = MAX
     int coarse   = 0;   // "Coarse" 10,5,2,1 um
     int fine     = 1;   // "Fine"   2,1,0.5 um
 

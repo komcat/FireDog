@@ -720,12 +720,18 @@ void App::DrawPreferencesWindow()
         const bool canEdit = CanUse(kRoleScanPrefs);
         ImGui::BeginDisabled(!canEdit);
         const float labelW = ImGui::CalcTextSize("First-light target").x + st.ItemSpacing.x * 4.0f;
+        // A target may also be MAX (kQuickTargetMax): no exit threshold, the
+        // whole ladder - the same choice the band's right-click offers.
         const auto targetCombo = [&](const char* label, const char* id, int& slot) {
             FormLabel(label, labelW, nullptr);
-            const XcanTarget& cur = e.xcanTargets[static_cast<std::size_t>(slot)];
             char prev[64];
-            std::snprintf(prev, sizeof(prev), "%d: %g uA%s", slot + 1, cur.targetUa,
-                          cur.enabled ? "" : " (off)");
+            if (slot == kQuickTargetMax) {
+                std::snprintf(prev, sizeof(prev), "MAX (no exit threshold)");
+            } else {
+                const XcanTarget& cur = e.xcanTargets[static_cast<std::size_t>(slot)];
+                std::snprintf(prev, sizeof(prev), "%d: %g uA%s", slot + 1, cur.targetUa,
+                              cur.enabled ? "" : " (off)");
+            }
             ImGui::SetNextItemWidth(260.0f);
             if (ImGui::BeginCombo(id, prev)) {
                 for (int i = 0; i < kXcanPresetCount; ++i) {
@@ -736,6 +742,8 @@ void App::DrawPreferencesWindow()
                                   t.enabled ? "" : " (off)");
                     if (ImGui::Selectable(it, slot == i)) slot = i;
                 }
+                if (ImGui::Selectable("MAX  (no exit threshold)", slot == kQuickTargetMax))
+                    slot = kQuickTargetMax;
                 ImGui::EndCombo();
             }
         };

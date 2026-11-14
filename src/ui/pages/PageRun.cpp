@@ -1849,14 +1849,15 @@ void App::LoadScanPresets()
         // A slot index out of range keeps the default rather than indexing
         // past the array.
         const nlohmann::json& q = j["quick_align"];
-        const auto slot = [&](const char* key, int& v) {
+        const auto slot = [&](const char* key, int& v, bool maxOk) {
             const int n = q.value(key, v);
-            if (n >= 0 && n < kXcanPresetCount) v = n;
+            if ((n >= 0 && n < kXcanPresetCount) || (maxOk && n == kQuickTargetMax)) v = n;
         };
-        slot("target_lo", quickAlign_.targetLo);
-        slot("target_hi", quickAlign_.targetHi);
-        slot("coarse", quickAlign_.coarse);
-        slot("fine", quickAlign_.fine);
+        // A target may also be MAX (kQuickTargetMax); a ladder may not.
+        slot("target_lo", quickAlign_.targetLo, true);
+        slot("target_hi", quickAlign_.targetHi, true);
+        slot("coarse", quickAlign_.coarse, false);
+        slot("fine", quickAlign_.fine, false);
     }
 }
 
@@ -2094,42 +2095,101 @@ void App::DrawRunQuickAlign()
     // One launch button: activate the target slot the label was drawn from,
     // then start the ladder on that hexapod. Same channel as the XCAN tab --
     // StartXcanPreset reads the ACTIVE slot, so the assignment is the argument.
+    // targetIdx may be kQuickTargetMax: the launch then runs MAX (no exit
+    // threshold) with the active slot left selected underneath, exactly as the
+    // XCAN tab's MAX button does.
     const auto launch = [&](const char* label, int targetIdx, int presetIdx,
                             const char* dev, const ImVec2& size) {
-        const XcanTarget& t = xcanTargets_[targetIdx];
+        const bool isMax = targetIdx == kQuickTargetMax;
+        const XcanTarget& t = xcanTargets_[isMax ? xcanPresetSel_ : targetIdx];
         const XcanPreset& p = xcanPresets_[presetIdx];
         const IMotionController* m = MotionByName(hardware_, dev);
-        const bool ready = m && m->IsConnected() && t.enabled && p.enabled;
+        const bool ready = m && m->IsConnected() && (isMax || t.enabled) && p.enabled;
         ImGui::BeginDisabled(busy || !ready);
         if (ImGui::Button(label, size)) {
-            xcanPresetSel_ = targetIdx;
-            xcanTargetMax_ = false;   // this button names a target
+            if (isMax) {
+                xcanTargetMax_ = true;
+            } else {
+                xcanPresetSel_ = targetIdx;
+                xcanTargetMax_ = false;   // this button names a target
+            }
             StartXcanPreset(dev, presetIdx);
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+                ImGui::OpenPopup("##quicktgt");   // this section's target picker
             if (!m)                   ImGui::SetTooltip("%s is not configured", dev);
             else if (!m->IsConnected()) ImGui::SetTooltip("%s is not connected", dev);
-            else if (!t.enabled)      ImGui::SetTooltip("target slot %d is off "
-                                                        "(Preferences > Scanning > XCAN targets)",
-                                                        targetIdx + 1);
+            else if (!isMax && !t.enabled)
+                ImGui::SetTooltip("target slot %d is off (Preferences > Scanning > XCAN "
+                                  "targets)\nright-click: pick another target",
+                                  targetIdx + 1);
             else if (!p.enabled)      ImGui::SetTooltip("preset slot %d is off "
                                                         "(Preferences > Scanning > XCAN presets)",
                                                         presetIdx + 1);
-            else ImGui::SetTooltip("%s  %s: %s um\ntarget %g uA (zones %g-%g uA)",
+            else if (isMax)
+                ImGui::SetTooltip("%s  %s: %s um\nMAX: no exit threshold, the whole ladder\n"
+                                  "right-click: pick the target",
+                                  dev, p.label.c_str(), p.stepsUm.c_str());
+            else ImGui::SetTooltip("%s  %s: %s um\ntarget %g uA (zones %g-%g uA)\n"
+                                   "right-click: pick the target",
                                    dev, p.label.c_str(), p.stepsUm.c_str(),
                                    t.targetUa, t.zoneLowUa, t.zoneHighUa);
         }
     };
 
+    // The section's target, picked from the target group (every ENABLED slot)
+    // plus MAX, by right-clicking any of its buttons. It is the same persisted
+    // QuickAlignSlots Preferences > Scanning > Quick align edits, so the pick
+    // is saved at once and gated the same way (kRoleScanPrefs). The popup
+    // lives inside the section's PushID, where launch() opened it.
+    const auto targetPicker = [&](int& slot) {
+        if (!ImGui::BeginPopup("##quicktgt")) return;
+        const bool canEdit = CanUse(kRoleScanPrefs);
+        ImGui::TextDisabled("Target for these buttons");
+        ImGui::Separator();
+        ImGui::BeginDisabled(!canEdit);
+        bool any = false;
+        for (int i = 0; i < kXcanPresetCount; ++i) {
+            const XcanTarget& t = xcanTargets_[i];
+            if (!t.enabled) continue;
+            any = true;
+            ImGui::PushID(i);
+            char row[96];
+            std::snprintf(row, sizeof(row), "%g uA   (zones %g-%g)", t.targetUa,
+                          t.zoneLowUa, t.zoneHighUa);
+            if (ImGui::Selectable(row, slot == i) && slot != i) {
+                slot = i;
+                SaveScanPresets();
+                FD_INFO("ui", "quick align: target set to %g uA (slot %d)", t.targetUa, i + 1);
+            }
+            ImGui::PopID();
+        }
+        if (!any) ImGui::TextDisabled("(no target slot is on)");
+        if (ImGui::Selectable("MAX   (no exit threshold)", slot == kQuickTargetMax) &&
+            slot != kQuickTargetMax) {
+            slot = kQuickTargetMax;
+            SaveScanPresets();
+            FD_INFO("ui", "quick align: target set to MAX");
+        }
+        ImGui::EndDisabled();
+        if (!canEdit) ImGui::TextDisabled("Technician and up may change this.");
+        ImGui::EndPopup();
+    };
+    const auto targetText = [&](int slot) {
+        return slot == kQuickTargetMax ? std::string("MAX") : XcanTargetLabel(xcanTargets_[slot]);
+    };
+
     // Section 1: first light at the low target -- one tall button.
     ImGui::PushID("quickLo");
     ImGui::BeginGroup();
-    const QuickAlignSlots& q = quickAlign_;
-    ImGui::TextDisabled("%s", XcanTargetLabel(xcanTargets_[q.targetLo]).c_str());
+    QuickAlignSlots& q = quickAlign_;
+    ImGui::TextDisabled("%s", targetText(q.targetLo).c_str());
     launch("Left Coarse", q.targetLo, q.coarse, "hex-left",
            ImVec2(btnW, btnH * 2.0f + style.ItemSpacing.y));
     ImGui::EndGroup();
+    targetPicker(q.targetLo);
     ImGui::PopID();
 
     // Divider between the two power classes (the drawn line the operator reads
@@ -2147,7 +2207,7 @@ void App::DrawRunQuickAlign()
     // coarse over fine, the order they are run in.
     ImGui::PushID("quickHi");
     ImGui::BeginGroup();
-    ImGui::TextDisabled("%s", XcanTargetLabel(xcanTargets_[q.targetHi]).c_str());
+    ImGui::TextDisabled("%s", targetText(q.targetHi).c_str());
     launch("Left Coarse", q.targetHi, q.coarse, "hex-left", ImVec2(btnW, btnH));
     ImGui::SameLine();
     launch("Left Fine", q.targetHi, q.fine, "hex-left", ImVec2(btnW, btnH));
@@ -2155,6 +2215,7 @@ void App::DrawRunQuickAlign()
     ImGui::SameLine();
     launch("Right Fine", q.targetHi, q.fine, "hex-right", ImVec2(btnW, btnH));
     ImGui::EndGroup();
+    targetPicker(q.targetHi);
     ImGui::PopID();
 
     // Stop rides in the band too: the operator who pressed a button here must
