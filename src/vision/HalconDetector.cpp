@@ -7,6 +7,7 @@
 #include "vision/HalconDetector.h"
 
 #include "core/Log.h"
+#include "vision/EdgeExtreme.h"   // stage 2: the extreme edge point (plain C++)
 #include "vision/FocusMetric.h"     // RgbToGray8 — the one RGB->luma conversion
 #include "vision/HalconEngine.h"
 
@@ -770,10 +771,34 @@ bool HalconDetector::Detect(const unsigned char* rgb, int w, int h, VisionDetect
         return Miss(out, ferr);
     }
 
-    const bool found =
+    bool found =
         (impl_->model.method == "ncc")      ? impl_->DetectNcc(gray.data(), used.w, used.h, out)
       : (impl_->model.method == "corner")   ? impl_->DetectCorner(gray.data(), used.w, used.h, out)
                                            : impl_->DetectCircle(gray.data(), used.w, used.h, out);
+
+    // Stage 2: the edge's extreme point in a box around what the method found,
+    // on the SAME filtered plane (so the chain is still applied in exactly one
+    // place). Plain C++ (vision/EdgeExtreme). A stage-2 miss is a miss: the
+    // method's point is only where to look, never a fallback answer - a run
+    // that silently reported the template centre would look exactly like one
+    // that found the apex. The score stays the method's.
+    if (found && impl_->model.edge.enabled) {
+        const EdgeExtremeResult er = FindEdgeExtreme(gray.data(), used.w, used.h, out->xPx,
+                                                     out->yPx, impl_->model.edge);
+        out->coarseXPx = out->xPx + used.x;
+        out->coarseYPx = out->yPx + used.y;
+        out->edgeBoxX  = er.boxX + used.x;
+        out->edgeBoxY  = er.boxY + used.y;
+        out->edgeBoxW  = er.boxW;
+        out->edgeBoxH  = er.boxH;
+        if (er.ok) {
+            out->xPx         = er.x;
+            out->yPx         = er.y;
+            out->edgeRefined = true;
+        } else {
+            found = Miss(out, "stage 2: " + er.error);
+        }
+    }
 
     // Report FULL-FRAME pixels whatever the ROI was. Exactly one place adds the
     // offset, so no consumer has to know whether an ROI was in play.

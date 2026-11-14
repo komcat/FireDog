@@ -26,6 +26,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/AlignLighting.h"
+#include "vision/EdgeExtreme.h"
 #include "vision/VisionResult.h"
 
 namespace firedog {
@@ -191,6 +192,12 @@ struct VisionModel {
     CircleParams circle;
     NccParams    ncc;
     CornerParams corner;
+
+    // Stage 2, optional and method-agnostic: the extreme edge point in a box
+    // around what the method found (vision/EdgeExtreme.h). With it on, the
+    // method is only a LOCATOR - a low NCC score is fine - and the reported
+    // point is the edge's leftmost / rightmost / topmost / bottommost point.
+    EdgeExtremeParams edge;
 
     // Taught template patch, "<uid>.pgm", RELATIVE to the model directory.
     // Relative on purpose: bobcat stores an absolute path, which makes a

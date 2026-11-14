@@ -49,6 +49,13 @@ struct VisionDetection {
     double widthPx = 0.0, heightPx = 0.0;
     double lengthPx = 0.0;          // corner: the mean side. RESERVED otherwise
 
+    // Stage 2 (VisionModel::edge): xPx/yPx above are then the EDGE's extreme
+    // point, and these keep what stage 1 found and where stage 2 looked - all
+    // full-frame px, for the overlay. Untouched (false / 0) without stage 2.
+    bool   edgeRefined = false;
+    double coarseXPx = 0.0, coarseYPx = 0.0;
+    double edgeBoxX = 0.0, edgeBoxY = 0.0, edgeBoxW = 0.0, edgeBoxH = 0.0;
+
     unsigned long long frameSeq = 0;   // which camera frame produced this
     double elapsedMs = 0.0;            // detector wall time, for the ROI warning
 };

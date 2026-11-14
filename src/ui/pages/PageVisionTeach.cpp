@@ -971,6 +971,22 @@ void App::DrawVisionTeachImage(VisionModel& m)
         rectOnScreen(live, visionDragMode_ == 1 ? kRoiCol : kBoxCol, 2.0f);
     }
 
+    // Stage 2's box, and the point stage 1 handed it - drawn on a miss too,
+    // because "the box was in the wrong place" is the commonest stage-2 miss.
+    if (visionHaveDet_ && visionDet_.edgeBoxW > 0.0 && visionDet_.edgeBoxH > 0.0) {
+        const ImU32 boxCol = IM_COL32(120, 200, 255, 220);
+        const ImVec2 b0 = view.ToScreen(static_cast<float>(visionDet_.edgeBoxX),
+                                        static_cast<float>(visionDet_.edgeBoxY));
+        const ImVec2 b1 = view.ToScreen(static_cast<float>(visionDet_.edgeBoxX + visionDet_.edgeBoxW),
+                                        static_cast<float>(visionDet_.edgeBoxY + visionDet_.edgeBoxH));
+        dl->AddRect(b0, b1, boxCol, 0.0f, 0, 1.5f);
+        dl->AddText(ImVec2(b0.x + 4.0f, b0.y + 2.0f), boxCol, "stage 2");
+        const ImVec2 q = view.ToScreen(static_cast<float>(visionDet_.coarseXPx),
+                                       static_cast<float>(visionDet_.coarseYPx));
+        dl->AddLine(ImVec2(q.x - 8.0f, q.y - 8.0f), ImVec2(q.x + 8.0f, q.y + 8.0f), boxCol, 1.5f);
+        dl->AddLine(ImVec2(q.x - 8.0f, q.y + 8.0f), ImVec2(q.x + 8.0f, q.y - 8.0f), boxCol, 1.5f);
+    }
+
     if (visionHaveDet_ && visionDet_.ok) {
         const ImVec2 c = view.ToScreen(static_cast<float>(visionDet_.xPx),
                                        static_cast<float>(visionDet_.yPx));
@@ -1269,6 +1285,61 @@ void App::DrawVisionFilterBand(VisionModel& m)
 
 // ---- The parameter column ---------------------------------------------------
 
+// Stage 2's form (VisionModel::edge, vision/EdgeExtreme.h). Closed by default:
+// most models do not use it. The overlay draws its box and both points.
+void App::DrawVisionEdgeForm(VisionModel& m, float itemW)
+{
+    EdgeExtremeParams& e = m.edge;
+    if (ImGui::Checkbox("find the extreme edge point", &e.enabled)) visionHaveDet_ = false;
+    HelpText("The method above only LOCATES the feature (a low score is fine); this "
+             "then casts a ray along every row (or column) of a box around that "
+             "point, on the filtered image, and reports the edge point furthest "
+             "toward the chosen side - the apex of a curved rim.");
+    ImGui::BeginDisabled(!e.enabled);
+    const char* sides[] = {"leftmost  (rays from the left)", "rightmost (rays from the right)",
+                           "topmost   (rays from the top)", "bottommost (rays from the bottom)"};
+    ImGui::SetNextItemWidth(itemW);
+    ImGui::Combo("report", &e.side, sides, 4);
+    int box[2] = {e.boxW, e.boxH};
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::DragInt2("box w / h px", box, 1.0f, 4, 10000)) {
+        e.boxW = box[0];
+        e.boxH = box[1];
+    }
+    int off[2] = {e.offX, e.offY};
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::DragInt2("box offset x / y px", off, 1.0f, -10000, 10000)) {
+        e.offX = off[0];
+        e.offY = off[1];
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Box centre relative to the point stage 1 reports\n"
+                          "(the NCC anchor, if one is set). 0, 0 = centred on it.");
+    const char* pols[] = {"bright edge (canny / binary output)", "dark edge"};
+    ImGui::SetNextItemWidth(itemW);
+    ImGui::Combo("edge is", &e.polarity, pols, 2);
+    ImGui::SetNextItemWidth(itemW);
+    ImGui::SliderInt("edge threshold", &e.threshold, 0, 255);
+    float band = static_cast<float>(e.bandPx);
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::DragFloat("apex band px", &band, 0.1f, 0.0f, 50.0f, "%.1f"))
+        e.bandPx = static_cast<double>(band);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Rays within this of the extreme are averaged across, so a\n"
+                          "flat stretch of edge reports its middle.");
+    float cont = static_cast<float>(e.continuityPx);
+    ImGui::SetNextItemWidth(itemW);
+    if (ImGui::DragFloat("continuity px", &cont, 0.1f, 0.5f, 50.0f, "%.1f"))
+        e.continuityPx = static_cast<double>(cont);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A ray's stop counts only if a neighbouring ray stopped\n"
+                          "within this distance - an edge is continuous, a speck of\n"
+                          "noise is not.");
+    ImGui::SetNextItemWidth(itemW);
+    ImGui::DragInt("min rays", &e.minRays, 0.2f, 1, 1000);
+    ImGui::EndDisabled();
+}
+
 void App::DrawVisionTeachParams(VisionModel& m, bool runControls)
 {
     std::string why;
@@ -1455,6 +1526,9 @@ void App::DrawVisionTeachParams(VisionModel& m, bool runControls)
         HelpText("Angle tolerance 0 means no rotation search, which is much the "
                  "fastest. Raise it only if the part really turns.");
     }
+
+    // ---- 4b. Stage 2: the extreme edge point ----
+    if (ImGui::CollapsingHeader("Stage 2: edge extreme point")) DrawVisionEdgeForm(m, itemW);
 
     // ---- 5 / 6. Detect + Reliability ----
     // Here on the teach page. The Vision detect helper draws them in its own

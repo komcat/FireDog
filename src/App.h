@@ -723,6 +723,7 @@ private:
     void DrawVisionCameraFoot(VisionModel& m);           // under the image: camera + zoom
     // ROI, method, chain, the method's form (each a collapsing header), then
     // Detect + Reliability unless `runControls` is false.
+    void DrawVisionEdgeForm(VisionModel& m, float itemW);   // stage 2: the extreme edge point
     void DrawVisionTeachParams(VisionModel& m, bool runControls = true);
     // Detect once + Live (+ the licence line), and the statistical run with its
     // Accept & save - the teach page's column and the Vision detect helper's top

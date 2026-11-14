@@ -455,7 +455,40 @@ A few decisions worth keeping:
   Parameter edits stay explicit-Save — a half-tuned detector must not reach the
   next run.
 
-### Threading
+### Stage 2: the extreme edge point (2026-11-14)
+
+A lens rim or a fibre end has no corner and no repeatable texture: a template
+lands NEAR it at a poor score and cannot say where the curve turns. So any
+model can carry a second stage (`VisionModel::edge`, JSON `edge`,
+`vision/EdgeExtreme.{h,cpp}`):
+
+1. **Stage 1 locates.** The model's method runs as always - with stage 2 on, a
+   low `min score` is fine; it only has to put the box in the right place.
+2. **Stage 2 measures.** A box (`box_w` x `box_h`, centred on stage 1's
+   reported point + `off_x/off_y`; with NCC that point is the anchor) on the
+   SAME filtered plane the method saw. One ray per row (left / right) or per
+   column (top / bottom) from the named side; each stops at the first pixel
+   past `threshold` (`polarity`: bright = a canny / binary output). The
+   reported point is the extreme stop - leftmost x, rightmost x, topmost y or
+   bottommost y - sub-pixel along the ray (interpolated to the threshold), and
+   across it the mean of every ray within `band_px` of the extreme, so a flat
+   stretch reports its middle.
+3. **A speck is not an edge.** A stop counts only when a neighbouring ray
+   stopped within `continuity_px`; fewer than `min_rays` valid stops is a miss.
+
+Rules:
+- **Plain C++, in `HalconDetector::Detect`** between the method and the ROI
+  origin, on the plane the chain already produced - the chain is still applied
+  in exactly one place, and the edge search needs no licence of its own.
+- **A stage-2 miss is a MISS** (`stage 2: no left edge in the box - ...`),
+  never stage 1's point: a run that silently reported the template centre
+  would look exactly like one that found the apex. The score stays stage 1's.
+- The result carries `edgeRefined`, stage 1's point (`coarseXPx/YPx`) and the
+  box (`edgeBox*`), full-frame, for the teach page's overlay (the blue
+  "stage 2" box and an x on the coarse point, drawn on a miss too). P (the
+  rotation) is stage 1's.
+- The box is image-aligned: "leftmost" is the camera picture's left.
+
 
 `Detect once` and `Live` call `Workflow::Detect` **on the UI thread**. That is
 not a breach of "no blocking call on the UI thread": it is a bounded one-shot

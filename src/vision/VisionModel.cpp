@@ -157,6 +157,43 @@ CornerParams CornerFromJson(const nlohmann::json& j)
     return c;
 }
 
+nlohmann::json EdgeToJson(const EdgeExtremeParams& e)
+{
+    nlohmann::json j;
+    j["enabled"]       = e.enabled;
+    j["side"]          = EdgeSideName(e.side);
+    j["box_w"]         = e.boxW;
+    j["box_h"]         = e.boxH;
+    j["off_x"]         = e.offX;
+    j["off_y"]         = e.offY;
+    j["threshold"]     = e.threshold;
+    j["polarity"]      = e.polarity;
+    j["band_px"]       = e.bandPx;
+    j["continuity_px"] = e.continuityPx;
+    j["min_rays"]      = e.minRays;
+    return j;
+}
+
+EdgeExtremeParams EdgeFromJson(const nlohmann::json& j)
+{
+    EdgeExtremeParams e;
+    if (!j.is_object()) return e;
+    e.enabled = j.value("enabled", false);
+    // By NAME in the file, so the numbering is free to change.
+    const std::string side = j.value("side", std::string("left"));
+    e.side = side == "right" ? 1 : side == "top" ? 2 : side == "bottom" ? 3 : 0;
+    e.boxW         = j.value("box_w", e.boxW);
+    e.boxH         = j.value("box_h", e.boxH);
+    e.offX         = j.value("off_x", e.offX);
+    e.offY         = j.value("off_y", e.offY);
+    e.threshold    = j.value("threshold", e.threshold);
+    e.polarity     = j.value("polarity", e.polarity);
+    e.bandPx       = j.value("band_px", e.bandPx);
+    e.continuityPx = j.value("continuity_px", e.continuityPx);
+    e.minRays      = j.value("min_rays", e.minRays);
+    return e;
+}
+
 nlohmann::json RelToJson(const VisionReliability& r)
 {
     nlohmann::json j;
@@ -456,6 +493,7 @@ nlohmann::json VisionModelToJson(const VisionModel& m)
     j["circle"]        = CircleToJson(m.circle);
     j["ncc"]           = NccToJson(m.ncc);
     j["corner"]        = CornerToJson(m.corner);
+    j["edge"]          = EdgeToJson(m.edge);
     j["template_file"] = m.templateFile;
     j["reliability"]   = RelToJson(m.rel);
     return j;
@@ -485,6 +523,7 @@ VisionModel VisionModelFromJson(const nlohmann::json& j)
     if (j.contains("circle"))      m.circle = CircleFromJson(j["circle"]);
     if (j.contains("ncc"))         m.ncc    = NccFromJson(j["ncc"]);
     if (j.contains("corner"))      m.corner = CornerFromJson(j["corner"]);
+    if (j.contains("edge"))        m.edge   = EdgeFromJson(j["edge"]);
     if (j.contains("reliability")) m.rel    = RelFromJson(j["reliability"]);
     return m;
 }
