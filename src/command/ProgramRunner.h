@@ -18,7 +18,9 @@
 #include "command/Recipe.h"
 #include "command/RecipeEngine.h"
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -38,6 +40,9 @@ public:
         int         passes = 1;  // that folder's loop count (1 = not in a loop)
         bool        dryRun = false;  // under a dry-run folder (command/DryRun.h)
         Recipe      recipe;
+        // The version this item will run (RecipeRunHash), set by Start - how a
+        // PENDING item finds its cycle-time history (docs/cycle-time-design.md).
+        std::uint64_t runHash = 0;
     };
     // Per-item outcome for the run view.
     enum class Mark { Pending, Running, Done, Failed, Stopped };
@@ -63,6 +68,11 @@ public:
         int         pass = 1, passes = 1;
         bool        dryRun = false;
         Mark        mark = Mark::Pending;
+        // Cycle time (docs/cycle-time-design.md): what the item is, and once
+        // it has ended what it actually took (wall, of which operator).
+        std::string   recipeUid;
+        std::uint64_t runHash = 0;
+        std::int64_t  wallMs = -1, waitMs = 0;   // -1 = has not ended
     };
     struct Status {
         bool        active = false;
@@ -77,6 +87,10 @@ public:
         // no $run, no cycle reset/advance. A mixed queue is a real run whose
         // dry items simply leave no accent (ItemStatus::dryRun).
         bool        dryRun = false;
+        // The run's wall clock: t1 is zero while it is active. `seq` changes
+        // with every Start, so a consumer caching queue sums knows a new run.
+        std::chrono::steady_clock::time_point t0{}, t1{};
+        std::uint64_t seq = 0;
     };
     const Status& GetStatus() const { return status_; }   // UI-thread only
 
@@ -94,6 +108,7 @@ private:
     RecipeEngine::Env  env_;
     RecipeEngine::StartOpts opts_;
     Status status_;
+    std::uint64_t seq_ = 0;
 };
 
 // ---- Run-request resolution ------------------------------------------------

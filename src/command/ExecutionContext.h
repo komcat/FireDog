@@ -273,10 +273,35 @@ public:
         std::function<bool(const PickRequest&, PickResult*)> awaitPick;
         // The prompt window with the AUTHOR's buttons instead of OK / Cancel:
         // returns the 0-based index pressed, -1 when Stop released it. null =>
-        // -1. No auto-OK: a choice has no default answer. LAST on purpose -
-        // the engines brace-initialise this struct positionally.
+        // -1. No auto-OK: a choice has no default answer.
         std::function<int(const std::string&, const std::vector<std::string>&, PromptLevel)>
             awaitChoice;
+        // Timing only (docs/cycle-time-design.md §2): true when a command
+        // starts waiting on a PERSON through something other than the hooks
+        // above (notify_operator, xcan_operator), false when it stops. Taken
+        // through OperatorWaitScope, never called directly. null => untimed.
+        // LAST on purpose - the engines brace-initialise this struct
+        // positionally, and the Lua engine leaves it empty.
+        std::function<void(bool)> operatorWait;
+    };
+
+    // RAII bracket around a wait on the operator that no hook already covers,
+    // so the recipe engine books it as operator time rather than machine time.
+    class OperatorWaitScope {
+    public:
+        explicit OperatorWaitScope(ExecutionContext& ctx) : ctx_(ctx)
+        {
+            if (ctx_.hooks_.operatorWait) ctx_.hooks_.operatorWait(true);
+        }
+        ~OperatorWaitScope()
+        {
+            if (ctx_.hooks_.operatorWait) ctx_.hooks_.operatorWait(false);
+        }
+        OperatorWaitScope(const OperatorWaitScope&) = delete;
+        OperatorWaitScope& operator=(const OperatorWaitScope&) = delete;
+
+    private:
+        ExecutionContext& ctx_;
     };
 
     ExecutionContext(Workflow& wf, HardwareManager& hw,

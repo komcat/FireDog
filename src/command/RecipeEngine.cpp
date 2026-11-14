@@ -96,6 +96,10 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
         if (err) *err = inlineErr;
         return false;
     }
+    // The version of what runs, taken BEFORE the second transform - only an
+    // untransformed run is ever timed, and ProgramRunner hashes the same thing
+    // (RecipeRunHash) for the items still pending.
+    const std::uint64_t runHash = RecipeStepsHash(run.steps);
     if (opts.teach) MakeTeachRecipe(run, reg_, teachOnly);   // the inlined bodies, same rule
     if (opts.dryRun) MakeDryRunRecipe(run, reg_);
 
@@ -150,6 +154,15 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
         nextStep_.clear();
         nextPath_.clear();
         lastCtx_.clear();   // it describes the LAST finished run, never a stale one
+        // Cycle time: a teach, dry or started-from-a-step run is not a cycle.
+        recipeUid_ = run.uid;
+        runHash_   = runHash;
+        timed_     = !opts.teach && !opts.dryRun && opts.startPath.empty();
+        runT0_     = std::chrono::steady_clock::now();
+        runT1_     = {};
+        waitSince_ = {};
+        waitAcc_   = 0;
+        waitDepth_ = 0;
         // Skip-until path: strip the editor's else-branch markers — the
         // runner walks plain indices (same quirk as run highlighting).
         startPath_.clear();
@@ -291,7 +304,41 @@ RecipeEngine::Status RecipeEngine::GetStatus() const
     s.nextPath           = nextPath_;
     if (runCtx_) s.ctx = runCtx_->CtxSnapshot();   // its own mutex; no deadlock
     s.lastCtx = lastCtx_;
+    s.recipeUid = recipeUid_;
+    s.runHash   = runHash_;
+    s.timed     = timed_;
+    if (runT0_ != std::chrono::steady_clock::time_point{}) {
+        using std::chrono::duration_cast;
+        using ms = std::chrono::milliseconds;
+        const auto now = std::chrono::steady_clock::now();
+        const auto end = runT1_ != std::chrono::steady_clock::time_point{} ? runT1_ : now;
+        s.elapsedMs = duration_cast<ms>(end - runT0_).count();
+        s.waitMs    = waitAcc_;
+        if (waitDepth_ > 0) s.waitMs += duration_cast<ms>(now - waitSince_).count();
+        s.waitingOperator = waitDepth_ > 0;
+    }
     return s;
+}
+
+std::vector<RecipeEngine::RunTiming> RecipeEngine::TakeRunTimings()
+{
+    const std::scoped_lock lock(mu_);
+    std::vector<RunTiming> out;
+    out.swap(timings_);
+    return out;
+}
+
+void RecipeEngine::BeginWaitLocked()
+{
+    if (waitDepth_++ == 0) waitSince_ = std::chrono::steady_clock::now();
+}
+
+void RecipeEngine::EndWaitLocked()
+{
+    if (waitDepth_ <= 0) return;
+    if (--waitDepth_ == 0)
+        waitAcc_ += std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - waitSince_).count();
 }
 
 bool RecipeEngine::SafetyAborted() const
@@ -314,6 +361,7 @@ bool RecipeEngine::AwaitPromptInternal(const std::string& message, bool wantsInp
     promptAnswer_   = false;
     promptAutoOkAt_ = autoOkMs > 0 ? clock::now() + std::chrono::milliseconds(autoOkMs)
                                    : clock::time_point{};
+    BeginWaitLocked();   // a prompt is operator time, auto-OK or not
     // Wait in slices so a stop request always gets through.
     while (!promptAnswered_ && !stopReq_.load()) {
         // Nobody answered inside the window: that IS the answer, OK.
@@ -326,6 +374,7 @@ bool RecipeEngine::AwaitPromptInternal(const std::string& message, bool wantsInp
         }
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
+    EndWaitLocked();
     prompt_.clear();
     promptWantsInput_ = false;
     promptAutoOkAt_   = clock::time_point{};
@@ -350,10 +399,12 @@ int RecipeEngine::AwaitChoiceInternal(const std::string& message,
     promptAnswered_   = false;
     promptAnswer_     = false;
     promptAutoOkAt_   = std::chrono::steady_clock::time_point{};   // a choice never answers itself
+    BeginWaitLocked();
     // Wait in slices so a stop request always gets through.
     while (!promptAnswered_ && !stopReq_.load()) {
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
+    EndWaitLocked();
     prompt_.clear();
     promptButtons_.clear();
     return (promptAnswered_ && !stopReq_.load()) ? promptChoice_ : -1;
@@ -366,10 +417,12 @@ bool RecipeEngine::AwaitAdjustInternal(const ExecutionContext::AdjustRequest& re
     adjustPending_  = true;
     adjustAnswered_ = false;
     adjustAnswer_   = false;
+    BeginWaitLocked();
     // Wait in slices so a stop request always gets through.
     while (!adjustAnswered_ && !stopReq_.load()) {
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
+    EndWaitLocked();
     adjustPending_ = false;
     return adjustAnswered_ && adjustAnswer_ && !stopReq_.load();
 }
@@ -382,10 +435,12 @@ bool RecipeEngine::AwaitPickInternal(const ExecutionContext::PickRequest& req,
     pickPending_  = true;
     pickAnswered_ = false;
     pickAnswer_   = false;
+    BeginWaitLocked();
     // Wait in slices so a stop request always gets through.
     while (!pickAnswered_ && !stopReq_.load()) {
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
+    EndWaitLocked();
     pickPending_ = false;
     const bool ok = pickAnswered_ && pickAnswer_ && !stopReq_.load();
     if (ok && out) *out = pickResult_;
@@ -407,10 +462,12 @@ bool RecipeEngine::AwaitStepInternal(const std::string& label,
         FD_INFO("recipe", "paused before %s", label.c_str());
     // Wait in slices so stop / safety / SetStepMode(false) / Resume always get
     // through.
+    BeginWaitLocked();   // held at the gate: the operator's time, not the machine's
     while (!stepGranted_ && held() && !stopReq_.load() &&
            !SafetyAborted()) {
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
+    EndWaitLocked();
     stepGranted_ = false;
     stepPaused_  = false;
     nextStep_.clear();
@@ -443,11 +500,19 @@ void RecipeEngine::ThreadMain(Recipe recipe, Recipe onFail, Env env)
                    PromptLevel level) {
                 return AwaitChoiceInternal(m, b, level);
             },
+            [this](bool on) {
+                const std::scoped_lock lock(mu_);
+                if (on) BeginWaitLocked();
+                else    EndWaitLocked();
+            },
         });
     {
         const std::scoped_lock lock(mu_);
         runCtx_ = &ctx;
     }
+    // The DUT open when the run started: the record names it if the run itself
+    // closed it (dut_close as the last step) - docs/cycle-time-design.md §5.
+    const std::string serialAtStart = DutSession::Instance().GetInfo().serial;
 
     StepRunner::Outcome out = StepRunner::Outcome::Fail;
     std::string runErr;
@@ -566,6 +631,25 @@ void RecipeEngine::ThreadMain(Recipe recipe, Recipe onFail, Env env)
         }
         currentStep_ = "";
         curPath_.clear();
+        // Cycle time: the clock stops here, whatever the outcome; only a
+        // Completed, timed run is handed to App to keep.
+        runT1_ = std::chrono::steady_clock::now();
+        while (waitDepth_ > 0) EndWaitLocked();   // a bracket cannot outlive the run
+        if (timed_ && state_ == State::Completed) {
+            RunTiming t;
+            t.recipeUid  = recipeUid_;
+            t.recipeName = recipeName_;
+            t.runHash    = runHash_;
+            t.wallMs     = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               runT1_ - runT0_).count();
+            t.waitMs     = waitAcc_;
+            t.steps      = leafDone_;
+            const DutSession::Info di = DutSession::Instance().GetInfo();
+            t.serial     = di.open ? di.serial : serialAtStart;
+            constexpr std::size_t kMaxQueued = 256;   // App drains every frame
+            if (timings_.size() >= kMaxQueued) timings_.erase(timings_.begin());
+            timings_.push_back(std::move(t));
+        }
         FD_INFO("recipe", "run '%s' finished: %s%s%s", recipeName_.c_str(),
                 StateName(state_), error_.empty() ? "" : " - ", error_.c_str());
         FD_DEBUG("mem", "after run '%s': %s", recipeName_.c_str(),

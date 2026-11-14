@@ -1963,11 +1963,12 @@ void App::DrawRecipeRunStrip(float height)
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", st.error.c_str());
     }
     if (st.leafTotal > 0) {
-        float frac = static_cast<float>(st.leafDone) / static_cast<float>(st.leafTotal);
-        if (frac > 1.0f) frac = 1.0f;   // while-loops can overshoot the estimate
-        char overlay[48];
-        std::snprintf(overlay, sizeof(overlay), "%zu / %zu", st.leafDone, st.leafTotal);
-        ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay);
+        // Time-based once this recipe version has history, else steps
+        // (docs/cycle-time-design.md); the overlay always counts steps.
+        const std::string overlay = RecipeRunBarText(st.leafDone, st.leafTotal);
+        ImGui::ProgressBar(RecipeRunBarFrac(st.leafDone, st.leafTotal), ImVec2(-1.0f, 0.0f),
+                           overlay.c_str());
+        DrawRecipeTimeLine();
     }
     ImGui::EndChild();
 }

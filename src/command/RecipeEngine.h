@@ -22,6 +22,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <set>
 #include <string>
@@ -162,8 +163,32 @@ public:
         // produced. It is cleared at Start, so it always describes the LAST
         // finished run and never a stale one.
         std::vector<std::pair<std::string, CtxValue>> lastCtx;
+        // ---- Cycle time (docs/cycle-time-design.md) ----
+        // The recipe run now (or last): its uid, the VERSION of what it
+        // executes (RecipeStepsHash of the inlined steps) and whether its time
+        // counts (not teach / dry, not started from a step). elapsedMs is the
+        // wall clock since Start, frozen at the end; waitMs the part of it
+        // spent blocked on the operator, including a wait still in progress.
+        std::string   recipeUid;
+        std::uint64_t runHash   = 0;
+        bool          timed     = false;
+        std::int64_t  elapsedMs = 0;
+        std::int64_t  waitMs    = 0;
+        bool          waitingOperator = false;   // blocked on a person right now
     };
     Status GetStatus() const;        // mutex-guarded copy — cheap, UI-safe
+
+    // A finished run whose time counts (Completed + Status::timed), queued at
+    // the terminal boundary for App::Update to write (the TakeSavedPositions
+    // shape: the worker never touches the history file).
+    struct RunTiming {
+        std::string   recipeUid, recipeName;
+        std::uint64_t runHash = 0;
+        std::int64_t  wallMs  = 0, waitMs = 0;
+        std::size_t   steps   = 0;     // leaf steps that ran
+        std::string   serial;          // the DUT open at the end (else at start)
+    };
+    std::vector<RunTiming> TakeRunTimings();
     bool   Running() const { return running_.load(); }
 
 private:
@@ -188,6 +213,9 @@ private:
     // stop or safety abort (the run ends Stopped).
     bool AwaitStepInternal(const std::string& label,
                            const std::vector<std::size_t>& path);
+    // Operator-time bracket (docs/cycle-time-design.md §2). mu_ must be held.
+    void BeginWaitLocked();
+    void EndWaitLocked();
 
     Workflow&              wf_;
     HardwareManager&       hw_;
@@ -240,6 +268,14 @@ private:
                                            // set/cleared under mu_
     // Snapshot of runCtx_ taken at the terminal boundary — see Status::lastCtx.
     std::vector<std::pair<std::string, CtxValue>> lastCtx_;
+    // Cycle time. Guarded by mu_. runT1_ is zero while running.
+    std::string   recipeUid_;
+    std::uint64_t runHash_ = 0;
+    bool          timed_   = false;
+    std::chrono::steady_clock::time_point runT0_{}, runT1_{}, waitSince_{};
+    std::int64_t  waitAcc_   = 0;   // ms of operator time in closed brackets
+    int           waitDepth_ = 0;   // open brackets (nesting never double-counts)
+    std::vector<RunTiming> timings_;   // finished, not yet taken (capped)
 
     std::thread worker_;   // joined in Stop-and-join helper + dtor. Declared
                            // last so everything it uses outlives it.

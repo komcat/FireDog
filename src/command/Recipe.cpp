@@ -358,6 +358,41 @@ std::size_t CountLeafSteps(const std::vector<RecipeStep>& steps)
     return n;
 }
 
+namespace {
+void StripNicknames(nlohmann::json& j)
+{
+    if (j.is_object()) {
+        j.erase("nickname");
+        for (const char* k : {"children", "else"})
+            if (j.contains(k)) StripNicknames(j[k]);
+    } else if (j.is_array()) {
+        for (nlohmann::json& e : j) StripNicknames(e);
+    }
+}
+} // namespace
+
+std::uint64_t RecipeStepsHash(const std::vector<RecipeStep>& steps)
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const RecipeStep& s : steps) arr.push_back(StepToJson(s));
+    StripNicknames(arr);
+    // nlohmann objects are std::map-ordered, so the dump is canonical.
+    const std::string text = arr.dump();
+    std::uint64_t h = 1469598103934665603ULL;   // FNV-1a 64 - stable across builds,
+    for (const char c : text) {                 // unlike std::hash
+        h ^= static_cast<unsigned char>(c);
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+std::uint64_t RecipeRunHash(const Recipe& r, const std::vector<Recipe>& library)
+{
+    Recipe copy = r;
+    if (!InlineSubRecipes(copy, library, nullptr)) return 0;
+    return RecipeStepsHash(copy.steps);
+}
+
 // ---- Validation -------------------------------------------------------------
 
 namespace {

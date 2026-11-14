@@ -167,8 +167,12 @@ CommandResult ExecNotifyOperator(ExecutionContext& ctx, const ParamValues& p)
                                              : BuzzPattern::None;   // "silent"
     Workflow& wf = ctx.Wf();
     const std::uint64_t id = wf.PostNotice(msg, timeoutMs, buzz);
-    const ExecutionContext::WaitResult r =
-        ctx.WaitUntil([&] { return wf.NoticeAcked(id); }, timeoutMs, 100);
+    ExecutionContext::WaitResult r = ExecutionContext::WaitResult::Timeout;
+    {
+        // Operator time, not machine time (docs/cycle-time-design.md §2).
+        const ExecutionContext::OperatorWaitScope waiting(ctx);
+        r = ctx.WaitUntil([&] { return wf.NoticeAcked(id); }, timeoutMs, 100);
+    }
     wf.ClearNotice(id);
 
     const std::string key = p.GetString("ctx");
@@ -264,9 +268,13 @@ CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
         const long long leftMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      deadline - Clock::now()).count();
         ExecutionContext::WaitResult r = ExecutionContext::WaitResult::Timeout;
-        if (leftMs > 0)
+        if (leftMs > 0) {
+            // Waiting for a press or Done is operator time; a scan it asks
+            // for (below) is machine time (docs/cycle-time-design.md §2).
+            const ExecutionContext::OperatorWaitScope waiting(ctx);
             r = ctx.WaitUntil([&] { return wf.XcanSessionWants(id); },
                               static_cast<int>(leftMs), 100);
+        }
         if (r == ExecutionContext::WaitResult::Stopped) return CommandResult::Fail("stopped");
         if (r != ExecutionContext::WaitResult::Ok) {
             record("timeout");

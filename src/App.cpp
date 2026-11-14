@@ -281,6 +281,9 @@ void App::Update(float dt)
     // Tick, which is what starts that next item. Otherwise a Pause pressed
     // during the last step would hold the next, unrelated run.
     if (!orch_.Busy() && orch_.recipe.Paused()) orch_.recipe.SetPaused(false);
+    // AFTER Tick: the runner has started the next item, so the engine status
+    // and the queue index describe the same recipe (docs/cycle-time-design.md).
+    UpdateCycleTimes();
     // The deck cycle, both halves of it. The marks are copied out of the
     // runner's per-item status every frame — which is what makes an accent
     // appear the moment a recipe finishes rather than only at the end of the

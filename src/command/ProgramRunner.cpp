@@ -5,6 +5,7 @@
 #include "core/Log.h"
 
 #include <functional>
+#include <map>
 #include <string>
 #include <utility>
 
@@ -27,6 +28,19 @@ bool ProgramRunner::Start(std::string kind, std::string label, std::string uid,
         return false;
     }
 
+    // Each item's version, hashed once per distinct recipe (a x1000 folder is
+    // one inline, not a thousand) - pending items find their cycle-time
+    // history by it. The engine hashes the same inlined steps at its Start.
+    {
+        std::map<std::string, std::uint64_t> byUid;
+        for (Item& it : queue) {
+            const auto f = byUid.find(it.recipe.uid);
+            if (f != byUid.end()) { it.runHash = f->second; continue; }
+            it.runHash = RecipeRunHash(it.recipe, env.library);
+            byUid.emplace(it.recipe.uid, it.runHash);
+        }
+    }
+
     kind_    = std::move(kind);
     label_   = std::move(label);
     uid_     = std::move(uid);
@@ -45,6 +59,8 @@ bool ProgramRunner::Start(std::string kind, std::string label, std::string uid,
     status_.total  = queue_.size();
     status_.teach  = opts_.teach;
     status_.dryRun = true;
+    status_.t0     = std::chrono::steady_clock::now();
+    status_.seq    = ++seq_;
     status_.items.reserve(queue_.size());
     for (const Item& it : queue_) {
         ItemStatus st;
@@ -56,6 +72,8 @@ bool ProgramRunner::Start(std::string kind, std::string label, std::string uid,
         st.passes     = it.passes;
         st.dryRun     = it.dryRun;
         st.mark       = Mark::Pending;
+        st.recipeUid  = it.recipe.uid;
+        st.runHash    = it.runHash;
         if (!it.dryRun) status_.dryRun = false;
         status_.items.push_back(std::move(st));
     }
@@ -82,6 +100,8 @@ void ProgramRunner::Tick()
         if (engine_.Running()) return;   // current recipe still going
         const RecipeEngine::Status es = engine_.GetStatus();
         waitingEngine_ = false;
+        status_.items[idx_].wallMs = es.elapsedMs;   // frozen at its end
+        status_.items[idx_].waitMs = es.waitMs;
         if (es.state == RecipeEngine::State::Completed) {
             status_.items[idx_].mark = Mark::Done;
             ++idx_;
@@ -123,6 +143,7 @@ void ProgramRunner::Finish(const char* result, const std::string& detail)
 {
     active_        = false;
     status_.active = false;
+    status_.t1     = std::chrono::steady_clock::now();
     status_.result = detail.empty() ? result : std::string(result) + " - " + detail;
 
     std::size_t done = 0;

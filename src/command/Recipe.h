@@ -24,6 +24,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
+
 namespace firedog {
 
 class CommandRegistry;
@@ -167,5 +169,14 @@ std::string StepPathLabel(const std::vector<std::size_t>& path);
 // Count enabled leaf (command) steps for progress display. Fixed-count loops
 // multiply; while-form loops count their body once (iterations unknown).
 std::size_t CountLeafSteps(const std::vector<RecipeStep>& steps);
+
+// The VERSION of what a run executes, for cycle-time history
+// (docs/cycle-time-design.md §4): FNV-1a 64 over StepToJson of every step with
+// `nickname` dropped - renaming a row changes nothing that runs; a param, an
+// enabled flag, an on_error or a sub-recipe body does. Hash the INLINED steps.
+std::uint64_t RecipeStepsHash(const std::vector<RecipeStep>& steps);
+// A copy of `r` inlined against `library`, then hashed - what RecipeEngine::Start
+// hashes for an ordinary run. 0 when the inline fails (that run is refused anyway).
+std::uint64_t RecipeRunHash(const Recipe& r, const std::vector<Recipe>& library);
 
 } // namespace firedog

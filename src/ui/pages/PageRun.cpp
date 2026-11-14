@@ -1674,19 +1674,22 @@ void App::DrawRunPanel()
     if (running || !rs.result.empty()) {
         ImGui::Text("%s: %s", rs.kind.c_str(), rs.label.c_str());
         if (running) {
-            ImGui::Text("recipe %zu / %zu", rs.index + 1, rs.total);
+            // The queue (its bar, cycle estimate and ETA), then the recipe
+            // running in it - docs/cycle-time-design.md.
+            DrawProgramTimeLine();
             if (!es.currentStep.empty()) ImGui::TextDisabled("%s", es.currentStep.c_str());
             if (es.leafTotal > 0) {
-                float frac = static_cast<float>(es.leafDone) /
-                             static_cast<float>(es.leafTotal);
-                if (frac > 1.0f) frac = 1.0f;
-                ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f));
+                const std::string overlay = RecipeRunBarText(es.leafDone, es.leafTotal);
+                ImGui::ProgressBar(RecipeRunBarFrac(es.leafDone, es.leafTotal),
+                                   ImVec2(-1.0f, 0.0f), overlay.c_str());
+                DrawRecipeTimeLine();
             }
         } else {
             const bool ok = rs.result.rfind("Completed", 0) == 0;
             ImGui::TextColored(ok ? ImVec4(0.4f, 1.0f, 0.5f, 1.0f)
                                   : ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
                                "%s", rs.result.c_str());
+            DrawProgramTimeLine();   // "took 3:42 (operator 0:32)"
         }
         ImGui::Separator();
         // A loop expands into the queue, so this list is as long as the RUN is

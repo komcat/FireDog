@@ -36,6 +36,7 @@
 #include "core/MosaicConfig.h"
 #include "core/PanelSwitches.h"
 #include "core/PositionRecords.h"
+#include "core/CycleTimes.h"
 #include "mosaic/MosaicDoc.h"
 #include "mosaic/MosaicWorker.h"
 
@@ -822,6 +823,17 @@ private:
     // Recipe ctx does NOT flow between recipes, so this is the UI collecting
     // each finished run's final snapshot into one list for the part.
     void DrainCycleVars();          // engine-idle edge -> cycleVars_ (App::Update)
+    // ---- Cycle time (ui/RunTiming.cpp, docs/cycle-time-design.md) ----
+    // From Update, AFTER programs.Tick: drains the engine's finished-run
+    // timings into the product's history (the ONE writer) and computes
+    // cycleEta_. The two Draw* only read cycleEta_.
+    void UpdateCycleTimes();
+    void DrawRecipeTimeLine();      // the recipe run: ETA / typical / operator time
+    void DrawProgramTimeLine();     // the program / slot run: cycle + ETA + its bar
+    // "3 / 12  0:42 of ~1:30" for a recipe run bar, and its fraction (time
+    // when there is history, else steps).
+    float RecipeRunBarFrac(std::size_t leafDone, std::size_t leafTotal) const;
+    std::string RecipeRunBarText(std::size_t leafDone, std::size_t leafTotal) const;
     void DrawRunValuesPanel();      // the Run page's right-column "Values" list
     void DrawRunReadouts();         // the pinned instrument readouts under it
     static bool IsOperatorCtxKey(const std::string& key);   // hides engine scratch
@@ -2211,6 +2223,41 @@ private:
     std::vector<bool>        runReadoutHas_;      // stream has published at all
     double                   runReadoutAt_ = 0.0; // ImGui::GetTime() of the last pull
     bool engineWasRunning_ = false;   // edge-detect ONE recipe finishing
+    // Cycle time (docs/cycle-time-design.md). The store follows the product's
+    // data folder; cycleEta_ is rebuilt every frame in UpdateCycleTimes and
+    // only READ by a Draw. The queue sums are cached on (run seq, item index,
+    // store seq) - a x1000 folder must not be re-summed per frame.
+    struct CycleEta {
+        // The recipe engine's run (running now, or the last one).
+        bool          have    = false;
+        bool          running = false;
+        bool          timed   = false;
+        const char*   untimedWhy = "";   // "teach run" / "dry run" / "started from a step"
+        bool          waiting = false;   // blocked on the operator right now
+        std::int64_t  elapsedMs = 0, waitMs = 0;
+        CycleEstimate est;               // n == 0: no history for this version
+        float         frac     = -1.0f;  // time-based progress; < 0 = none
+        std::int64_t  remainMs = -1;     // < 0 = unknown
+        std::int64_t  overMs   = 0;      // machine time past the median
+        // The program / slot queue.
+        bool          prog        = false;   // a queue run exists to describe
+        bool          progRunning = false;
+        bool          progTimed   = false;   // not teach / all-dry
+        std::int64_t  progElapsedMs = 0, progWaitMs = 0;
+        std::int64_t  progTotalMs  = -1;     // expected whole run (< 0 unknown)
+        std::int64_t  progRemainMs = -1;
+        std::size_t   progUnknown  = 0;      // items with no history (ETA is a floor)
+        float         progFrac     = -1.0f;  // machine-time progress; < 0 = none
+    };
+    CycleEta       cycleEta_;
+    CycleTimeStore cycleStore_;
+    std::uint64_t  cycleQSeq_ = 0, cycleQStoreSeq_ = 0;
+    std::size_t    cycleQIndex_ = ~std::size_t{0};
+    bool           cycleQActive_ = false;   // the LAST item ends without an index change
+    std::int64_t   cycleQDoneWallMs_ = 0, cycleQDoneWaitMs_ = 0, cycleQDoneMachineMs_ = 0;
+    std::int64_t   cycleQPendTypicalMs_ = 0, cycleQPendMachineMs_ = 0;
+    std::size_t    cycleQPendUnknown_ = 0;
+    std::string    cycleWriteErr_;   // last append failure, logged once per message
     // The node the ACTIVE run was launched on ("" = slot scope). Recorded at
     // Start because the deck stays clickable during a run: advancing off
     // deckNode_ afterwards would step from wherever the operator clicked while
