@@ -80,11 +80,13 @@ inline std::map<std::string, std::string> DefaultAuxTipLabels()
 // gauge. Presentation only: hiding a part hides text, never the mark - an
 // absent mark is how a refusal reads (no tip, an expired beacon).
 struct AuxMarkLabels {
-    // Beacon: "b_focus  9m  HL +383 um  4.83 mm"
-    bool beaconName  = true;   // its name
-    bool beaconTime  = true;   // minutes left
-    bool beaconTool  = true;   // the nearest tool and its height over the beacon
-    bool beaconDist  = true;   // off the picture: the distance on the edge arrow
+    // Beacon: "b_focus  9m  HL +383 um  4.83 mm" when all on. Off by default:
+    // the pulse alone - its colour and beat already say how near a tool is,
+    // and two beacons at one spot stacked their text over the picture.
+    bool beaconName  = false;  // its name
+    bool beaconTime  = false;  // minutes left
+    bool beaconTool  = false;  // the nearest tool and its height over the beacon
+    bool beaconDist  = false;  // off the picture: the distance on the edge arrow
     bool beaconGauge = true;   // a marker on the height gauge
     // Gripped object: "CLens  HL  12m  h -132 um"
     bool objName    = true;    // its name
