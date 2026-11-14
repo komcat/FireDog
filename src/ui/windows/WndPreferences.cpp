@@ -4,9 +4,13 @@
 // Definitions of App members - see App.h.
 //
 // Opened from the Overview's Hardware header. Everything here is a STATION
-// preference persisted in UiSettings. Display and Charts only change how this
-// bench draws, hence kRolePrefs (Operator); Motion holds the defaults the Jog
-// window's Tool -> cam row starts from, so that page edits only at kRoleJog.
+// preference persisted in UiSettings - except Scanning, which edits the XCAN
+// launch presets, targets and the quick-align band's slots, machine state in
+// config/scan_presets.local.json (the same file the Run page's right-click
+// modals write). Display and Charts only change how this bench draws, hence
+// kRolePrefs (Operator); Motion holds the defaults the Jog window's Tool -> cam
+// row starts from, so that page edits only at kRoleJog; Scanning edits only at
+// kRoleScanPrefs.
 //
 // The dialog edits a working copy (prefsEdit_). Apply writes back only what
 // differs from prefsBase_ (the values when it opened or last applied), so a
@@ -24,6 +28,8 @@
 #include <algorithm>
 #include <cfloat>
 #include <cstdio>
+#include <cstdlib>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -33,7 +39,8 @@ namespace {
 // The category tree. A group is a non-selectable parent; a page is a leaf with
 // the id prefsCat_ holds. Add a page: a row here and a case in the switch.
 enum PrefsPage { kPrefDisplay = 0, kPrefChartCurrent = 1, kPrefMotionRegMove = 2,
-                 kPrefToolMarkers = 3 };
+                 kPrefToolMarkers = 3, kPrefXcanPresets = 4, kPrefXcanTargets = 5,
+                 kPrefQuickAlign = 6 };
 
 struct PrefsGroup {
     const char* name;
@@ -48,6 +55,9 @@ const std::vector<PrefsGroup>& PrefsTree()
         {"Charts",      {{"Current (SMU)", kPrefChartCurrent, "Charts > Current (SMU)"}}},
         {"Motion",      {{"Tool -> cam", kPrefMotionRegMove, "Motion > Tool -> cam"}}},
         {"Graphic view", {{"Tool markers", kPrefToolMarkers, "Graphic view > Tool markers"}}},
+        {"Scanning",    {{"XCAN presets", kPrefXcanPresets, "Scanning > XCAN presets"},
+                         {"XCAN targets", kPrefXcanTargets, "Scanning > XCAN targets"},
+                         {"Quick align", kPrefQuickAlign, "Scanning > Quick align"}}},
     };
     return tree;
 }
@@ -72,6 +82,71 @@ std::string BandListError(const std::vector<ChartYBand>& bands)
     }
     return {};
 }
+
+// A comma list of positive numbers ("10,5,2,1"), or false - what
+// hexapod_align.lua's ladder parser would choke on.
+bool ParseUmList(const std::string& s, std::vector<double>* out)
+{
+    std::stringstream ss(s);
+    std::string tok;
+    std::vector<double> v;
+    while (std::getline(ss, tok, ',')) {
+        const auto b = tok.find_first_not_of(" \t");
+        if (b == std::string::npos) return false;
+        const auto e = tok.find_last_not_of(" \t");
+        tok = tok.substr(b, e - b + 1);
+        char* end = nullptr;
+        const double d = std::strtod(tok.c_str(), &end);
+        if (end == tok.c_str() || *end != '\0' || !(d > 0.0)) return false;
+        v.push_back(d);
+    }
+    if (v.empty()) return false;
+    if (out) *out = v;
+    return true;
+}
+
+// Why the XCAN pages cannot be applied, or "". Only ENABLED slots are judged:
+// a spare switched off may hold anything until somebody turns it on.
+std::string XcanPrefsError(const AppPrefs& e)
+{
+    char buf[160];
+    for (int i = 0; i < kXcanPresetCount; ++i) {
+        const XcanPreset& p = e.xcanPresets[static_cast<std::size_t>(i)];
+        if (!p.enabled) continue;
+        if (!ParseUmList(p.stepsUm, nullptr)) {
+            std::snprintf(buf, sizeof(buf), "XCAN preset %d: steps must be positive numbers "
+                          "separated by commas.", i + 1);
+            return buf;
+        }
+        if (p.axes.find_first_not_of(" ,") == std::string::npos) {
+            std::snprintf(buf, sizeof(buf), "XCAN preset %d: no axes.", i + 1);
+            return buf;
+        }
+    }
+    for (int i = 0; i < kXcanPresetCount; ++i) {
+        const XcanTarget& t = e.xcanTargets[static_cast<std::size_t>(i)];
+        if (!t.enabled) continue;
+        if (!(t.targetUa > 0.0)) {
+            std::snprintf(buf, sizeof(buf), "XCAN target %d: target must be above 0.", i + 1);
+            return buf;
+        }
+        if (!(t.zoneLowUa > 0.0) || !(t.zoneHighUa > t.zoneLowUa)) {
+            std::snprintf(buf, sizeof(buf), "XCAN target %d: zones need 0 < low < high.", i + 1);
+            return buf;
+        }
+    }
+    return {};
+}
+
+// One labelled row of a form: the label, a tooltip on it, then the cursor at
+// the field column.
+void FormLabel(const char* label, float labelW, const char* tip)
+{
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    ImGui::SameLine(labelW);
+}
 } // namespace
 
 AppPrefs App::CurrentPrefs() const
@@ -86,6 +161,11 @@ AppPrefs App::CurrentPrefs() const
     p.auxTipLabels   = auxTipLabels_;
     p.jogRegZOff     = jogRegZOffDef_;
     p.jogRegUnver    = jogRegUnverDef_;
+    for (int i = 0; i < kXcanPresetCount; ++i) {
+        p.xcanPresets[static_cast<std::size_t>(i)] = xcanPresets_[i];
+        p.xcanTargets[static_cast<std::size_t>(i)] = xcanTargets_[i];
+    }
+    p.quickAlign = quickAlign_;
     return p;
 }
 
@@ -139,6 +219,26 @@ void App::ApplyPreferences()
         jogRegUnverDef_ = e.jogRegUnver;
         jogRegUnver_    = jogRegUnverDef_;
     }
+    // Scanning: slot by slot, so a slot edited meanwhile in a Run-page modal
+    // and left alone here is not overwritten from this window's older copy.
+    // The next launch reads them; a scan already running keeps what it got.
+    bool scanChanged = false;
+    for (int i = 0; i < kXcanPresetCount; ++i) {
+        const std::size_t k = static_cast<std::size_t>(i);
+        if (!(e.xcanPresets[k] == b.xcanPresets[k])) {
+            xcanPresets_[i] = e.xcanPresets[k];
+            scanChanged = true;
+        }
+        if (!(e.xcanTargets[k] == b.xcanTargets[k])) {
+            xcanTargets_[i] = e.xcanTargets[k];
+            scanChanged = true;
+        }
+    }
+    if (!(e.quickAlign == b.quickAlign)) {
+        quickAlign_ = e.quickAlign;
+        scanChanged = true;
+    }
+    if (scanChanged) SaveScanPresets();
     SaveUiSettings();
     prefsBase_ = CurrentPrefs();
     prefsEdit_ = prefsBase_;
@@ -409,6 +509,270 @@ void App::DrawPreferencesWindow()
                             "off the surface on this machine. Cam -> tool is XY only.");
         break;
     }
+    case kPrefXcanPresets: {
+        ImGui::TextWrapped("The XCAN launch presets: the step ladder and every "
+                           "hexapod_align.lua tunable a launch hands the script. They are "
+                           "the Run page's XCAN preset buttons and the ladders the quick-align "
+                           "band presses. A running scan keeps what it started with.");
+        ImGui::Spacing();
+        const bool canEdit = CanUse(kRoleScanPrefs);
+        if (ImGui::BeginTabBar("##xcanPresetTabs")) {
+            for (int i = 0; i < kXcanPresetCount; ++i) {
+                XcanPreset& p = e.xcanPresets[static_cast<std::size_t>(i)];
+                char tab[64];
+                std::snprintf(tab, sizeof(tab), "%d %s%s###xp%d", i + 1, p.label.c_str(),
+                              p.enabled ? "" : " (off)", i);
+                if (!ImGui::BeginTabItem(tab)) continue;
+                ImGui::PushID(i);
+                ImGui::BeginDisabled(!canEdit);
+                const float labelW = ImGui::CalcTextSize("Consecutive limit").x +
+                                     st.ItemSpacing.x * 4.0f;
+                const float w = 160.0f;
+
+                ImGui::SeparatorText("Button");
+                FormLabel("Show button", labelW, "Off: the preset is a hidden spare.");
+                ImGui::Checkbox("##en", &p.enabled);
+                FormLabel("Label", labelW, nullptr);
+                char lb[32];
+                std::snprintf(lb, sizeof(lb), "%s", p.label.c_str());
+                ImGui::SetNextItemWidth(w);
+                if (ImGui::InputText("##label", lb, sizeof(lb))) p.label = lb;
+
+                ImGui::SeparatorText("Ladder");
+                FormLabel("Steps (um)", labelW,
+                          "align_steps_um - coarse -> fine, comma separated. Each pass\n"
+                          "walks every axis at one step size. With a target's adaptive\n"
+                          "zones the same list is the zone steps (coarsest for the\n"
+                          "lowest signal) and passes coarser than the zone are skipped.");
+                char sb[96];
+                std::snprintf(sb, sizeof(sb), "%s", p.stepsUm.c_str());
+                ImGui::SetNextItemWidth(w);
+                if (ImGui::InputText("##steps", sb, sizeof(sb))) p.stepsUm = sb;
+                ImGui::SameLine();
+                std::vector<double> ladder;
+                if (ParseUmList(p.stepsUm, &ladder))
+                    ImGui::TextDisabled("%zu passes", ladder.size());
+                else
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f), "not a number list");
+                FormLabel("Axes", labelW, "align_axes - coordinate-descent order, e.g. Z,Y,X.");
+                char ab[48];
+                std::snprintf(ab, sizeof(ab), "%s", p.axes.c_str());
+                ImGui::SetNextItemWidth(w);
+                if (ImGui::InputText("##axes", ab, sizeof(ab))) p.axes = ab;
+
+                ImGui::SeparatorText("Measure");
+                FormLabel("Settle (ms)", labelW,
+                          "align_settle_ms - with fresh samples: the CEILING on the wait\n"
+                          "for them; with fresh samples 0: a blind delay.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputDouble("##settle", &p.settleMs, 0.0, 0.0, "%g");
+                FormLabel("Settle floor (ms)", labelW,
+                          "align_settle_min_ms - never measure sooner than this after a\n"
+                          "move (slow receivers: photodiode / TIA). 0 = none.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputDouble("##settlemin", &p.settleMinMs, 0.0, 0.0, "%g");
+                FormLabel("Fresh samples", labelW,
+                          "align_fresh_samples - NEW publishes on the feedback topic to\n"
+                          "wait for per measure. 2 = the first fully post-move sample.\n"
+                          "0 = the original blind settle sleep.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputInt("##fresh", &p.freshSamples);
+                FormLabel("Average count", labelW,
+                          "align_avg_count - samples averaged for the baseline.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputInt("##avg", &p.avgCount);
+
+                ImGui::SeparatorText("Convergence");
+                FormLabel("Consecutive limit", labelW,
+                          "align_consec_limit - stop a direction after this many\n"
+                          "non-improving steps.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputInt("##consec", &p.consecLimit);
+                FormLabel("Signal drop (%)", labelW,
+                          "align_sig_drop_pct - a relative drop this big ends the\n"
+                          "direction at once. Noise dips reach ~6% here; true\n"
+                          "post-peak drops are 50%+.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputDouble("##drop", &p.sigDropPct, 0.0, 0.0, "%g");
+                FormLabel("Improve (%)", labelW,
+                          "align_improve_pct - the margin over which the scan goes back\n"
+                          "to the global peak when the current signal fell off it.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputDouble("##improve", &p.improvePct, 0.0, 0.0, "%g");
+                FormLabel("Min signal (A)", labelW,
+                          "align_min_signal - abort when |baseline| is below this,\n"
+                          "feedback units (amps). 0 = never.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputDouble("##minsig", &p.minSignal, 0.0, 0.0, "%g");
+
+                ImGui::SeparatorText("Motion");
+                FormLabel("Max travel (um)", labelW,
+                          "align_max_travel_um - travel cap per direction.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputDouble("##travel", &p.maxTravelUm, 0.0, 0.0, "%g");
+                FormLabel("Velocity (mm/s)", labelW,
+                          "align_velocity_mm_s - set once before the scan. 0 = keep.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputDouble("##vel", &p.velocityMmS, 0.0, 0.0, "%g");
+                FormLabel("Arrival tol (mm)", labelW, "align_tol_mm - move arrival tolerance.");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputDouble("##tol", &p.tolMm, 0.0, 0.0, "%g");
+                FormLabel("Move timeout (ms)", labelW, "align_move_timeout_ms");
+                ImGui::SetNextItemWidth(w);
+                ImGui::InputDouble("##mto", &p.moveTimeoutMs, 0.0, 0.0, "%g");
+
+                ImGui::SeparatorText("Cycle-time trims");
+                ImGui::Checkbox("Skip opposite", &p.skipOpposite);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("align_skip_opposite - a first direction that walked\n"
+                                      "uphill already brackets the peak; skip the other.");
+                ImGui::SameLine();
+                ImGui::Checkbox("Direction memory", &p.dirMemory);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("align_dir_memory - each axis starts with the\n"
+                                      "direction that last improved.");
+                ImGui::SameLine();
+                ImGui::Checkbox("Reuse sample", &p.reuseSample);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("align_reuse_sample - a point just measured is not\n"
+                                      "measured again.");
+
+                // Values the script would only meet as nonsense.
+                p.freshSamples = std::clamp(p.freshSamples, 0, 20);
+                p.avgCount     = std::clamp(p.avgCount, 1, 100);
+                p.consecLimit  = std::clamp(p.consecLimit, 1, 100);
+                p.settleMs     = (std::max)(p.settleMs, 0.0);
+                p.settleMinMs  = (std::max)(p.settleMinMs, 0.0);
+
+                ImGui::Spacing();
+                if (ImGui::Button("Reset this preset to defaults")) p = DefaultXcanPreset(i);
+                ImGui::EndDisabled();
+                ImGui::PopID();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+        if (!canEdit) ImGui::TextDisabled("Technician and up may change these.");
+        break;
+    }
+    case kPrefXcanTargets: {
+        ImGui::TextWrapped("The XCAN target slots - one per product power class. The "
+                           "target ends the scan the moment the feedback reaches it; the "
+                           "adaptive zones split [low, high] into the ladder's sections. "
+                           "The ACTIVE slot (yellow on the Run page) goes into every XCAN "
+                           "and Climb launch. Values in uA.");
+        ImGui::Spacing();
+        const bool canEdit = CanUse(kRoleScanPrefs);
+        ImGui::BeginDisabled(!canEdit);
+        if (ImGui::BeginTable("##xcanTargets", 6,
+                              ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_SizingFixedFit)) {
+            ImGui::TableSetupColumn("Slot");
+            ImGui::TableSetupColumn("Show");
+            ImGui::TableSetupColumn("Target (uA)");
+            ImGui::TableSetupColumn("Zone low (uA)");
+            ImGui::TableSetupColumn("Zone high (uA)");
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+            for (int i = 0; i < kXcanPresetCount; ++i) {
+                XcanTarget& t = e.xcanTargets[static_cast<std::size_t>(i)];
+                ImGui::PushID(i);
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::AlignTextToFramePadding();
+                ImGui::Text("%d", i + 1);
+                ImGui::TableNextColumn();
+                ImGui::Checkbox("##en", &t.enabled);
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(110.0f);
+                ImGui::InputDouble("##tgt", &t.targetUa, 0.0, 0.0, "%g");
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(110.0f);
+                ImGui::InputDouble("##lo", &t.zoneLowUa, 0.0, 0.0, "%g");
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(110.0f);
+                ImGui::InputDouble("##hi", &t.zoneHighUa, 0.0, 0.0, "%g");
+                ImGui::TableNextColumn();
+                if (ImGui::SmallButton("Defaults")) t = DefaultXcanTarget(i);
+                ImGui::SameLine();
+                if (t.zoneHighUa <= t.zoneLowUa)
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f), "high <= low");
+                else if (t.targetUa > t.zoneHighUa)
+                    ImGui::TextDisabled("target above the zones");
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        ImGui::EndDisabled();
+        if (!canEdit) ImGui::TextDisabled("Technician and up may change these.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("Zone low should sit at the raster handoff level.\n"
+                            "A slot switched off is no Target button, and a quick-align\n"
+                            "button using it is disabled.");
+        break;
+    }
+    case kPrefQuickAlign: {
+        ImGui::TextWrapped("Which slots the Run page's quick-align band presses. The "
+                           "first-light button (the tall Left Coarse) runs at the LOW target; "
+                           "the four production buttons (Left / Right x Coarse / Fine) run "
+                           "at the HIGH target.");
+        ImGui::Spacing();
+        const bool canEdit = CanUse(kRoleScanPrefs);
+        ImGui::BeginDisabled(!canEdit);
+        const float labelW = ImGui::CalcTextSize("First-light target").x + st.ItemSpacing.x * 4.0f;
+        const auto targetCombo = [&](const char* label, const char* id, int& slot) {
+            FormLabel(label, labelW, nullptr);
+            const XcanTarget& cur = e.xcanTargets[static_cast<std::size_t>(slot)];
+            char prev[64];
+            std::snprintf(prev, sizeof(prev), "%d: %g uA%s", slot + 1, cur.targetUa,
+                          cur.enabled ? "" : " (off)");
+            ImGui::SetNextItemWidth(260.0f);
+            if (ImGui::BeginCombo(id, prev)) {
+                for (int i = 0; i < kXcanPresetCount; ++i) {
+                    const XcanTarget& t = e.xcanTargets[static_cast<std::size_t>(i)];
+                    char it[96];
+                    std::snprintf(it, sizeof(it), "%d: %g uA  (zones %g-%g)%s", i + 1,
+                                  t.targetUa, t.zoneLowUa, t.zoneHighUa,
+                                  t.enabled ? "" : " (off)");
+                    if (ImGui::Selectable(it, slot == i)) slot = i;
+                }
+                ImGui::EndCombo();
+            }
+        };
+        const auto presetCombo = [&](const char* label, const char* id, int& slot) {
+            FormLabel(label, labelW, nullptr);
+            const XcanPreset& cur = e.xcanPresets[static_cast<std::size_t>(slot)];
+            char prev[96];
+            std::snprintf(prev, sizeof(prev), "%d: %s%s", slot + 1, cur.label.c_str(),
+                          cur.enabled ? "" : " (off)");
+            ImGui::SetNextItemWidth(260.0f);
+            if (ImGui::BeginCombo(id, prev)) {
+                for (int i = 0; i < kXcanPresetCount; ++i) {
+                    const XcanPreset& p = e.xcanPresets[static_cast<std::size_t>(i)];
+                    char it[160];
+                    std::snprintf(it, sizeof(it), "%d: %s  (%s um)%s", i + 1, p.label.c_str(),
+                                  p.stepsUm.c_str(), p.enabled ? "" : " (off)");
+                    if (ImGui::Selectable(it, slot == i)) slot = i;
+                }
+                ImGui::EndCombo();
+            }
+        };
+        QuickAlignSlots& q = e.quickAlign;
+        ImGui::SeparatorText("Targets");
+        targetCombo("First-light target", "##qlo", q.targetLo);
+        targetCombo("Production target", "##qhi", q.targetHi);
+        ImGui::SeparatorText("Ladders");
+        presetCombo("Coarse buttons", "##qco", q.coarse);
+        presetCombo("Fine buttons", "##qfi", q.fine);
+        ImGui::Spacing();
+        if (ImGui::Button("Reset to defaults##quick")) q = QuickAlignSlots{};
+        ImGui::EndDisabled();
+        if (!canEdit) ImGui::TextDisabled("Technician and up may change these.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("Edit the slots themselves on the XCAN presets / XCAN targets\n"
+                            "pages.");
+        break;
+    }
     default:
         prefsCat_ = kPrefDisplay;
         break;
@@ -416,7 +780,8 @@ void App::DrawPreferencesWindow()
     ImGui::EndChild();
 
     // ---- OK / Cancel / Apply (bottom right) ----
-    const std::string err   = BandListError(e.chartYBandList);
+    std::string err = BandListError(e.chartYBandList);
+    if (err.empty()) err = XcanPrefsError(e);
     const bool        dirty = !(e.themeIndex == prefsBase_.themeIndex &&
                                 e.fontIndex == prefsBase_.fontIndex &&
                                 e.fontSize == prefsBase_.fontSize &&
@@ -425,7 +790,10 @@ void App::DrawPreferencesWindow()
                                 e.chartChDefault == prefsBase_.chartChDefault &&
                                 e.auxTipLabels == prefsBase_.auxTipLabels &&
                                 e.jogRegZOff == prefsBase_.jogRegZOff &&
-                                e.jogRegUnver == prefsBase_.jogRegUnver);
+                                e.jogRegUnver == prefsBase_.jogRegUnver &&
+                                e.xcanPresets == prefsBase_.xcanPresets &&
+                                e.xcanTargets == prefsBase_.xcanTargets &&
+                                e.quickAlign == prefsBase_.quickAlign);
     ImGui::Spacing();
     const float bw    = ImGui::CalcTextSize("Cancel").x + st.FramePadding.x * 2.0f + 24.0f;
     const float total = bw * 3.0f + st.ItemSpacing.x * 2.0f;

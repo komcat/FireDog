@@ -81,6 +81,8 @@ struct XcanPreset {
     bool   skipOpposite  = true;        // skip -dir after +dir improved
     bool   dirMemory     = true;        // last winning direction first
     bool   reuseSample   = true;        // no re-measure of unmoved points
+
+    bool operator==(const XcanPreset&) const = default;
 };
 inline constexpr int kXcanPresetCount = 5;
 
@@ -94,6 +96,26 @@ struct XcanTarget {
     double targetUa   = 400.0;   // align_exit_threshold
     double zoneLowUa  = 20.0;    // align_zone_low  (adaptive ladder lower limit)
     double zoneHighUa = 400.0;   // align_zone_high (adaptive ladder upper limit)
+
+    bool operator==(const XcanTarget&) const = default;
+};
+
+// The built-in slot values (PageRun.cpp): the Run page's modals and the
+// Preferences window's XCAN pages both reset a slot to these.
+XcanPreset DefaultXcanPreset(int i);
+XcanTarget DefaultXcanTarget(int i);
+
+// Which slots the Run page's quick-align band presses: the first-light pass
+// (one button, `targetLo`) and the four production passes (`targetHi`), each
+// with the `coarse` or `fine` launch preset. Indices into xcanTargets_ /
+// xcanPresets_, persisted in scan_presets.local.json beside them.
+struct QuickAlignSlots {
+    int targetLo = 1;   // 400 uA by default
+    int targetHi = 2;   // 3400 uA by default
+    int coarse   = 0;   // "Coarse" 10,5,2,1 um
+    int fine     = 1;   // "Fine"   2,1,0.5 um
+
+    bool operator==(const QuickAlignSlots&) const = default;
 };
 
 // One climb-raster launch preset (a button on the Scan band's Climb tab): the
@@ -179,6 +201,9 @@ inline constexpr UserRole kRoleDowntime = UserRole::Technician;
 //   Display block. Its Motion page sets what the Jog window's Tool -> cam
 //   starts with, so that page edits only at kRoleJog.
 inline constexpr UserRole kRolePrefs = UserRole::Operator;
+//   Its Scanning > XCAN pages tune how the align moves a hexapod and when it
+//   stops - what the machine knows, so Technician edits them (anyone may read).
+inline constexpr UserRole kRoleScanPrefs = UserRole::Technician;
 
 // The Preferences window's working copy (WndPreferences.cpp): what the dialog
 // edits until OK / Apply. Apply writes back only the fields that differ from
@@ -194,6 +219,11 @@ struct AppPrefs {
     std::map<std::string, std::string> auxTipLabels;   // Aux tool-tip text by device
     double jogRegZOff  = 0.0;    // Jog "Tool -> cam" defaults
     bool   jogRegUnver = true;
+    // Scanning > XCAN: machine state in scan_presets.local.json, not
+    // UiSettings - Apply writes back the slots that differ and saves that file.
+    std::array<XcanPreset, kXcanPresetCount> xcanPresets{};
+    std::array<XcanTarget, kXcanPresetCount> xcanTargets{};
+    QuickAlignSlots quickAlign;
 };
 
 // Hysteresis state for one chart's fixed Y range: the band indices it showed
@@ -2127,6 +2157,9 @@ private:
     XcanTarget xcanTargets_[kXcanPresetCount];
     int  xcanTgtCfgSel_  = 0;
     bool xcanTgtCfgOpen_ = false;
+    // The quick-align band's slot assignment (Preferences > Scanning > Quick
+    // align), persisted with the presets.
+    QuickAlignSlots quickAlign_;
     // Climb launch presets (Climb tab, same five-slot shape). The exit TARGET
     // is not here: the Climb tab drives at the same active xcanTargets_ slot
     // the XCAN tab does — one product power class, two searches aiming at it.

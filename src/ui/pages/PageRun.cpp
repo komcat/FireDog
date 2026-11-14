@@ -59,7 +59,7 @@ static constexpr double kRasterTargetsUa[] = {5.0, 20.0};
 // zone_low must sit AT the raster handoff level — see the micro-lobe field
 // note in hexapod_align.lua); slots 4-5 are spares the operator can switch
 // on in the target settings modal (right-click a Target button).
-static XcanTarget DefaultXcanTarget(int i)
+XcanTarget DefaultXcanTarget(int i)
 {
     XcanTarget t;
     switch (i) {
@@ -85,7 +85,7 @@ static std::string XcanTargetLabel(const XcanTarget& t)
 // Built-in XCAN launch presets: slots 1/2 are bobcat's Coarse/Fine ladders
 // (enabled), 3-5 are blank spares the operator can switch on in the
 // settings modal (right-click any preset button).
-static XcanPreset DefaultXcanPreset(int i)
+XcanPreset DefaultXcanPreset(int i)
 {
     XcanPreset p;
     switch (i) {
@@ -1804,6 +1804,7 @@ void App::LoadScanPresets()
     }
     for (int i = 0; i < kClimbPresetCount; ++i)
         climbPresets_[i] = DefaultClimbPreset(i);
+    quickAlign_ = QuickAlignSlots{};
     std::ifstream f(MachinePath("config/scan_presets.local.json"));
     if (!f.is_open()) f.open("config/scan_presets.json");   // shipped default, beside the exe
     if (!f.is_open()) return;   // first run — defaults stand
@@ -1837,6 +1838,19 @@ void App::LoadScanPresets()
                 ClimbPresetFromJson(arr[i], climbPresets_[static_cast<int>(i)]);
         }
     }
+    if (j.contains("quick_align") && j["quick_align"].is_object()) {
+        // A slot index out of range keeps the default rather than indexing
+        // past the array.
+        const nlohmann::json& q = j["quick_align"];
+        const auto slot = [&](const char* key, int& v) {
+            const int n = q.value(key, v);
+            if (n >= 0 && n < kXcanPresetCount) v = n;
+        };
+        slot("target_lo", quickAlign_.targetLo);
+        slot("target_hi", quickAlign_.targetHi);
+        slot("coarse", quickAlign_.coarse);
+        slot("fine", quickAlign_.fine);
+    }
 }
 
 void App::SaveScanPresets() const
@@ -1858,6 +1872,10 @@ void App::SaveScanPresets() const
     j["xcan_presets"]  = std::move(arr);
     j["xcan_targets"]  = std::move(tarr);
     j["climb_presets"] = std::move(carr);
+    j["quick_align"]   = nlohmann::json{{"target_lo", quickAlign_.targetLo},
+                                        {"target_hi", quickAlign_.targetHi},
+                                        {"coarse", quickAlign_.coarse},
+                                        {"fine", quickAlign_.fine}};
     const std::string path = MachinePath("config/scan_presets.local.json");
     std::ofstream f(path);
     if (f.is_open()) {
@@ -2033,15 +2051,12 @@ void App::DrawRunScanBlock()
 // hexapod -- into one button. Section 1 is the first-light pass at the low
 // target; section 2 is the four production passes at the high one.
 //
-// The slots are fixed but the LABELS are rendered from the live target, so an
-// operator who retunes slot 2 in the target modal gets a button that still says
-// what it will do rather than a stale number. A button whose target slot or
-// step preset has been switched off in the settings modal is disabled, not
-// hidden -- a missing button reads as a broken build.
-constexpr int kQuickTargetLo = 1;   // xcanTargets_ slot: 400 uA by default
-constexpr int kQuickTargetHi = 2;   // xcanTargets_ slot: 3400 uA by default
-constexpr int kQuickCoarse   = 0;   // xcanPresets_ slot: "Coarse" 10,5,2,1 um
-constexpr int kQuickFine     = 1;   // xcanPresets_ slot: "Fine"   2,1,0.5 um
+// Which slots the buttons press is quickAlign_ (Preferences > Scanning > Quick
+// align), and the LABELS are rendered from the live target, so an operator who
+// retunes a slot gets a button that still says what it will do rather than a
+// stale number. A button whose target slot or step preset has been switched off
+// in the settings is disabled, not hidden -- a missing button reads as a broken
+// build.
 
 // Resolve a motion device by its config name; nullptr when it is not built.
 static IMotionController* MotionByName(const HardwareManager& hw, const char* name)
@@ -2089,10 +2104,10 @@ void App::DrawRunQuickAlign()
             if (!m)                   ImGui::SetTooltip("%s is not configured", dev);
             else if (!m->IsConnected()) ImGui::SetTooltip("%s is not connected", dev);
             else if (!t.enabled)      ImGui::SetTooltip("target slot %d is off "
-                                                        "(right-click a Target button)",
+                                                        "(Preferences > Scanning > XCAN targets)",
                                                         targetIdx + 1);
             else if (!p.enabled)      ImGui::SetTooltip("preset slot %d is off "
-                                                        "(right-click a preset button)",
+                                                        "(Preferences > Scanning > XCAN presets)",
                                                         presetIdx + 1);
             else ImGui::SetTooltip("%s  %s: %s um\ntarget %g uA (zones %g-%g uA)",
                                    dev, p.label.c_str(), p.stepsUm.c_str(),
@@ -2103,8 +2118,9 @@ void App::DrawRunQuickAlign()
     // Section 1: first light at the low target -- one tall button.
     ImGui::PushID("quickLo");
     ImGui::BeginGroup();
-    ImGui::TextDisabled("%s", XcanTargetLabel(xcanTargets_[kQuickTargetLo]).c_str());
-    launch("Left Coarse", kQuickTargetLo, kQuickCoarse, "hex-left",
+    const QuickAlignSlots& q = quickAlign_;
+    ImGui::TextDisabled("%s", XcanTargetLabel(xcanTargets_[q.targetLo]).c_str());
+    launch("Left Coarse", q.targetLo, q.coarse, "hex-left",
            ImVec2(btnW, btnH * 2.0f + style.ItemSpacing.y));
     ImGui::EndGroup();
     ImGui::PopID();
@@ -2124,13 +2140,13 @@ void App::DrawRunQuickAlign()
     // coarse over fine, the order they are run in.
     ImGui::PushID("quickHi");
     ImGui::BeginGroup();
-    ImGui::TextDisabled("%s", XcanTargetLabel(xcanTargets_[kQuickTargetHi]).c_str());
-    launch("Left Coarse", kQuickTargetHi, kQuickCoarse, "hex-left", ImVec2(btnW, btnH));
+    ImGui::TextDisabled("%s", XcanTargetLabel(xcanTargets_[q.targetHi]).c_str());
+    launch("Left Coarse", q.targetHi, q.coarse, "hex-left", ImVec2(btnW, btnH));
     ImGui::SameLine();
-    launch("Left Fine", kQuickTargetHi, kQuickFine, "hex-left", ImVec2(btnW, btnH));
-    launch("Right Coarse", kQuickTargetHi, kQuickCoarse, "hex-right", ImVec2(btnW, btnH));
+    launch("Left Fine", q.targetHi, q.fine, "hex-left", ImVec2(btnW, btnH));
+    launch("Right Coarse", q.targetHi, q.coarse, "hex-right", ImVec2(btnW, btnH));
     ImGui::SameLine();
-    launch("Right Fine", kQuickTargetHi, kQuickFine, "hex-right", ImVec2(btnW, btnH));
+    launch("Right Fine", q.targetHi, q.fine, "hex-right", ImVec2(btnW, btnH));
     ImGui::EndGroup();
     ImGui::PopID();
 
