@@ -55,10 +55,11 @@ static void PushRunBigText()
 // Raster first-light exit levels, in uA (feedback amps; injected x1e-6).
 static constexpr double kRasterTargetsUa[] = {5.0, 20.0};
 // The Run page raster's grid, in the hexapod's OWN (local) axes: rows step
-// down local Y, each row sweeps local X centred on the start. Named here, and
+// down local X (the laser's top), each row sweeps local Y (its side) centred
+// on the start. Named here, and
 // on the tab's labels, so nobody has to know the script's defaults.
-static constexpr const char* kRasterSlowAxis = "Y";
-static constexpr const char* kRasterFastAxis = "X";
+static constexpr const char* kRasterSlowAxis = "X";
+static constexpr const char* kRasterFastAxis = "Y";
 
 // Built-in XCAN target presets: the three product power classes (the
 // zone_low must sit AT the raster handoff level — see the micro-lobe field
@@ -2521,7 +2522,7 @@ void App::DrawXcanPresetModal()
 // tab's active first-light target preset; feedback channel and Trace are
 // shared with the XCAN band. The axes are the hexapod's OWN (local) axes and
 // are passed explicitly, so the labels on the tab are the truth whatever the
-// script defaults say: slow = local Y stepping down from start, fast = local X
+// script defaults say: slow = local X stepping down from start, fast = local Y
 // sweeping centered.
 void App::StartRasterScan(const std::string& device)
 {
@@ -2556,7 +2557,7 @@ void App::DrawRunRasterBlock()
     const LuaEngine::Status st = orch_.lua.GetStatus();
     const bool running = orch_.lua.Running();
 
-    // Knob row: slow (rows, local Y-) span/step, fast (sweep, local X +/-)
+    // Knob row: slow (rows, local X-) span/step, fast (sweep, local Y +/-)
     // span/step, um.
     ImGui::TextDisabled("Slow: local %s- span/step", kRasterSlowAxis);
     if (ImGui::IsItemHovered())

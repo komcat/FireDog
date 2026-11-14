@@ -408,18 +408,20 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       // The axes are the HEXAPOD'S OWN (local) X / Y / Z, named
                       // here rather than left to the script's defaults, so the
                       // step says which way the grid runs.
-                      {"slow_axis", PT::Enum, false, "Y", 0, 0, {"X", "Y", "Z"},
-                       "slow (row) axis - the hexapod's LOCAL axis that steps once per row"},
+                      {"slow_axis", PT::Enum, false, "X", 0, 0, {"X", "Y", "Z"},
+                       "slow (row) axis - the hexapod's LOCAL axis that steps once per row "
+                       "(default X, the laser's top)"},
                       {"slow_dir", PT::Enum, false, "-", 0, 0, {"-", "+"},
                        "which way the slow axis steps from the start pose"},
                       {"slow_span_um", PT::Double, false, 40.0, 1.0, 2000.0, {},
-                       "slow-axis travel, one-sided from start (local Y- by default)"},
+                       "slow-axis travel, one-sided from start (local X- by default)"},
                       {"slow_step_um", PT::Double, false, 4.0, 0.1, 500.0, {},
                        "row pitch (slow axis)"},
-                      {"fast_axis", PT::Enum, false, "X", 0, 0, {"X", "Y", "Z"},
-                       "fast (sweep) axis - the hexapod's LOCAL axis swept along each row"},
+                      {"fast_axis", PT::Enum, false, "Y", 0, 0, {"X", "Y", "Z"},
+                       "fast (sweep) axis - the hexapod's LOCAL axis swept along each row "
+                       "(default Y, the laser's side)"},
                       {"fast_span_um", PT::Double, false, 40.0, 1.0, 2000.0, {},
-                       "fast-axis width, centered on start (local X +/- half by default)"},
+                       "fast-axis width, centered on start (local Y +/- half by default)"},
                       {"fast_step_um", PT::Double, false, 4.0, 0.1, 500.0, {},
                        "sample pitch along a row (fast axis)"},
                       {"exit_target_ua", PT::Double, false, 0.0, 0.0, 1e9, {},

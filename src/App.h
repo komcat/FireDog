@@ -2065,12 +2065,12 @@ private:
     // any target button turns MAX off. Climb cannot run under it (its target
     // is mandatory) and says so.
     bool   xcanTargetMax_  = false;
-    // Run-band raster launcher knobs (raster_scan.lua): slow axis = local Y steps down
-    // from start, fast axis = local X sweeps centered (kRasterSlow/FastAxis in
+    // Run-band raster launcher knobs (raster_scan.lua): slow axis = local X steps down
+    // from start, fast axis = local Y sweeps centered (kRasterSlow/FastAxis in
     // PageRun.cpp, passed explicitly); gating stays at the script defaults.
-    double rasterSlowSpanUm_ = 40.0;                  // local Y- total travel
+    double rasterSlowSpanUm_ = 40.0;                  // local X- total travel
     double rasterSlowStepUm_ = 4.0;                   // row pitch
-    double rasterFastSpanUm_ = 40.0;                  // local X total width (+/- half)
+    double rasterFastSpanUm_ = 40.0;                  // local Y total width (+/- half)
     double rasterFastStepUm_ = 4.0;                   // sample pitch per row
 
     // Run page UI state: the deck selection (recipe -1 = slot-level), light
