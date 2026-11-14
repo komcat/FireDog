@@ -163,18 +163,44 @@ void App::DrawVisionDetectHelperWindow()
     const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
     const std::string prefix = merged.value("ctx_prefix", std::string("det"));
 
-    // ---- The top band: what it reports + how it runs | where the camera goes ----
-    // Two columns, because stacked they pushed the teach panels half way down
-    // the window. The right column only exists once the step owns a model:
-    // Teach here writes into it.
+    // ---- The top band: camera position | report + run | detect + statistics ----
+    // Side by side, because stacked they pushed the teach panels half way down
+    // the window. Left to right in the order a run uses them: where the camera
+    // goes, what the step reports and how it runs, then the trial detections.
+    // The camera column exists once the step owns a model (Teach here writes
+    // into it); the trial column once that model may be tuned here.
     const bool canTeach = CanAccess(Page::VisionTeach);
     const int  owners   = m ? CountStepOwners(session_.Recipes(), m->uid) : 0;
     const bool modelOk  = m && owners <= 1;
-    if (ImGui::BeginTable("dvTop", modelOk ? 2 : 1, ImGuiTableFlags_BordersInnerV)) {
+    const bool tunable  = modelOk && canTeach && currentPage_ != Page::VisionTeach;
+
+    // Point the shared teach state at this model BEFORE the band: its Detect
+    // once writes visionDet_, and a reset after it would wipe the result. UI
+    // state, not the document: the teach panels keep their selection, zoom and
+    // last detection on App.
+    if (tunable && visionSelUid_ != m->uid) {
+        ResetVisionTeachState();
+        visionSelUid_ = m->uid;
+        visionFocusX_ = static_cast<float>(cameraW_) * 0.5f;
+        visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
+        visionTmpl_.key.clear();
+    }
+    if (tunable) visionOwnerLabel_ = owner;
+
+    const int topCols = modelOk ? (tunable ? 3 : 2) : 1;
+    if (ImGui::BeginTable("dvTop", topCols, ImGuiTableFlags_BordersInnerV)) {
+        if (modelOk) ImGui::TableSetupColumn("view", ImGuiTableColumnFlags_WidthFixed, 290.0f);
         ImGui::TableSetupColumn("run", ImGuiTableColumnFlags_WidthStretch);
-        if (modelOk) ImGui::TableSetupColumn("view", ImGuiTableColumnFlags_WidthFixed, 280.0f);
+        if (tunable) ImGui::TableSetupColumn("test", ImGuiTableColumnFlags_WidthFixed, 340.0f);
         ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
+        int col = 0;
+        if (modelOk) {
+            ImGui::TableSetColumnIndex(col++);
+            // Where the camera goes before it looks. Go is the editor's; Teach
+            // here writes the model, so it carries the Admin gate itself.
+            DrawDetectViewSection(*s, merged, *m, busy, canTeach);
+        }
+        ImGui::TableSetColumnIndex(col++);
         ImGui::SeparatorText("Report");
         {
             bool tx = merged.value("take_x", true), ty = merged.value("take_y", true),
@@ -218,12 +244,14 @@ void App::DrawVisionDetectHelperWindow()
         }
         // The run options: anybody who may edit the recipe may set them.
         if (modelOk) DrawDetectRunOptions(*s, merged, busy);
-        if (modelOk) {
-            ImGui::TableSetColumnIndex(1);
-            // Where the camera goes before it looks. Before the Admin gate below:
-            // Go is the editor's; Teach here writes the model, so it carries the
-            // gate itself.
-            DrawDetectViewSection(*s, merged, *m, busy, canTeach);
+        if (tunable) {
+            // The trial detections, beside the options they are judged with -
+            // the same two functions the teach page's column draws.
+            ImGui::TableSetColumnIndex(col++);
+            ImGui::SeparatorText("Detect");
+            DrawVisionDetectControls(*m, true);
+            ImGui::SeparatorText("Statistics run");
+            DrawVisionReliability(*m);
         }
         ImGui::EndTable();
     }
@@ -291,17 +319,6 @@ void App::DrawVisionDetectHelperWindow()
         return;
     }
 
-    // Point the shared teach state at this model. UI state, not the document:
-    // the teach panels keep their selection, zoom and last detection on App.
-    if (visionSelUid_ != m->uid) {
-        ResetVisionTeachState();
-        visionSelUid_ = m->uid;
-        visionFocusX_ = static_cast<float>(cameraW_) * 0.5f;
-        visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
-        visionTmpl_.key.clear();
-    }
-    visionOwnerLabel_ = owner;
-
     // What the step would report from the last detection, through the same two
     // functions the command uses - so the numbers here are the numbers a run
     // writes, give or take where the gantry stands when it does.
@@ -341,7 +358,8 @@ void App::DrawVisionDetectHelperWindow()
                                : "drag a rectangle around the feature to cut the template");
     ImGui::Separator();
 
-    DrawVisionTeachBody(*m);
+    // Detect + Reliability are in the top band, so the column leaves them out.
+    DrawVisionTeachBody(*m, false);
     ImGui::End();
 }
 
@@ -350,18 +368,26 @@ void App::DrawVisionDetectHelperWindow()
 void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, VisionModel& m,
                                 bool busy, bool canTeach)
 {
-    ImGui::SeparatorText("Camera position");
     const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
-
     double vp[3] = {0.0, 0.0, 0.0};
     const bool taught = ViewPointOf(merged, vp);
+
+    if (!taught) ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+    ImGui::SeparatorText("Camera position");
+    if (!taught) ImGui::PopStyleColor();
     if (taught) {
         ImGui::Text("X %.4f  Y %.4f", vp[0], vp[1]);
         ImGui::Text("Z %.4f", vp[2]);
         ImGui::SameLine();
         ImGui::TextDisabled("(%s axis)", camDev.c_str());
     } else {
-        ImGui::TextWrapped("not taught - the step detects wherever the camera stands");
+        // Required: a run refuses the step before anything moves. Red, because
+        // this is the one thing standing between the step and a run.
+        ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+        ImGui::TextUnformatted("NOT TAUGHT");
+        ImGui::TextWrapped("A run refuses this step until the camera view is taught - "
+                           "put the camera over the object, focus, then Teach here.");
+        ImGui::PopStyleColor();
     }
 
     // The guide: what the camera saw when the view was taught. The centre half
@@ -461,6 +487,9 @@ void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, Vis
     ImGui::BeginDisabled(busy || !taught);
     if (ImGui::Button("Clear")) s.params.erase("view_point");
     ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Forget the taught view. The step will not run until it is "
+                          "taught again.");
 
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
     ImGui::TextWrapped("exposure %.0f us, light %s - the model's, applied before the move",

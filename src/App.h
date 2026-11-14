@@ -674,7 +674,9 @@ private:
     // anchor window, the live re-detect, the filtered preview) for ONE model.
     // The page draws it under its owner strip; the Vision detect helper draws
     // it for a detect_object step's private model - one set of teach panels.
-    void DrawVisionTeachBody(VisionModel& m);
+    // `runControls` false = the parameter column leaves out Detect and
+    // Reliability, because the caller (the helper) draws them elsewhere.
+    void DrawVisionTeachBody(VisionModel& m, bool runControls = true);
     // Creates the station's tier-`tier` model (1..kAlignDetectTiers), switches page.
     void OpenVisionTeach(AlignProc& a, int station, int tier = 1);
     void ResetVisionTeachState();                        // both openers start here
@@ -699,7 +701,14 @@ private:
     void PasteDetectionToStation(AlignProc& a, int station, int tier);
     void DrawVisionTeachImage(VisionModel& m);           // live image + ROI/box drag
     void DrawVisionCameraFoot(VisionModel& m);           // under the image: camera + zoom
-    void DrawVisionTeachParams(VisionModel& m);          // method + parameter form
+    // ROI, method, chain, the method's form (each a collapsing header), then
+    // Detect + Reliability unless `runControls` is false.
+    void DrawVisionTeachParams(VisionModel& m, bool runControls = true);
+    // Detect once + Live (+ the licence line), and the statistical run with its
+    // Accept & save - the teach page's column and the Vision detect helper's top
+    // band both call these, so there is one of each.
+    void DrawVisionDetectControls(VisionModel& m, bool busyGate);
+    void DrawVisionReliability(VisionModel& m);
     // The three pre-process slots and the picture they produce. Its own function
     // because it is the one band that is not about a method: the chain runs
     // before any of them and belongs to the model, not to the form below it.

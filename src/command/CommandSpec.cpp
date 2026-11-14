@@ -144,6 +144,10 @@ std::string ValidateParams(const CommandSpec& spec, const nlohmann::json& params
         const bool present = params.is_object() && params.contains(p.name) &&
                              !params[p.name].is_null();
         if (!present) {
+            // A taught point says what to do about it: "missing parameter"
+            // reads as a broken file, not as a Teach here nobody pressed.
+            if (p.required && p.type == ParamType::PointXyz)
+                return "point '" + p.name + "' not taught - Teach here in the step";
             if (p.required) return "missing required parameter '" + p.name + "'";
             out[p.name] = p.defaultValue;
             continue;
@@ -151,8 +155,8 @@ std::string ValidateParams(const CommandSpec& spec, const nlohmann::json& params
         const nlohmann::json& v = params[p.name];
         // `{}` is the UNTAUGHT point a POR deploy writes for a step it could not
         // pair with this machine's: present, so it can never pass for "no
-        // point" (for detect_object that would mean "detect where the camera
-        // stands"), and refused with a message that says what to do.
+        // point" on an optional one, and refused with a message that says what
+        // to do.
         if (p.type == ParamType::PointXyz && v.is_object() && v.empty())
             return "point '" + p.name + "' not taught on this machine - Teach here in the step";
         if (!TypeMatches(p.type, v)) {

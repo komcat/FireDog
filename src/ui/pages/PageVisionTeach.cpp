@@ -1173,9 +1173,9 @@ void App::DrawVisionFilterBand(VisionModel& m)
     std::string why;
     const bool halcon = HalconDetector::Available(&why);
 
-    ImGui::SeparatorText("Pre-process filters");
-
-    const char* kinds[] = {"None", "Binary threshold", "Gaussian", "Canny edge"};
+    // The section's header is the caller's (a collapsing header in
+    // DrawVisionTeachParams).
+    const char* kinds[]= {"None", "Binary threshold", "Gaussian", "Canny edge"};
     const float itemW = LabelledItemWidth();
 
     for (int i = 0; i < kVisionFilterSlots; ++i) {
@@ -1220,11 +1220,6 @@ void App::DrawVisionFilterBand(VisionModel& m)
         }
         ImGui::PopID();
     }
-
-    HelpText("Applied in order to the search ROI before the method runs; a stage's "
-             "output is the next one's input. Watch what this does to the METHOD's "
-             "own numbers: after a binary threshold the image is 0 and 255, so a "
-             "circle grey window of 0..100 now selects the background.");
 
     // Preview sits directly above the picture it refreshes, so the button reads
     // as "redraw this" rather than as another parameter.
@@ -1274,39 +1269,66 @@ void App::DrawVisionFilterBand(VisionModel& m)
 
 // ---- The parameter column ---------------------------------------------------
 
-void App::DrawVisionTeachParams(VisionModel& m)
+void App::DrawVisionTeachParams(VisionModel& m, bool runControls)
 {
     std::string why;
     const bool halcon = HalconDetector::Available(&why);
-    const bool busy   = orch_.Busy();
     const float itemW = LabelledItemWidth();
     double mmX = 0.0, mmY = 0.0;
     workflow_.CameraPixelToMm(mmX, mmY);
 
-    // ---- 1. Method ----
-    // At the very top, and without a separator: it decides what the rest of this
-    // column even means, so it reads as the column's subject rather than as one
-    // band among six.
-    int method = (m.method == "ncc") ? 1 : (m.method == "corner") ? 2 : 0;
-    const char* methods[] = {"Circle / fiducial", "Pattern (NCC)", "Square corner"};
-    ImGui::SetNextItemWidth(itemW);
-    if (ImGui::Combo("detection method", &method, methods, 3)) {
-        m.method = (method == 1) ? "ncc" : (method == 2) ? "corner" : "circle";
-        visionHaveDet_    = false;
-        visionAnchorOpen_ = false;   // the picker belongs to the NCC form
+    // The column runs in the order the pixels travel - crop (ROI) -> which
+    // detector -> the chain in front of it -> the detector's own numbers - and
+    // every section folds, so the one being tuned can have the column.
+    constexpr ImGuiTreeNodeFlags kOpen = ImGuiTreeNodeFlags_DefaultOpen;
+
+    // ---- 1. Search ROI ----
+    if (ImGui::CollapsingHeader("Search ROI", kOpen)) {
+        ImGui::Checkbox("limit the search to a region", &m.roi.enabled);
+        ImGui::BeginDisabled(!m.roi.enabled);
+        int roi[4] = {m.roi.x, m.roi.y, m.roi.w, m.roi.h};
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::DragInt4("##roi", roi, 1.0f, 0, 100000, "%d")) {
+            m.roi.x = roi[0]; m.roi.y = roi[1]; m.roi.w = roi[2]; m.roi.h = roi[3];
+        }
+        if (ImGui::Button(visionDragMode_ == 1 ? "drag it on the image..." : "Set ROI by drag"))
+            visionDragMode_ = (visionDragMode_ == 1) ? 0 : 1;
+        ImGui::SameLine();
+        if (ImGui::Button("Full frame")) {
+            m.roi = VisionRoi{};
+            visionFocusX_ = static_cast<float>(cameraW_) * 0.5f;
+            visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
+        }
+        ImGui::EndDisabled();
+        HelpText("x / y / w / h in camera pixels. An ROI is the cheapest speed-up there "
+                 "is, and usually the difference between a detector that can run live "
+                 "and one that cannot.");
     }
 
-    // ---- 2. Pre-process ----
-    // Above the method form, because that is the order the pixels travel in:
-    // crop -> chain -> method.
-    DrawVisionFilterBand(m);
+    // ---- 2. Method ----
+    if (ImGui::CollapsingHeader("Detection method", kOpen)) {
+        int method = (m.method == "ncc") ? 1 : (m.method == "corner") ? 2 : 0;
+        const char* methods[] = {"Circle / fiducial", "Pattern (NCC)", "Square corner"};
+        ImGui::SetNextItemWidth(itemW);
+        if (ImGui::Combo("detection method", &method, methods, 3)) {
+            m.method = (method == 1) ? "ncc" : (method == 2) ? "corner" : "circle";
+            visionHaveDet_    = false;
+            visionAnchorOpen_ = false;   // the picker belongs to the NCC form
+        }
+    }
 
-    // ---- 3. The method's own form ----
-    ImGui::SeparatorText(m.method == "ncc"      ? "Template (NCC)"
-                         : m.method == "corner" ? "Square corner"
-                                                : "Circle / fiducial");
+    // ---- 3. Pre-process ----
+    // In front of the method's form: the chain runs on the ROI before it.
+    if (ImGui::CollapsingHeader("Pre-process filters", kOpen)) DrawVisionFilterBand(m);
 
-    if (m.method == "circle") {
+    // ---- 4. The method's own form ----
+    // "###vismethodform": the label follows the method, the open state does not.
+    const char* formTitle = m.method == "ncc"      ? "Template (NCC)###vismethodform"
+                          : m.method == "corner"   ? "Square corner###vismethodform"
+                                                   : "Circle / fiducial###vismethodform";
+    if (!ImGui::CollapsingHeader(formTitle, kOpen)) {
+        // folded - nothing of the form to draw
+    } else if (m.method == "circle") {
         CircleParams& c = m.circle;
         const char* pol[] = {"dark feature", "bright feature"};
         ImGui::SetNextItemWidth(itemW);
@@ -1434,33 +1456,23 @@ void App::DrawVisionTeachParams(VisionModel& m)
                  "fastest. Raise it only if the part really turns.");
     }
 
-    // ---- 4. Search ROI ----
-    // Below the method, above Detect: it is the last thing narrowed before the
-    // run, and the chain above is described in terms of it.
-    ImGui::SeparatorText("Search ROI");
-    ImGui::Checkbox("limit the search to a region", &m.roi.enabled);
-    ImGui::BeginDisabled(!m.roi.enabled);
-    int roi[4] = {m.roi.x, m.roi.y, m.roi.w, m.roi.h};
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::DragInt4("##roi", roi, 1.0f, 0, 100000, "%d")) {
-        m.roi.x = roi[0]; m.roi.y = roi[1]; m.roi.w = roi[2]; m.roi.h = roi[3];
-    }
-    if (ImGui::Button(visionDragMode_ == 1 ? "drag it on the image..." : "Set ROI by drag"))
-        visionDragMode_ = (visionDragMode_ == 1) ? 0 : 1;
-    ImGui::SameLine();
-    if (ImGui::Button("Full frame")) {
-        m.roi = VisionRoi{};
-        visionFocusX_ = static_cast<float>(cameraW_) * 0.5f;
-        visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
-    }
-    ImGui::EndDisabled();
-    HelpText("x / y / w / h in camera pixels. An ROI is the cheapest speed-up there "
-             "is, and usually the difference between a detector that can run live "
-             "and one that cannot.");
+    // ---- 5 / 6. Detect + Reliability ----
+    // Here on the teach page. The Vision detect helper draws them in its own
+    // top band instead (runControls = false), beside the step's run options.
+    if (!runControls) return;
+    if (ImGui::CollapsingHeader("Detect", kOpen)) DrawVisionDetectControls(m, false);
+    if (ImGui::CollapsingHeader("Reliability", kOpen)) DrawVisionReliability(m);
+}
 
-    // ---- 5. Detect ----
-    ImGui::SeparatorText("Detect");
-    ImGui::BeginDisabled(!halcon);
+// Detect once + Live, the HALCON licence line and the slow warning. The teach
+// page's Detect section and the Vision detect helper's top band both call this
+// one function. `busyGate`: the helper also disables Detect once while a run is
+// active (its model is not pointed at the teach state then).
+void App::DrawVisionDetectControls(VisionModel& m, bool busyGate)
+{
+    std::string why;
+    const bool halcon = HalconDetector::Available(&why);
+    ImGui::BeginDisabled(!halcon || (busyGate && orch_.Busy()));
     if (ImGui::Button("Detect once", ImVec2(120.0f, 0.0f))) {
         workflow_.Detect(m, session_.VisionDir(), &visionDet_);
         visionHaveDet_ = true;
@@ -1485,9 +1497,15 @@ void App::DrawVisionTeachParams(VisionModel& m)
     // read one thing, which is how they end up disagreeing.
     if (visionHaveDet_ && visionDet_.ok && visionDet_.elapsedMs > kSlowDetectMs)
         ImGui::TextColored(kWarn, "slow - tighten the ROI or drop a pyramid level");
+}
 
-    // ---- 6. Reliability ----
-    ImGui::SeparatorText("Reliability");
+// The statistical run: N detections, the spread, Accept & save. Shared like
+// DrawVisionDetectControls.
+void App::DrawVisionReliability(VisionModel& m)
+{
+    std::string why;
+    const bool halcon = HalconDetector::Available(&why);
+    const bool busy   = orch_.Busy();
     ImGui::SetNextItemWidth(90.0f);
     ImGui::DragInt("runs", &visionTestRuns_, 1.0f, 2, 500);
     ImGui::SameLine();
@@ -1789,7 +1807,7 @@ void App::DrawVisionTeachPanel()
 // it under its owner strip; the Vision detect helper (WndVisionDetect.cpp)
 // draws it for a detect_object step's private model. One body, so a step's
 // model is tuned with exactly the panels an alignment station's is.
-void App::DrawVisionTeachBody(VisionModel& m)
+void App::DrawVisionTeachBody(VisionModel& m, bool runControls)
 {
     // ---- Body: image | chain + method | results, two draggable splitters ----
     // Both side columns are resizable because neither natural width is a
@@ -1876,7 +1894,7 @@ void App::DrawVisionTeachBody(VisionModel& m)
     ImGui::SameLine(0.0f, 0.0f);
 
     ImGui::BeginChild("visparams", ImVec2(visionParamW_, bodyH), ImGuiChildFlags_Borders);
-    DrawVisionTeachParams(m);
+    DrawVisionTeachParams(m, runControls);
     ImGui::EndChild();
 
     ImGui::SameLine(0.0f, 0.0f);

@@ -432,7 +432,7 @@ CommandResult ExecVisionDetect(ExecutionContext& ctx, const ParamValues& p)
 //     the move to the camera view taught into the step (`view_point`, the
 //     helper's Teach here): with `z_lift` (default) Z goes to `safe_z_mm`
 //     first, XY across, Z down to the taught height last; without it, one
-//     direct XYZ move. No view_point = detect where the camera stands.
+//     direct XYZ move. The view is REQUIRED - an untaught step is refused.
 //   2 DETECTION  with the STEP'S OWN model. On a miss, `manual_fallback` asks the
 //     operator to put the crosshair on the object (the alignment pick window)
 //     and that point IS the result, P = 0, marked manual; otherwise `require`
@@ -521,6 +521,21 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
     if (!cam) return CommandResult::Fail(err);
     const ParamValues mv = DetectMoveParams(p);
 
+    // The taught view is REQUIRED, and checked before the light or the
+    // exposure changes: validation at Start already refuses a step without
+    // one, but Lua and RunRegistered skip validation, so the command refuses
+    // again here rather than detecting wherever the camera happens to stand.
+    if (!p.Has("view_point"))
+        return CommandResult::Fail("detect_object: the camera view is not taught - "
+                                   "Teach here in the step's Vision detect helper");
+    const nlohmann::json& vp = p.Raw().at("view_point");
+    if (!vp.is_object() || !vp.contains("X") || !vp.contains("Y") || !vp.contains("Z") ||
+        !vp.at("X").is_number() || !vp.at("Y").is_number() || !vp.at("Z").is_number())
+        return CommandResult::Fail("detect_object: view_point is not an X/Y/Z pose - "
+                                   "Teach here again");
+    const double vx = vp.at("X").get<double>(), vy = vp.at("Y").get<double>(),
+                 vz = vp.at("Z").get<double>();
+
     // ---- 1 pre-detection: camera, light, then the view ------------------------
     // Light, then exposure, BEFORE the move, so the picture is ready on arrival
     // - the order align_station uses. A model whose light cannot be set FAILS:
@@ -533,13 +548,7 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
     if (m->exposureUs > 0.0 && !ctx.Wf().SetCameraExposure(m->exposureUs))
         return CommandResult::Fail("detect_object: camera exposure change rejected "
                                    "(camera connected?)");
-    if (p.Has("view_point")) {
-        const nlohmann::json& vp = p.Raw().at("view_point");
-        if (!vp.is_object() || !vp.contains("X") || !vp.contains("Y") || !vp.contains("Z"))
-            return CommandResult::Fail("detect_object: view_point is not an X/Y/Z pose - "
-                                       "Teach here again");
-        const double vx = vp.at("X").get<double>(), vy = vp.at("Y").get<double>(),
-                     vz = vp.at("Z").get<double>();
+    {
         const CommandResult mvr =
             MoveCameraToView(ctx, cam, idx, vx, vy, vz, p.GetBool("z_lift"),
                              p.GetDouble("safe_z_mm"), mv);
@@ -548,8 +557,7 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
                 prefix.c_str(), vx, vy, vz, p.GetBool("z_lift") ? " via the safe Z" : "");
         // The stage has arrived and settled (MoveWithApproach's two signals),
         // but what sits on it may still be ringing: a fixed pause before the
-        // fresh-frame gate starts counting. Only after a move - a step that
-        // detects where the camera stands has nothing to settle from.
+        // fresh-frame gate starts counting.
         const int settle = p.GetInt("settle_ms");
         if (settle > 0 && !ctx.Sleep(settle)) return CommandResult::Fail("stopped");
     }
@@ -1043,9 +1051,12 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                        "deg, clockwise positive on the camera picture (ncc / corner "
                        "models with an angle tolerance)",
                        PinDir::Any, kVisionDetectHelper},
-                      {"view_point", PT::PointXyz, false, {}, 0, 0, {},
+                      // REQUIRED (2026-11-13): a detection is only as good as
+                      // the view it was tuned at, so every step drives there
+                      // first and an untaught step is refused at Start.
+                      {"view_point", PT::PointXyz, true, {}, 0, 0, {},
                        "the camera pose to detect from, in the camera device's axis space - "
-                       "taught in the helper (Teach here); empty = detect where it stands",
+                       "taught in the helper (Teach here); required",
                        PinDir::Any, kVisionDetectHelper},
                       {"settle_ms", PT::Int, false, 100, 0, 10000, {},
                        "after arriving at view_point, wait this long before the frames "

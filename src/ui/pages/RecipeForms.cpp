@@ -209,6 +209,23 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
                     }
                     HelpTooltip(list);
                 }
+                // A REQUIRED setting the helper owns and nobody set yet: said in
+                // red here, because the rows that would show it are folded into
+                // the summary and validation will refuse the run over it.
+                for (std::size_t k = i; k < j; ++k) {
+                    if (!ps[k].required) continue;
+                    const bool has = s.params.contains(ps[k].name) &&
+                                     !s.params[ps[k].name].is_null() &&
+                                     !(ps[k].type == ParamType::PointXyz &&
+                                       s.params[ps[k].name].is_object() &&
+                                       s.params[ps[k].name].empty());
+                    if (!has)
+                        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s %s - open the %s",
+                                           ps[k].name.c_str(),
+                                           ps[k].type == ParamType::PointXyz ? "not taught"
+                                                                             : "not set",
+                                           spec->helper.c_str());
+                }
                 i = j;
                 continue;
             }

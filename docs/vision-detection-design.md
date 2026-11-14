@@ -611,7 +611,11 @@ button, never a side effect of opening the window. Teaching is Admin
    live), then the camera device drives to the **view taught into the step**
    (`view_point`, `ParamType::PointXyz`, axis space). `z_lift` (default on) goes
    Z → `safe_z_mm` (default 25, an axis value), X/Y across, Z down to the taught
-   height; off, one direct XYZ move. No view = detect where the camera stands.
+   height; off, one direct XYZ move. The view is **required** (2026-11-13; it
+   used to be optional, meaning "detect where the camera stands"): validation
+   at Start refuses an untaught step (`point 'view_point' not taught`), the
+   command refuses it again for Lua / `RunRegistered`, the helper's Camera
+   position section and the step form's summary say it in red.
    The legs run with `DetectMoveParams` (the movers' 0.01 mm arrival, the step's
    `velocity_mm_s`, no approach) through `ApplyPreMove` + `MoveWithApproach`.
    On arrival the step waits `settle_ms` (default 100) before the fresh-frame
