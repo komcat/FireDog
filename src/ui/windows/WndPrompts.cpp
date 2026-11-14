@@ -719,6 +719,22 @@ void App::DrawXcanOperatorWindow()
     }
     if (!s.note.empty())
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "%s", s.note.c_str());
+    // Auto-continue: the worker owns the clock and answers Done itself; this
+    // only shows its countdown (autoDoneAt) or what it is waiting for.
+    if (s.autoDoneMs > 0 && !waiting) {
+        const auto now = std::chrono::steady_clock::now();
+        if (s.autoDoneAt != std::chrono::steady_clock::time_point{} && met) {
+            const double leftS =
+                std::chrono::duration<double>(s.autoDoneAt - now).count();
+            ImGui::TextColored(ImVec4(0.40f, 0.92f, 0.50f, 1.0f),
+                               "Target reached - continuing automatically in %.1f s",
+                               leftS > 0.0 ? leftS : 0.0);
+            ImGui::TextDisabled("press a preset to scan again instead");
+        } else {
+            ImGui::TextDisabled("Continues automatically once the reading holds the target "
+                                "for %.1f s", s.autoDoneMs / 1000.0);
+        }
+    }
     ImGui::Separator();
 
     // Done: green when the spec is met (or there is none), amber when it is

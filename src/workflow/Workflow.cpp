@@ -151,7 +151,7 @@ Workflow::OperatorNotice Workflow::PendingNotice() const
 
 std::uint64_t Workflow::BeginXcanSession(const std::string& message, int timeoutMs,
                                          double target, const std::string& topic,
-                                         bool requireTarget)
+                                         bool requireTarget, int autoDoneMs)
 {
     const std::scoped_lock lock(xcanSesMu_);
     xcanSes_               = XcanSession{};
@@ -160,6 +160,7 @@ std::uint64_t Workflow::BeginXcanSession(const std::string& message, int timeout
     xcanSes_.target        = target;
     xcanSes_.topic         = topic;
     xcanSes_.requireTarget = requireTarget;
+    xcanSes_.autoDoneMs    = target > 0.0 && autoDoneMs > 0 ? autoDoneMs : 0;
     xcanSes_.deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 0);
     xcanReq_    = XcanScanRequest{};
@@ -231,6 +232,13 @@ void Workflow::FinishXcanScan(std::uint64_t id, const std::string& error, bool h
     xcanSes_.haveBest  = haveBest;
     xcanSes_.lastBest  = best;
     ++xcanSes_.scans;
+}
+
+void Workflow::SetXcanAutoDone(std::uint64_t id, std::chrono::steady_clock::time_point at)
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    if (xcanSes_.id != id) return;
+    xcanSes_.autoDoneAt = at;
 }
 
 void Workflow::ReopenXcanSession(std::uint64_t id, const std::string& note)

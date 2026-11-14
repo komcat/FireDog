@@ -454,9 +454,18 @@ public:
         std::string   topic;
         bool          requireTarget = false;
         std::string   note;
+        // Auto-continue: with a target, the WORKER answers Done itself once the
+        // reading has held the target for autoDoneMs (0 = off). autoDoneAt is
+        // when that will happen - set while the hold runs, {} otherwise -
+        // published for the window's countdown only; the worker owns the clock.
+        int           autoDoneMs = 0;
+        std::chrono::steady_clock::time_point autoDoneAt{};
     };
     std::uint64_t BeginXcanSession(const std::string& message, int timeoutMs, double target,
-                                   const std::string& topic, bool requireTarget);
+                                   const std::string& topic, bool requireTarget,
+                                   int autoDoneMs);
+    // The worker: the auto-continue hold started (at = when it fires) or broke ({}).
+    void SetXcanAutoDone(std::uint64_t id, std::chrono::steady_clock::time_point at);
     // The worker: a Done it cannot accept (the reading fell below a required
     // target) - back to waiting, with the reason shown in the window.
     void ReopenXcanSession(std::uint64_t id, const std::string& note);

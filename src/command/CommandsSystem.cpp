@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,21 +51,21 @@ constexpr const char* kXcanAxesHelp =
 
 // The choice -> hexapod_align.lua's align_axes ("Z,X,Y").
 //
-// "Z>Y>X" returns "": it is the script's own default, and injecting it anyway
-// would overwrite an align_axes a recipe ctx_set beforehand - the one escape
-// hatch these typed wrappers promise for every align_* key they do not carry.
-// Anything that is not one of the choices lands there too: a full triad is
-// recoverable, a scan that skips the axis the recipe meant is not.
+// ALWAYS a full order, never "": the step carries `axes` on its form, so it
+// must always write align_axes. Skipping the write for "Z>Y>X" let the PREVIOUS
+// xcan step's order leak through the recipe's shared ctx - a "Y>X" step
+// followed by a "Z>Y>X" one ran the second on Y,X and never climbed Z.
+// Anything that is not one of the choices becomes the full triad: a full
+// triad is recoverable, a scan that skips the axis the recipe meant is not.
 std::string XcanAxisOrder(const std::string& choice)
 {
-    if (choice == "Z>Y>X") return "";
     for (const std::string& c : XcanAxisChoices()) {
         if (c != choice) continue;
         std::string out;
         for (const char ch : c) out += ch == '>' ? ',' : ch;
         return out;
     }
-    return "";
+    return "Z,Y,X";
 }
 
 CommandResult ExecLog(ExecutionContext& ctx, const ParamValues& p)
@@ -246,10 +247,14 @@ CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
     const double target       = p.GetDouble("target");      // base units, 0 = no spec
     const std::string topic   = p.GetString("topic");
     const bool requireTarget  = p.GetBool("require_target") && target > 0.0;
+    // Auto-continue needs a spec to judge: no target, no auto Done.
+    const int autoDoneMs      = target > 0.0
+                                    ? static_cast<int>(p.GetDouble("auto_done_s") * 1000.0 + 0.5)
+                                    : 0;
     Workflow& wf              = ctx.Wf();
 
-    const std::uint64_t id =
-        wf.BeginXcanSession(msg, timeoutMin * 60 * 1000, target, topic, requireTarget);
+    const std::uint64_t id = wf.BeginXcanSession(msg, timeoutMin * 60 * 1000, target, topic,
+                                                 requireTarget, autoDoneMs);
     // Every exit closes the window: done, cancel, timeout, stop, a throw.
     struct EndSession {
         Workflow& wf;
@@ -268,14 +273,52 @@ CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
         const long long leftMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      deadline - Clock::now()).count();
         ExecutionContext::WaitResult r = ExecutionContext::WaitResult::Timeout;
+        // Auto-continue: the reading must HOLD the target for autoDoneMs while
+        // the session waits - one sample below restarts the hold. The clock
+        // starts fresh on every wait, so a scan (which runs inline below, not
+        // in this wait) always ends with a full hold the operator can see and
+        // break with another press. The worker answers Done itself, so the
+        // ordinary Done path below records it.
+        bool autoDone = false;
+        std::optional<Clock::time_point> metSince;
+        const auto autoHold = [&] {
+            if (autoDoneMs <= 0) return false;
+            DataStream& s   = DataBus::Instance().Stream(topic);
+            const bool  met = s.Count() > 0 && s.LatestValue() >= target;
+            const auto  now = Clock::now();
+            if (!met) {
+                if (metSince) {
+                    metSince.reset();
+                    wf.SetXcanAutoDone(id, {});
+                }
+                return false;
+            }
+            if (!metSince) {
+                metSince = now;
+                wf.SetXcanAutoDone(id, now + std::chrono::milliseconds(autoDoneMs));
+            }
+            return now - *metSince >= std::chrono::milliseconds(autoDoneMs);
+        };
         if (leftMs > 0) {
             // Waiting for a press or Done is operator time; a scan it asks
             // for (below) is machine time (docs/cycle-time-design.md §2).
             const ExecutionContext::OperatorWaitScope waiting(ctx);
-            r = ctx.WaitUntil([&] { return wf.XcanSessionWants(id); },
-                              static_cast<int>(leftMs), 100);
+            r = ctx.WaitUntil(
+                [&] {
+                    if (wf.XcanSessionWants(id)) return true;
+                    autoDone = autoHold();
+                    return autoDone;
+                },
+                static_cast<int>(leftMs), 100);
         }
+        wf.SetXcanAutoDone(id, {});
         if (r == ExecutionContext::WaitResult::Stopped) return CommandResult::Fail("stopped");
+        if (autoDone && r == ExecutionContext::WaitResult::Ok) {
+            // No-op when the operator answered in the same instant - theirs stands.
+            wf.AnswerXcanSession(id, true);
+            FD_INFO("xcan", "xcan_operator: %s held the target for %.1f s - continuing "
+                            "automatically", topic.c_str(), autoDoneMs / 1000.0);
+        }
         if (r != ExecutionContext::WaitResult::Ok) {
             record("timeout");
             FD_WARN("xcan", "xcan_operator: no Done in %d min (%d scans) - failing the step",
@@ -304,6 +347,7 @@ CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
             if (!prefix.empty()) {
                 ctx.CtxSet(prefix + "_signal", sig);
                 ctx.CtxSet(prefix + "_met", met);
+                ctx.CtxSet(prefix + "_auto", autoDone);
             }
             record("done");
             FD_INFO("xcan", "xcan_operator: Done after %d scan%s - %s %.4g%s", scans,
@@ -516,8 +560,7 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                   [rp](ExecutionContext& c, const ParamValues& p) {
                       c.CtxSet("align_device", p.GetString("device"));
                       c.CtxSet("align_topic", p.GetString("topic"));
-                      if (const std::string ax = XcanAxisOrder(p.GetString("axes")); !ax.empty())
-                          c.CtxSet("align_axes", ax);
+                      c.CtxSet("align_axes", XcanAxisOrder(p.GetString("axes")));
                       c.CtxSet("align_steps_um", p.GetString("steps_um"));
                       c.CtxSet("align_exit_threshold",
                                p.GetDouble("exit_target_ua") * 1e-6);
@@ -774,6 +817,11 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                              "Done is only accepted while the reading meets the target "
                              "(Cancel still fails the step); off = Done always, and "
                              "<prefix>_met records whether it was met"},
+                            {"auto_done_s", PT::Double, false, 3.0, 0.0, 60.0, {},
+                             "with a target: continue automatically (Done) once the reading "
+                             "has held the target this long between scans; any dip restarts "
+                             "the hold, a press cancels it. 0 = the operator always presses "
+                             "Done"},
                             {"timeout_min", PT::Int, false, 30, 1, 480, {},
                              "fail the step when Done has not been pressed after this many "
                              "minutes (scans included)"},
@@ -796,6 +844,8 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                 o.keys.push_back({pre + "_result", "text", "done / cancel / timeout"});
                 o.keys.push_back({pre + "_signal", "number", "the reading at Done (A)"});
                 o.keys.push_back({pre + "_met", "bool", "the reading at Done met the target"});
+                o.keys.push_back({pre + "_auto", "bool",
+                                  "Done was automatic (the target held auto_done_s)"});
             }
             o.keys.push_back({"align_best", "number", "the last scan's best signal (A)"});
             return o;
