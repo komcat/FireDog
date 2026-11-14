@@ -165,6 +165,14 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
         }
         ImGui::TextWrapped("%s", spec->description.c_str());
         ImGui::Spacing();
+        // detect_object: what its model looks for, and the view it was taught
+        // at - read-only, outside the canEdit dimming so a run does not grey them.
+        if (s.type == "detect_object") {
+            ImGui::EndDisabled();
+            DrawDetectStepThumbs(s);
+            ImGui::BeginDisabled(!canEdit);
+            ImGui::Spacing();
+        }
         // A command with a helper window: its button first, big, because the
         // helper is where this step's numbers are meant to be set. Outside the
         // canEdit gate's reach on purpose - the helper is a view as well, and

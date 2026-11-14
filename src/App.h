@@ -461,7 +461,10 @@ private:
     // come with it.
     void DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool busy);
     void StartDetectViewGo(const nlohmann::json& merged);
-    bool EnsureViewThumbTex(const VisionModel& m);   // visionViewTex_, reloaded on change
+    bool EnsureViewThumbTex(PatchTex& pt, const VisionModel& m);   // reloaded on change
+    // The detect_object step form's read-only pair: the taught template and
+    // the taught view thumbnail of the step's private model, side by side.
+    void DrawDetectStepThumbs(const RecipeStep& s);
     std::string AutoNickname(const RecipeStep& s) const;   // live label from params
     void DrawRecipeTreeToolbar(Recipe& r, bool canEdit);   // move/delete row
     void DrawRecipePalette(Recipe& r, bool canEdit);
@@ -1925,6 +1928,8 @@ private:
     // a re-teach or an anchor drag reloads it and nothing else does.
     PatchTex visionTmpl_;       // vision teach page: the NCC patch + its anchor
     PatchTex visionViewTex_;    // Vision detect helper: the step's view thumbnail
+    PatchTex stepTmplTex_;      // Recipe Editor detect_object form: template ...
+    PatchTex stepViewTex_;      // ... and view thumbnail
     PatchTex alignTmpl_[2];     // grip page ([0]; [1] spare)
     // Alignment page station cards: one thumbnail per station x detection tier,
     // index (station - 1) * kAlignDetectTiers + (tier - 1).

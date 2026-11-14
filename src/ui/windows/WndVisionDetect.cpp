@@ -392,7 +392,7 @@ void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, Vis
 
     // The guide: what the camera saw when the view was taught. The centre half
     // of the frame - where the object should sit for the next person teaching.
-    if (EnsureViewThumbTex(m)) {
+    if (EnsureViewThumbTex(visionViewTex_, m)) {
         // Fitted into 200 x 200, aspect kept: a guide, not a second viewer.
         constexpr float kThumbBox = 200.0f;
         const float sc = std::min(kThumbBox / static_cast<float>(visionViewTex_.w),
@@ -646,35 +646,89 @@ void App::StartDetectViewGo(const nlohmann::json& merged)
     }
 }
 
-bool App::EnsureViewThumbTex(const VisionModel& m)
+bool App::EnsureViewThumbTex(PatchTex& pt, const VisionModel& m)
 {
     namespace fs = std::filesystem;
     const std::string path = session_.VisionDir() + "/" + ViewThumbFile(m.uid);
     std::error_code ec;
     const auto t = fs::last_write_time(path, ec);
     if (ec) {
-        visionViewTex_.key.clear();
-        visionViewTex_.w = visionViewTex_.h = 0;
+        pt.key.clear();
+        pt.w = pt.h = 0;
         return false;
     }
     // Keyed on the file and its write time: a re-teach rewrites the same name.
     const std::string key = path + "|" + std::to_string(t.time_since_epoch().count());
-    if (key != visionViewTex_.key) {
-        visionViewTex_.key = key;
+    if (key != pt.key) {
+        pt.key = key;
         std::vector<unsigned char> gray;
         int w = 0, h = 0;
         if (LoadGrayPgm(path, &gray, &w, &h) && w > 0 && h > 0) {
             std::vector<unsigned char> rgb(static_cast<std::size_t>(w) * h * 3);
             for (std::size_t i = 0; i < gray.size(); ++i)
                 rgb[i * 3 + 0] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = gray[i];
-            visionViewTex_.tex = host_.EnsureTextureRGB(visionViewTex_.tex, w, h, rgb.data());
-            visionViewTex_.w   = w;
-            visionViewTex_.h   = h;
+            pt.tex = host_.EnsureTextureRGB(pt.tex, w, h, rgb.data());
+            pt.w   = w;
+            pt.h   = h;
         } else {
-            visionViewTex_.w = visionViewTex_.h = 0;
+            pt.w = pt.h = 0;
         }
     }
-    return visionViewTex_.tex != 0 && visionViewTex_.w > 0 && visionViewTex_.h > 0;
+    return pt.tex != 0 && pt.w > 0 && pt.h > 0;
+}
+
+// The Recipe Editor's step form for a detect_object: what the step's private
+// model looks for (the taught template) beside what the camera saw when the
+// view was taught (the centre-half thumbnail). Read-only - teaching both is
+// the helper's job - so an author scanning a recipe sees which part each step
+// finds without opening anything. Own texture slots (stepTmplTex_ /
+// stepViewTex_): the teach page and the helper may be showing another model,
+// and two surfaces sharing one keyed slot would re-upload every frame.
+void App::DrawDetectStepThumbs(const RecipeStep& s)
+{
+    const std::string uid = s.params.value("model", std::string());
+    const VisionModel* m = uid.empty() ? nullptr : FindVisionModel(session_.VisionModels(), uid);
+
+    constexpr float kTileH = 96.0f;
+    const float gap  = ImGui::GetStyle().ItemSpacing.x;
+    float       half = (ImGui::GetContentRegionAvail().x - gap) * 0.5f;
+    half = std::clamp(half, 60.0f, 180.0f);
+
+    const auto tile = [&](const PatchTex* pt, bool have, const char* empty, const char* caption,
+                          const char* tip) {
+        ImGui::BeginGroup();
+        const ImVec2 o = ImGui::GetCursorScreenPos();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(o, ImVec2(o.x + half, o.y + kTileH), IM_COL32(20, 20, 22, 255));
+        if (have) {
+            const float sc = std::min(half / static_cast<float>(pt->w),
+                                      kTileH / static_cast<float>(pt->h));
+            const ImVec2 sz(static_cast<float>(pt->w) * sc, static_cast<float>(pt->h) * sc);
+            ImGui::SetCursorScreenPos(ImVec2(o.x + (half - sz.x) * 0.5f,
+                                             o.y + (kTileH - sz.y) * 0.5f));
+            ImGui::Image((ImTextureID)(intptr_t)pt->tex, sz);
+        } else {
+            const ImVec2 ts = ImGui::CalcTextSize(empty);
+            dl->AddText(ImVec2(o.x + (half - ts.x) * 0.5f, o.y + (kTileH - ts.y) * 0.5f),
+                        IM_COL32(120, 120, 125, 255), empty);
+        }
+        dl->AddRect(o, ImVec2(o.x + half, o.y + kTileH), IM_COL32(70, 74, 82, 255));
+        ImGui::SetCursorScreenPos(o);
+        ImGui::Dummy(ImVec2(half, kTileH));
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+        ImGui::TextDisabled("%s", caption);
+        ImGui::EndGroup();
+    };
+
+    const bool haveTmpl = m && EnsurePatchTex(stepTmplTex_, *m);
+    const bool haveView = m && EnsureViewThumbTex(stepViewTex_, *m);
+    tile(&stepTmplTex_, haveTmpl, m ? "no template" : "no model", "template",
+         "What this step's detection model looks for - the patch it was\n"
+         "taught on (NCC / corner). Teach it in the Vision detect helper.");
+    ImGui::SameLine(0.0f, gap);
+    tile(&stepViewTex_, haveView, "no view taught", "view",
+         "What the camera saw when this step's view was taught: the\n"
+         "centre half of the frame, snapped by Teach here in the helper.");
 }
 
 } // namespace firedog
