@@ -553,6 +553,28 @@ void App::DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool
                               "move. 0 = none. Only when Center on result is on.");
         ImGui::EndDisabled();
 
+        // -- then a typed offset from the centred pose --
+        ImGui::TableNextColumn();
+        ImGui::BeginDisabled(!center);
+        bool off = merged.value("center_offset", false);
+        if (ImGui::Checkbox("Then move offset", &off)) s.params["center_offset"] = off;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("After centring, move %s by dX / dY / dZ in one move.\n"
+                              "AXIS values on %s (no transform) - on gantry-main Z- is up.\n"
+                              "0 on an axis leaves it where it is. Only with Center on result.",
+                              camDev.c_str(), camDev.c_str());
+        ImGui::BeginDisabled(!off);
+        const auto offRow = [&](const char* label, const char* key) {
+            double v = merged.value(key, 0.0);
+            ImGui::SetNextItemWidth(numW);
+            if (ImGui::InputDouble(label, &v, 0.0, 0.0, "%.4f")) s.params[key] = v;
+        };
+        offRow("dX mm (axis)", "center_dx_mm");
+        offRow("dY mm (axis)", "center_dy_mm");
+        offRow("dZ mm (axis)", "center_dz_mm");
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+
         ImGui::EndTable();
     }
     ImGui::EndDisabled();

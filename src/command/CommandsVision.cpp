@@ -438,7 +438,9 @@ CommandResult ExecVisionDetect(ExecutionContext& ctx, const ParamValues& p)
 //     and that point IS the result, P = 0, marked manual; otherwise `require`
 //     decides between a failed step and <prefix>_ok = false.
 //   3 POST-DETECTION  optionally (`center_after`) the camera XY onto the result,
-//     Z unchanged, through MoveToObjectResult - move_to_result's own drive.
+//     Z unchanged, through MoveToObjectResult - move_to_result's own drive;
+//     then optionally (`center_offset`) one move by a typed axis-space
+//     dX / dY / dZ from that centred pose.
 //
 // X / Y are machine mm on the camera's device - its axis pose at the frame
 // centre (the crosshair) plus the feature's pixel offset, through the
@@ -655,6 +657,42 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
                                                    takeY, 0.0, 0.0,
                                                    p.GetDouble("center_max_mm"), mv);
         if (!c.ok) return c;
+
+        // ---- 3b then a typed offset from the centred pose --------------------
+        // AXIS-space deltas on the camera's own device: no AxisTransform, so a
+        // Z offset counts the way the device counts (gantry-main: Z- is up). The
+        // centred X/Y are the result's (what the centring commanded, not the
+        // settle residue); anything not centred, and Z, from the live pose.
+        if (p.GetBool("center_offset")) {
+            const double off[3] = {p.GetDouble("center_dx_mm"), p.GetDouble("center_dy_mm"),
+                                   p.GetDouble("center_dz_mm")};
+            const char* const axisName[3] = {"X", "Y", "Z"};
+            const std::map<std::string, double> live = cam->Positions();
+            std::vector<std::pair<std::string, double>> targets;
+            for (int a = 0; a < 3; ++a) {
+                if (off[a] == 0.0) continue;
+                double base = 0.0;
+                if (a == 0 && takeX)      base = res.x;
+                else if (a == 1 && takeY) base = res.y;
+                else {
+                    const auto it = live.find(axisName[a]);
+                    if (it == live.end())
+                        return CommandResult::Fail("detect_object: '" + cam->Name() +
+                                                   "' reports no " + axisName[a] +
+                                                   " for the offset after centring");
+                    base = it->second;
+                }
+                targets.emplace_back(axisName[a], base + off[a]);
+            }
+            if (!targets.empty()) {
+                FD_INFO("vision", "detect_object '%s': offset after centring dX %+.4f dY %+.4f "
+                        "dZ %+.4f ('%s' axis mm)", prefix.c_str(), off[0], off[1], off[2],
+                        cam->Name().c_str());
+                const CommandResult o = MoveWithApproach(ctx, cam, idx, targets, mv,
+                                                         "the offset from result '" + prefix + "'");
+                if (!o.ok) return o;
+            }
+        }
     }
     return CommandResult::Success();
 }
@@ -1033,6 +1071,20 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                        PinDir::Any, kVisionDetectHelper},
                       {"center_max_mm", PT::Double, false, 5.0, 0.0, 1000.0, {},
                        "refuse a centring move longer than this (0 = no ceiling)",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"center_offset", PT::Bool, false, false, 0, 0, {},
+                       "after the centring: move the camera device by center_dx/dy/dz_mm "
+                       "(AXIS space, one move; only with center_after)",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"center_dx_mm", PT::Double, false, 0.0, 0, 0, {},
+                       "X offset from the centred pose, camera-device AXIS mm",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"center_dy_mm", PT::Double, false, 0.0, 0, 0, {},
+                       "Y offset from the centred pose, camera-device AXIS mm",
+                       PinDir::Any, kVisionDetectHelper},
+                      {"center_dz_mm", PT::Double, false, 0.0, 0, 0, {},
+                       "Z offset from the centred pose, camera-device AXIS mm "
+                       "(gantry-main: Z- is up)",
                        PinDir::Any, kVisionDetectHelper},
                       {"camera_device", PT::DeviceMotion, false, "gantry-main", 0, 0, {},
                        "the device the camera rides on: X / Y are ITS axis coordinates"},

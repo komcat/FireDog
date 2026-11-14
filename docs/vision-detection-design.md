@@ -626,6 +626,13 @@ button, never a side effect of opening the window. Teaching is Admin
 3. **Post-detection** (`center_after`): after `pre_center_ms` (default 100),
    the camera X/Y onto the result, Z unchanged, refused past `center_max_mm`, through **`MoveToObjectResult`**
    (`command/MotionWaits.h`) — the same drive `move_to_result` uses.
+   Then, optionally (`center_offset`, only with `center_after`), ONE move by
+   `center_dx_mm` / `center_dy_mm` / `center_dz_mm` from the centred pose, in
+   the camera device's **axis** space (no `AxisTransform`; on `gantry-main`
+   Z- is up). A centred X/Y offsets from the result's value (what the centring
+   commanded); Z and any uncentred axis from the live pose; a 0 offset leaves
+   that axis out of the move. Typed, so no ceiling — `center_max_mm` guards
+   the measured part of the travel.
 
 **Teaching the view (the helper's Camera position section).** *Teach here*
 records, in one click: the camera device's X/Y/Z into the step, the camera's
