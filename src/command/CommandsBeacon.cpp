@@ -6,6 +6,7 @@
 //                        (the steps before it put it there)
 //   remove_beacon        cancel one beacon (or all)
 //   move_tool_to_beacon  move_tool_to_camera, with the beacon as "the camera"
+//   move_camera_to_beacon  drive the CAMERA back to where the beacon was planted
 //
 // A beacon lets a recipe look somewhere, move the camera on (to inspect, to
 // focus elsewhere), and still send a registered tool back to where it looked.
@@ -168,6 +169,50 @@ CommandResult ExecMoveToolToBeacon(ExecutionContext& ctx, const ParamValues& p)
     return ApproachRefPoint(ctx, p, device, r, m, idx, target);
 }
 
+// ---- move_camera_to_beacon --------------------------------------------------
+// The camera back onto its own beacon. The beacon IS a measured pose of the
+// camera's device, in that device's axis space, so no frame is crossed and no
+// registration is involved: the step's device must be the beacon's, and the
+// target is the beacon (+ z_offset_mm) through ApproachAxisPoint - the same
+// axes / max_mm / controller precheck / MoveWithApproach as every move to a
+// point, so this adds no second "drive a device to a point".
+
+CommandResult ExecMoveCameraToBeacon(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string device = p.GetString("device");
+    const std::string name   = p.GetString("name");
+
+    Beacon      b;
+    std::string why;
+    if (!ctx.Wf().BeaconFor(name, &b, &why)) return CommandResult::Fail(why);
+
+    // The beacon's numbers only mean something on the device it was planted
+    // on; the same numbers on another controller are a different place.
+    if (b.device != device)
+        return CommandResult::Fail("beacon '" + name + "' was planted on '" + b.device +
+                                   "', not '" + device + "' - nothing moved");
+
+    std::string err;
+    int idx = -1;
+    IMotionController* m = ResolveMotion(ctx, device, &idx, &err);
+    if (!m) return CommandResult::Fail(err);
+
+    const double  zoff = p.GetDouble("z_offset_mm");
+    const RegVec3 target{b.x, b.y, b.z + zoff};
+    FD_INFO("beacon", "camera '%s' to beacon '%s': (%.4f, %.4f, %.4f), z_offset %+.4f, "
+                      "%.1f min left",
+            device.c_str(), name.c_str(), b.x, b.y, b.z, zoff, BeaconMinutesLeft(b));
+    const CommandResult r =
+        ApproachAxisPoint(ctx, p, device, m, idx, target,
+                          "check the beacon is the one meant, or raise max_mm",
+                          "the beacon");
+    if (!r.ok) return r;
+
+    const int settle = p.GetInt("settle_ms");
+    if (settle > 0 && !ctx.Sleep(settle)) return CommandResult::Fail("stopped");
+    return CommandResult::Success();
+}
+
 } // namespace
 
 void RegisterBeaconCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
@@ -267,6 +312,36 @@ void RegisterBeaconCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                       ApproachPctParam(),
                   },
                   CommandSpec::Needs::None, ExecMoveToolToBeacon});
+
+    reg.Register({"move_camera_to_beacon", "Registration",
+                  "Drive the CAMERA back to a beacon - the measured pose plant_beacon "
+                  "recorded, on the same device; z_offset_mm moves it off the focused Z",
+                  {
+                      {"device", PT::DeviceMotion, false, "gantry-main", 0, 0, {},
+                       "the CAMERA's motion device - must be the device the beacon was "
+                       "planted on"},
+                      {"name", PT::String, false, "beacon1", 0, 0, {},
+                       "the beacon (planted by plant_beacon, under 30 min old)"},
+                      {"z_offset_mm", PT::Double, false, 0.0, -100.0, 100.0, {},
+                       "offset from the beacon's Z, which is the camera Z that FOCUSED "
+                       "there - so 0 returns to focus. An AXIS offset on the camera's "
+                       "device (on gantry-main, axis Z- is up)"},
+                      {"axes", PT::String, false, "XYZ", 0, 0, {},
+                       "which axes to command (e.g. XY keeps the current Z); the others "
+                       "are left where they are"},
+                      {"max_mm", PT::Double, false, 0.0, 0.0, 2000.0, {},
+                       "refuse a move longer than this; 0 disables the ceiling"},
+                      {"settle_ms", PT::Int, false, 0, 0, 10000, {},
+                       "wait after arrival (before the next step looks)"},
+                      {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
+                      {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {},
+                       "arrival tolerance"},
+                      VelocityParam(),
+                      ApproachVelocityParam(),
+                      ApproachMmParam(),
+                      ApproachPctParam(),
+                  },
+                  CommandSpec::Needs::None, ExecMoveCameraToBeacon});
 }
 
 } // namespace firedog

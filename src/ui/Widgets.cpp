@@ -561,6 +561,7 @@ const char* StepIconFile(const char* type)
         {"move_camera_to_tool",       "rg_cam_to_tool"},
         {"tool_travel_to_camera",     "rg_tool_to_cam"},
         {"move_tool_to_beacon",       "rg_tool_to_cam"},
+        {"move_camera_to_beacon",     "rg_cam_to_tool"},
         {"plant_beacon",              "rg_device_reg"},
         {"plant_beacon_here",         "rg_device_reg"},
         {"remove_beacon",             "rg_device_reg"},

@@ -12,11 +12,12 @@ would have to stay where it is.
 | `plant_beacon_here` | The same record without a move: waits `settle_ms` and stores where the camera stands NOW. The steps before it (a move, a detection's `center_after`) put it there. |
 | `remove_beacon` | Removes `name`, or every beacon with `all`. A missing name is a no-op unless `must_exist` is set. |
 | `move_tool_to_beacon` | `move_tool_to_camera` with the beacon as the camera point: same params, same refusals, same approach. |
+| `move_camera_to_beacon` | Drives the CAMERA's device back onto the beacon (+ `z_offset_mm`, default 0 = the focused Z). The step's `device` must be the beacon's. No registration: the beacon is already that device's own axis pose, so it goes straight through `ApproachAxisPoint` (`axes`, `max_mm` default 0 = no ceiling, the controller precheck, `MoveWithApproach`), then waits `settle_ms`. |
 | `grip_object_to_beacon` | the same for a REGISTERED gripped object (`grip_register_object`): the tip aims at beacon − (dx, dy, dz) so the object lands on it. `docs/gripped-object-design.md` §8. |
 
 Code: `core/Beacon.h` (the record and its lifetime), `Workflow::SetBeacon` /
 `BeaconFor` / `Beacons` / `ClearBeacons` / `ExpireBeacons` (the store),
-`command/CommandsBeacon.cpp` (the three commands), `App::DrawAuxBeacons`
+`command/CommandsBeacon.cpp` (the plant / remove / move commands), `App::DrawAuxBeacons`
 (`ui/windows/WndAux.cpp`).
 
 ## Rules
@@ -47,10 +48,15 @@ Code: `core/Beacon.h` (the record and its lifetime), `Workflow::SetBeacon` /
     `move_tool_to_camera` uses.
   - The final placement is still a measured delta (see
     `device-registration-design.md`).
+- **Returning the CAMERA to a beacon crosses no frame.** `move_camera_to_beacon`
+  refuses a step whose `device` is not the beacon's (the same numbers on another
+  controller are a different place) and otherwise drives the beacon's own
+  measured pose. It is a plain move to a point, not an approach through a
+  registration, and it adds no move path of its own: `ApproachAxisPoint`.
 - **The ctx keys `<name>_x/_y/_z` are display mirrors.** No move reads them; the
   store is the only channel.
 - **Not a teach mover, not a parallel mover, not in the dry-run allowlist.**
-  - A teach run disables all four commands.
+  - A teach run disables all of them.
   - They touch shared `Workflow` state, so `parallelBy` stays empty.
   - The registration moves are deliberately absent from `kDryRunCommands`.
 - **The Aux window only DRAWS beacons.**
