@@ -535,8 +535,10 @@ CommandResult ExecToolTravelToCamera(ExecutionContext& ctx, const ParamValues& p
         std::vector<std::pair<std::string, double>> issued;
         if (!ctx.Wf().MoveRelativeGlobal(static_cast<std::size_t>(idx), 0.0, 0.0,
                                          lift, &issued))
-            return CommandResult::Fail("lift off rejected - is global Z mapped for '" +
-                                       device + "'?");
+            return CommandResult::Fail(
+                MoveRefusedWhy().empty()
+                    ? "lift off rejected - is global Z mapped for '" + device + "'?"
+                    : "lift off rejected" + MoveRefusedWhy());
         // Wait on exactly what was SENT: the transform decided which local axes
         // those millimetres landed on, and recomputing them from a pose that has
         // since moved is how a wait starts passing early.

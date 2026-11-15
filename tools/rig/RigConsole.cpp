@@ -72,6 +72,7 @@ void RigConsole::PrintHelp() const
         "  status                      connection state of everything brought up\n"
         "  probe [<device>|all]        connect (if needed) and print live read-back\n"
         "  disconnect                  tear the session down (closes the device sessions)\n"
+        "  interlocks                  every interlock rule's live state (read only)\n"
         "\n"
         "  loglevel <trace|debug|info|warn|error>\n"
         "  help                        this text\n"
@@ -276,6 +277,30 @@ bool RigConsole::CmdLogLevel(const std::vector<std::string>& tok)
     return true;
 }
 
+// Every interlock rule judged on the live fleet - which would refuse a move
+// right now, and why. Evaluation only: nothing here moves or stops anything.
+static void PrintInterlocks(const RigSession& s)
+{
+    const IlConfig cfg = s.Wf().Interlocks();
+    if (!cfg.loadError.empty())
+        std::cout << "   interlock file UNREADABLE (" << cfg.loadError
+                  << ") - the client refuses every move\n";
+    std::cout << "   interlocks " << (cfg.enabled ? "ON" : "OFF") << ", " << cfg.rules.size()
+              << " rule(s)\n";
+    const std::vector<IlRuleStatus> st = s.Wf().InterlockStatus();
+    for (std::size_t i = 0; i < st.size() && i < cfg.rules.size(); ++i) {
+        const IlRuleStatus& r = st[i];
+        std::cout << "   [" << (!r.enabled ? "disabled" : r.active ? "ACTIVE  " : "inactive")
+                  << "] " << r.name << (r.unknown ? "  (unreadable input -> active)" : "")
+                  << "\n";
+        for (std::size_t c = 0; c < r.conds.size() && c < cfg.rules[i].when.size(); ++c)
+            std::cout << "        " << (r.conds[c].truth ? "TRUE " : "false") << "  "
+                      << IlCondText(cfg.rules[i].when[c]) << "   (" << r.conds[c].text << ")\n";
+        for (const IlBlock& b : cfg.rules[i].blocks)
+            std::cout << "        refuses " << IlBlockText(b) << "\n";
+    }
+}
+
 bool RigConsole::Execute(const std::string& line, bool& stop)
 {
     stop = false;
@@ -298,6 +323,11 @@ bool RigConsole::Execute(const std::string& line, bool& stop)
         if (!session_) { Fail("nothing connected - run `connect` first"); return false; }
         PrintStatus(*session_);
         return session_->AllExpectedConnected();
+    }
+    if (cmd == "interlocks") {
+        if (!session_) { Fail("nothing connected - run `connect` first"); return false; }
+        PrintInterlocks(*session_);
+        return true;
     }
     if (cmd == "disconnect") {
         if (!session_) { std::cout << "   nothing connected\n"; return true; }

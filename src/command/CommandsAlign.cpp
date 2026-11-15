@@ -345,7 +345,8 @@ CommandResult ExecAlignStation(ExecutionContext& ctx, const ParamValues& p)
     }
 
     if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
-        return CommandResult::Fail("move to station " + std::to_string(station) + " rejected");
+        return CommandResult::Fail("move to station " + std::to_string(station) + " rejected" +
+                                   MoveRefusedWhy());
     const auto arrived = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
                                     p.GetInt("timeout_ms"));
     if (arrived != ExecutionContext::WaitResult::Ok) {
@@ -992,7 +993,8 @@ CommandResult DriveToNominalPose(ExecutionContext& ctx, const ParamValues& p,
     }
 
     if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), targets))
-        return CommandResult::Fail(std::string("move to the ") + what + " rejected");
+        return CommandResult::Fail(std::string("move to the ") + what + " rejected" +
+                                   MoveRefusedWhy());
     const auto arrived = WaitArrive(ctx, m, targets, p.GetDouble("tol_mm"),
                                     p.GetInt("timeout_ms"));
     if (arrived != ExecutionContext::WaitResult::Ok) {

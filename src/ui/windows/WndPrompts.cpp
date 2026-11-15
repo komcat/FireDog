@@ -904,9 +904,8 @@ void App::DrawManualAdjustWindow()
     // step). Workflow inhibits motion during a critical safety alert anyway —
     // the visual disable just says so up front.
     const double step = kSteps[adjustStepIdx_].mm;
-    // Same critical-alert query the engines use (SafetyBlocked is private).
-    const bool safetyBlocked =
-        workflow_.SafetyAlertActive() && workflow_.SafetyAlert().critical;
+    // Same abort query the engines use: a critical alert or an interlock trip.
+    const bool safetyBlocked = workflow_.MotionAbortActive();
     const bool canJog = dev && !safetyBlocked;
     const std::size_t udi = static_cast<std::size_t>(di < 0 ? 0 : di);
     const ImVec2 jb(52.0f * k, 0.0f);

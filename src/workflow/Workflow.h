@@ -10,6 +10,7 @@
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
 #include "core/Beacon.h"               // Beacon (temporary camera-pose markers)
 #include "core/GrippedObject.h"        // GrippedObject (object registered to a gripper)
+#include "core/Interlock.h"            // IlConfig (conditional motion interlocks)
 #include "core/RasterMap.h"            // RasterMap (raster scan -> Aux heatmap)
 #include "core/ObjectResult.h"         // ObjectResult (detected objects, live)
 #include "core/PivotDefaults.h"        // PivotDefault (restored after a controller restart)
@@ -23,6 +24,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -32,6 +34,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -394,6 +397,63 @@ public:
         return safetyWatch_ ? safetyWatch_->ActiveAlert() : SafetyWatch::Alert{};
     }
     void AcknowledgeSafety() { if (safetyWatch_) safetyWatch_->Acknowledge(); }
+
+    // ---- Motion interlocks (core/Interlock.h, docs/interlock-design.md) -----
+    // Conditional, cross-device rules: WHEN slides / IO inputs / axis values
+    // hold, REFUSE named axes (and slide extends). Two halves, one rule set:
+    //  * the GATE - every move method below checks its intent before issuing
+    //    it, under one mutex held across check + issue (lanes, workers and the
+    //    UI jog race each other), and records the commanded targets;
+    //  * the WATCH - one owned thread that stops a device whose blocked axis is
+    //    moving while its rule is active, and latches a TRIP. A trip behaves
+    //    like a critical safety alert: the engines abort, new motion is
+    //    refused until AcknowledgeInterlockTrip.
+    // Fail closed throughout. Any thread.
+    void     ApplyInterlocks(IlConfig cfg);     // swap the live rule set whole
+    IlConfig Interlocks() const;                // a copy of the live rule set
+    // The live state the rules judge. The IO pins read are those `forCfg`
+    // names (the editor's working copy), else the live rule set's.
+    IlSnapshot InterlockSnapshot(const IlConfig* forCfg = nullptr) const;
+    std::vector<IlRuleStatus> InterlockStatus() const;
+    // The jog window's greying (advisory; the gate decides). Empty = nothing blocked.
+    std::map<std::string, IlDirBlock> InterlockBlockedDirs(std::size_t devIdx) const;
+
+    // The last refusal the gate made (any thread), for the UI's banner. seq
+    // grows with every refusal so a reader can tell a new one from the old.
+    struct InterlockEvent {
+        std::uint64_t seq = 0;   // 0 = none yet
+        std::string   rule;
+        std::string   text;
+        std::chrono::steady_clock::time_point at{};
+    };
+    InterlockEvent LastInterlockRefusal() const;
+    // THIS thread's last move refusal by a gated method ("" = the last gated
+    // call was not refused by the gate, the safety alert or a trip). A command
+    // appends it to its failure text so a refused step says WHY.
+    static const std::string& LastMoveRefusal();
+
+    struct InterlockTrip {
+        bool        active = false;
+        std::string rule;
+        std::string device;
+        std::string axis;
+        std::string reason;
+        std::chrono::system_clock::time_point at{};
+    };
+    bool          InterlockTripActive() const;
+    InterlockTrip InterlockTripState() const;
+    void          AcknowledgeInterlockTrip();
+
+    // Admin bypass: gate and watch pass (and log what they would have done)
+    // until it expires. Never covers the safety alert. App clears it at logout.
+    void        SetInterlockBypass(int minutes, const std::string& who);
+    void        ClearInterlockBypass(const char* why);
+    int         InterlockBypassSecondsLeft() const;   // 0 = not bypassed
+    std::string InterlockBypassBy() const;
+
+    // What the engines abort on: a critical safety alert OR an interlock trip.
+    bool        MotionAbortActive() const;
+    const char* MotionAbortReason() const;   // "safety alert" | "interlock trip"
     // The stack light. NOT part of Start(): the client calls it after Start,
     // and FireDogRig - which runs the same Start() and must never write an IO
     // output - does not. What it shows is decided by App every frame (the OEE
@@ -990,6 +1050,24 @@ private:
     {
         return safetyWatch_ && safetyWatch_->AlertActive() && safetyWatch_->AlertCritical();
     }
+    // The first line of every move method: clears this thread's refusal, then
+    // refuses (logged, recorded) under the safety alert or an interlock trip.
+    // `what` names the motion in the log ("move", "jog", "path", ...).
+    bool MotionInhibited(const char* what);
+
+    // ---- Interlocks: the gate, the commanded targets, the watch -------------
+    // Check `in` for device devIdx against the live rules. The caller holds
+    // ilGateMu_ (see Gated in Workflow.cpp). Refusal is logged and recorded.
+    bool GateIntent(const IlIntent& in);
+    // After an accepted issue: remember where devIdx was sent (the "commanded
+    // end" every axis condition also reads) / that it is referencing.
+    void NoteCommanded(std::size_t devIdx, const IlIntent& in);
+    IlSnapshot BuildInterlockSnapshot(const IlConfig& cfg) const;
+    std::shared_ptr<const IlConfig> InterlockCfg() const;
+    bool InterlockBypassedNow() const;
+    void InterlockWatchLoop();
+    void StartInterlocks();     // load the rule set + start the watch (Start)
+    void StopInterlockWatch();  // ~Workflow, first
 
     HardwareManager& hw_;
 
@@ -1065,6 +1143,34 @@ private:
     // this object, so it must die first. Declared last so it is destroyed
     // before every other member; ~Workflow also stops it explicitly.
     std::unique_ptr<SafetyWatch> safetyWatch_;
+
+    // Interlocks. ilGateMu_ serialises check + issue across every thread that
+    // moves; ilMu_ guards the data below (short holds only - never across a
+    // driver call). The watch thread is joined first thing in ~Workflow.
+    std::mutex                       ilGateMu_;
+    mutable std::mutex               ilMu_;
+    std::shared_ptr<const IlConfig>  ilCfg_;
+    struct IlCmdTrack {
+        std::map<std::string, double> targets;   // in-flight commanded ends
+        bool allBusy = false;                    // reference / buffer running
+        int  buffer  = -1;                       // the buffer that set allBusy, if any
+        std::chrono::steady_clock::time_point at{};          // last issue
+        std::chrono::steady_clock::time_point settleCheck{};  // last IsSettled query
+    };
+    std::map<std::size_t, IlCmdTrack> ilCmd_;
+    // The last target SENT per device/axis, kept after arrival (IlMotionState::
+    // lastCmd): a restated axis is not motion. Dropped when the device is
+    // stopped, references / runs a buffer, or disconnects.
+    std::map<std::size_t, std::map<std::string, double>> ilLastCmd_;
+    InterlockEvent                    ilLastRefusal_;
+    InterlockTrip                     ilTrip_;
+    std::atomic<bool>                 ilTripActive_{false};
+    std::chrono::steady_clock::time_point ilBypassUntil_{};
+    std::string                       ilBypassBy_;
+    std::thread                       ilWatch_;
+    std::mutex                        ilWatchMu_;
+    std::condition_variable           ilWatchCv_;
+    bool                              ilWatchStop_ = false;
     // The stack light (workflow/TowerLight.h). Its pump thread reads the safety
     // watch, so it must stop first: declared after safetyWatch_ (destroyed
     // before it), and ~Workflow resets it explicitly ahead of both.

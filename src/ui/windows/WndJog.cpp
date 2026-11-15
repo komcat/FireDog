@@ -1053,6 +1053,35 @@ void App::DrawJogPanel()
     // told to go. Presses from the keyboard are stamped by the handler at the
     // end of this function and show from the next frame.
     const double nowT = ImGui::GetTime();
+
+    // Interlock greying: which of the six directions a rule refuses right now
+    // (order W A S D R F, as jogKeyFlashAt_). ADVISORY - Workflow's gate is the
+    // authority and refuses a press regardless; this only shows which way is
+    // closed, and by which rule, before the operator presses.
+    bool        ilBlk[6] = {};
+    std::string ilWhy[6];
+    {
+        const std::map<std::string, IlDirBlock> blocked = workflow_.InterlockBlockedDirs(di);
+        static const float kDir[6][3] = {{0, -1, 0}, {-1, 0, 0}, {0, 1, 0},
+                                         {1, 0, 0},  {0, 0, 1},  {0, 0, -1}};
+        for (int k = 0; k < 6 && !blocked.empty(); ++k) {
+            // The local axis + sign the press lands on: JogGlobal's dominant entry.
+            std::vector<std::pair<std::string, double>> d;
+            if (!workflow_.GlobalDeltaToAxes(di, kDir[k][0], kDir[k][1], kDir[k][2], &d)) continue;
+            const std::pair<std::string, double>* dom = nullptr;
+            for (const auto& e : d)
+                if (!dom || std::fabs(e.second) > std::fabs(dom->second)) dom = &e;
+            if (!dom || std::fabs(dom->second) < 1e-9) continue;
+            const auto it = blocked.find(dom->first);
+            if (it == blocked.end()) continue;
+            const bool plus = dom->second > 0.0;
+            if (plus ? it->second.plus : it->second.minus) {
+                ilBlk[k] = true;
+                ilWhy[k] = plus ? it->second.rulePlus : it->second.ruleMinus;
+            }
+        }
+    }
+
     auto dirButton = [&](int k, const char* label, ImGuiKey key) -> bool {
         float lit = KeyGlow(nowT - jogKeyFlashAt_[k], 0.35);
         if (kbLive && ImGui::IsKeyDown(key)) lit = 1.0f;
@@ -1064,7 +1093,11 @@ void App::DrawJogPanel()
             ImGui::PushStyleColor(ImGuiCol_Text, LerpColor(ImGui::GetStyleColorVec4(ImGuiCol_Text),
                                                            ImVec4(0.10f, 0.08f, 0.02f, 1.0f), lit));
         }
+        ImGui::BeginDisabled(ilBlk[k]);
         const bool pressed = ImGui::Button(label, jb);
+        ImGui::EndDisabled();
+        if (ilBlk[k] && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Interlock [%s] refuses this direction now", ilWhy[k].c_str());
         if (lit > 0.0f) {
             ImGui::PopStyleColor(3);
             // A soft halo around the lit key.

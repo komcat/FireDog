@@ -53,7 +53,7 @@ namespace firedog {
 enum class Page { Overview, Camera, Keithley, CLD, PSU, Light, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
                   Align, VisionTeach, AlignNominal, Needle,
-                  DeviceReg, Grip, Tray, Mosaic, Version, Oee };
+                  DeviceReg, Grip, Tray, Mosaic, Version, Oee, Interlocks };
 
 class AppUpdater;   // update/AppUpdater.h - owned by main(), it outlives App
 
@@ -209,6 +209,12 @@ inline constexpr UserRole kRolePrefs = UserRole::Operator;
 //   Its Scanning > XCAN pages tune how the align moves a hexapod and when it
 //   stops - what the machine knows, so Technician edits them (anyone may read).
 inline constexpr UserRole kRoleScanPrefs = UserRole::Technician;
+//   The Interlocks window only READS the live rule states - why a move was
+//   refused is a troubleshooting question, so it sits with Motion. Editing the
+//   rules is the Interlock Editor page (Admin, by the MinRoleFor default), and
+//   the timed bypass switches every rule off, so it is Admin too.
+inline constexpr UserRole kRoleInterlockView   = UserRole::Technician;
+inline constexpr UserRole kRoleInterlockBypass = UserRole::Admin;
 
 // The Preferences window's working copy (WndPreferences.cpp): what the dialog
 // edits until OK / Apply. Apply writes back only the fields that differ from
@@ -434,6 +440,15 @@ private:
     void DrawPneumaticDetailPanel();  // middle: selected slide + Extend/Retract/Stop
     void DrawPneumaticInfoPanel();    // right:  live output/sensor states
     void DrawWatchEditPanel();        // IO Watch editor (full-page, View menu)
+    // Interlock editor (full-page, View menu, Admin): edits ilEdit_, a working
+    // copy of the rule set; Apply hands it to Workflow::ApplyInterlocks, Save
+    // also writes <root>/config/interlocks.local.json. PageInterlocks.cpp.
+    void DrawInterlockEditPanel();
+    // The floating Interlocks window (WndInterlocks.cpp, View menu): READ ONLY
+    // live rule states, the last refusal, the trip, and the Admin bypass.
+    void DrawInterlocksWindow();
+    void DrawInterlockTripModal();    // the watch stopped a device (like the safety alert)
+    void DrawInterlockMenuBadges();   // menu-bar: BYPASSED countdown, the last refusal
     void DrawTransformEditPanel();    // axis-transform editor (full-page, View menu)
     // Recipe editor (full-page, View menu) — Phase B. B1 browse+run, B2 edit.
     void DrawRecipeEditPanel();       // page body: recipes | step tree | inspector
@@ -1299,6 +1314,16 @@ private:
     // IO Watch editor (View menu page): edits a working copy of the io_watch
     // config; Apply rebuilds the live watch, Save also writes config/hardware.json.
     IoWatchConfig watchCfg_;
+
+    // Interlocks (core/Interlock.h). ilEdit_ is the editor's working copy,
+    // seeded from Workflow after Start and re-seeded by Revert; ilSel_ the
+    // rule on the right; ilDirty_ = edited since the last Apply / Revert.
+    IlConfig    ilEdit_;
+    int         ilSel_   = -1;
+    bool        ilDirty_ = false;
+    std::string ilMsg_;              // the editor's last Apply / Save outcome
+    bool        showInterlocks_ = false;   // the floating status window
+    int         ilBypassMin_    = 5;       // the bypass length the Admin picks
 
     // Transforms editor (View menu page): the working copy of ALL device
     // transforms (including devices not in the fleet — preserved on Save).

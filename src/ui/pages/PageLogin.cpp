@@ -137,6 +137,10 @@ void App::LogOut()
     runEdit_   = false;
     showData_  = false;
     showPosRec_ = false;
+    showInterlocks_ = false;
+    // A bypass is one Admin's decision about the next few minutes, never a
+    // state the next person inherits - the jog arm's rule.
+    workflow_.ClearInterlockBypass("signed out");
     // An ARMED jog must never survive a change of hands. The arm exists so that
     // moving the machine is a deliberate act by a specific person; inherited by
     // whoever signs in next it is the opposite of that. showAux_ is left alone —

@@ -101,7 +101,7 @@ CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int 
     // the approach existed. No live-position read, no extra leg, no cost.
     if (approachV <= 0.0) {
         if (!IssueMove(ctx, idx, targets, p))
-            return CommandResult::Fail("move to " + what + " rejected");
+            return CommandResult::Fail("move to " + what + " rejected" + MoveRefusedWhy());
         const auto r = WaitArrive(ctx, m, targets, tol, timeoutMs);
         if (r == ExecutionContext::WaitResult::Ok) return WaitSettle(ctx, m, idx);
         ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
@@ -124,7 +124,7 @@ CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int 
     // zero distance is zero.
     if (dist < 1e-9) {
         if (!IssueMove(ctx, idx, targets, p))
-            return CommandResult::Fail("move to " + what + " rejected");
+            return CommandResult::Fail("move to " + what + " rejected" + MoveRefusedWhy());
         return WaitSettle(ctx, m, idx);
     }
     const double approach = approachMm > 0.0 ? approachMm : dist * approachPct / 100.0;
@@ -161,7 +161,7 @@ CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int 
             inter.emplace_back(axis, c + (tgt - c) * frac);
         }
         if (!IssueMove(ctx, idx, inter, p))
-            return CommandResult::Fail("travel leg to " + what + " rejected");
+            return CommandResult::Fail("travel leg to " + what + " rejected" + MoveRefusedWhy());
         const auto r = WaitArrive(ctx, m, inter, tol > 0.05 ? tol : 0.05, timeoutMs);
         if (r != ExecutionContext::WaitResult::Ok) {
             ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
@@ -182,7 +182,7 @@ CommandResult MoveWithApproach(ExecutionContext& ctx, IMotionController* m, int 
     // set, so the slow leg also starts and stops gently.
     if (!IssueMove(ctx, idx, targets, p)) {
         restore();
-        return CommandResult::Fail("approach leg to " + what + " rejected");
+        return CommandResult::Fail("approach leg to " + what + " rejected" + MoveRefusedWhy());
     }
     const auto r = WaitArrive(ctx, m, targets, tol, timeoutMs);
     if (r != ExecutionContext::WaitResult::Ok) {
@@ -230,6 +230,12 @@ ParamSpec DynJerkPerAccParam()
 {
     return {"dyn_jerk_per_acc", ParamType::Double, false, 10.0, 0.1, 1000.0, {},
             "dynamic profile: JERK = this x ACC", PinDir::Any, "Profile"};
+}
+
+std::string MoveRefusedWhy()
+{
+    const std::string& r = Workflow::LastMoveRefusal();
+    return r.empty() ? std::string() : " - " + r;
 }
 
 bool IssueMove(ExecutionContext& ctx, int idx,
@@ -548,7 +554,7 @@ CommandResult ExecMovePath(ExecutionContext& ctx, const ParamValues& p)
         const MapRouteLeg& leg = legs[i];
         if (leg.targets.empty()) continue;   // node with no shared axes (first = start)
         if (!IssueMove(ctx, idx, leg.targets, p))
-            return CommandResult::Fail("move to '" + leg.label + "' rejected");
+            return CommandResult::Fail("move to '" + leg.label + "' rejected" + MoveRefusedWhy());
         const auto r = WaitArrive(ctx, m, leg.targets, kDefaultTolMM, legTimeout);
         if (r != ExecutionContext::WaitResult::Ok) {
             ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
@@ -591,11 +597,17 @@ CommandResult ExecMoveRelativeGlobal(ExecutionContext& ctx, const ParamValues& p
     // device's signed local axes; consecutive calls accumulate onto one
     // evolving target (JogTrack), which is exactly what we want here.
     if (dx != 0.0 && !ctx.Wf().JogGlobal(static_cast<std::size_t>(idx), 1, 0, 0, dx))
-        return CommandResult::Fail("global X move rejected (unmapped axis?)");
+        return CommandResult::Fail("global X move rejected" +
+                                   (MoveRefusedWhy().empty() ? std::string(" (unmapped axis?)")
+                                                             : MoveRefusedWhy()));
     if (dy != 0.0 && !ctx.Wf().JogGlobal(static_cast<std::size_t>(idx), 0, 1, 0, dy))
-        return CommandResult::Fail("global Y move rejected (unmapped axis?)");
+        return CommandResult::Fail("global Y move rejected" +
+                                   (MoveRefusedWhy().empty() ? std::string(" (unmapped axis?)")
+                                                             : MoveRefusedWhy()));
     if (dz != 0.0 && !ctx.Wf().JogGlobal(static_cast<std::size_t>(idx), 0, 0, 1, dz))
-        return CommandResult::Fail("global Z move rejected (unmapped axis?)");
+        return CommandResult::Fail("global Z move rejected" +
+                                   (MoveRefusedWhy().empty() ? std::string(" (unmapped axis?)")
+                                                             : MoveRefusedWhy()));
 
     // Settle-based arrival: the command doesn't know the local targets (the
     // transform does), so wait until positions stop changing — 3 consecutive
@@ -739,7 +751,7 @@ CommandResult ExecDirectionSearch(ExecutionContext& ctx, const ParamValues& p)
     const auto moveTo = [&](double target, const char* what) -> CommandResult {
         const std::vector<std::pair<std::string, double>> t = {{axis, target}};
         if (!IssueMove(ctx, idx, t, p))
-            return CommandResult::Fail(std::string("move to ") + what + " rejected");
+            return CommandResult::Fail(std::string("move to ") + what + " rejected" + MoveRefusedWhy());
         const auto r = WaitArrive(ctx, m, t, tolMm, timeoutMs);
         if (r != ExecutionContext::WaitResult::Ok) {
             ctx.Wf().StopMotion(static_cast<std::size_t>(idx));
@@ -1264,7 +1276,9 @@ CommandResult ExecSlideMove(ExecutionContext& ctx, const ParamValues& p, bool ex
 
     const bool issued = extend ? ctx.Wf().ExtendSlide(static_cast<std::size_t>(idx))
                                : ctx.Wf().RetractSlide(static_cast<std::size_t>(idx));
-    if (!issued) return CommandResult::Fail(extend ? "extend rejected" : "retract rejected");
+    if (!issued)
+        return CommandResult::Fail(std::string(extend ? "extend rejected" : "retract rejected") +
+                                   MoveRefusedWhy());
 
     // Workflow ticks the slide state machine every frame; we watch its status.
     // timeout_ms 0 = the slide's own configured timeout + margin.

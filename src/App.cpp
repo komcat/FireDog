@@ -45,7 +45,7 @@ bool IsTakeoverPage(Page p)
            p == Page::VisionTeach || p == Page::AlignNominal ||
            p == Page::Needle || p == Page::DeviceReg ||
            p == Page::Grip || p == Page::Tray || p == Page::Mosaic ||
-           p == Page::Version || p == Page::Oee;
+           p == Page::Version || p == Page::Oee || p == Page::Interlocks;
 }
 } // namespace
 
@@ -214,6 +214,7 @@ int App::Run()
     oee_.Start();
     hardware_.ConnectAllAsync();   // simulated instruments (motion/etc.)
     workflow_.Start(hw);           // layer 2 brings camera + Keithley online
+    ilEdit_ = workflow_.Interlocks();   // the Interlock Editor's working copy
     workflow_.StartTowerLight();   // the stack light follows the OEE state (not the rig's)
     RegisterBuiltinCommands(orch_.registry, workflow_, hardware_);   // layer 2.5
     FD_INFO("command", "%zu command(s) registered", orch_.registry.Count());
@@ -254,6 +255,7 @@ int App::Run()
             if (showTray_  && CanUse(kRoleTray)) DrawTrayWindow();
             if (showPosRec_ && CanUse(kRolePosRecords)) DrawPositionRecordsWindow();
             if (showMotionInspect_ && CanUse(kRoleInspect)) DrawMotionInspectWindow();
+            if (showInterlocks_ && CanUse(kRoleInterlockView)) DrawInterlocksWindow();
             if (showDispHelper_ && CanAccess(Page::RecipeEdit)) DrawDispenseHelperWindow();
             if (showRoiViewHelper_ && CanAccess(Page::RecipeEdit)) DrawRoiFilterViewHelperWindow();
             if (showVisionDetHelper_ && CanAccess(Page::RecipeEdit)) DrawVisionDetectHelperWindow();

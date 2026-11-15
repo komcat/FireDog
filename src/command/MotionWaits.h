@@ -36,6 +36,13 @@ ExecutionContext::WaitResult WaitArrive(
 // Stops the device and fails on timeout, so an abort leaves a defined state.
 CommandResult WaitSettle(ExecutionContext& ctx, IMotionController* m, int idx);
 
+// Why the last gated Workflow motion call on THIS thread was refused - an
+// interlock rule, the safety alert, an interlock trip - as " - <reason>", or
+// "" when it was not refused by any of them (a driver error says so on the
+// device's LastError instead). Append it to every "... rejected" failure so a
+// refused step names the rule that refused it.
+std::string MoveRefusedWhy();
+
 // Resolve a device name to a CONNECTED controller; null + *err otherwise.
 IMotionController* ResolveMotion(ExecutionContext& ctx, const std::string& device,
                                  int* idxOut, std::string* err);

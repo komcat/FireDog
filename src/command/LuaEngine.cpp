@@ -711,7 +711,8 @@ LuaEngine::~LuaEngine()
 
 bool LuaEngine::SafetyAborted() const
 {
-    return wf_.SafetyAlertActive() && wf_.SafetyAlert().critical;
+    // A critical safety alert OR an interlock trip (Workflow::MotionAbortActive).
+    return wf_.MotionAbortActive();
 }
 
 bool LuaEngine::HookShouldStop() const
@@ -1056,7 +1057,7 @@ void LuaEngine::ThreadMain(std::string path, Env env)
         runCtx_ = nullptr;
         if (stopReq_.load() || SafetyAborted()) {
             state_ = State::Stopped;
-            error_ = SafetyAborted() ? "safety alert" : "stopped by operator";
+            error_ = SafetyAborted() ? wf_.MotionAbortReason() : "stopped by operator";
         } else if (firstErr.empty()) {
             state_ = State::Completed;
             error_.clear();

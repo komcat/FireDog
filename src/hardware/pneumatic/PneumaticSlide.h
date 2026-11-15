@@ -52,6 +52,10 @@ public:
 
     const std::string& Name() const { return w_.name; }
     uint32_t TimeoutMs() const { return w_.timeoutMs; }
+    // The valve output (ON = extend), so a raw IO write to it can be gated
+    // like Extend() (Workflow::SetIoOutput, the interlock gate).
+    const IIoDevice* OutputDevice() const { return w_.outputDev; }
+    int              OutputPin() const { return w_.outputPin; }
     bool IsIoConnected() const;   // all three referenced devices connected
 
     bool Extend();    // output ON,  target Extended  (non-blocking)

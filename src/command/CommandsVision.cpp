@@ -67,7 +67,7 @@ CommandResult MoveAxisTo(ExecutionContext& ctx, IMotionController* m, int idx,
     if (!ctx.Wf().MoveToPosition(static_cast<std::size_t>(idx), target)) {
         char buf[128];
         std::snprintf(buf, sizeof(buf), "move to %s=%.4f rejected", axis.c_str(), z);
-        return CommandResult::Fail(buf);
+        return CommandResult::Fail(buf + MoveRefusedWhy());
     }
     const auto r = WaitArrive(ctx, m, target, tolMM, timeoutMs);
     if (r != ExecutionContext::WaitResult::Ok) {

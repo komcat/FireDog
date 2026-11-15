@@ -298,6 +298,9 @@ void App::DrawStripDog(float height)
     if (workflow_.SafetyAlertActive()) {
         mood = FireDogMood::Alarm;
         what = "SAFETY ALERT";
+    } else if (workflow_.InterlockTripActive()) {
+        mood = FireDogMood::Alarm;
+        what = "INTERLOCK TRIP";
     } else if (station == OeeState::Down) {
         mood = FireDogMood::Down;
         what = "station DOWN - see the OEE page";
@@ -448,6 +451,8 @@ void App::DrawMainWindow()
                 if (CanUse(kRoleTray)) ImGui::MenuItem("Waffle Tray window", nullptr, &showTray_);
                 if (CanUse(kRolePosRecords))
                     ImGui::MenuItem("Position Records", nullptr, &showPosRec_);
+                if (CanUse(kRoleInterlockView))
+                    ImGui::MenuItem("Interlocks", nullptr, &showInterlocks_);
                 if (ImGui::BeginMenu("Theme")) {   // same picker as Display header
                     for (int i = 0; i < Theme::Count(); ++i) {
                         if (ImGui::MenuItem(Theme::Name(i), nullptr, themeIndex_ == i)) {
@@ -481,6 +486,9 @@ void App::DrawMainWindow()
                 if (CanAccess(Page::WatchEdit) &&
                     ImGui::MenuItem("IO Watch Editor", nullptr, currentPage_ == Page::WatchEdit))
                     ToggleEditorPage(Page::WatchEdit);
+                if (CanAccess(Page::Interlocks) &&
+                    ImGui::MenuItem("Interlock Editor", nullptr, currentPage_ == Page::Interlocks))
+                    ToggleEditorPage(Page::Interlocks);
                 if (CanAccess(Page::TransformEdit) &&
                     ImGui::MenuItem("Transforms Editor", nullptr, currentPage_ == Page::TransformEdit))
                     ToggleEditorPage(Page::TransformEdit);
@@ -528,6 +536,7 @@ void App::DrawMainWindow()
             if (workflow_.SafetyAlertActive()) {
                 ImGui::TextColored(StateColor(ConnState::Failed), "  !! SAFETY ALERT !!");
             }
+            DrawInterlockMenuBadges();   // trip, BYPASSED countdown, the last refusal
             ImGui::EndMenuBar();
         }
 
@@ -612,6 +621,7 @@ void App::DrawMainWindow()
         DrawProductPopups();   // modals opened via the File-menu flags above
         DrawExitConfirmModal();   // confirm before closing the application
         DrawSafetyAlertModal();   // blocking safety alert (highest priority)
+        DrawInterlockTripModal(); // the interlock watch stopped a device
         DrawRecipePromptWindow(); // global recipe prompt (any page, any time)
         DrawManualAdjustWindow(); // global manual_adjust jog window
         DrawOperatorNoticeWindow(); // global notify_operator window (yellow, OK only)
@@ -628,7 +638,7 @@ void App::DrawMainWindow()
             currentPage_ == Page::Needle || currentPage_ == Page::DeviceReg ||
             currentPage_ == Page::Grip || currentPage_ == Page::Tray ||
             currentPage_ == Page::Mosaic || currentPage_ == Page::Version ||
-            currentPage_ == Page::Oee) {
+            currentPage_ == Page::Oee || currentPage_ == Page::Interlocks) {
             const char* title = currentPage_ == Page::WatchEdit       ? "IO Watch Editor"
                                 : currentPage_ == Page::TransformEdit ? "Transforms Editor"
                                 : currentPage_ == Page::RecipeEdit    ? "Recipe Editor"
@@ -644,6 +654,7 @@ void App::DrawMainWindow()
                                 : currentPage_ == Page::Mosaic        ? "Mosaic"
                                 : currentPage_ == Page::Version       ? "Version and software update"
                                 : currentPage_ == Page::Oee           ? "OEE - station utilisation"
+                                : currentPage_ == Page::Interlocks    ? "Interlock Editor"
                                                                       : "Run";
             // Vision teach and the two alignment teach pages are only ever
             // reached FROM the Alignment page, and a takeover -> takeover switch
@@ -692,6 +703,7 @@ void App::DrawMainWindow()
             else if (currentPage_ == Page::Mosaic)        DrawMosaicPanel();
             else if (currentPage_ == Page::Version)       DrawVersionPanel();
             else if (currentPage_ == Page::Oee)           DrawOeePanel();
+            else if (currentPage_ == Page::Interlocks)    DrawInterlockEditPanel();
             else                                          DrawRunPanel();
             ImGui::EndChild();
             ImGui::End();

@@ -50,6 +50,8 @@ public:
     const HardwareConfig& Config() const { return cfg_; }
     HardwareManager&      Hw()           { return hw_; }
     const HardwareManager& Hw() const    { return hw_; }
+    // Read-only: the rig evaluates the interlock rules, it never moves.
+    const Workflow&       Wf() const     { return wf_; }
 
 private:
     bool AnyConnecting() const;

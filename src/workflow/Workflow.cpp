@@ -36,6 +36,11 @@ double NowSec()
 // starts a fresh burst re-seeded from the live position.
 constexpr double kJogCoalesceSec = 0.4;
 
+// Why the last gated motion call on THIS thread was refused (interlock rule,
+// safety alert, trip) - "" when it was not. Workflow::LastMoveRefusal reads
+// it; every gated method clears it first (MotionInhibited, or by hand).
+thread_local std::string tlMoveRefusal;
+
 // Velocity guardrail, enforced for EVERY caller (UI, recipes, programs) — the
 // UI's clamp is convenience, this is the hard limit per controller type.
 constexpr double kMinVelMMs    = 0.001;
@@ -60,6 +65,9 @@ Workflow::~Workflow()
 {
     // The tower pump reads the safety watch: stop it (all lamps off) first.
     tower_.reset();
+    // The interlock watch reads the fleet and this object's interlock state:
+    // joined before anything it touches can go.
+    StopInterlockWatch();
     // The safety watch thread calls back into this object (StopAllMotion) —
     // make sure it is fully stopped before any member is torn down.
     if (safetyWatch_) safetyWatch_->Stop();
@@ -72,6 +80,7 @@ void Workflow::Start(const HardwareConfig& hw)
     StartPneumatics(hw);   // after StartIO — resolves pins on the IO fleet
     StartIoWatch(hw);      // after StartIO — same pin resolution
     StartSafetyWatch(hw);  // after StartIO — first-priority safety signals
+    StartInterlocks();     // after motion, IO and slides — the rules read all three
     StartCamera(hw);
     StartKeithley(hw);
     StartCld(hw);
@@ -88,7 +97,8 @@ void Workflow::Start(const HardwareConfig& hw)
 void Workflow::StartTowerLight()
 {
     if (tower_) return;
-    tower_ = std::make_unique<TowerLight>(hw_, [this] { return SafetyAlertActive(); });
+    tower_ = std::make_unique<TowerLight>(
+        hw_, [this] { return SafetyAlertActive() || InterlockTripActive(); });
     tower_->Start(LoadTowerLightConfig());
 }
 
@@ -632,6 +642,9 @@ void Workflow::StopAllMotion()
             m->StopAll();
         }
     }
+    const std::lock_guard<std::mutex> lk(ilMu_);
+    ilCmd_.clear();   // stopped: no device has a commanded end any more
+    ilLastCmd_.clear();
 }
 
 void Workflow::QueueSavedPosition(const std::string& device, const SavedPos& p)
@@ -2147,18 +2160,22 @@ bool Workflow::StartPathMove(std::size_t devIdx, std::vector<PathWaypoint> waypo
         FD_WARN("path", "a path is already running - cancel it first");
         return false;
     }
-    if (SafetyBlocked()) {
-        FD_WARN("safety", "path blocked - acknowledge the safety alert first");
-        return false;
-    }
+    if (MotionInhibited("path")) return false;
     if (devIdx >= hw_.MotionCount() || waypoints.empty()) return false;
     IMotionController* m = hw_.MotionDevice(devIdx);
     if (!m || !m->IsConnected()) return false;
 
-    if (!m->MoveAbsolute(waypoints.front().targets)) {
-        FD_WARN("path", "path start failed: move to '%s' rejected",
-                waypoints.front().label.c_str());
-        return false;
+    {
+        const std::lock_guard<std::mutex> gate(ilGateMu_);
+        const IlIntent in{IlIntent::Kind::Move, hw_.MotionName(devIdx),
+                          waypoints.front().targets, "path"};
+        if (!GateIntent(in)) return false;
+        if (!m->MoveAbsolute(waypoints.front().targets)) {
+            FD_WARN("path", "path start failed: move to '%s' rejected",
+                    waypoints.front().label.c_str());
+            return false;
+        }
+        NoteCommanded(devIdx, in);
     }
     pathCancelReq_.store(false);
     pathExec_.active    = true;
@@ -2201,9 +2218,9 @@ void Workflow::TickPath(float dt)
         FD_WARN("path", "path aborted - motion was stopped");
         return;
     }
-    if (SafetyBlocked()) {
+    if (MotionAbortActive()) {
         pathExec_.active = false;
-        FD_WARN("path", "path aborted - safety alert active");
+        FD_WARN("path", "path aborted - %s active", MotionAbortReason());
         return;
     }
     IMotionController* m = (pathExec_.devIdx < hw_.MotionCount())
@@ -2237,10 +2254,22 @@ void Workflow::TickPath(float dt)
             return;
         }
         const PathWaypoint& next = pathExec_.waypoints[pathExec_.cur];
+        // Every leg is gated on its own: the rules may have changed state
+        // since the path started (a slide went down at a node).
+        const std::lock_guard<std::mutex> gate(ilGateMu_);
+        const IlIntent in{IlIntent::Kind::Move, hw_.MotionName(pathExec_.devIdx),
+                          next.targets, "path"};
+        if (!GateIntent(in)) {
+            pathExec_.active = false;
+            FD_WARN("path", "path aborted at '%s' - interlock", next.label.c_str());
+            return;
+        }
         if (!m->MoveAbsolute(next.targets)) {
             pathExec_.active = false;
             FD_WARN("path", "path aborted - move to '%s' rejected", next.label.c_str());
+            return;
         }
+        NoteCommanded(pathExec_.devIdx, in);
         return;
     }
 
@@ -2506,10 +2535,7 @@ int Workflow::GantryAxisZUpSign() const
 
 bool Workflow::MoveGantryRelativeMM(double dxMM, double dyMM)
 {
-    if (SafetyBlocked()) {
-        FD_WARN("safety", "move blocked - acknowledge the safety alert first");
-        return false;
-    }
+    if (MotionInhibited("click-to-move")) return false;
     const std::size_t gi = GantryIndex();
     IMotionController* g = (gi < hw_.MotionCount()) ? hw_.MotionDevice(gi) : nullptr;
     if (!g) { FD_WARN("workflow", "click-to-move: no ACS gantry available"); return false; }
@@ -2524,9 +2550,14 @@ bool Workflow::MoveGantryRelativeMM(double dxMM, double dyMM)
     const std::vector<std::pair<std::string, double>> tgt = {
         {"X", x + dxMM}, {"Y", y + dyMM}
     };
+    const std::lock_guard<std::mutex> gate(ilGateMu_);
+    const IlIntent in{IlIntent::Kind::Move, hw_.MotionName(gi), tgt, "click-to-move"};
+    if (!GateIntent(in)) return false;
     FD_INFO("workflow", "%s move dXY=(%+.4f, %+.4f) mm -> XY=(%.4f, %.4f)",
             g->Name().c_str(), dxMM, dyMM, x + dxMM, y + dyMM);
-    return g->MoveAbsolute(tgt);
+    if (!g->MoveAbsolute(tgt)) return false;
+    NoteCommanded(gi, in);
+    return true;
 }
 
 void Workflow::SetTransforms(std::map<std::string, AxisTransform> t)
@@ -2645,17 +2676,19 @@ bool Workflow::MoveRelativeGlobal(std::size_t devIdx, double gxMM, double gyMM,
                                   std::vector<std::pair<std::string, double>>* issued)
 {
     if (issued) issued->clear();
-    if (SafetyBlocked()) {
-        FD_WARN("safety", "move blocked - acknowledge the safety alert first");
-        return false;
-    }
+    if (MotionInhibited("move")) return false;
     std::vector<std::pair<std::string, double>> targets;
     if (!GlobalDeltaTargets(devIdx, gxMM, gyMM, gzMM, &targets)) return false;
 
     IMotionController* m = hw_.MotionDevice(devIdx);
     if (!m) return false;
+    const std::lock_guard<std::mutex> gate(ilGateMu_);
+    const IlIntent in{IlIntent::Kind::Move, hw_.MotionName(devIdx), targets, "move"};
+    if (!GateIntent(in)) return false;
+    if (!m->MoveAbsolute(targets)) return false;
+    NoteCommanded(devIdx, in);
     if (issued) *issued = targets;
-    return m->MoveAbsolute(targets);
+    return true;
 }
 
 bool Workflow::JogGlobalRot(std::size_t devIdx, float gu, float gv, float gw, double step)
@@ -2686,13 +2719,14 @@ bool Workflow::JogGlobalRot(std::size_t devIdx, float gu, float gv, float gw, do
 
 bool Workflow::JogLocalAxis(std::size_t devIdx, const std::string& axis, double deltaMM)
 {
-    if (SafetyBlocked()) {
-        FD_WARN("safety", "jog blocked - acknowledge the safety alert first");
-        return false;
-    }
+    if (MotionInhibited("jog")) return false;
     if (devIdx >= hw_.MotionCount()) return false;
     IMotionController* m = hw_.MotionDevice(devIdx);
     if (!m) return false;
+
+    // The interlock gate's lock, taken before the jog track is touched: check +
+    // issue must be atomic, and it serialises jogTracks_ as a side effect.
+    const std::lock_guard<std::mutex> gate(ilGateMu_);
 
     // Accumulate an evolving target so a new press OVERRIDES (extends) the
     // previous target rather than queuing a move read from lagging feedback.
@@ -2705,11 +2739,19 @@ bool Workflow::JogLocalAxis(std::size_t devIdx, const std::string& axis, double 
         const auto it = pos.find(axis);
         jt.target = (it != pos.end()) ? it->second : 0.0;
     }
-    jt.target += deltaMM;
-    jt.lastT   = now;
+    const double target = jt.target + deltaMM;
+
+    // A refused press does NOT advance the accumulated target: the next press
+    // must not inherit a step that never went out.
+    const IlIntent in{IlIntent::Kind::Move, hw_.MotionName(devIdx), {{axis, target}}, "jog"};
+    if (!GateIntent(in)) return false;
+    jt.target = target;
+    jt.lastT  = now;
 
     FD_INFO("jog", "%s: %s %+.4f mm -> %.4f", m->Name().c_str(), axis.c_str(), deltaMM, jt.target);
-    return m->MoveAbsolute(axis, jt.target);   // driver retargets (PI_MOV / acsc_ToPoint)
+    if (!m->MoveAbsolute(axis, jt.target)) return false;   // driver retargets (PI_MOV / acsc_ToPoint)
+    NoteCommanded(devIdx, in);
+    return true;
 }
 
 bool Workflow::StopMotion(std::size_t devIdx)
@@ -2725,7 +2767,13 @@ bool Workflow::StopMotion(std::size_t devIdx)
     IMotionController* m = hw_.MotionDevice(devIdx);
     if (!m) return false;
     FD_WARN("workflow", "STOP %s", m->Name().c_str());
-    return m->StopAll();
+    const bool ok = m->StopAll();
+    {
+        const std::lock_guard<std::mutex> lk(ilMu_);
+        ilCmd_.erase(devIdx);   // stopped: its commanded end is where it halts
+        ilLastCmd_.erase(devIdx);
+    }
+    return ok;
 }
 
 bool Workflow::SetAxisEnabled(std::size_t devIdx, const std::string& axis, bool on)
@@ -2831,16 +2879,22 @@ bool Workflow::RunBuffer(std::size_t devIdx, int buffer, const std::string& labe
     if (!m || !m->SupportsBuffers()) return false;
     // A buffer program can move the axes, so it is refused exactly where a move
     // would be: behind the safety alert, and while this device is pathing.
-    if (SafetyBlocked()) {
-        FD_WARN("safety", "buffer %d not started - acknowledge the safety alert first", buffer);
-        return false;
-    }
+    if (MotionInhibited("buffer")) return false;
     if (pathExec_.active && pathExec_.devIdx == devIdx) {
         FD_WARN("motion", "buffer %d not started - %s is running a path", buffer,
                 hw_.MotionName(devIdx).c_str());
         return false;
     }
-    if (!m->RunBuffer(buffer, label)) return false;
+    {
+        // A program's targets are unknown: it is judged as moving EVERY axis.
+        const std::lock_guard<std::mutex> gate(ilGateMu_);
+        const IlIntent in{IlIntent::Kind::AllAxes, hw_.MotionName(devIdx), {}, "buffer"};
+        if (!GateIntent(in)) return false;
+        if (!m->RunBuffer(buffer, label)) return false;
+        NoteCommanded(devIdx, in);
+        const std::lock_guard<std::mutex> lk(ilMu_);
+        ilCmd_[devIdx].buffer = buffer;   // busy for as long as the program runs
+    }
     bufFollow_.reset();
     if (!thenAxis.empty()) {
         bufFollowCancelReq_ = false;
@@ -2857,16 +2911,19 @@ bool Workflow::StartReference(std::size_t devIdx)
     if (!m || !m->SupportsReference()) return false;
     // Referencing drives the platform through a homing move of its own, so it
     // is refused exactly where a move would be.
-    if (SafetyBlocked()) {
-        FD_WARN("safety", "reference not started - acknowledge the safety alert first");
-        return false;
-    }
+    if (MotionInhibited("reference")) return false;
     if (pathExec_.active && pathExec_.devIdx == devIdx) {
         FD_WARN("motion", "reference not started - %s is running a path",
                 hw_.MotionName(devIdx).c_str());
         return false;
     }
-    return m->StartReference();
+    // A homing sweep goes wherever the controller takes it: every axis.
+    const std::lock_guard<std::mutex> gate(ilGateMu_);
+    const IlIntent in{IlIntent::Kind::AllAxes, hw_.MotionName(devIdx), {}, "reference"};
+    if (!GateIntent(in)) return false;
+    if (!m->StartReference()) return false;
+    NoteCommanded(devIdx, in);
+    return true;
 }
 
 bool Workflow::BufferRunning(std::size_t devIdx, int buffer) const
@@ -2923,27 +2980,32 @@ bool Workflow::StopBuffer(std::size_t devIdx, int buffer)
 bool Workflow::MoveToPosition(std::size_t devIdx,
                               const std::vector<std::pair<std::string, double>>& targets)
 {
-    if (SafetyBlocked()) {
-        FD_WARN("safety", "move blocked - acknowledge the safety alert first");
-        return false;
-    }
+    if (MotionInhibited("move")) return false;
     if (devIdx >= hw_.MotionCount() || targets.empty()) return false;
     IMotionController* m = hw_.MotionDevice(devIdx);
-    return m && m->MoveAbsolute(targets);   // coordinated (PI_MOV / acsc_ToPointM+GoM)
+    if (!m) return false;
+    const std::lock_guard<std::mutex> gate(ilGateMu_);   // check + issue, atomically
+    const IlIntent in{IlIntent::Kind::Move, hw_.MotionName(devIdx), targets, "move"};
+    if (!GateIntent(in)) return false;
+    if (!m->MoveAbsolute(targets)) return false;   // coordinated (PI_MOV / acsc_ToPointM+GoM)
+    NoteCommanded(devIdx, in);
+    return true;
 }
 
 bool Workflow::MoveToPositionDynamic(std::size_t devIdx,
                                      const std::vector<std::pair<std::string, double>>& targets,
                                      const DynamicProfile& dyn)
 {
-    if (SafetyBlocked()) {
-        FD_WARN("safety", "move blocked - acknowledge the safety alert first");
-        return false;
-    }
+    if (MotionInhibited("move")) return false;
     if (devIdx >= hw_.MotionCount() || targets.empty()) return false;
     IMotionController* m = hw_.MotionDevice(devIdx);
     if (!m || !m->SupportsProfile()) return false;
-    return m->MoveAbsoluteDynamic(targets, dyn);
+    const std::lock_guard<std::mutex> gate(ilGateMu_);
+    const IlIntent in{IlIntent::Kind::Move, hw_.MotionName(devIdx), targets, "move"};
+    if (!GateIntent(in)) return false;
+    if (!m->MoveAbsoluteDynamic(targets, dyn)) return false;
+    NoteCommanded(devIdx, in);
+    return true;
 }
 
 bool Workflow::RestoreDefaultProfile(std::size_t devIdx)
@@ -2967,6 +3029,22 @@ bool Workflow::SetIoOutput(std::size_t devIdx, int pin, bool on)
     if (!d) return false;
 
     const std::string pinName = d->OutputPinName(pin);
+
+    // Switching a slide's valve ON by hand is an extend by another name: gate
+    // it exactly as ExtendSlide is, or the IO page is a way round the rules.
+    std::unique_lock<std::mutex> gate(ilGateMu_, std::defer_lock);
+    if (on) {
+        tlMoveRefusal.clear();
+        for (std::size_t i = 0; i < hw_.SlideCount(); ++i) {
+            const PneumaticSlide* s = hw_.Slide(i);
+            if (!s || s->OutputDevice() != d || s->OutputPin() != pin) continue;
+            gate.lock();
+            const IlIntent in{IlIntent::Kind::SlideExtend, s->Name(), {}, "extend"};
+            if (!GateIntent(in)) return false;
+            break;
+        }
+    }
+
     FD_INFO("io", "%s: output %d%s%s%s -> %s", d->Name().c_str(), pin,
             pinName.empty() ? "" : " (", pinName.c_str(), pinName.empty() ? "" : ")",
             on ? "ON" : "OFF");
@@ -3045,7 +3123,14 @@ bool Workflow::ClearIoLatch(std::size_t devIdx, uint64_t mask)
 bool Workflow::ExtendSlide(std::size_t idx)
 {
     if (idx >= hw_.SlideCount()) return false;
-    return hw_.Slide(idx)->Extend();
+    PneumaticSlide* s = hw_.Slide(idx);
+    tlMoveRefusal.clear();
+    // Extending is the motion an interlock may forbid (a slide dropping onto a
+    // moving gripper); retracting is the return to the safe state, never gated.
+    const std::lock_guard<std::mutex> gate(ilGateMu_);
+    const IlIntent in{IlIntent::Kind::SlideExtend, s->Name(), {}, "extend"};
+    if (!GateIntent(in)) return false;
+    return s->Extend();
 }
 
 bool Workflow::RetractSlide(std::size_t idx)
@@ -3058,6 +3143,408 @@ bool Workflow::StopSlide(std::size_t idx)
 {
     if (idx >= hw_.SlideCount()) return false;
     return hw_.Slide(idx)->Stop();
+}
+
+// ---- Motion interlocks -------------------------------------------------------
+// core/Interlock.h decides; this section feeds it the live fleet, gates every
+// move method, remembers where each device was sent, and runs the watch.
+namespace {
+
+// An in-flight target this close to the measured position has been reached.
+constexpr double kIlReachedTol = 0.002;
+// A move younger than this may still read settled (a PI profile that has not
+// started yet), so only an older one is retired on the controller's word.
+constexpr auto kIlMinFlight  = std::chrono::milliseconds(1000);
+constexpr auto kIlSettlePoll = std::chrono::milliseconds(250);   // IsSettled is a query
+
+// The slide from its LIVE bits, not the state machine (ticked once per UI
+// frame): a valve switched on with the up-sensor still lit is already on its
+// way down, and the watch must see that before the next frame does.
+IlSlidePos SlideState(const PneumaticSlide::Status& s)
+{
+    if (!s.ioValid) return IlSlidePos::Unknown;
+    if (s.extendedOn && s.retractedOn) return IlSlidePos::Unknown;   // sensor fault
+    if (s.outputOn && !s.extendedOn) return IlSlidePos::Moving;      // going down
+    if (!s.outputOn && !s.retractedOn) return IlSlidePos::Moving;    // coming up
+    return s.extendedOn ? IlSlidePos::Extended : IlSlidePos::Retracted;
+}
+
+} // namespace
+
+const std::string& Workflow::LastMoveRefusal() { return tlMoveRefusal; }
+
+bool Workflow::MotionInhibited(const char* what)
+{
+    tlMoveRefusal.clear();
+    if (SafetyBlocked()) {
+        tlMoveRefusal = "safety alert active - acknowledge it first";
+        FD_WARN("safety", "%s blocked - acknowledge the safety alert first", what);
+        return true;
+    }
+    if (ilTripActive_.load()) {
+        tlMoveRefusal = "interlock trip active - acknowledge it first";
+        FD_WARN("interlock", "%s blocked - acknowledge the interlock trip first", what);
+        return true;
+    }
+    return false;
+}
+
+std::shared_ptr<const IlConfig> Workflow::InterlockCfg() const
+{
+    const std::lock_guard<std::mutex> lk(ilMu_);
+    return ilCfg_;
+}
+
+void Workflow::ApplyInterlocks(IlConfig cfg)
+{
+    std::size_t on = 0;
+    for (const IlRule& r : cfg.rules) on += r.enabled ? 1u : 0u;
+    FD_INFO("interlock", "rule set applied: %zu rule(s), %zu enabled, interlocks %s%s",
+            cfg.rules.size(), on, cfg.enabled ? "ON" : "OFF",
+            cfg.loadError.empty() ? "" : " - FILE UNREADABLE, every move refused");
+    auto p = std::make_shared<const IlConfig>(std::move(cfg));
+    const std::lock_guard<std::mutex> lk(ilMu_);
+    ilCfg_ = std::move(p);
+}
+
+IlConfig Workflow::Interlocks() const
+{
+    const auto c = InterlockCfg();
+    return c ? *c : IlConfig{};
+}
+
+IlSnapshot Workflow::BuildInterlockSnapshot(const IlConfig& cfg) const
+{
+    IlSnapshot s;
+    for (std::size_t i = 0; i < hw_.MotionCount(); ++i) {
+        IMotionController* m = hw_.MotionDevice(i);
+        if (!m) continue;
+        IlMotionState st;
+        st.connected = hw_.MotionState(i) == ConnState::Connected && m->IsConnected();
+        st.axes      = m->Axes();
+        if (st.connected) st.measured = m->Positions();
+        s.motion[hw_.MotionName(i)] = std::move(st);
+    }
+    {
+        const std::lock_guard<std::mutex> lk(ilMu_);
+        for (const auto& [idx, t] : ilCmd_) {
+            if (idx >= hw_.MotionCount()) continue;
+            IlMotionState& st = s.motion[hw_.MotionName(idx)];
+            st.commanded = t.targets;
+            st.allBusy   = t.allBusy;
+        }
+        for (const auto& [idx, last] : ilLastCmd_)
+            if (idx < hw_.MotionCount()) s.motion[hw_.MotionName(idx)].lastCmd = last;
+    }
+    for (std::size_t i = 0; i < hw_.SlideCount(); ++i) {
+        const PneumaticSlide* sl = hw_.Slide(i);
+        if (sl) s.slides[sl->Name()] = SlideState(sl->GetStatus());
+    }
+    for (const auto& [dev, pin] : IlIoPinsUsed(cfg)) {
+        IlIoPin p;
+        std::size_t di = hw_.IoCount();
+        for (std::size_t i = 0; i < hw_.IoCount(); ++i)
+            if (hw_.IoName(i) == dev) { di = i; break; }
+        const IIoDevice* d = di < hw_.IoCount() ? hw_.IoDevice(di) : nullptr;
+        const int pi = d ? d->InputPinByName(pin) : -1;
+        if (!d) {
+            p.why = "no IO device '" + dev + "'";
+        } else if (hw_.IoState(di) != ConnState::Connected) {
+            p.why = dev + " not connected";
+        } else if (pi < 0) {
+            p.why = dev + " has no input '" + pin + "'";
+        } else {
+            const IIoDevice::IoStatus st = d->Status();
+            if (!st.valid) {
+                p.why = dev + " has no reading yet";
+            } else {
+                p.known = true;
+                p.on    = ((st.inputs >> pi) & 1ull) != 0;
+            }
+        }
+        s.io[IlIoKey(dev, pin)] = std::move(p);
+    }
+    return s;
+}
+
+IlSnapshot Workflow::InterlockSnapshot(const IlConfig* forCfg) const
+{
+    if (forCfg) return BuildInterlockSnapshot(*forCfg);
+    const auto c = InterlockCfg();
+    return BuildInterlockSnapshot(c ? *c : IlConfig{});
+}
+
+std::vector<IlRuleStatus> Workflow::InterlockStatus() const
+{
+    const auto c = InterlockCfg();
+    if (!c) return {};
+    return IlEvaluateAll(*c, BuildInterlockSnapshot(*c));
+}
+
+std::map<std::string, IlDirBlock> Workflow::InterlockBlockedDirs(std::size_t devIdx) const
+{
+    const auto c = InterlockCfg();
+    if (!c || !c->enabled || devIdx >= hw_.MotionCount() || InterlockBypassedNow()) return {};
+    if (c->rules.empty() && c->loadError.empty()) return {};
+    return IlBlockedDirs(*c, BuildInterlockSnapshot(*c), hw_.MotionName(devIdx));
+}
+
+bool Workflow::GateIntent(const IlIntent& in)
+{
+    const auto cfg = InterlockCfg();
+    if (!cfg || !cfg->enabled) return true;
+    if (cfg->rules.empty() && cfg->loadError.empty()) return true;
+    const IlVerdict v = IlCheckIntent(*cfg, BuildInterlockSnapshot(*cfg), in);
+    if (v.ok) return true;
+    if (InterlockBypassedNow()) {
+        FD_WARN("interlock", "bypassed: %s", v.reason.c_str());
+        return true;
+    }
+    FD_WARN("interlock", "%s", v.reason.c_str());
+    tlMoveRefusal = v.reason;
+    const std::lock_guard<std::mutex> lk(ilMu_);
+    ++ilLastRefusal_.seq;
+    ilLastRefusal_.rule = v.rule;
+    ilLastRefusal_.text = v.reason;
+    ilLastRefusal_.at   = std::chrono::steady_clock::now();
+    return false;
+}
+
+void Workflow::NoteCommanded(std::size_t devIdx, const IlIntent& in)
+{
+    if (in.kind == IlIntent::Kind::SlideExtend) return;
+    const std::lock_guard<std::mutex> lk(ilMu_);
+    IlCmdTrack& t = ilCmd_[devIdx];
+    t.at = std::chrono::steady_clock::now();
+    if (in.kind == IlIntent::Kind::AllAxes) {
+        t.allBusy = true;
+        t.buffer  = -1;
+        ilLastCmd_.erase(devIdx);   // it goes wherever the controller takes it
+        return;
+    }
+    for (const auto& [axis, tgt] : in.targets) {
+        t.targets[axis]           = tgt;
+        ilLastCmd_[devIdx][axis] = tgt;
+    }
+}
+
+Workflow::InterlockEvent Workflow::LastInterlockRefusal() const
+{
+    const std::lock_guard<std::mutex> lk(ilMu_);
+    return ilLastRefusal_;
+}
+
+bool Workflow::InterlockTripActive() const { return ilTripActive_.load(); }
+
+Workflow::InterlockTrip Workflow::InterlockTripState() const
+{
+    const std::lock_guard<std::mutex> lk(ilMu_);
+    InterlockTrip t = ilTrip_;
+    t.active = ilTripActive_.load();
+    return t;
+}
+
+void Workflow::AcknowledgeInterlockTrip()
+{
+    if (!ilTripActive_.exchange(false)) return;
+    FD_INFO("interlock", "trip acknowledged - motion allowed again");
+}
+
+void Workflow::SetInterlockBypass(int minutes, const std::string& who)
+{
+    minutes = std::clamp(minutes, 1, 60);
+    {
+        const std::lock_guard<std::mutex> lk(ilMu_);
+        ilBypassUntil_ = std::chrono::steady_clock::now() + std::chrono::minutes(minutes);
+        ilBypassBy_    = who;
+    }
+    FD_WARN("interlock", "INTERLOCKS BYPASSED for %d min by %s - the safety alert still "
+                         "applies", minutes, who.c_str());
+}
+
+void Workflow::ClearInterlockBypass(const char* why)
+{
+    {
+        const std::lock_guard<std::mutex> lk(ilMu_);
+        if (ilBypassUntil_ == std::chrono::steady_clock::time_point{}) return;
+        ilBypassUntil_ = {};
+        ilBypassBy_.clear();
+    }
+    FD_INFO("interlock", "bypass ended (%s) - interlocks enforced", why ? why : "cleared");
+}
+
+bool Workflow::InterlockBypassedNow() const
+{
+    const std::lock_guard<std::mutex> lk(ilMu_);
+    return ilBypassUntil_ > std::chrono::steady_clock::now();
+}
+
+int Workflow::InterlockBypassSecondsLeft() const
+{
+    const std::lock_guard<std::mutex> lk(ilMu_);
+    const auto now = std::chrono::steady_clock::now();
+    if (ilBypassUntil_ <= now) return 0;
+    const auto ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(ilBypassUntil_ - now).count();
+    return static_cast<int>((ms + 999) / 1000);
+}
+
+std::string Workflow::InterlockBypassBy() const
+{
+    const std::lock_guard<std::mutex> lk(ilMu_);
+    return ilBypassBy_;
+}
+
+bool Workflow::MotionAbortActive() const { return SafetyBlocked() || ilTripActive_.load(); }
+
+const char* Workflow::MotionAbortReason() const
+{
+    return SafetyBlocked() ? "safety alert" : "interlock trip";
+}
+
+void Workflow::StartInterlocks()
+{
+    std::string used;
+    IlConfig cfg = LoadInterlocks(&used);
+    if (used.empty())
+        FD_INFO("interlock", "no interlock file - no rules");
+    else
+        FD_INFO("interlock", "rules from %s", used.c_str());
+    ApplyInterlocks(std::move(cfg));
+    if (!ilWatch_.joinable()) ilWatch_ = std::thread(&Workflow::InterlockWatchLoop, this);
+}
+
+void Workflow::StopInterlockWatch()
+{
+    {
+        const std::lock_guard<std::mutex> lk(ilWatchMu_);
+        ilWatchStop_ = true;
+    }
+    ilWatchCv_.notify_all();
+    if (ilWatch_.joinable()) ilWatch_.join();
+}
+
+// The watch thread. Each tick: retire in-flight targets that have been reached
+// or abandoned, expire a bypass, then stop every device whose blocked axis is
+// moving under an active rule. It never MOVES anything.
+void Workflow::InterlockWatchLoop()
+{
+    using clock = std::chrono::steady_clock;
+    clock::time_point lastBypassLog{};
+    for (;;) {
+        const auto cfg = InterlockCfg();
+        const int  ms  = cfg ? cfg->watchMs : 50;
+
+        // 1. Retire in-flight targets.
+        std::vector<std::size_t> devs;
+        {
+            const std::lock_guard<std::mutex> lk(ilMu_);
+            for (const auto& [idx, t] : ilCmd_) devs.push_back(idx);
+        }
+        for (const std::size_t idx : devs) {
+            IMotionController* m = idx < hw_.MotionCount() ? hw_.MotionDevice(idx) : nullptr;
+            const bool connected = m && m->IsConnected();
+            const std::map<std::string, double> pos =
+                connected ? m->Positions() : std::map<std::string, double>{};
+            if (connected) m->RequestFastPoll();   // fresh positions while in flight
+            bool askSettled = false;
+            clock::time_point stamp{};
+            int buffer = -1;
+            {
+                const std::lock_guard<std::mutex> lk(ilMu_);
+                const auto it = ilCmd_.find(idx);
+                if (it == ilCmd_.end()) continue;
+                IlCmdTrack& t = it->second;
+                if (!connected) {   // nothing can be moving, nothing was sent
+                    ilCmd_.erase(it);
+                    ilLastCmd_.erase(idx);
+                    continue;
+                }
+                std::erase_if(t.targets, [&](const auto& kv) {
+                    const auto p = pos.find(kv.first);
+                    return p != pos.end() && std::fabs(p->second - kv.second) <= kIlReachedTol;
+                });
+                if (t.targets.empty() && !t.allBusy) { ilCmd_.erase(it); continue; }
+                const auto now = clock::now();
+                if (now - t.at >= kIlMinFlight && now - t.settleCheck >= kIlSettlePoll) {
+                    t.settleCheck = now;
+                    askSettled    = true;
+                    stamp         = t.at;
+                    buffer        = t.buffer;
+                }
+            }
+            if (!askSettled) continue;
+            // Queries, outside the lock: a stopped-short move, an ended reference.
+            bool done = m->IsSettled() &&
+                        m->Referenced() != IMotionController::RefState::Referencing;
+            if (done && buffer >= 0 && m->BufferRunning(buffer)) done = false;
+            if (!done) continue;
+            const std::lock_guard<std::mutex> lk(ilMu_);
+            const auto it = ilCmd_.find(idx);
+            if (it != ilCmd_.end() && it->second.at == stamp) ilCmd_.erase(it);   // not reissued
+        }
+
+        // 2. A bypass that ran out.
+        {
+            bool expired = false;
+            {
+                const std::lock_guard<std::mutex> lk(ilMu_);
+                if (ilBypassUntil_ != clock::time_point{} && ilBypassUntil_ <= clock::now()) {
+                    ilBypassUntil_ = {};
+                    ilBypassBy_.clear();
+                    expired = true;
+                }
+            }
+            if (expired) FD_INFO("interlock", "bypass expired - interlocks enforced");
+        }
+
+        // 3. Violations: an active rule's blocked axis is moving.
+        if (cfg && cfg->enabled && !cfg->rules.empty()) {
+            const std::vector<IlViolation> vio =
+                IlFindViolations(*cfg, BuildInterlockSnapshot(*cfg));
+            if (!vio.empty() && InterlockBypassedNow()) {
+                if (clock::now() - lastBypassLog > std::chrono::seconds(2)) {
+                    lastBypassLog = clock::now();
+                    FD_WARN("interlock", "bypassed: [%s] %s %s moving: %s", vio[0].rule.c_str(),
+                            vio[0].device.c_str(), vio[0].axis.c_str(), vio[0].reason.c_str());
+                }
+            } else if (!vio.empty()) {
+                std::set<std::string> stopped;
+                for (const IlViolation& v : vio) {
+                    if (!stopped.insert(v.device).second) continue;
+                    for (std::size_t i = 0; i < hw_.MotionCount(); ++i) {
+                        if (hw_.MotionName(i) != v.device) continue;
+                        IMotionController* m = hw_.MotionDevice(i);
+                        if (m) m->StopAll();
+                        FD_ERROR("interlock", "TRIP [%s] stopped %s (%s moving): %s",
+                                 v.rule.c_str(), v.device.c_str(), v.axis.c_str(),
+                                 v.reason.c_str());
+                        // Told to stop: there is no commanded end any more.
+                        const std::lock_guard<std::mutex> lk(ilMu_);
+                        ilCmd_.erase(i);
+                        ilLastCmd_.erase(i);
+                    }
+                }
+                // Abandon whatever the UI thread was sequencing (atomics, as the
+                // safety watch does): a path's next leg, a buffer's follow-up.
+                pathCancelReq_.store(true);
+                bufFollowCancelReq_.store(true);
+                const std::lock_guard<std::mutex> lk(ilMu_);
+                if (!ilTripActive_.load()) {
+                    ilTrip_.rule   = vio[0].rule;
+                    ilTrip_.device = vio[0].device;
+                    ilTrip_.axis   = vio[0].axis;
+                    ilTrip_.reason = vio[0].reason;
+                    ilTrip_.at     = std::chrono::system_clock::now();
+                    ilTripActive_.store(true);
+                }
+            }
+        }
+
+        std::unique_lock<std::mutex> lk(ilWatchMu_);
+        if (ilWatchCv_.wait_for(lk, std::chrono::milliseconds(ms), [this] { return ilWatchStop_; }))
+            return;
+    }
 }
 
 } // namespace firedog

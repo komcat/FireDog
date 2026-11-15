@@ -343,7 +343,8 @@ void RecipeEngine::EndWaitLocked()
 
 bool RecipeEngine::SafetyAborted() const
 {
-    return wf_.SafetyAlertActive() && wf_.SafetyAlert().critical;
+    // A critical safety alert OR an interlock trip (Workflow::MotionAbortActive).
+    return wf_.MotionAbortActive();
 }
 
 bool RecipeEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
@@ -621,7 +622,7 @@ void RecipeEngine::ThreadMain(Recipe recipe, Recipe onFail, Env env)
         if (stopped) {
             state_ = State::Stopped;
             if (error_.empty())
-                error_ = SafetyAborted() ? "safety alert" : "stopped by operator";
+                error_ = SafetyAborted() ? wf_.MotionAbortReason() : "stopped by operator";
         } else if (!failed) {
             state_ = State::Completed;
             error_.clear();
