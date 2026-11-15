@@ -531,7 +531,8 @@ void PorTool::DrawHelpWindow()
         ImGui::BulletText("Deck: programs > slots. Double-click a recipe row to open that recipe's compare.");
         ImGui::BulletText("Recipes: 'deck recipes only' hides the ones no program runs.");
         ImGui::BulletText("Positions: what the deck drives to, in first-use order - the teach order of a cycle.");
-        ImGui::BulletText("Hardware: hardware.json + motion_transforms.json, pins by NUMBER, so a moved wire shows.");
+        ImGui::BulletText("Hardware: hardware.json + motion_transforms.json, pins by NUMBER, so a moved wire shows; "
+                          "interlocks.local.json rule by NAME - a rule or refusal the target lacks is Missing.");
         ImGui::BulletText("Notes: which files were read on each side, and how this machine's root was found.");
         ImGui::BulletText("Differences only hides what matches; All params shows every field, not just the different ones.");
 
@@ -1168,7 +1169,8 @@ void PorTool::DrawExportWindow()
     ImGui::SetNextWindowSize(ImVec2(680.0f, 460.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Export master", &showExport_)) {
         ImGui::TextWrapped("Copies product '%s' from the master root, with that machine's "
-                           "hardware.json, maps.local.json and motion_transforms.json, into an "
+                           "hardware.json, maps.local.json, motion_transforms.json and "
+                           "interlocks.local.json, into an "
                            "EMPTY folder laid out like a machine root. Backups (*.bak) and the "
                            "position journal stay behind. The master is only read.",
                            product_.c_str());

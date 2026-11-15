@@ -207,6 +207,7 @@ by section (`por/PorHardware`):
 | Keithley · CLD101x · PSUs | name | — |
 | Lights | name | one per channel `Ln` |
 | IO watch · Safety watch | (one each) | bindings by name · signals by device + pin |
+| Interlocks (`interlocks.local.json`) | (one) | a row per rule by NAME; its conditions and refusals beneath, each as a set by canonical text |
 
 - **Pins are compared by NUMBER**, both sides' names on the same pin side by side
   (pin numbers are normalised, bit i == pin i, `CLAUDE.md` Hardware). A name that sits
@@ -220,8 +221,19 @@ by section (`por/PorHardware`):
   (the working recipes' device/pin/slide/light params, a slide's own pins, a command's
   `needs`) is marked; a used one missing on the target is Missing, the rest of a
   difference Changed.
+- **Interlocks** (`docs/interlock-design.md`) are the machine type's geometry, so
+  they sit on this page. Each side's file is read BY PATH (`LoadInterlocksFile`,
+  never `MachinePath`); no file = no rules. Rules pair by NAME (uids are per
+  machine). Conditions (an AND) and refusals have no meaningful order, so each is
+  compared as a set by its canonical text (slides and axes sorted). Severity follows
+  which way the target differs: an enabled master rule the target lacks, a rule
+  disabled on the target, a refusal the target's rule lacks, interlocks switched off
+  or an unreadable file on the target are **Missing** (it protects less). Any other
+  difference is Changed. The note is shown, never judged. *Export master* carries
+  `interlocks.local.json` with the other machine files.
 - The page compares and nothing else: a fix is a hand edit of the target's
-  `<root>/config/hardware.json`, the same as today (`CLAUDE.md`, State & documents).
+  `<root>/config/hardware.json` (or its Interlock Editor), the same as today
+  (`CLAUDE.md`, State & documents).
 
 ## 6b. The Fix list - errors, not differences
 

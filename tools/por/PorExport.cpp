@@ -84,7 +84,8 @@ bool ExportMaster(const std::string& masterRoot, const std::string& product,
         *err = "could not read " + src.generic_string() + ": " + ec.message();
         return false;
     }
-    for (const char* f : {"hardware.json", "maps.local.json", "motion_transforms.json"}) {
+    for (const char* f : {"hardware.json", "maps.local.json", "motion_transforms.json",
+                          "interlocks.local.json"}) {
         const fs::path from = fs::path(masterRoot) / "config" / f;
         if (!fs::is_regular_file(from, ec)) continue;
         if (!CopyOne(from, destAbs / "config" / f, destAbs, log, err)) return false;

@@ -15,6 +15,7 @@
 #include "command/Recipe.h"
 #include "core/AlignFrame.h"
 #include "core/GripProfile.h"
+#include "core/Interlock.h"
 #include "core/MotionMap.h"
 #include "core/Product.h"
 #include "core/SavedPositions.h"
@@ -62,6 +63,10 @@ struct PorSide {
     PorHardwareNames hw;            // the names a recipe may use, from hwConfig
     bool             hasTransforms = false;
     std::map<std::string, AxisTransform> transforms;   // config/motion_transforms.json
+    // config/interlocks.local.json, read by path (never through MachinePath).
+    // Absent = no rules on that machine (the app's shipped default is empty).
+    bool             hasInterlocks = false;
+    IlConfig         interlocks;
 
     std::set<std::string> scripts;        // file names: <product>/scripts, then <root>/config/scripts
     std::set<std::string> promptImages;   // file names: <product>/prompt_images, then <root>/config/prompt_images

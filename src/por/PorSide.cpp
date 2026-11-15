@@ -134,6 +134,16 @@ bool LoadPorSide(const std::string& root, const std::string& product, PorSide* o
     } else {
         s.notes.push_back("transforms: none (" + xf + ")");
     }
+    const std::string il = s.root + "/config/interlocks.local.json";
+    s.interlocks = LoadInterlocksFile(il, &s.hasInterlocks);
+    if (!s.hasInterlocks)
+        s.notes.push_back("interlocks: none (" + il + ") - no rules on this machine");
+    else if (!s.interlocks.loadError.empty())
+        s.notes.push_back("interlocks: UNREADABLE - " + s.interlocks.loadError +
+                          " (that machine refuses every move)");
+    else
+        s.notes.push_back("interlocks: " + il + " (" + std::to_string(s.interlocks.rules.size()) +
+                          " rule(s))");
 
     s.manifest = LoadProductManifestAt(dir);
     if (!s.manifest.Loaded()) {

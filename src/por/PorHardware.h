@@ -10,6 +10,11 @@
 // pin by pin, and says where a name moved.
 //
 // Fields are of two kinds:
+// The motion interlocks (config/interlocks.local.json) are the same kind of
+// fact - the machine type's geometry - and get their own section: rules by
+// NAME, conditions and refusals as sets; a rule or refusal the target lacks
+// is Missing (it protects less).
+//
 //   * DESIGN   what the machine type fixes (axes, pin names, channel names,
 //              counts, triggers, a transform) - a difference is a difference;
 //   * MACHINE  this unit's identity (an IP, a port, a board id, a serial, a VISA
@@ -30,7 +35,8 @@ namespace firedog {
 struct PorHardwareReport {
     // One Section row each: Motion devices, Motion transforms, IO devices (with
     // a pin row per named pin), Pneumatic slides, Cameras, Keithley, CLD101x,
-    // PSUs, Lights (with a channel row per channel), IO watch, Safety watch.
+    // PSUs, Lights (with a channel row per channel), IO watch, Safety watch,
+    // Interlocks (a row per rule, its conditions and refusals beneath).
     std::vector<PorRow>      sections;
     std::vector<std::string> notes;
 };

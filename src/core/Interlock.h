@@ -195,6 +195,10 @@ std::string IlBlockText(const IlBlock& b);  // "gantry-main X,Y (+ only)"
 // <machine root>/config/interlocks.local.json, else the shipped
 // config/interlocks.json, else an empty config. `pathUsed` gets the file read.
 IlConfig    LoadInterlocks(std::string* pathUsed = nullptr);
+// One file, by path - no machine root resolved (FireDogPor reads both sides
+// with this). *found = the file exists. A malformed file comes back with
+// loadError set, exactly as LoadInterlocks hands it to the gate.
+IlConfig    LoadInterlocksFile(const std::string& path, bool* found = nullptr);
 bool        SaveInterlocks(const IlConfig& cfg, std::string* err = nullptr);   // the local file
 std::string InterlocksLocalPath();
 

@@ -172,6 +172,7 @@ It never covers the safety alert.
 | Interlocks window | View > Interlocks, read only | Technician (`kRoleInterlockView`) |
 | bypass | the Interlocks window | Admin |
 | rig | `interlocks` prints every rule's live state; it evaluates, never acts | — |
+| POR | the Hardware page's *Interlocks* section: master vs target by rule NAME (`docs/por-design.md` §6a); *Export master* carries the file | — |
 
 Interlocks are **machine** state, because they describe the machine's geometry.
 Like `hardware.json`, a change every machine needs is made on each machine.
@@ -211,6 +212,5 @@ rather than vanishing.
 
 ## 9. Follow-ups
 
-- POR: compare `interlocks.local.json` rule by rule (by name), like `hardware.json`.
 - A rule could carry "allow the move that clears it" automatically. Today the
   direction filter says it explicitly (`dir`).

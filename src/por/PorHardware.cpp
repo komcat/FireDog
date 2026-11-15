@@ -5,6 +5,7 @@
 #include "command/CommandSpec.h"
 #include "core/LightCallout.h"   // ChannelInLight
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <set>
@@ -463,6 +464,129 @@ PorRow SignalRow(const SafetySignalConfig* m, const SafetySignalConfig* t)
     return r;
 }
 
+// ---- Interlocks: rules by NAME, their conditions and refusals as sets -----------
+// A rule is an AND of conditions and a list of refusals; neither has an order
+// that means anything, so each is compared by its canonical text (slides and
+// axes sorted). Which way a difference cuts decides its weight: a refusal the
+// target's rule LACKS means the target protects less - Missing, like a master
+// rule the target lacks altogether. Everything else is Changed.
+
+std::string CondKey(IlCond c)
+{
+    std::sort(c.slides.begin(), c.slides.end());
+    return IlCondText(c);
+}
+
+std::string BlockKey(IlBlock b)
+{
+    std::sort(b.axes.begin(), b.axes.end());
+    return IlBlockText(b);
+}
+
+PorRow IlCondRow(const std::string* m, const std::string* t)
+{
+    PorRow r = Dev(PorRowKind::Item, "when  " + (m ? *m : *t), m != nullptr, t != nullptr, false);
+    PorParam p;
+    p.name      = "condition";
+    p.hasMaster = m != nullptr;
+    p.hasTarget = t != nullptr;
+    if (m) p.master = *m;
+    if (t) p.target = *t;
+    if (m && !t) p.note = "only the master's rule has this condition";
+    if (!m && t) p.note = "only the target's rule has this condition";
+    r.params.push_back(std::move(p));
+    if (!m || !t) r.status = PorStatus::Changed;
+    Finish(r);
+    return r;
+}
+
+PorRow IlBlockRow(const std::string* m, const std::string* t, bool masterRuleOn)
+{
+    PorRow r = Dev(PorRowKind::Item, "refuses  " + (m ? *m : *t), m != nullptr, t != nullptr, false);
+    PorParam p;
+    p.name      = "refuses";
+    p.hasMaster = m != nullptr;
+    p.hasTarget = t != nullptr;
+    if (m) p.master = *m;
+    if (t) p.target = *t;
+    if (m && !t) {
+        r.status = masterRuleOn ? PorStatus::Missing : PorStatus::Changed;
+        p.note   = "the target's rule does not refuse this - it protects less";
+    } else if (!m && t) {
+        r.status = PorStatus::Changed;
+        p.note   = "the target's rule also refuses this";
+    }
+    r.params.push_back(std::move(p));
+    Finish(r);
+    return r;
+}
+
+PorRow IlRuleRow(const IlRule* m, const IlRule* t)
+{
+    const std::string name = m ? m->name : t->name;
+    const bool on = m && m->enabled;
+    // An ENABLED master rule the target lacks is Missing: a protection the
+    // master machine has and this one does not.
+    PorRow r = Dev(PorRowKind::Device, name, m != nullptr, t != nullptr, on);
+    if (m && !t) r.status = on ? PorStatus::Missing : PorStatus::OnlyMaster;
+    F(r, m, t, "enabled", &IlRule::enabled);
+    if (m && t && m->enabled && !t->enabled) {
+        r.params.back().status = PorStatus::Missing;
+        r.params.back().note   = "disabled on the target - it protects less";
+    }
+    Fs(r, "note", m != nullptr, t != nullptr, m ? m->note : "", t ? t->note : "");
+    r.params.back().status = PorStatus::Same;   // words, not behaviour: shown, never judged
+
+    const auto keys = [](const IlRule* x, auto keyFn, const auto& list) {
+        std::vector<std::string> out;
+        if (x)
+            for (const auto& e : list(*x)) out.push_back(keyFn(e));
+        return out;
+    };
+    const auto whenOf  = [](const IlRule& x) -> const std::vector<IlCond>& { return x.when; };
+    const auto blockOf = [](const IlRule& x) -> const std::vector<IlBlock>& { return x.blocks; };
+    const std::vector<std::string> cm = keys(m, CondKey, whenOf), ct = keys(t, CondKey, whenOf);
+    const std::vector<std::string> bm = keys(m, BlockKey, blockOf), bt = keys(t, BlockKey, blockOf);
+    const auto self = [](const std::string& s) { return s; };
+    for (PorRow& c : PairBy(cm, ct, self, [](const std::string* a, const std::string* b) {
+             return IlCondRow(a, b);
+         }))
+        r.children.push_back(std::move(c));
+    for (PorRow& c : PairBy(bm, bt, self, [on](const std::string* a, const std::string* b) {
+             return IlBlockRow(a, b, on);
+         }))
+        r.children.push_back(std::move(c));
+    Finish(r);
+    return r;
+}
+
+PorRow InterlocksRow(const PorSide& ms, const PorSide& ts)
+{
+    PorRow r = Dev(PorRowKind::Device, "interlocks", true, true, false);
+    const IlConfig& m = ms.interlocks;
+    const IlConfig& t = ts.interlocks;
+    Fs(r, "file", true, true, ms.hasInterlocks ? "interlocks.local.json" : "(none - no rules)",
+       ts.hasInterlocks ? "interlocks.local.json" : "(none - no rules)");
+    r.params.back().status = PorStatus::Same;   // presence speaks through the rules below
+    if (!m.loadError.empty() || !t.loadError.empty()) {
+        Fs(r, "readable", true, true, m.loadError.empty() ? "yes" : "NO", t.loadError.empty() ? "yes" : "NO");
+        if (!t.loadError.empty()) {
+            r.params.back().status = PorStatus::Missing;
+            r.params.back().note   = "the target's file cannot be read: it refuses every move";
+        }
+    }
+    F(r, &m, &t, "enabled", &IlConfig::enabled);
+    if (m.enabled && !t.enabled) {
+        r.params.back().status = PorStatus::Missing;
+        r.params.back().note   = "switched off on the target - no rule is enforced there";
+    }
+    F(r, &m, &t, "watch_ms", &IlConfig::watchMs);
+    r.children = PairBy(m.rules, t.rules, [](const IlRule& x) { return x.name; },
+                        [](const IlRule* a, const IlRule* b) { return IlRuleRow(a, b); });
+    Finish(r);
+    return r;
+}
+
 } // namespace
 
 PorHardwareReport CompareHardware(const PorSide& master, const PorSide& target,
@@ -533,6 +657,15 @@ PorHardwareReport CompareHardware(const PorSide& master, const PorSide& target,
         std::vector<PorRow> one;
         one.push_back(std::move(w));
         rep.sections.push_back(Section("Safety watch", std::move(one)));
+    }
+    {
+        // The machine type's geometry, like the rest of this page: rules by
+        // NAME (uids are per machine), conditions and refusals as sets.
+        if (!master.hasInterlocks) rep.notes.push_back("the master has no interlocks.local.json (no rules)");
+        if (!target.hasInterlocks) rep.notes.push_back("the target has no interlocks.local.json (no rules)");
+        std::vector<PorRow> one;
+        one.push_back(InterlocksRow(master, target));
+        rep.sections.push_back(Section("Interlocks", std::move(one)));
     }
     return rep;
 }

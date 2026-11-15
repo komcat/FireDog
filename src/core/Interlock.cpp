@@ -620,27 +620,39 @@ IlConfig FromJson(const nlohmann::json& j)
 
 std::string InterlocksLocalPath() { return MachinePath("config/interlocks.local.json"); }
 
+IlConfig LoadInterlocksFile(const std::string& path, bool* found)
+{
+    if (found) *found = false;
+    std::ifstream f(path);
+    if (!f.is_open()) return IlConfig{};
+    if (found) *found = true;
+    try {
+        nlohmann::json j;
+        f >> j;
+        return FromJson(j);
+    } catch (const std::exception& e) {
+        IlConfig broken;
+        broken.loadError = path + ": " + e.what();
+        return broken;
+    }
+}
+
 IlConfig LoadInterlocks(std::string* pathUsed)
 {
     if (pathUsed) pathUsed->clear();
     const std::string local = InterlocksLocalPath();
     for (const std::string& path : {local, std::string(kShippedPath)}) {
-        std::ifstream f(path);
-        if (!f.is_open()) continue;
+        bool found = false;
+        IlConfig cfg = LoadInterlocksFile(path, &found);
+        if (!found) continue;
         if (pathUsed) *pathUsed = path;
-        try {
-            nlohmann::json j;
-            f >> j;
-            return FromJson(j);
-        } catch (const std::exception& e) {
-            // NOT a fall-through to the shipped (empty) default: that would
-            // silently switch every interlock off. Refuse motion instead.
-            FD_ERROR("interlock", "%s is malformed (%s) - every move is refused until it "
-                                  "is fixed", path.c_str(), e.what());
-            IlConfig broken;
-            broken.loadError = path + ": " + e.what();
-            return broken;
-        }
+        // A malformed file is NOT a fall-through to the shipped (empty)
+        // default: that would silently switch every interlock off. The gate
+        // refuses motion on its loadError instead.
+        if (!cfg.loadError.empty())
+            FD_ERROR("interlock", "%s - every move is refused until it is fixed",
+                     cfg.loadError.c_str());
+        return cfg;
     }
     return IlConfig{};
 }
