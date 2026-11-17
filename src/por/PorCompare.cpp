@@ -567,6 +567,39 @@ PorRow PairedStep(Ctx& c, const RecipeStep& ms, const RecipeStep& ts)
     for (const std::string& k : extra)
         r.params.push_back(CompareParam(c, ms.type, k, nullptr, ms.params, ts.params));
 
+    // Per-VARIANT step values (RecipeStep::variants, a supply's volts per
+    // model): for every variant either side overrides, the value that variant
+    // RUNS with on each side - its override, else the base - so an override on
+    // one side that equals the other side's base is Same, and a missing one
+    // that changes what runs is Changed. Shown as "volts @65C".
+    {
+        std::set<std::string> vnames;
+        for (auto it = ms.variants.begin(); it != ms.variants.end(); ++it) vnames.insert(it.key());
+        for (auto it = ts.variants.begin(); it != ts.variants.end(); ++it) vnames.insert(it.key());
+        const nlohmann::json mBase = spec ? EffectiveParams(*spec, ms.params) : ms.params;
+        const nlohmann::json tBase = spec ? EffectiveParams(*spec, ts.params) : ts.params;
+        for (const std::string& vn : vnames) {
+            const nlohmann::json mo = ms.variants.contains(vn) ? ms.variants[vn] : nlohmann::json::object();
+            const nlohmann::json to = ts.variants.contains(vn) ? ts.variants[vn] : nlohmann::json::object();
+            std::set<std::string> keys;
+            for (auto it = mo.begin(); it != mo.end(); ++it) keys.insert(it.key());
+            for (auto it = to.begin(); it != to.end(); ++it) keys.insert(it.key());
+            for (const std::string& k : keys) {
+                const bool mOwn = mo.contains(k), tOwn = to.contains(k);
+                const nlohmann::json mv = mOwn ? mo[k] : (mBase.contains(k) ? mBase[k] : nlohmann::json());
+                const nlohmann::json tv = tOwn ? to[k] : (tBase.contains(k) ? tBase[k] : nlohmann::json());
+                PorParam p;
+                p.name      = k + " @" + vn;
+                p.cls       = PorParamClass::Design;
+                p.hasMaster = p.hasTarget = true;
+                p.master    = mv.is_null() ? "" : mv.dump() + (mOwn ? "" : "  (base)");
+                p.target    = tv.is_null() ? "" : tv.dump() + (tOwn ? "" : "  (base)");
+                if (!JsonEqual(mv, tv)) p.status = PorStatus::Changed;
+                r.params.push_back(std::move(p));
+            }
+        }
+    }
+
     for (const PorParam& p : r.params) r.status = Max(r.status, RowShare(p.status));
     if (!spec && !IsStructuralStep(ms.type)) r.status = Max(r.status, PorStatus::Unknown);
 
@@ -836,6 +869,28 @@ PorRow ProgramRow(Ctx& c, const Program* mp, const Program* tp, PorStatus oneSid
         if (p.master != p.target) p.status = PorStatus::Changed;
         r.status = p.status;
         r.params.push_back(std::move(p));
+        // The position VARIANT every run of the program moves by - which model
+        // it builds. A different one is a different product run, and one the
+        // target does not declare is refused there at Execute.
+        PorParam v;
+        v.name = "variant";
+        v.cls  = PorParamClass::Design;
+        v.master = mp->posVariant.empty() ? "base" : mp->posVariant;
+        v.target = tp->posVariant.empty() ? "base" : tp->posVariant;
+        v.hasMaster = v.hasTarget = true;
+        const auto declared = [](const PorSide& s, const std::string& n) {
+            return n.empty() || std::find(s.posVariants.begin(), s.posVariants.end(), n) !=
+                                    s.posVariants.end();
+        };
+        if (!declared(c.t, tp->posVariant)) {
+            v.status = PorStatus::Missing;
+            v.note   = "the target does not declare variant '" + tp->posVariant +
+                       "' - Execute refuses";
+        } else if (v.master != v.target) {
+            v.status = PorStatus::Changed;
+        }
+        r.status = Max(r.status, v.status);
+        r.params.push_back(std::move(v));
     } else {
         r.status = oneSided;
     }

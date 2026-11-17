@@ -102,6 +102,13 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
     const std::uint64_t runHash = RecipeStepsHash(run.steps);
     if (opts.teach) MakeTeachRecipe(run, reg_, teachOnly);   // the inlined bodies, same rule
     if (opts.dryRun) MakeDryRunRecipe(run, reg_);
+    // The run's POSITION VARIANT, step half: opted-in params (a supply's volts
+    // / amps) take this variant's overrides, then every step is flat. After
+    // the inline so sub-recipe bodies get it; after the hash, which already
+    // covers the overrides. Every variant's values were validated above.
+    if (const std::size_t nv = ApplyStepVariants(run.steps, env.posVariant, reg_); nv > 0)
+        FD_INFO("recipe", "'%s': %zu param(s) set for variant %s", run.name.c_str(), nv,
+                env.posVariant.c_str());
 
     // The on-fail recipe is resolved, validated (devices Connected) and
     // inlined NOW, not when it is needed: a cleanup that cannot run must
@@ -137,6 +144,7 @@ bool RecipeEngine::Start(const Recipe& recipe, Env env, std::string* err,
             if (err) *err = msg;
             return false;
         }
+        ApplyStepVariants(onFail.steps, env.posVariant, reg_);   // same model, same supply
     }
 
     {

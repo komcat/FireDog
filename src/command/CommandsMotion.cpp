@@ -313,6 +313,11 @@ CommandResult TeachAfterMove(ExecutionContext& ctx, IMotionController* m,
               "spot, then Save. Skip leaves it untaught."
         : "Teach '" + std::string(pos.name) + "' on " + device +
               ": jog onto the exact spot, then Save. Skip keeps the saved value.";
+    // Under a position variant the operator must know Save writes THAT
+    // variant's values (the run shows the base where it has none yet).
+    if (!ctx.PositionVariant().empty())
+        req.message += " [variant " + ctx.PositionVariant() + ": Save writes " +
+                       ctx.PositionVariant() + "'s values; the base is untouched]";
     req.untaught     = pos.untaught;
     req.device       = device;
     req.stepUm       = 10.0;

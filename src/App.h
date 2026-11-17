@@ -499,6 +499,11 @@ private:
     void DrawRecipeCtxKeys(const Recipe& r);       // searchable add-step column
     bool DrawParamWidget(const CommandSpec& spec, const ParamSpec& p,
                          nlohmann::json& params);   // schema form row
+    // DrawParamWidget for a step: a param that may vary per variant
+    // (ParamSpec::variant) is edited as the WORKING variant's override when one
+    // is set (posVariant_), with a "base" button to drop it; any other param,
+    // or base, is the plain row.
+    bool DrawStepParam(const CommandSpec& spec, const ParamSpec& p, RecipeStep& s);
     void DrawTeachPositionModal();    // "Teach here" confirm, raised from a form row
     // Overwrite an existing saved position (by uid) with the device's live
     // pose. In place — the uid survives, so every reference to it survives.
@@ -857,7 +862,7 @@ private:
     // A heuristic by name: a user who points ctx_prefix at their own name gets
     // a user key; one who reuses a default prefix gets a system one.
     bool IsSystemCtxKey(const std::string& key);
-    // Program Organizer (its own window, opened by the Run strip's Edit box):
+    // Program Organizer (its own window, opened by the Run deck's Organizer button):
     // recipe library | 1st slot tree | aisle | 2nd slot tree. The ONLY
     // program-editing surface. `panel` is 0 (1st) or 1 (2nd) throughout: each
     // panel shows a slot of its own with a selection of its own, and the aisle
@@ -2213,7 +2218,7 @@ private:
     // an index into a tree means nothing the moment a folder above it opens,
     // closes or is reordered. Empty = slot scope.
     std::string deckNode_;
-    bool runEdit_       = false;   // mirrors orgOpen_: the strip's Edit checkbox
+    bool runEdit_       = false;   // mirrors orgOpen_ (the deck's Organizer button opens it)
     bool showMotionInspect_ = false;   // the strip's Inspect Motion window
     bool motionInspectAll_  = false;   // ...listing every step, not only motion
     // Teach mode (the Run strip's toggle). While on, EVERY recipe launch is a

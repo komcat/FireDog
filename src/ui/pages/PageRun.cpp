@@ -1346,17 +1346,26 @@ void App::DrawRunPanel()
     DrawPauseButton(ImVec2(220.0f, stripBtnH));
     ImGui::PopFont();
     ImGui::PopStyleColor(3);
+    // What is loaded, as the answer to "what am I running?": the PRODUCT, and
+    // the program only when its name says something the product's does not
+    // (a product usually carries one program named after it). The program is
+    // LOADED, not picked from a combo: which one is up is a deliberate act.
     ImGui::SameLine();
     centerNext(ImGui::GetTextLineHeight());
-    ImGui::TextDisabled(onNode ? "item" : "slot");
-    // The program is LOADED, not picked from a combo: which program is up is a
-    // deliberate operator act, and the name is the answer to "what am I
-    // running?" — the reason it sits in the run strip and not down in the
-    // deck. Edit mode joins it for the same reason.
+    ImGui::TextDisabled("Product:");
     ImGui::SameLine();
     centerNext(ImGui::GetTextLineHeight());
-    if (haveProg) ImGui::Text("%s", session_.Programs()[progSel_].name.c_str());
-    else          ImGui::TextDisabled("(no program)");
+    if (session_.ProductLoaded()) ImGui::Text("%s", session_.Product().name.c_str());
+    else                          ImGui::TextDisabled("(none)");
+    if (!haveProg) {
+        ImGui::SameLine();
+        centerNext(ImGui::GetTextLineHeight());
+        ImGui::TextDisabled("(no program)");
+    } else if (session_.Programs()[progSel_].name != session_.Product().name) {
+        ImGui::SameLine();
+        centerNext(ImGui::GetTextLineHeight());
+        ImGui::TextDisabled("program %s", session_.Programs()[progSel_].name.c_str());
+    }
     // Which MODEL the deck runs: the program header's position variant. Shown
     // beside the name because it is part of the answer to "what am I running?";
     // red when the product no longer declares it (Execute then refuses).
@@ -1376,28 +1385,8 @@ void App::DrawRunPanel()
                                       "program header in the Program Organizer.",
                               pv.c_str());
     }
-    // Edit no longer grows buttons in the deck: it opens the Program Organizer
-    // window. The checkbox mirrors that window's own close box, so the two can
-    // never disagree about whether it is up.
-    //
-    // Absent below Technician: the Run page is the one surface an Operator has,
-    // and this checkbox is a door out of it into program editing. Gated HERE as
-    // well as at the window, because the strip is the only way in that does not
-    // go through the View menu.
-    if (CanUse(kRoleOrg)) {
-        ImGui::SameLine();
-        centerNext(ImGui::GetFrameHeight());
-        ImGui::BeginDisabled(running);
-        if (ImGui::Checkbox("Edit", &runEdit_)) {
-            orgOpen_ = runEdit_;
-            // Opening it lands on the slot the deck is showing: the operator
-            // asked to edit THIS station, not whichever one was last
-            // reorganised.
-            if (orgOpen_) { orgSlot_ = deckSlot_; orgSel_.clear(); }
-        }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open the Program Organizer");
-        ImGui::EndDisabled();
-    }
+    // The Program Organizer is opened from the deck column now (under the slot
+    // combo it edits), not from a checkbox here.
     // Teach / Inspect Motion live in the deck column, under the slot combo
     // (see "Mode buttons" below): they qualify what Execute runs on THIS slot, so they
     // sit with the slot, and the strip keeps only Execute and what is loaded.
@@ -1519,10 +1508,12 @@ void App::DrawRunPanel()
     // variants at all (so "base" is a statement, not an absence) or the program
     // names one; changed only in the Program Organizer. Red = not declared by
     // this product any more, and Execute refuses.
+    bool rowUsed = false;   // something is on this row: the button goes beside it
     if (haveProg) {
         const std::string& pv = session_.Programs()[progSel_].posVariant;
         if (!pv.empty() || !session_.PositionVariants().empty()) {
             const bool known = session_.HasPositionVariant(pv);
+            ImGui::AlignTextToFramePadding();
             if (pv.empty())
                 ImGui::TextDisabled("base");
             else
@@ -1534,14 +1525,48 @@ void App::DrawRunPanel()
             if (hov || ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", pv.empty()
                     ? "This program runs the BASE positions. Set a variant in the\n"
-                      "Program Organizer header (Edit) to run a model's positions."
+                      "Program Organizer header to run a model's positions."
                     : known
                         ? "Every run of this program moves by this position variant:\n"
                           "a position taught for it uses those values, any other its\n"
-                          "base values. Set in the Program Organizer header (Edit)."
+                          "base values. Set in the Program Organizer header."
                         : "This variant is not declared by the product - Execute refuses.\n"
                           "Declare it on the Motion page or change the program header.");
+            rowUsed = true;
         }
+    }
+    // The Program Organizer, opened from under the slot combo it edits
+    // (formerly the strip's Edit checkbox). A button, not a toggle: the
+    // window's own close box closes it, and pressing this while it is open
+    // brings it to the front. Opening lands on the slot the deck is showing -
+    // the operator asked to edit THIS station.
+    //
+    // Absent below Technician: the Run page is the one surface an Operator
+    // has, and this is a door out of it into program editing. Gated HERE as
+    // well as at the window, because this is the only way in that does not go
+    // through the View menu. Disabled while a run is active.
+    if (CanUse(kRoleOrg)) {
+        const char* orgLabel = "Organizer";
+        const float orgW = ImGui::CalcTextSize(orgLabel).x + style.FramePadding.x * 2.0f;
+        // Right-aligned on the variant row (or a row of its own), never
+        // overlapping the text already on it.
+        if (rowUsed) ImGui::SameLine();
+        ImGui::SetCursorPosX(
+            (std::max)(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - orgW));
+        ImGui::BeginDisabled(running);
+        if (ImGui::Button(orgLabel)) {
+            if (!orgOpen_) {
+                orgSlot_ = deckSlot_;
+                orgSel_.clear();
+            }
+            orgOpen_ = runEdit_ = true;
+            ImGui::SetWindowFocus("Program Organizer");
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(running ? "Not while a run is active"
+                                      : "Open the Program Organizer on this slot (edit the\n"
+                                        "program, its slots, folders and variant)");
     }
 
     // ---- Mode buttons: Teach | Inspect Motion, under the slot they act on ----
@@ -1630,8 +1655,8 @@ void App::DrawRunPanel()
     // count — lives in the Program Organizer window, because the two are
     // different jobs: the deck is what an operator reads while running one
     // station, and an editing control in it is a mis-click away from changing
-    // the program under a part. The Edit checkbox in the strip opens the
-    // organizer; it no longer grows buttons here.
+    // the program under a part. The Organizer button under the slot combo
+    // opens the organizer; nothing here grows editing buttons.
     //
     // Rows are 2.25 text-lines tall. This is the list an operator picks from
     // between parts, often with a glove on: the row is a touch target first and

@@ -628,7 +628,9 @@ void PorTool::DrawExplorer()
     for (const PorPosRow& p : positions_.rows)
         if ((p.tier == PorPosTier::Deck || p.tier == PorPosTier::Private) && Worse(p.status, posWorst))
             posWorst = p.status;
-    if (!positions_.mapIssues.empty() && Worse(PorStatus::Missing, posWorst)) posWorst = PorStatus::Missing;
+    if ((!positions_.mapIssues.empty() || !positions_.variantIssues.empty()) &&
+        Worse(PorStatus::Missing, posWorst))
+        posWorst = PorStatus::Missing;
     ExplorerItem("Positions", view_ == View::Positions, true, posWorst);
     if (clicked()) view_ = View::Positions;
 
@@ -1068,6 +1070,9 @@ void PorTool::DrawPositions()
 {
     for (const std::string& m : positions_.mapIssues)
         ImGui::TextColored(StatusColor(PorStatus::Missing), "%s", m.c_str());
+    for (const std::string& m : positions_.variantIssues)
+        ImGui::TextColored(StatusColor(PorStatus::Missing), "%s", m.c_str());
+    for (const std::string& m : positions_.variantNotes) ImGui::TextDisabled("%s", m.c_str());
     if (!positions_.untraced.empty()) {
         std::string t;
         for (const std::string& s : positions_.untraced) t += (t.empty() ? "" : ", ") + s;

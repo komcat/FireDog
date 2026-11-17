@@ -153,7 +153,7 @@ bool LoadPorSide(const std::string& root, const std::string& product, PorSide* o
 
     s.positions = LoadRole<SavedPosMap>(
         s, "positions", "positions.local.json",
-        [](const std::string& p) { return LoadSavedPositionsFile(p); },
+        [&s](const std::string& p) { return LoadSavedPositionsFile(p, nullptr, &s.posVariants); },
         [](const SavedPosMap& d) { return d.empty(); });
     s.recipes = LoadRole<std::vector<Recipe>>(
         s, "recipes", "recipes.local.json",

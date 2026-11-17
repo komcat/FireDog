@@ -391,6 +391,9 @@ std::string RunLuaFile(const std::string& requested, const CommandRegistry& reg,
                 std::string ie;
                 if (!InlineSubRecipes(run, library, &ie))
                     throw std::runtime_error("run_recipe '" + found->name + "': " + ie);
+                // The run's position variant reaches the recipe's steps too
+                // (a supply's volts per model), exactly as RecipeEngine::Start.
+                ApplyStepVariants(run.steps, ctx.PositionVariant(), reg);
                 FD_INFO("script", "run_recipe '%s' (%zu leaf step(s))",
                         run.name.c_str(), CountLeafSteps(run.steps));
                 // Same ExecutionContext: shared ctx values, same stop token.

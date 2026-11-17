@@ -443,7 +443,7 @@ void App::DrawMainWindow()
             if (ImGui::BeginMenu("View")) {
                 if (CanUse(kRoleAux)) ImGui::MenuItem("Aux Window", nullptr, &showAux_);
                 if (CanUse(kRoleJog)) ImGui::MenuItem("Jog",        nullptr, &showJog_);
-                // Same bit as the Run strip's Edit checkbox — one window, two
+                // Same bit as the Run deck's Organizer button — one window, two
                 // ways in, never two answers about whether it is open.
                 if (CanUse(kRoleOrg) &&
                     ImGui::MenuItem("Program Organizer", nullptr, &orgOpen_))

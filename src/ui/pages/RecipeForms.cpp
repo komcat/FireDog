@@ -166,6 +166,15 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
             }
         }
         ImGui::TextWrapped("%s", spec->description.c_str());
+        // Under a working variant, say which of this step's numbers are being
+        // edited: the violet rows are that variant's own, the rest are base.
+        if (!posVariant_.empty() &&
+            std::any_of(spec->params.begin(), spec->params.end(),
+                        [](const ParamSpec& q) { return q.variant; })) {
+            ImGui::TextColored(kVariantViolet, "Variant %s:", posVariant_.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("violet values are this variant's own; edit one to give it its own");
+        }
         ImGui::Spacing();
         // detect_object: what its model looks for, and the view it was taught
         // at - read-only, outside the canEdit dimming so a run does not grey them.
@@ -197,7 +206,7 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
         const std::vector<ParamSpec>& ps = spec->params;
         for (std::size_t i = 0; i < ps.size();) {
             if (ps[i].group.empty()) {
-                DrawParamWidget(*spec, ps[i], s.params);
+                DrawStepParam(*spec, ps[i], s);
                 ++i;
                 continue;
             }
@@ -250,7 +259,7 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
             if (open) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
             if (ImGui::CollapsingHeader(ps[i].group.c_str())) {
                 ImGui::Indent();
-                for (std::size_t k = i; k < j; ++k) DrawParamWidget(*spec, ps[k], s.params);
+                for (std::size_t k = i; k < j; ++k) DrawStepParam(*spec, ps[k], s);
                 ImGui::Unindent();
             }
             i = j;
@@ -260,6 +269,51 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
                            s.type.c_str());
     }
     ImGui::EndDisabled();
+}
+
+// A step's form row, variant-aware. A param that may vary per variant is, under
+// a working variant, drawn over a VIEW of the params holding that variant's
+// value (its override, else the base) and written back into the override - so
+// the ordinary widget, SI prefixes and all, edits it and the base is never
+// touched. "base" drops the override. Everything else is the plain row.
+bool App::DrawStepParam(const CommandSpec& spec, const ParamSpec& p, RecipeStep& s)
+{
+    if (!p.variant || posVariant_.empty()) return DrawParamWidget(spec, p, s.params);
+
+    const std::string& pv = posVariant_;
+    const bool own = s.variants.contains(pv) && s.variants[pv].is_object() &&
+                     s.variants[pv].contains(p.name);
+    nlohmann::json view = s.params;
+    if (own) view[p.name] = s.variants[pv][p.name];
+
+    ImGui::PushID("variant");
+    if (own) ImGui::PushStyleColor(ImGuiCol_Text, kVariantViolet);
+    const bool changed = DrawParamWidget(spec, p, view);
+    if (own) ImGui::PopStyleColor();
+    if (changed) {
+        if (view.contains(p.name)) {
+            s.variants[pv][p.name] = view[p.name];
+        } else if (own) {   // the widget cleared an optional value: back to base
+            s.variants[pv].erase(p.name);
+            if (s.variants[pv].empty()) s.variants.erase(pv);
+        }
+    }
+    const bool ownNow = s.variants.contains(pv) && s.variants[pv].is_object() &&
+                        s.variants[pv].contains(p.name);
+    if (ownNow) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("base")) {
+            s.variants[pv].erase(p.name);
+            if (s.variants[pv].empty()) s.variants.erase(pv);
+        }
+        if (ImGui::IsItemHovered()) {
+            const nlohmann::json bv = s.params.contains(p.name) ? s.params[p.name] : p.defaultValue;
+            ImGui::SetTooltip("Drop %s's own %s: it then uses the base value (%s)", pv.c_str(),
+                              p.name.c_str(), bv.dump().c_str());
+        }
+    }
+    ImGui::PopID();
+    return changed;
 }
 
 // One schema-driven form row: reads params[p.name] (schema default when

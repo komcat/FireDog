@@ -16,6 +16,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 #include <string>
 
 namespace firedog {
@@ -163,6 +164,18 @@ CommandResult ExecPsuStartup(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// Opt the named params into per-VARIANT values (ParamSpec::variant): a step
+// can then carry a value per product model, applied at run start
+// (ApplyStepVariants). Only what is a property of the PART - a supply's volts
+// for this model - never which device or channel it drives.
+CommandSpec WithVariantParams(CommandSpec spec, std::initializer_list<const char*> names)
+{
+    for (ParamSpec& ps : spec.params)
+        for (const char* n : names)
+            if (ps.name == n) ps.variant = true;
+    return spec;
+}
+
 } // namespace
 
 void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& hw)
@@ -297,7 +310,7 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
         return ParamSpec{"device", ParamType::DevicePsu, false, "", 0, 0, {},
                          "power supply (its name in hardware.json); empty = the first one"};
     };
-    reg.Register({"psu_set_vi", "Instruments", "Set a PSU channel's V/I setpoints",
+    reg.Register(WithVariantParams({"psu_set_vi", "Instruments", "Set a PSU channel's V/I setpoints",
                   {
                       psuDeviceParam(),
                       {"channel", PT::Int, true, {}, 1, 3, {}, "channel 1..3"},
@@ -310,7 +323,7 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
                                                     p.GetDouble("volts"),
                                                     p.GetDouble("amps")),
                                         "psu setpoint");
-                  }});
+                  }}, {"volts", "amps"}));
     reg.Register({"psu_output", "Instruments", "Switch a PSU channel output on/off",
                   {
                       psuDeviceParam(),
@@ -363,7 +376,7 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
                                       : (cur ? topics::PsuCurrent(dev, ch) : topics::PsuVoltage(dev, ch));
                       return ReadTopicToCtx(c, topic, p.GetString("ctx"));
                   }});
-    reg.Register({"psu_startup", "Instruments",
+    reg.Register(WithVariantParams({"psu_startup", "Instruments",
                   "Verified PSU start-up: check link, set CV/CC target + limit, output ON, settle, verify",
                   {
                       psuDeviceParam(),
@@ -386,7 +399,7 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
                       {"ctx_prefix", PT::String, false, "psu", 0, 0, {},
                        "results: <prefix>_ok, _v, _i, _mode (CV/CC as measured)"},
                   },
-                  Needs::Psu, ExecPsuStartup});
+                  Needs::Psu, ExecPsuStartup}, {"volts", "amps", "tol_v", "tol_a"}));
 
     // ---- CCS PD3 lighting ---------------------------------------------------
     // Percent of full scale everywhere; 0 % is OUTPUT OFF (F000 still glows).

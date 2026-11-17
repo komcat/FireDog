@@ -135,8 +135,9 @@ monitor and reshape a program while watching the deck it will drive).
 +-------------------------------------------------------------------+
 ```
 
-- **The Run strip's Edit checkbox, the View menu entry and the window's close
-  box are ONE bit** (`runEdit_` mirrors `orgOpen_`). Three ways in, never two
+- **The deck's Organizer button (under the slot combo), the View menu entry
+  and the window's close box are ONE bit** (`runEdit_` mirrors `orgOpen_`).
+  The button only OPENS (and focuses) it; the close box closes it. Never two
   answers about whether it is open.
 - **The organizer's slot selection is its own** (`orgSlot_`, seeded from the
   deck when the window opens). Reorganising slot 3 must not drag the operator's

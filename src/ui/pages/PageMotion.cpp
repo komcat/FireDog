@@ -924,7 +924,8 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                 }
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Delete the variant and every position's values for it.\n"
+                ImGui::SetTooltip("Delete the variant, every position's values for it and\n"
+                                  "every recipe step's values for it (save the recipes after).\n"
                                   "Refused while a program header names it.");
             ImGui::PopID();
         }

@@ -42,6 +42,11 @@ struct RecipeStep {
     std::string    nickname;                          // optional display label
     bool           enabled = true;                    // disabled: skipped, kept
     nlohmann::json params  = nlohmann::json::object();
+    // Per-VARIANT overrides of params that opted in (ParamSpec::variant):
+    // {"65C": {"volts": 2.8, "amps": 0.3}}. `params` stays the base. Applied
+    // once at run start (ApplyStepVariants), never read by a command. JSON
+    // "variants", omitted when empty. docs/position-variants-design.md §6.
+    nlohmann::json variants = nlohmann::json::object();
 
     std::vector<RecipeStep> children;                 // loop / if / group / sub_recipe
     std::vector<RecipeStep> elseChildren;             // if only
@@ -178,5 +183,16 @@ std::uint64_t RecipeStepsHash(const std::vector<RecipeStep>& steps);
 // A copy of `r` inlined against `library`, then hashed - what RecipeEngine::Start
 // hashes for an ordinary run. 0 when the inline fails (that run is refused anyway).
 std::uint64_t RecipeRunHash(const Recipe& r, const std::vector<Recipe>& library);
+
+// The step half of a POSITION VARIANT run (docs/position-variants-design.md
+// §6): every step's override for `variant` is written over its params - only
+// for params that opted in (ParamSpec::variant; anything else is left for
+// validation to have refused) - and every step's `variants` is then CLEARED,
+// so what runs is flat and no command ever learns what a variant is. "" (base)
+// only clears. Recursive (children, else). Applied by the engines AFTER
+// sub-recipes are inlined, so the inlined bodies get it too, and after the run
+// hash, which already covers the overrides. Returns how many params changed.
+std::size_t ApplyStepVariants(std::vector<RecipeStep>& steps, const std::string& variant,
+                              const CommandRegistry& reg);
 
 } // namespace firedog

@@ -99,12 +99,67 @@ A teach is how a variant gets its values — "keep the name, teach it for B":
 variants, so after restoring the row each variant can be restored. A rename is
 always of the row.
 
-## 6. Out of scope (v1)
+## 6. Step values per variant (PSU first)
 
-- **POR** compares and deploys base values only. Export master copies the file
-  whole, so variants travel with it; a deploy placeholder does not yet copy
-  variant entries (they should arrive `untaught`), and the compare does not
-  judge them.
+Some models need different supply settings, not different places. The same
+idea reaches recipe STEPS: a step keeps its params as the base and carries
+per-variant overrides of the params that opted in.
+
+```json
+{ "type": "psu_startup",
+  "params":   { "device": "psu1", "channel": 1, "mode": "CV", "volts": 3.3, "amps": 0.5 },
+  "variants": { "65C": { "volts": 2.8, "amps": 0.3 } } }
+```
+
+- **Opt-in per PARAM** (`ParamSpec::variant`, set after construction like
+  `siUnit`), the same shape as a command opting into teach or `parallel`. A
+  variant may change a value that is a property of the part — a supply's
+  volts for this model — never WHICH device, channel or position a step
+  drives. Opted in today: `psu_startup` `volts` `amps` `tol_v` `tol_a`,
+  `psu_set_vi` `volts` `amps` (`WithVariantParams`, `CommandsInstruments.cpp`).
+  A light %, an exposure or a Keithley bias opts in with one line.
+- **Applied once, after inlining** — `ApplyStepVariants(steps, variant, reg)`
+  in `RecipeEngine::Start` (after `InlineSubRecipes` and the run hash, so the
+  sub-recipe bodies get it; the on-fail recipe too) and in Lua's
+  `fd.run_recipe` (the ctx's variant). It writes the override over the param
+  and CLEARS every step's `variants`: what runs is flat and no command ever
+  reads an override. Base only clears.
+- **Every variant is validated**, whichever one a run uses: `ValidateRecipe`
+  checks each override set with `ValidateParams` (`variant 65C: volts ...`)
+  and refuses a key whose param did not opt in. Validation is per step, so
+  the editor's red marks and Start's refusal cover all models at once.
+- **Edited in the step form under the working variant** (the Recipe Editor's
+  combo): an opted-in row is drawn over a view holding the variant's value
+  and written back into the override (`App::DrawStepParam`), violet when the
+  variant has its own, with a `base` button to drop it. Base editing is
+  unchanged.
+- The overrides are part of the step's JSON, so they are in the recipe's
+  dirty state, its copy/paste and its cycle-time version hash (editing a
+  65C value re-starts learning for every model of that recipe).
+- Deleting a declared variant also drops its step overrides
+  (`DeletePositionVariant`), leaving the recipes DIRTY for an explicit Save.
+
+## 7. POR (FireDogPor)
+
+- **Deck**: a program's `variant` is a compared param; the target's value is
+  judged Missing when the target does not declare it (Execute would refuse).
+- **Steps**: for every variant either side overrides, `<param> @<variant>`
+  compares the value that variant RUNS with on each side (override, else the
+  base) — so an override equal to the other side's base is Same.
+- **Positions** (deck / private tiers): values stay measured and are never
+  compared per variant; COVERAGE is. A variant the master has taught for a
+  position that the target has not (none, or an untaught one) is Missing —
+  that model would drive to the base place there — and becomes a Teach item
+  on the Fix list (`teachAfterDeploy`). A variant only the target has is noted.
+- **Declared lists** (`PorSide::posVariants`): a variant a master program runs
+  that the target does not declare is a Missing issue and a Configure item
+  (a deploy BLOCKER); one declared on one side only is listed, not judged.
+- **Deploy plan**: a placeholder carries the master's variant entries, every
+  one `untaught`. Programs and steps carry their `variant` / `variants` as
+  written. Export master copies the files whole, so variants travel.
+
+## 8. Out of scope (v1)
+
 - **Cycle times** are keyed by the recipe's version hash, not the variant.
 - No variant rename (declare the new name, re-teach, delete the old).
 - Private positions (`algn_*`, grip inspect poses) are never offered a variant;

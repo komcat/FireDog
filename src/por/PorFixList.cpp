@@ -473,6 +473,19 @@ PorFixList BuildFixList(const PorSide& master, const PorSide& target, const Comm
                           "position '" + r.name + "' on " + r.device + where,
                           "untaught on the master itself - teach it there, then export again", "",
                           PorFixJump::Positions)].uses = r.uses;
+        } else if (r.status == PorStatus::Missing && r.hasTarget && !r.targetUntaught &&
+                   !r.variantsMissing.empty()) {
+            // Taught here for the base, not for a model the master teaches.
+            std::string list;
+            for (const std::string& v : r.variantsMissing) list += (list.empty() ? "" : ", ") + v;
+            PorFixItem& it = b.items[b.Add(
+                PorFixKind::Teach,
+                "position '" + r.name + "' on " + r.device + where + " for variant " + list,
+                "teach it for that variant here: the Motion page with its variant combo on " +
+                    list + ", or the deck's Teach run of a program on that variant",
+                "", PorFixJump::Positions)];
+            it.uses             = r.uses;
+            it.teachAfterDeploy = true;   // until then that model runs on the base place
         } else if (r.status == PorStatus::Missing) {
             PorFixItem& it = b.items[b.Add(
                 PorFixKind::Teach, "position '" + r.name + "' on " + r.device + where,
@@ -489,6 +502,14 @@ PorFixList BuildFixList(const PorSide& master, const PorSide& target, const Comm
                           PorFixJump::Positions)].uses = r.uses;
         }
     }
+
+    // A variant a master program runs that this machine does not declare: the
+    // program is refused at Execute until somebody declares it here.
+    for (const std::string& m : positions.variantIssues)
+        b.Add(PorFixKind::Configure, m,
+              "declare it on this machine: Motion page > Variants... (then teach the "
+              "positions that differ for it)",
+              "", PorFixJump::Positions);
 
     PorFixList out;
     out.items = std::move(b.items);

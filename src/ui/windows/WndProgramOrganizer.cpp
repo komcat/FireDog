@@ -4,9 +4,9 @@
 //
 // It is a WINDOW, not a page: reshaping a program is done while looking at the
 // deck and the DUT panel it will drive, and multi-viewport lets it be dragged
-// onto a second monitor. The Run strip's Edit checkbox and this window's close
-// box are the same bit (runEdit_ / orgOpen_ are mirrored), so the two can never
-// disagree about whether it is up.
+// onto a second monitor. The Run deck's Organizer button opens it and this
+// window's close box closes it - one bit (runEdit_ / orgOpen_ are mirrored), so
+// nothing can disagree about whether it is up.
 //
 // The deck stayed READ-ONLY when this landed. The two are different jobs: the
 // deck is what an operator reads while running one station, and an editing
@@ -510,7 +510,7 @@ void App::DrawProgramOrganizer()
     ImGui::SetNextWindowSize(ImVec2(1040.0f, 560.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Program Organizer", &orgOpen_)) {
         ImGui::End();
-        runEdit_ = orgOpen_;   // the close box and the strip checkbox are one bit
+        runEdit_ = orgOpen_;   // the close box and the deck's Organizer button: one bit
         return;
     }
 

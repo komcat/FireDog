@@ -221,6 +221,22 @@ const SavedPos* FindOnTarget(const PorSide& t, const Need& n, const SavedPos* mp
     return sp;
 }
 
+// Variant coverage of a matched pair: which of the master's variants the
+// target has not taught (none, or only an untaught placeholder), and which the
+// target has that the master does not. Coverage only - the values are measured.
+void VariantCoverage(PorPosRow& r, const SavedPos& mp, const SavedPos& tp)
+{
+    for (const auto& [v, mv] : mp.variants) {
+        (void)mv;
+        const auto it = tp.variants.find(v);
+        if (it == tp.variants.end() || it->second.untaught) r.variantsMissing.push_back(v);
+    }
+    for (const auto& [v, tv] : tp.variants) {
+        (void)tv;
+        if (!mp.variants.count(v)) r.variantsTargetOnly.push_back(v);
+    }
+}
+
 void Judge(PorPosRow& r, PorStatus whenMissing)
 {
     if (!r.hasTarget || !r.hasMaster) { r.status = r.hasMaster ? whenMissing : PorStatus::OnlyTarget; return; }
@@ -229,9 +245,24 @@ void Judge(PorPosRow& r, PorStatus whenMissing)
         if (r.note.empty()) r.note = "an untaught placeholder on the target - teach it there";
         return;
     }
+    // A model the master teaches here but the target does not: a run of it on
+    // the target would drive to the BASE place without a word.
+    if (!r.variantsMissing.empty()) {
+        r.status = whenMissing;
+        std::string list;
+        for (const std::string& v : r.variantsMissing) list += (list.empty() ? "" : ", ") + v;
+        if (r.note.empty())
+            r.note = "not taught for variant " + list + " on the target - it would use the base";
+        return;
+    }
     if (r.ambiguous)                         r.status = PorStatus::Ambiguous;
     else if (r.axesDiffer || r.overThreshold) r.status = PorStatus::Measured;
     else                                     r.status = PorStatus::Same;
+    if (!r.variantsTargetOnly.empty() && r.note.empty()) {
+        std::string list;
+        for (const std::string& v : r.variantsTargetOnly) list += (list.empty() ? "" : ", ") + v;
+        r.note = "the target also has variant " + list + " (the master has none)";
+    }
 }
 
 } // namespace
@@ -282,6 +313,7 @@ PorPositionsReport ComparePositions(const PorSide& master, const PorSide& target
                 row.targetUntaught = tp->untaught;
                 matchedTarget.insert({tdev, tp->uid});
                 Deltas(row, mmThreshold, degThreshold);
+                VariantCoverage(row, *mp, *tp);
             }
             Judge(row, PorStatus::Missing);
             rep.rows.push_back(std::move(row));
@@ -307,6 +339,7 @@ PorPositionsReport ComparePositions(const PorSide& master, const PorSide& target
                 row.targetUntaught = tp->untaught;
                 matchedTarget.insert({dev, tp->uid});
                 Deltas(row, mmThreshold, degThreshold);
+                VariantCoverage(row, mp, *tp);
             }
             row.ambiguous = cm > 1 || ct > 1;
             Judge(row, PorStatus::OnlyMaster);
@@ -337,6 +370,30 @@ PorPositionsReport ComparePositions(const PorSide& master, const PorSide& target
         if (it != target.maps.end())
             for (const MotionMap& mm : it->second) found = found || mm.name == name;
         if (!found) rep.mapIssues.push_back("map '" + name + "' on " + dev + " is missing on the target");
+    }
+
+    // Declared position variants. A master program's variant the target does
+    // not declare is a program the target refuses at Execute; a variant
+    // declared on one side only is listed so nobody is surprised by it.
+    {
+        const auto declared = [](const PorSide& s, const std::string& v) {
+            return std::find(s.posVariants.begin(), s.posVariants.end(), v) != s.posVariants.end();
+        };
+        std::set<std::string> used;
+        for (const Program& p : master.programs) {
+            if (p.posVariant.empty() || used.count(p.posVariant)) continue;
+            used.insert(p.posVariant);
+            if (!declared(target, p.posVariant))
+                rep.variantIssues.push_back("variant '" + p.posVariant + "' (program '" + p.name +
+                                            "') is not declared on the target - that program "
+                                            "would be refused at Execute");
+        }
+        for (const std::string& v : master.posVariants)
+            if (!declared(target, v) && !used.count(v))
+                rep.variantNotes.push_back("variant '" + v + "' is declared on the master only");
+        for (const std::string& v : target.posVariants)
+            if (!declared(master, v))
+                rep.variantNotes.push_back("variant '" + v + "' is declared on the target only");
     }
     rep.untraced.assign(tr.untraced.begin(), tr.untraced.end());
     return rep;

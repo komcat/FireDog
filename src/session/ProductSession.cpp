@@ -1069,10 +1069,26 @@ bool ProductSession::DeletePositionVariant(const std::string& name, std::string*
     std::size_t dropped = 0;
     for (auto& [dev, list] : positions_)
         for (SavedPos& p : list) dropped += p.variants.erase(name);
+    // Step overrides of the variant (a supply's volts for that model) go with
+    // it. Recipes are a document with an explicit Save, so this leaves them
+    // DIRTY rather than writing them behind the editor's back.
+    std::size_t stepVals = 0;
+    const std::function<void(std::vector<RecipeStep>&)> sweep = [&](std::vector<RecipeStep>& steps) {
+        for (RecipeStep& s : steps) {
+            if (s.variants.contains(name)) {
+                stepVals += s.variants[name].size();
+                s.variants.erase(name);
+            }
+            sweep(s.children);
+            sweep(s.elseChildren);
+        }
+    };
+    for (Recipe& r : recipes_) sweep(r.steps);
     std::erase(posVariants_, name);
     SavePositions("variant delete " + name);
-    FD_INFO("saved", "position variant '%s' deleted (%zu position entr%s dropped)", name.c_str(),
-            dropped, dropped == 1 ? "y" : "ies");
+    FD_INFO("saved", "position variant '%s' deleted (%zu position entr%s, %zu step value%s "
+                     "dropped%s)", name.c_str(), dropped, dropped == 1 ? "y" : "ies", stepVals,
+            stepVals == 1 ? "" : "s", stepVals ? " - save the recipes" : "");
     return true;
 }
 

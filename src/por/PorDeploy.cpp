@@ -160,6 +160,9 @@ struct Translator {
         ph.vals     = mp->vals;
         ph.hidden   = mp->hidden;
         ph.untaught = true;
+        // Its variants travel the same way: the master's numbers, untaught, so
+        // a run of that model refuses it until it is taught here too.
+        for (const auto& [vn, mv] : mp->variants) ph.variants[vn] = SavedPosVariant{mv.vals, true};
         plan.positions[device].push_back(ph);
         plan.placeholders.push_back({device, name, ph.uid, {use}});
         return ph.uid;

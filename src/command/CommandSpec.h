@@ -139,6 +139,13 @@ struct ParamSpec {
     // Stored plain, in the base unit - nothing but the form reads it. Set after
     // construction (spec.params[i].siUnit = "A"), so no brace-init moves.
     std::string    siUnit;
+    // The value may differ per POSITION VARIANT (the product's models): a
+    // step then carries per-variant overrides of it (RecipeStep::variants),
+    // applied once at run start by ApplyStepVariants. Opt-in per param, like
+    // teach / parallelBy per command: a variant may change a supply's volts,
+    // never which supply. Set after construction, like siUnit.
+    // docs/position-variants-design.md §6.
+    bool           variant = false;
 };
 
 struct CommandResult {

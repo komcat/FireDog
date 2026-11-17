@@ -38,6 +38,7 @@ nlohmann::json StepToJson(const RecipeStep& s)
     if (!s.nickname.empty()) j["nickname"] = s.nickname;
     if (!s.enabled) j["enabled"] = false;
     if (!s.params.empty()) j["params"] = s.params;
+    if (!s.variants.empty()) j["variants"] = s.variants;
     switch (s.onError) {
     case RecipeStep::OnError::Abort:    break;   // default — omit
     case RecipeStep::OnError::Continue: j["on_error"] = "continue"; break;
@@ -86,6 +87,9 @@ RecipeStep StepFromJson(const nlohmann::json& j)
     s.nickname = j.value("nickname", std::string());
     s.enabled  = j.value("enabled", true);
     if (j.contains("params") && j["params"].is_object()) s.params = j["params"];
+    if (j.contains("variants") && j["variants"].is_object())
+        for (const auto& [v, o] : j["variants"].items())
+            if (!v.empty() && o.is_object() && !o.empty()) s.variants[v] = o;
     MigrateStepParams(s);
     if (j.contains("on_error")) {
         const nlohmann::json& e = j["on_error"];
@@ -391,6 +395,30 @@ std::uint64_t RecipeRunHash(const Recipe& r, const std::vector<Recipe>& library)
     Recipe copy = r;
     if (!InlineSubRecipes(copy, library, nullptr)) return 0;
     return RecipeStepsHash(copy.steps);
+}
+
+std::size_t ApplyStepVariants(std::vector<RecipeStep>& steps, const std::string& variant,
+                              const CommandRegistry& reg)
+{
+    std::size_t n = 0;
+    for (RecipeStep& s : steps) {
+        if (!variant.empty() && s.variants.contains(variant) && s.variants[variant].is_object()) {
+            if (const CommandSpec* spec = reg.Find(s.type)) {
+                for (const auto& [k, val] : s.variants[variant].items()) {
+                    for (const ParamSpec& q : spec->params) {
+                        if (q.name != k || !q.variant) continue;
+                        s.params[k] = val;
+                        ++n;
+                        break;
+                    }
+                }
+            }
+        }
+        s.variants = nlohmann::json::object();
+        n += ApplyStepVariants(s.children, variant, reg);
+        n += ApplyStepVariants(s.elseChildren, variant, reg);
+    }
+    return n;
 }
 
 // ---- Validation -------------------------------------------------------------
@@ -730,6 +758,29 @@ void ValidateSteps(const ValidateEnv& env, const std::vector<RecipeStep>& steps,
             if (!e.empty()) {
                 Issue(env, where, path, e);
                 continue;
+            }
+            // EVERY variant's overrides, whichever one this run uses: a value
+            // that is out of range for 65C is a broken recipe whatever is on
+            // the machine today, and a param that never opted in must not be
+            // varied by hand-editing the file.
+            for (const auto& [vname, ov] : s.variants.items()) {
+                if (!ov.is_object()) continue;
+                nlohmann::json vp = s.params;
+                bool shapeOk = true;
+                for (const auto& [k, val] : ov.items()) {
+                    const ParamSpec* ps = nullptr;
+                    for (const ParamSpec& q : spec->params) if (q.name == k) { ps = &q; break; }
+                    if (!ps || !ps->variant) {
+                        Issue(env, where, path, "variant " + vname + ": '" + k +
+                                                    "' cannot vary per variant");
+                        shapeOk = false;
+                        continue;
+                    }
+                    vp[k] = val;
+                }
+                if (!shapeOk) continue;
+                const std::string ve = ValidateParams(*spec, vp, nullptr);
+                if (!ve.empty()) Issue(env, where, path, "variant " + vname + ": " + ve);
             }
             CheckReferences(env, where, path, *spec, merged);
             if (s.type == "wait_until") {

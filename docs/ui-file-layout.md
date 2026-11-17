@@ -253,7 +253,7 @@ Deliberately *not* hoisted, because each has exactly one home: `kWinW`/`kWinH`
 | `src/ui/pages/PageVersion.cpp` | Version page (takeover, Help menu, Admin): this build + the software update — Check / Download / Restart and install, release notes. Talks only to `AppUpdater` (owned by `main()`); see `docs/software-update-design.md` | 120 |
 | `src/ui/windows/WndJog.cpp` | Jog window (Jog / Camera / **Pos** / **IO** tabs) + the shared velocity combo | 885 |
 | `src/ui/windows/WndAux.cpp` | Aux window (camera + chart, own OS window) | 170 |
-| `src/ui/windows/WndProgramOrganizer.cpp` | Program Organizer window (Run strip's Edit / View menu): recipe library \| slot tree with folders, loop counts, drag-drop; the ONLY program-editing surface | 520 |
+| `src/ui/windows/WndProgramOrganizer.cpp` | Program Organizer window (Run deck's Organizer button / View menu): recipe library \| slot tree with folders, loop counts, drag-drop; the ONLY program-editing surface | 520 |
 | `src/ui/windows/WndPrompts.cpp` | global `prompt` + `manual_adjust` + alignment crosshair-pick windows; the operator panel switches (`UpdatePanelSwitches`, from `Update()`; the Run strip consumes `run`); sole `imgui_internal.h` user | 360 |
 
 CMake needs no edits: `GLOB_RECURSE … CONFIGURE_DEPENDS` picks up new files.

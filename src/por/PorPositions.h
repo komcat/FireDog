@@ -49,6 +49,12 @@ struct PorPosRow {
     // is judged Missing (it is not taught here); an untaught master row on the
     // deck is the master's own defect.
     bool        masterUntaught = false, targetUntaught = false;
+    // Position VARIANTS (docs/position-variants-design.md): the master has its
+    // own values for these and the target has none (or an untaught one) - a run
+    // of that model on the target would silently use the BASE place. Values are
+    // measured per machine and never compared; only the coverage is.
+    std::vector<std::string> variantsMissing;
+    std::vector<std::string> variantsTargetOnly;   // the target's own, the master has none
     std::vector<std::string> uses;       // "Siphog888 > PROD V2 > Load > 3.2 move_to_position"
     std::string note;
 };
@@ -57,6 +63,11 @@ struct PorPositionsReport {
     std::vector<PorPosRow>   rows;            // Deck (first-use order), Private, Unused, TargetOnly
     std::vector<std::string> untraced;        // product scripts the deck runs, not followed
     std::vector<std::string> mapIssues;       // a required map missing on the target, ...
+    // A variant a master program runs that the target does not declare (its
+    // program would be refused at Execute) - judged Missing; and a variant
+    // declared on one side only - listed, not judged.
+    std::vector<std::string> variantIssues;
+    std::vector<std::string> variantNotes;
 };
 
 PorPositionsReport ComparePositions(const PorSide& master, const PorSide& target,

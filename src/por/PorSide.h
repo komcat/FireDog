@@ -50,6 +50,9 @@ struct PorSide {
 
     ProductManifest          manifest;
     SavedPosMap              positions;
+    // The positions file's DECLARED variant names (docs/position-variants-design.md):
+    // a program naming one the target does not declare is refused there.
+    std::vector<std::string> posVariants;
     std::vector<Recipe>      recipes;
     std::vector<Program>     programs;
     std::vector<AlignProc>   aligns;
