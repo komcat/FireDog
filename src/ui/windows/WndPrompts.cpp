@@ -761,8 +761,47 @@ void App::DrawXcanOperatorWindow()
     ImGui::PopStyleColor(3);
     ImGui::EndDisabled();
     if (doneBlocked && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("This step requires the reading to reach the target before Done.\n"
-                          "Run another preset, or Cancel to fail the step.");
+        ImGui::SetTooltip(s.allowForce
+                              ? "This step requires the reading to reach the target before Done.\n"
+                                "Run another preset, Force Pass to continue anyway (recorded),\n"
+                                "or Cancel to fail the step."
+                              : "This step requires the reading to reach the target before Done.\n"
+                                "Run another preset, or Cancel to fail the step.");
+    // FORCE PASS: only where Done is blocked by a required target and the step
+    // allows the override. Two presses - the first arms it for 5 s and says
+    // what it will do - because it passes a part BELOW spec. The step records
+    // it (result "forced", <prefix>_forced, a $force_pass DUT event).
+    if (s.allowForce && doneBlocked) {
+        constexpr double kArmSec = 5.0;
+        const double now   = ImGui::GetTime();
+        const bool   armed = xopForceArmId_ == s.id && now - xopForceArmAt_ < kArmSec;
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              armed ? ImVec4(0.75f, 0.18f, 0.18f, 1.0f) : ImVec4(0.45f, 0.20f, 0.45f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                              armed ? ImVec4(0.88f, 0.25f, 0.25f, 1.0f) : ImVec4(0.58f, 0.28f, 0.58f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.60f, 0.12f, 0.12f, 1.0f));
+        char forceLbl[64];
+        if (armed)
+            std::snprintf(forceLbl, sizeof(forceLbl), "CONFIRM force pass (%.0f s)###xopForce",
+                          std::ceil(kArmSec - (now - xopForceArmAt_)));
+        else
+            std::snprintf(forceLbl, sizeof(forceLbl), "Force Pass###xopForce");
+        if (ImGui::Button(forceLbl, ImVec2(260.0f * k, ImGui::GetFrameHeight() * 1.5f))) {
+            if (armed) {
+                workflow_.ForcePassXcanSession(s.id);
+                xopForceArmId_ = 0;
+            } else {
+                xopForceArmId_ = s.id;
+                xopForceArmAt_ = now;
+            }
+        }
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Pass this step BELOW the required target and continue the\n"
+                              "program. Press twice. Recorded on the part (DUT $force_pass)\n"
+                              "with the reading, the target and who pressed it.");
+    }
     ImGui::SameLine();
     if (ImGui::Button("Cancel (Fail Step)", ImVec2(200.0f * k, ImGui::GetFrameHeight() * 1.5f)))
         workflow_.AnswerXcanSession(s.id, false);

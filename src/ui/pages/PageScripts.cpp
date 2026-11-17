@@ -1111,7 +1111,7 @@ void App::DrawScriptsPanel()
     const bool canRun   = !orch_.Busy() && selValid && !ScriptDirty();
     ImGui::BeginDisabled(!canRun);
     if (ImGui::Button("Run", ImVec2(90.0f, 0.0f))) {
-        LuaEngine::Env env = session_.MakeLuaEnv();
+        LuaEngine::Env env = session_.MakeLuaEnv(posVariant_);   // the header's active variant
         scriptStartErr_.clear();
         const std::string& path = session_.Scripts()[static_cast<std::size_t>(scriptSel_)].path;
         orch_.lua.SetBreakpoints(scriptBps_[path]);

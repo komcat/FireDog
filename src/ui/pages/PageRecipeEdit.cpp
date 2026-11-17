@@ -176,17 +176,21 @@ void App::DrawRecipeEditPanel()
     const ImVec2 avail   = ImGui::GetContentRegionAvail();
     const float  paneH   = avail.y - stripH - issuesH -
                            spacing * (issues.empty() ? 1.0f : 2.0f);
-    const float  leftW  = 230.0f;
     // The inspector is the one column whose natural width is not a constant: a
     // move_relative form is eight labelled fields, an XCAN step's is thirty, and
     // the operator's font size moves both. Dragged by the splitter below and
-    // persisted, like the main window's panes.
+    // persisted, like the main window's panes. The recipe LIST is dragged the
+    // same way (its own splitter, edListW_): long recipe names want it wide.
     constexpr float kSplitW    = 6.0f;
     constexpr float kMinMidW   = 260.0f;
     constexpr float kMinRightW = 220.0f;
+    constexpr float kMinLeftW  = 180.0f;
     if (edInspectW_ < kMinRightW) edInspectW_ = kMinRightW;
-    const float maxRightW = avail.x - leftW - ImGui::GetStyle().ItemSpacing.x -
-                            kSplitW - kMinMidW;
+    if (edListW_ < kMinLeftW) edListW_ = kMinLeftW;
+    const float maxLeftW = avail.x - kMinRightW - 2.0f * kSplitW - kMinMidW;
+    if (edListW_ > maxLeftW) edListW_ = maxLeftW > kMinLeftW ? maxLeftW : kMinLeftW;
+    const float  leftW  = edListW_;
+    const float maxRightW = avail.x - leftW - 2.0f * kSplitW - kMinMidW;
     if (edInspectW_ > maxRightW) edInspectW_ = maxRightW > kMinRightW ? maxRightW : kMinRightW;
     const float  rightW = edInspectW_;
 
@@ -551,15 +555,23 @@ void App::DrawRecipeEditPanel()
         ImGui::TextDisabled("(all %zu filtered out)", session_.Recipes().size());
     ImGui::EndChild();   // ##edRecipeRows
     ImGui::EndChild();
-    ImGui::SameLine();
+    // The list's own splitter, flush on both sides so the drag bar IS the
+    // border; persisted on drag END like the others.
+    ImGui::SameLine(0.0f, 0.0f);
+    if (Splitter("##edlistsplit", true, kSplitW, paneH)) {
+        edListW_ += ImGui::GetIO().MouseDelta.x;
+        edListSplitting_ = true;
+    } else if (edListSplitting_) {
+        edListSplitting_ = false;
+        SaveUiSettings();
+    }
+    ImGui::SameLine(0.0f, 0.0f);
 
     // ---- Middle: searchable palette column + step tree ----
-    // One ItemSpacing gap on the left (the recipe list's SameLine), then the
-    // splitter, which is flush on both sides so the drag bar IS the border.
-    // Floored: on a window too narrow for all three minimums ImGui would read a
-    // negative width as "available minus this" and scramble the layout.
-    const float midW = fmaxf(80.0f, avail.x - leftW - rightW -
-                                        ImGui::GetStyle().ItemSpacing.x - kSplitW);
+    // Between two splitters, each flush on both sides. Floored: on a window
+    // too narrow for all three minimums ImGui would read a negative width as
+    // "available minus this" and scramble the layout.
+    const float midW = fmaxf(80.0f, avail.x - leftW - rightW - 2.0f * kSplitW);
     // The palette's width is dragged (splitter between it and the tree) and
     // persisted: the long command names (grip_camera_to_object) want it wide,
     // a deep step tree wants it narrow, and no constant serves both.
@@ -1905,11 +1917,8 @@ void App::DrawRecipeRunStrip(float height)
     const float btnW  = 110.0f;
     const float chkW  = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x +
                         ImGui::CalcTextSize("Step").x;
-    // The working position variant's combo sits first: it qualifies what Run
-    // moves to, like Step qualifies how.
-    const float varW  = 100.0f;
-    // Variant / Run / Run Step / Run From / Next / Pause / Stop / Save.
-    const float ctrlW = varW + btnW * 7.0f + chkW + style.ItemSpacing.x * 8.0f;
+    // Run / Run Step / Run From / Next / Pause / Stop / Save.
+    const float ctrlW = btnW * 7.0f + chkW + style.ItemSpacing.x * 7.0f;
     const float rightEdge =
         ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
 
@@ -1950,12 +1959,17 @@ void App::DrawRecipeRunStrip(float height)
                               "saved positions and prompts to Save each one.");
     }
 
+    // Which model Run / Run Step / Run From move by: the header's ACTIVE
+    // variant, shown here and changed only there.
+    if (!posVariant_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(kVariantViolet, "| VARIANT %s", posVariant_.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Run uses the active variant's values (set in the header): a\n"
+                              "position or PSU value taught for it, else the base.");
+    }
+
     ImGui::SameLine(rightEdge - ctrlW);
-    // Which model Run / Run Step / Run From move by (App::posVariant_, shared
-    // with the Motion page). Locked while anything runs: the run in flight
-    // already holds its copy, and the combo must not claim otherwise.
-    DrawPosVariantCombo("##edPosVar", varW, !orch_.Busy());
-    ImGui::SameLine();
     // Step mode: Run starts paused at the selected step; Next executes one
     // leaf at a time. Toggling while a run is active pauses/resumes it live.
     ImGui::BeginDisabled(progRun);

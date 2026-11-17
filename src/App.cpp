@@ -80,6 +80,7 @@ int App::Run()
         if (ui.edInspectW    > 0.0f) edInspectW_    = ui.edInspectW;
         if (ui.edPaletteW    > 0.0f) edPaletteW_    = ui.edPaletteW;
         if (ui.edKeysH       > 0.0f) edKeysH_       = ui.edKeysH;
+        if (ui.edListW       > 0.0f) edListW_       = ui.edListW;
         edShowHidden_ = ui.edShowHidden;
         edLooseOnly_  = ui.edLooseOnly;
         edDurationSec_ = ui.edDurationSec;
@@ -139,6 +140,7 @@ int App::Run()
         runLastSlot_     = ui.runSlot > 0 ? ui.runSlot : 0;
         lastProduct      = ui.lastProduct;
         posPad_          = ui.posPad;
+        variantByProduct_ = ui.variantByProduct;
         runReadouts_     = ui.runReadouts;
         runValsUserOnly_ = ui.runValsUserOnly;
         dataHiddenKeys_  = std::set<std::string>(ui.dataHiddenKeys.begin(),
@@ -659,6 +661,7 @@ void App::SaveUiSettings()
     s.edInspectW    = edInspectW_;
     s.edPaletteW    = edPaletteW_;
     s.edKeysH       = edKeysH_;
+    s.edListW       = edListW_;
     s.edShowHidden  = edShowHidden_;
     s.edLooseOnly   = edLooseOnly_;
     s.edDurationSec = edDurationSec_;
@@ -710,6 +713,7 @@ void App::SaveUiSettings()
     s.runSlot     = runLastSlot_;
     s.lastProduct = session_.Product().name;
     s.posPad      = posPad_;
+    s.variantByProduct = variantByProduct_;
     s.runReadouts = runReadouts_;
     s.runValsUserOnly = runValsUserOnly_;
     s.dataHiddenKeys  = std::vector<std::string>(dataHiddenKeys_.begin(), dataHiddenKeys_.end());
@@ -795,8 +799,29 @@ void App::ResetDocumentSelections()
     trayMsg_.clear();
     workflow_.InvalidateDetector("");
     SyncScriptSelection();
-    // The working position variant names one of the OLD product's variants.
-    posVariant_.clear();
+    // The active position variant: what this station last built of THIS
+    // product, if the product still declares it; base otherwise.
+    {
+        posVariant_.clear();
+        const auto it = variantByProduct_.find(session_.Product().name);
+        if (it != variantByProduct_.end() && session_.HasPositionVariant(it->second))
+            posVariant_ = it->second;
+        if (!posVariant_.empty())
+            FD_INFO("product", "active variant '%s' restored for '%s'", posVariant_.c_str(),
+                    session_.Product().name.c_str());
+    }
+}
+
+void App::SetActiveVariant(const std::string& v)
+{
+    if (v == posVariant_ || !session_.HasPositionVariant(v)) return;
+    FD_INFO("product", "active variant: %s -> %s", posVariant_.empty() ? "base" : posVariant_.c_str(),
+            v.empty() ? "base" : v.c_str());
+    posVariant_ = v;
+    const std::string& prod = session_.Product().name;
+    if (v.empty()) variantByProduct_.erase(prod);
+    else           variantByProduct_[prod] = v;
+    SaveUiSettings();
 }
 
 // Scripts page selection, after the session rescanned the scripts dir: keep

@@ -184,6 +184,9 @@ UserRole MinRoleFor(Page p);
 //   The Aux window only ever displays, so an operator may have it.
 inline constexpr UserRole kRoleJog = UserRole::Technician;
 inline constexpr UserRole kRoleOrg = UserRole::Technician;
+//   The header's ACTIVE position variant picks which model every run builds;
+//   an operator sees it, a technician changes it.
+inline constexpr UserRole kRoleVariant = UserRole::Technician;
 inline constexpr UserRole kRoleAux = UserRole::Operator;
 //   View Data reads the same records as the DUT Records page, so it sits with it.
 inline constexpr UserRole kRoleData = UserRole::Technician;
@@ -524,6 +527,10 @@ private:
     void DrawManualAdjustWindow();    // GLOBAL manual_adjust jog window — non-modal, always on top
     void DrawOperatorNoticeWindow();  // GLOBAL notify_operator window — yellow, OK only, non-modal, on top
     void DrawXcanOperatorWindow();    // GLOBAL xcan_operator window — Quick align buttons, Done / Cancel
+    // The window's FORCE PASS takes two presses: the first arms it for this
+    // session (id) for a few seconds, the second answers. Runtime only.
+    std::uint64_t xopForceArmId_ = 0;
+    double        xopForceArmAt_ = 0.0;   // ImGui::GetTime() of the first press
     void DrawAlignPickWindow();       // GLOBAL align_station crosshair pick — non-modal, always on top
     // Alignment page (View menu, full-page): teach a local frame (O1) from two
     // operator-marked features. The capture itself runs through the engines, so
@@ -1574,6 +1581,10 @@ private:
     // thing from a hardware info panel.
     float edInspectW_ = 320.0f;
     bool  edInspectSplitting_ = false;   // edge-detect the drag END
+    // Width of the recipe list column, dragged by its splitter and persisted
+    // (ed_list_w). Long recipe names want it wide, a long step form narrow.
+    float edListW_ = 288.0f;
+    bool  edListSplitting_ = false;
     // Width of the editor's command palette column, dragged by the splitter
     // between the palette and the step tree. Persisted like the inspector: a
     // long command name wants it wide, a long step list wants it narrow.
@@ -2227,17 +2238,21 @@ private:
     // NOT in UiSettings - a mode that survives a restart would make every
     // launch silently teach - and cleared on LogOut like jogArmed_.
     bool teachMode_     = false;
-    // The WORKING position variant ("" = base): what the hand-driven surfaces
-    // show, move to and teach - the Motion page's positions table, the Recipe
-    // Editor's Run / Run Step / Run From and Teach here, the form's Go, the Jog
-    // pad's Go and Upd. A PROGRAM run never reads it: its variant is the
-    // program header's (Program::posVariant). Runtime only, like teachMode_,
-    // and cleared on product load (another product's variants mean nothing).
+    // The ACTIVE position variant ("" = base): the ONE answer to "which model
+    // is this station building". Every run (the Run page's deck, the Recipe
+    // Editor's Run / Run Step / Run From, scripts), every hand-driven surface
+    // (Motion table, Teach here, form Go, Jog pad, StartWatchedMove) and every
+    // teach uses it. Changed ONLY in the header (DrawStripProductVariant,
+    // kRoleVariant, never while busy), through SetActiveVariant. Remembered per
+    // product (variantByProduct_, UiSettings) and restored on product load; a
+    // name the product no longer declares reads as base.
     // docs/position-variants-design.md.
     std::string posVariant_;
-    // The working variant's combo (Motion page, Recipe Editor strip): base +
-    // the product's declared variants. A working variant the product no longer
-    // declares falls back to base here (drawn every frame, so it self-heals).
+    std::map<std::string, std::string> variantByProduct_;   // product name -> variant
+    void SetActiveVariant(const std::string& v);   // the one writer (+ persist)
+    // The header's product name + variant combo, after the page buttons.
+    void DrawStripProductVariant(float height);
+    // The variant combo itself (base + the declared variants).
     void DrawPosVariantCombo(const char* id, float width, bool enabled);
     // The ONE place a launch's StartOpts pick up the toggle; every Run/Execute
     // surface builds its opts from this, or one of them forgets the flag.

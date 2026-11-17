@@ -60,11 +60,6 @@ struct Program {
     std::string uid;
     std::string name = "program";
     std::string description;
-    // The POSITION VARIANT every run of this program moves by ("" = base): one
-    // of the product's declared variants (ProductSession::PositionVariants),
-    // applied when the run's Env is built. JSON "variant", omitted for base.
-    // docs/position-variants-design.md.
-    std::string posVariant;
     std::vector<ProgramSlot> slots;
 };
 

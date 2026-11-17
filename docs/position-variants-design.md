@@ -31,8 +31,8 @@ On disk (the product's `{uid}.positions.json`, or `positions.local.json`):
 - **Base is implicit.** `vals` IS the base variant; it is never listed and the
   name `base` cannot be declared.
 - **The list is DECLARED per product** (`"variants"`, `ProductSession::PositionVariants`).
-  A program header, the working-variant combo and a teach can only name a
-  declared one, so a typo never invents a variant. Declared and deleted on the
+  The header's active-variant combo and a teach can only name a declared
+  one, so a typo never invents a variant. Declared and deleted on the
   Motion page (*Variants...*).
 - Both keys are written only when non-empty: a file without variants is
   byte-for-byte what an older build wrote. **An older build that SAVES the
@@ -54,21 +54,36 @@ shape as the teach and dry-run transforms: one transform at Start, nothing
 downstream learns. `Env::posVariant` records which variant was applied; it is
 read only by the teach hand-off and the DUT record.
 
-## 3. Who picks the variant
+## 3. Who picks the variant: ONE active variant, in the header
 
-| Surface | Variant |
+There is exactly ONE variant selector: the combo in the header, after the page
+buttons, beside the product name (`App::DrawStripProductVariant`, large text).
+Its value, `App::posVariant_`, is the station's answer to "which model am I
+building", and EVERYTHING uses it:
+
+| Surface | Uses the active variant |
 |---|---|
-| Run page deck (Execute, Teach run) | the PROGRAM header's `Program::posVariant` (JSON `"variant"`), set in the Program Organizer |
-| Recipe Editor Run / Run Step / Run From, Teach here, the form's Go | the WORKING variant (`App::posVariant_`), the run strip's combo |
-| Motion page positions table, Update / Edit / Move, *Use base* | the working variant (the same member; its combo sits by the title) |
-| Jog pad Go, its "at" readout and hold + Upd; `StartWatchedMove` callers | the working variant |
-| Everything else (quick autofocus, mosaic, align / grip / needle / scripts pages, XCAN / raster) | base |
+| Run page deck (Execute, Teach run), Inspect Motion, the teach-positions picker | yes |
+| Recipe Editor Run / Run Step / Run From, Teach here, the form's Go, the step form's variant values | yes |
+| Motion page positions table, Update / Edit / Move, *Use base* | yes (shown read-only by the title) |
+| Jog pad Go, its "at" readout and hold + Upd; `StartWatchedMove` callers | yes |
+| Scripts page Run | yes |
+| Quick autofocus, mosaic, align / grip / needle pages, XCAN / raster | base (they never pass one) |
 
-The working variant is runtime only (like teach mode) and cleared on product
-load. The Run page never reads it: what a deck runs is a property of the
-program, not of whoever last touched the Motion page. A program naming a
-variant the product no longer declares is **refused at Execute** (red on the
-strip), before the frames or the cycle are touched.
+- **One writer**: `App::SetActiveVariant`, called only by the header combo.
+  Technician and up (`kRoleVariant`); locked while `orch_.Busy()` - a run
+  already holds its copy and the header must not claim another model. An
+  operator sees it, big, read-only.
+- **Remembered per product**: `UiSettings variant_by_product` (product name ->
+  variant), restored in `ResetDocumentSelections` on every product load and at
+  start. A name the product no longer declares reads as base (the combo heals
+  it every frame; Execute refuses one as a backstop).
+- **No per-program variant.** An earlier version had a program-header variant
+  plus a separate editor "working" variant; two answers to one question let a
+  deck run one model while the Motion page showed another. Old program files'
+  `"variant"` key is ignored.
+- Other pages SHOW it (the Recipe Editor strip's `VARIANT`, the Motion title),
+  never select it.
 
 ## 4. Teaching a variant
 
@@ -141,8 +156,6 @@ per-variant overrides of the params that opted in.
 
 ## 7. POR (FireDogPor)
 
-- **Deck**: a program's `variant` is a compared param; the target's value is
-  judged Missing when the target does not declare it (Execute would refuse).
 - **Steps**: for every variant either side overrides, `<param> @<variant>`
   compares the value that variant RUNS with on each side (override, else the
   base) — so an override equal to the other side's base is Same.
@@ -151,12 +164,12 @@ per-variant overrides of the params that opted in.
   position that the target has not (none, or an untaught one) is Missing —
   that model would drive to the base place there — and becomes a Teach item
   on the Fix list (`teachAfterDeploy`). A variant only the target has is noted.
-- **Declared lists** (`PorSide::posVariants`): a variant a master program runs
-  that the target does not declare is a Missing issue and a Configure item
-  (a deploy BLOCKER); one declared on one side only is listed, not judged.
+- **Declared lists** (`PorSide::posVariants`): a variant the master declares
+  that the target does not is a Missing issue and a Configure item (a deploy
+  BLOCKER) - that model cannot be selected there; one only the target
+  declares is listed, not judged.
 - **Deploy plan**: a placeholder carries the master's variant entries, every
-  one `untaught`. Programs and steps carry their `variant` / `variants` as
-  written. Export master copies the files whole, so variants travel.
+  one `untaught`. Steps carry their `variants` as written. Export master copies the files whole, so variants travel.
 
 ## 8. Out of scope (v1)
 

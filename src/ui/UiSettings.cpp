@@ -53,6 +53,7 @@ UiSettings UiSettings::Load(const std::string& path)
         if (j.contains("ed_inspect_w")) s.edInspectW = j["ed_inspect_w"].get<float>();
         if (j.contains("ed_palette_w")) s.edPaletteW = j["ed_palette_w"].get<float>();
         if (j.contains("ed_keys_h")) s.edKeysH = j["ed_keys_h"].get<float>();
+        if (j.contains("ed_list_w")) s.edListW = j["ed_list_w"].get<float>();
         if (j.contains("ed_show_hidden")) s.edShowHidden = j["ed_show_hidden"].get<bool>();
         if (j.contains("ed_loose_only")) s.edLooseOnly = j["ed_loose_only"].get<bool>();
         if (j.contains("ed_duration_sec")) s.edDurationSec = j["ed_duration_sec"].get<bool>();
@@ -188,6 +189,10 @@ UiSettings UiSettings::Load(const std::string& path)
                 s.posPad[it.key()] = std::move(slots);
             }
         }
+        if (j.contains("variant_by_product") && j["variant_by_product"].is_object())
+            for (auto it = j["variant_by_product"].begin(); it != j["variant_by_product"].end(); ++it)
+                if (it.value().is_string() && !it.value().get<std::string>().empty())
+                    s.variantByProduct[it.key()] = it.value().get<std::string>();
         // Quick IO rows: same tolerance - a malformed entry becomes a blank
         // row the operator can reassign, never a thrown-away file.
         if (j.contains("quick_io") && j["quick_io"].is_array()) {
@@ -251,6 +256,7 @@ bool UiSettings::Save(const std::string& path) const
     j["ed_inspect_w"]    = edInspectW;
     j["ed_palette_w"]    = edPaletteW;
     j["ed_keys_h"]       = edKeysH;
+    j["ed_list_w"]       = edListW;
     j["ed_show_hidden"]  = edShowHidden;
     j["ed_loose_only"]   = edLooseOnly;
     j["ed_duration_sec"] = edDurationSec;
@@ -327,6 +333,7 @@ bool UiSettings::Save(const std::string& path) const
     nlohmann::json pad = nlohmann::json::object();
     for (const auto& kv : posPad) pad[kv.first] = kv.second;
     j["pos_pad"] = pad;
+    j["variant_by_product"] = variantByProduct;
     nlohmann::json qio = nlohmann::json::array();
     for (const QuickIoRow& r : quickIo)
         qio.push_back({{"device", r.device}, {"pin", r.pin}, {"ms", r.dwellMs}});

@@ -95,14 +95,14 @@ public:
 
     // ---- position variants (docs/position-variants-design.md) ----
     // The product's DECLARED variant names, saved in the positions file. Base
-    // is implicit ("") and never listed. A program header, the editor's combo
+    // is implicit ("") and never listed. The header's active-variant combo
     // and a teach can only name one of these, so a typo never makes a variant.
     const std::vector<std::string>& PositionVariants() const { return posVariants_; }
     bool HasPositionVariant(const std::string& v) const;   // "" (base) always true
     // Declare a variant (trimmed, <= 31 chars, unique, not "base"). Saves.
     bool AddPositionVariant(const std::string& name, std::string* err);
     // Drop a declared variant AND every position's entry for it (journalled).
-    // Refused while a program header names it - `err` lists which.
+    // Its recipe-step overrides go too (the recipes are left dirty).
     bool DeletePositionVariant(const std::string& name, std::string* err);
     // One row's entry for `variant`: set its values (creating the entry,
     // clearing its untaught) or remove it (the row falls back to base). Both

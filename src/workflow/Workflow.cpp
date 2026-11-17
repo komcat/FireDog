@@ -161,7 +161,8 @@ Workflow::OperatorNotice Workflow::PendingNotice() const
 
 std::uint64_t Workflow::BeginXcanSession(const std::string& message, int timeoutMs,
                                          double target, const std::string& topic,
-                                         bool requireTarget, int autoDoneMs)
+                                         bool requireTarget, int autoDoneMs,
+                                         bool allowForce)
 {
     const std::scoped_lock lock(xcanSesMu_);
     xcanSes_               = XcanSession{};
@@ -171,6 +172,7 @@ std::uint64_t Workflow::BeginXcanSession(const std::string& message, int timeout
     xcanSes_.topic         = topic;
     xcanSes_.requireTarget = requireTarget;
     xcanSes_.autoDoneMs    = target > 0.0 && autoDoneMs > 0 ? autoDoneMs : 0;
+    xcanSes_.allowForce    = requireTarget && allowForce;   // nothing to force otherwise
     xcanSes_.deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 0);
     xcanReq_    = XcanScanRequest{};
@@ -205,6 +207,15 @@ void Workflow::AnswerXcanSession(std::uint64_t id, bool done)
     if (xcanSes_.scanning) return;
     xcanAnswer_        = done ? 1 : -1;
     xcanSes_.requested = false;   // an unclaimed press dies with the session
+}
+
+void Workflow::ForcePassXcanSession(std::uint64_t id)
+{
+    const std::scoped_lock lock(xcanSesMu_);
+    if (id == 0 || xcanSes_.id != id || xcanAnswer_ != 0) return;
+    if (!xcanSes_.allowForce || xcanSes_.scanning) return;   // same rule as Done
+    xcanAnswer_        = 2;
+    xcanSes_.requested = false;
 }
 
 bool Workflow::XcanSessionWants(std::uint64_t id) const

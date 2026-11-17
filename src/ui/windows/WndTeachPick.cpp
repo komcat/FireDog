@@ -65,8 +65,9 @@ void App::RebuildTeachPick()
     }
     teachPickLabel_ = q.label;
     // A teach under a variant writes THAT variant's values: say so up front.
-    if (const std::string& pv = session_.Programs()[progSel_].posVariant; !pv.empty())
-        teachPickLabel_ += "  [variant " + pv + " - saves go to " + pv + ", base untouched]";
+    if (!posVariant_.empty())
+        teachPickLabel_ += "  [variant " + posVariant_ + " - saves go to " + posVariant_ +
+                           ", base untouched]";
 
     // A looped folder repeats its recipes in the queue; list each recipe once.
     std::map<std::string, std::vector<TeachTarget>> byRecipe;
@@ -92,8 +93,7 @@ void App::RebuildTeachPick()
                         if (p.uid == t.uid) {
                             row.name     = p.name;
                             // Under the PROGRAM's variant, as the run will see it.
-                            row.untaught = EffectiveUntaught(
-                                p, session_.Programs()[progSel_].posVariant);
+                            row.untaught = EffectiveUntaught(p, posVariant_);
                             break;
                         }
                 const auto wi = was.find(key);

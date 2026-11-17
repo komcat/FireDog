@@ -869,28 +869,6 @@ PorRow ProgramRow(Ctx& c, const Program* mp, const Program* tp, PorStatus oneSid
         if (p.master != p.target) p.status = PorStatus::Changed;
         r.status = p.status;
         r.params.push_back(std::move(p));
-        // The position VARIANT every run of the program moves by - which model
-        // it builds. A different one is a different product run, and one the
-        // target does not declare is refused there at Execute.
-        PorParam v;
-        v.name = "variant";
-        v.cls  = PorParamClass::Design;
-        v.master = mp->posVariant.empty() ? "base" : mp->posVariant;
-        v.target = tp->posVariant.empty() ? "base" : tp->posVariant;
-        v.hasMaster = v.hasTarget = true;
-        const auto declared = [](const PorSide& s, const std::string& n) {
-            return n.empty() || std::find(s.posVariants.begin(), s.posVariants.end(), n) !=
-                                    s.posVariants.end();
-        };
-        if (!declared(c.t, tp->posVariant)) {
-            v.status = PorStatus::Missing;
-            v.note   = "the target does not declare variant '" + tp->posVariant +
-                       "' - Execute refuses";
-        } else if (v.master != v.target) {
-            v.status = PorStatus::Changed;
-        }
-        r.status = Max(r.status, v.status);
-        r.params.push_back(std::move(v));
     } else {
         r.status = oneSided;
     }

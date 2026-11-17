@@ -835,35 +835,6 @@ void App::DrawMotionPositionsPanel()
     DrawMotionPositionsTab(static_cast<size_t>(selectedMotion_), m);
 }
 
-// The working position variant's combo: base + the product's declared
-// variants. Shared by this page and the Recipe Editor's run strip (one member,
-// posVariant_, so the two can never disagree about which model is on the
-// bench). A working variant the product stopped declaring reads as base.
-void App::DrawPosVariantCombo(const char* id, float width, bool enabled)
-{
-    if (!session_.HasPositionVariant(posVariant_)) posVariant_.clear();
-    const bool on = !posVariant_.empty();
-    ImGui::BeginDisabled(!enabled);
-    ImGui::SetNextItemWidth(width);
-    if (on) ImGui::PushStyleColor(ImGuiCol_Text, kVariantViolet);
-    const bool open = ImGui::BeginCombo(id, on ? posVariant_.c_str() : "base");
-    if (on) ImGui::PopStyleColor();
-    if (open) {
-        if (ImGui::Selectable("base", !on)) posVariant_.clear();
-        for (const std::string& v : session_.PositionVariants())
-            if (ImGui::Selectable(v.c_str(), posVariant_ == v)) posVariant_ = v;
-        if (session_.PositionVariants().empty())
-            ImGui::TextDisabled("(no variants - Motion page > Variants...)");
-        ImGui::EndCombo();
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Working position variant: what the Motion table shows and\n"
-                          "Update / Edit write, what the Recipe Editor runs and teaches,\n"
-                          "and what the Jog pad's Go drives to. A position not taught for\n"
-                          "it uses its base values. Program runs use their own header.");
-}
-
 void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
 {
     const std::vector<std::string> axes = m->Axes();
@@ -871,13 +842,17 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
     // Laid out for the narrow right panel: a title, then one row of buttons,
     // then the selection and its tools, then the table.
     ImGui::TextUnformatted("Saved positions");
-    // The WORKING position variant: the table shows, Move drives to, and
-    // Update / Edit write THIS variant's values. A program run ignores it (its
-    // header names its own). docs/position-variants-design.md.
+    // The ACTIVE position variant (chosen in the header, the one place it
+    // changes): the table shows, Move drives to, and Update / Edit write THIS
+    // variant's values. Shown here, never picked here.
+    // docs/position-variants-design.md.
     ImGui::SameLine();
-    ImGui::TextDisabled("variant");
-    ImGui::SameLine();
-    DrawPosVariantCombo("##posvar", 110.0f, true);
+    if (posVariant_.empty()) ImGui::TextDisabled("variant base");
+    else                     ImGui::TextColored(kVariantViolet, "variant %s", posVariant_.c_str());
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The active variant (set in the header, beside the product name).\n"
+                          "The table shows its values - base where a position has none -\n"
+                          "and Update / Edit write them.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Variants...")) {
         posVarMsg_.clear();
@@ -913,7 +888,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                     std::string err;
                     const std::string name = v;   // v dies with the erase below
                     if (session_.DeletePositionVariant(name, &err)) {
-                        if (posVariant_ == name) posVariant_.clear();
+                        if (posVariant_ == name) SetActiveVariant("");
                         posVarMsg_ = "deleted '" + name + "'";
                     } else {
                         posVarMsg_ = err;
@@ -926,7 +901,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Delete the variant, every position's values for it and\n"
                                   "every recipe step's values for it (save the recipes after).\n"
-                                  "Refused while a program header names it.");
+                                  "If it is the active variant, the header goes back to base.");
             ImGui::PopID();
         }
         ImGui::Separator();

@@ -520,10 +520,14 @@ public:
         // published for the window's countdown only; the worker owns the clock.
         int           autoDoneMs = 0;
         std::chrono::steady_clock::time_point autoDoneAt{};
+        // FORCE PASS: with a required target, the operator may still pass the
+        // step below it - a deliberate override the step records (ctx + DUT
+        // event). Only offered when the step allows it (allow_force).
+        bool          allowForce = false;
     };
     std::uint64_t BeginXcanSession(const std::string& message, int timeoutMs, double target,
                                    const std::string& topic, bool requireTarget,
-                                   int autoDoneMs);
+                                   int autoDoneMs, bool allowForce);
     // The worker: the auto-continue hold started (at = when it fires) or broke ({}).
     void SetXcanAutoDone(std::uint64_t id, std::chrono::steady_clock::time_point at);
     // The worker: a Done it cannot accept (the reading fell below a required
@@ -533,8 +537,10 @@ public:
     // The UI. RequestXcanScan is refused (false) while a scan waits or runs.
     bool RequestXcanScan(std::uint64_t id, XcanScanRequest req);
     void AnswerXcanSession(std::uint64_t id, bool done);   // Done = true, Cancel = false
+    // The operator passes the step BELOW a required target (allowForce only).
+    void ForcePassXcanSession(std::uint64_t id);
     // The worker. Wants = an answer or a request is waiting (the wait's predicate);
-    // Answer = 0 none, 1 Done, -1 Cancel; Take moves the request into `out` and
+    // Answer = 0 none, 1 Done, 2 Force pass, -1 Cancel; Take moves the request into `out` and
     // marks the session scanning; Finish records how it ended.
     bool XcanSessionWants(std::uint64_t id) const;
     int  XcanSessionAnswer(std::uint64_t id) const;

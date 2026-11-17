@@ -347,14 +347,14 @@ void App::DrawMotionInspectWindow()
                         "camera);  current = not set in this scope.");
     ImGui::Separator();
 
-    // The targets the run would ACTUALLY drive to: the program's position
+    // The targets the run would ACTUALLY drive to: the active position
     // variant applied exactly as MakeRecipeEnv applies it.
-    if (!prog->posVariant.empty()) {
-        ImGui::TextColored(kVariantViolet, "Variant %s", prog->posVariant.c_str());
+    if (!posVariant_.empty()) {
+        ImGui::TextColored(kVariantViolet, "Variant %s", posVariant_.c_str());
         ImGui::SameLine();
         ImGui::TextDisabled("- targets are this variant's values where taught, else base.");
     }
-    const SavedPosMap viewPos = ApplyPositionVariant(session_.Positions(), prog->posVariant);
+    const SavedPosMap viewPos = ApplyPositionVariant(session_.Positions(), posVariant_);
     InspectWalk w{orch_.registry, viewPos, session_.VisionModels(),
                   motionInspectAll_, {}, {}, 0};
 

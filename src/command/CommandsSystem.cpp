@@ -9,6 +9,7 @@
 #include "command/ExecutionContext.h"
 #include "command/LuaEngine.h"   // RunLuaFile (run_script)
 #include "core/DataBus.h"
+#include "core/DutSession.h"   // $force_pass (xcan_operator)
 #include "core/Log.h"
 #include "hardware/HardwareManager.h"   // final-position capture (manual_adjust)
 #include "workflow/Workflow.h"          // the operator-notice slot (notify_operator)
@@ -247,6 +248,9 @@ CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
     const double target       = p.GetDouble("target");      // base units, 0 = no spec
     const std::string topic   = p.GetString("topic");
     const bool requireTarget  = p.GetBool("require_target") && target > 0.0;
+    // Force pass: the operator may pass the step BELOW a required target - a
+    // judged override, recorded as one. Meaningless without a requirement.
+    const bool allowForce     = requireTarget && p.GetBool("allow_force");
     // Auto-continue needs a spec to judge: no target, no auto Done.
     const int autoDoneMs      = target > 0.0
                                     ? static_cast<int>(p.GetDouble("auto_done_s") * 1000.0 + 0.5)
@@ -254,7 +258,7 @@ CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
     Workflow& wf              = ctx.Wf();
 
     const std::uint64_t id = wf.BeginXcanSession(msg, timeoutMin * 60 * 1000, target, topic,
-                                                 requireTarget, autoDoneMs);
+                                                 requireTarget, autoDoneMs, allowForce);
     // Every exit closes the window: done, cancel, timeout, stop, a throw.
     struct EndSession {
         Workflow& wf;
@@ -328,6 +332,36 @@ CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
         }
 
         const int answer = wf.XcanSessionAnswer(id);
+        if (answer == 2) {
+            // FORCE PASS: the operator passes the step below the required
+            // target. The step SUCCEEDS so the program continues, and the
+            // override is recorded where it cannot be missed: <prefix>_forced
+            // and _met (false) in ctx, a WARN in the log, and a $force_pass
+            // event on the open DUT with the reading, the spec and who pressed.
+            DataStream& s    = DataBus::Instance().Stream(topic);
+            const bool  have = s.Count() > 0;
+            const double sig = have ? s.LatestValue() : 0.0;
+            const bool  met  = have && sig >= target;
+            if (!prefix.empty()) {
+                ctx.CtxSet(prefix + "_signal", sig);
+                ctx.CtxSet(prefix + "_met", met);
+                ctx.CtxSet(prefix + "_auto", false);
+                ctx.CtxSet(prefix + "_forced", true);
+            }
+            record("forced");
+            nlohmann::json ev;
+            ev["step"]    = "xcan_operator";
+            ev["topic"]   = topic;
+            ev["reading"] = sig;
+            ev["target"]  = target;
+            ev["met"]     = met;
+            ev["scans"]   = scans;
+            DutSession::Instance().RecordEvent("$force_pass", std::move(ev));
+            FD_WARN("xcan", "xcan_operator: FORCE PASS by the operator after %d scan%s - %s "
+                            "%.4g, target %.4g%s", scans, scans == 1 ? "" : "s", topic.c_str(),
+                    sig, target, met ? " (met at the press)" : " (BELOW target)");
+            return CommandResult::Success();
+        }
         if (answer > 0) {
             // The reading at Done, judged against the spec HERE - the window's
             // colour is a guide, this is the record.
@@ -348,6 +382,7 @@ CommandResult ExecXcanOperator(ExecutionContext& ctx, const ParamValues& p,
                 ctx.CtxSet(prefix + "_signal", sig);
                 ctx.CtxSet(prefix + "_met", met);
                 ctx.CtxSet(prefix + "_auto", autoDone);
+                ctx.CtxSet(prefix + "_forced", false);
             }
             record("done");
             FD_INFO("xcan", "xcan_operator: Done after %d scan%s - %s %.4g%s", scans,
@@ -817,6 +852,11 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                              "Done is only accepted while the reading meets the target "
                              "(Cancel still fails the step); off = Done always, and "
                              "<prefix>_met records whether it was met"},
+                            {"allow_force", PT::Bool, false, true, 0, 0, {},
+                             "with require_target: offer a FORCE PASS button - the operator "
+                             "passes the step below the target (two presses) and the program "
+                             "continues; recorded as <prefix>_forced, result \"forced\" and a "
+                             "$force_pass DUT event. Off = the target is a hard gate"},
                             {"auto_done_s", PT::Double, false, 3.0, 0.0, 60.0, {},
                              "with a target: continue automatically (Done) once the reading "
                              "has held the target this long between scans; any dip restarts "
@@ -827,8 +867,8 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
                              "minutes (scans included)"},
                             {"ctx_prefix", PT::String, false, "xop", 0, 0, {},
                              "if set, <prefix>_scans (how many ran) and <prefix>_result "
-                             "(done / cancel / timeout); the last scan's align_* keys are "
-                             "in ctx either way"},
+                             "(done / forced / cancel / timeout); the last scan's align_* keys "
+                             "are in ctx either way"},
                         },
                         CommandSpec::Needs::None,
                         [rp](ExecutionContext& c, const ParamValues& p) {
@@ -841,11 +881,13 @@ void RegisterSystemCommands(CommandRegistry& reg, Workflow& wf, HardwareManager&
             CommandOutputs o;
             if (!pre.empty()) {
                 o.keys.push_back({pre + "_scans", "number", "scans the operator ran"});
-                o.keys.push_back({pre + "_result", "text", "done / cancel / timeout"});
+                o.keys.push_back({pre + "_result", "text", "done / forced / cancel / timeout"});
                 o.keys.push_back({pre + "_signal", "number", "the reading at Done (A)"});
                 o.keys.push_back({pre + "_met", "bool", "the reading at Done met the target"});
                 o.keys.push_back({pre + "_auto", "bool",
                                   "Done was automatic (the target held auto_done_s)"});
+                o.keys.push_back({pre + "_forced", "bool",
+                                  "the operator FORCE-PASSED it below the required target"});
             }
             o.keys.push_back({"align_best", "number", "the last scan's best signal (A)"});
             return o;

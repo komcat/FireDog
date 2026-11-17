@@ -1059,13 +1059,6 @@ bool ProductSession::DeletePositionVariant(const std::string& name, std::string*
         if (err) *err = "no such variant";
         return false;
     }
-    std::string users;
-    for (const Program& p : programs_)
-        if (p.posVariant == name) users += (users.empty() ? "" : ", ") + p.name;
-    if (!users.empty()) {
-        if (err) *err = "program(s) " + users + " run variant '" + name + "' - change them first";
-        return false;
-    }
     std::size_t dropped = 0;
     for (auto& [dev, list] : positions_)
         for (SavedPos& p : list) dropped += p.variants.erase(name);

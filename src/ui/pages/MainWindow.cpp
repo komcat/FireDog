@@ -15,6 +15,7 @@
 #include "core/Log.h"
 #include "update/AppUpdater.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -248,6 +249,75 @@ void App::DrawMoveStatusBar()
         CancelMapFollow("stopped from the MOVING banner");
     }
     ImGui::Separator();
+}
+
+// The header's "what is this station building": the loaded PRODUCT and its
+// ACTIVE position variant, in large text after the page buttons, centred on
+// their height. The variant combo is the ONE place the active variant changes
+// (docs/position-variants-design.md): Technician and up (kRoleVariant), never
+// while anything runs - a run already holds its copy, and the header must not
+// claim a model the machine is not building. Everyone else sees it read-only.
+void App::DrawStripProductVariant(float height)
+{
+    const float k  = 1.5f;
+    const float y0 = ImGui::GetCursorPosY();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 16.0f);
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * k);
+    const float yc = y0 + (height - ImGui::GetFrameHeight()) * 0.5f;
+
+    ImGui::SetCursorPosY(yc);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Product");
+    ImGui::SameLine();
+    ImGui::SetCursorPosY(yc);
+    ImGui::AlignTextToFramePadding();
+    if (session_.ProductLoaded()) ImGui::TextUnformatted(session_.Product().name.c_str());
+    else                          ImGui::TextDisabled("(none)");
+
+    ImGui::SameLine(0.0f, 28.0f);
+    ImGui::SetCursorPosY(yc);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Variant");
+    ImGui::SameLine();
+    ImGui::SetCursorPosY(yc);
+    float w = ImGui::CalcTextSize("base").x;
+    for (const std::string& v : session_.PositionVariants())
+        w = (std::max)(w, ImGui::CalcTextSize(v.c_str()).x);
+    w += ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
+    DrawPosVariantCombo("##hdrVariant", w, CanUse(kRoleVariant) && !orch_.Busy());
+    ImGui::PopFont();
+}
+
+// The active-variant combo: base + the product's declared variants, writing
+// through SetActiveVariant (the one writer, which persists it per product). A
+// variant the product stopped declaring reads as base - drawn every frame, so
+// it heals itself (Draw must not mutate the document; this is UI state).
+void App::DrawPosVariantCombo(const char* id, float width, bool enabled)
+{
+    if (!session_.HasPositionVariant(posVariant_)) SetActiveVariant("");
+    const bool on = !posVariant_.empty();
+    ImGui::BeginDisabled(!enabled);
+    ImGui::SetNextItemWidth(width);
+    if (on) ImGui::PushStyleColor(ImGuiCol_Text, kVariantViolet);
+    const bool open = ImGui::BeginCombo(id, on ? posVariant_.c_str() : "base");
+    if (on) ImGui::PopStyleColor();
+    if (open) {
+        if (ImGui::Selectable("base", !on)) SetActiveVariant("");
+        for (const std::string& v : session_.PositionVariants())
+            if (ImGui::Selectable(v.c_str(), posVariant_ == v)) SetActiveVariant(v);
+        if (session_.PositionVariants().empty())
+            ImGui::TextDisabled("(none declared - Motion page > Variants...)");
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        const char* why = orch_.Busy()               ? "\n\nLocked while a run is active."
+                        : !CanUse(kRoleVariant)      ? "\n\nA technician changes it."
+                                                     : "";
+        ImGui::SetTooltip("Active position variant - which model this station builds.\n"
+                          "Every run, teach and hand move uses its values; a position\n"
+                          "not taught for it uses the base. Remembered per product.%s", why);
+    }
 }
 
 // The mascot at the right end of the quick strip, `height` tall. It shows what
@@ -610,8 +680,15 @@ void App::DrawMainWindow()
             // How the station spent its day - the one page besides Run an
             // operator has, and the DOWN / UP declaration for a technician.
             pageBtn("OEE", Page::Oee, true);
-            // The mascot closes the row at the right edge, as tall as the buttons.
+            // What this station is building: the product and its ACTIVE
+            // position variant - the one place the variant is chosen.
             if (anyBtn) ImGui::SameLine();
+            const float lineY = ImGui::GetCursorPosY();   // the buttons' top
+            DrawStripProductVariant(stripBtn.y);
+            // The mascot closes the row at the right edge, as tall as the
+            // buttons - back on their top, the centred text moved the line.
+            ImGui::SameLine();
+            ImGui::SetCursorPosY(lineY);
             DrawStripDog(stripBtn.y);
             ImGui::Separator();
         }

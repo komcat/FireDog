@@ -127,6 +127,7 @@ struct UiSettings {
     // Recipe editor: width of its command palette column in px (0 = default).
     float edPaletteW = 0.0f;
     float edKeysH    = 0.0f;   // Recipe Editor: the Context keys panel's height
+    float edListW    = 0.0f;   // Recipe Editor: the recipe list's width (0 = default)
     // Recipe editor: the recipe list's filter. A view preference, so it lives
     // here and not in the recipes file — two operators filing the same
     // library differently must not fight over one saved filter.
@@ -288,6 +289,13 @@ struct UiSettings {
     // product does not contain simply fails to resolve — the button greys out
     // instead of driving somewhere the operator did not mean.
     std::map<std::string, std::vector<std::string>> posPad;
+
+    // The ACTIVE position variant per product (product name -> variant; absent
+    // = base): which model this station was building, restored when that
+    // product loads again. A station fact, like the pad above - the product
+    // only DECLARES its variants; a name it no longer declares reads as base.
+    // docs/position-variants-design.md.
+    std::map<std::string, std::string> variantByProduct;
 
     // Jog window "IO" tab: the quick-output rows, in display order. A station
     // layout like the pad above, and kept for the same reason: which pins an

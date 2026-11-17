@@ -340,6 +340,16 @@ void DutSession::RecordRun(const std::string& kind, const std::string& name,
         FD_WARN("dut", "run event write failed: %s", aerr.c_str());
 }
 
+void DutSession::RecordEvent(const std::string& eventKey, nlohmann::json value)
+{
+    const std::scoped_lock lock(mu_);
+    if (!open_ || eventKey.empty() || eventKey[0] != '$') return;
+    if (!opId_.empty()) value["operator"] = opId_;
+    std::string aerr;
+    if (!AppendLocked(eventKey, "object", std::move(value), &aerr))
+        FD_WARN("dut", "%s event write failed: %s", eventKey.c_str(), aerr.c_str());
+}
+
 bool DutSession::AppendLocked(const std::string& key, const char* type,
                               nlohmann::json value, std::string* err)
 {

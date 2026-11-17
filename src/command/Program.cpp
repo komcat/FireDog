@@ -85,7 +85,6 @@ Program CloneProgram(const Program& p)
     c.uid         = GenerateUid();
     c.name        = p.name + " copy";
     c.description = p.description;
-    c.posVariant  = p.posVariant;
     c.slots.reserve(p.slots.size());
     for (const ProgramSlot& s : p.slots) c.slots.push_back(CloneSlot(s));
     return c;
@@ -293,7 +292,6 @@ nlohmann::json ProgramToJson(const Program& p)
     j["uid"]  = p.uid;
     j["name"] = p.name;
     if (!p.description.empty()) j["description"] = p.description;
-    if (!p.posVariant.empty())  j["variant"]     = p.posVariant;
     nlohmann::json slots = nlohmann::json::array();
     for (const ProgramSlot& s : p.slots) {
         nlohmann::json sj;
@@ -315,7 +313,6 @@ Program ProgramFromJson(const nlohmann::json& j)
     p.uid         = j.value("uid", std::string());
     p.name        = j.value("name", std::string("program"));
     p.description = j.value("description", std::string());
-    p.posVariant  = j.value("variant", std::string());
     if (p.uid.empty()) p.uid = GenerateUid();
     if (j.contains("slots") && j["slots"].is_array()) {
         for (const nlohmann::json& sj : j["slots"]) {

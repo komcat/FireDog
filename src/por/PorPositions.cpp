@@ -372,25 +372,17 @@ PorPositionsReport ComparePositions(const PorSide& master, const PorSide& target
         if (!found) rep.mapIssues.push_back("map '" + name + "' on " + dev + " is missing on the target");
     }
 
-    // Declared position variants. A master program's variant the target does
-    // not declare is a program the target refuses at Execute; a variant
-    // declared on one side only is listed so nobody is surprised by it.
+    // Declared position variants. A model the master can build that the
+    // target does not declare cannot be picked in the target's header at all -
+    // that is a gap; one only the target declares is listed, not judged.
     {
         const auto declared = [](const PorSide& s, const std::string& v) {
             return std::find(s.posVariants.begin(), s.posVariants.end(), v) != s.posVariants.end();
         };
-        std::set<std::string> used;
-        for (const Program& p : master.programs) {
-            if (p.posVariant.empty() || used.count(p.posVariant)) continue;
-            used.insert(p.posVariant);
-            if (!declared(target, p.posVariant))
-                rep.variantIssues.push_back("variant '" + p.posVariant + "' (program '" + p.name +
-                                            "') is not declared on the target - that program "
-                                            "would be refused at Execute");
-        }
         for (const std::string& v : master.posVariants)
-            if (!declared(target, v) && !used.count(v))
-                rep.variantNotes.push_back("variant '" + v + "' is declared on the master only");
+            if (!declared(target, v))
+                rep.variantIssues.push_back("variant '" + v + "' is not declared on the target - "
+                                            "that model cannot be selected there");
         for (const std::string& v : target.posVariants)
             if (!declared(master, v))
                 rep.variantNotes.push_back("variant '" + v + "' is declared on the target only");

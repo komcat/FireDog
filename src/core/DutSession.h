@@ -94,6 +94,12 @@ public:
                    const std::string& result, const std::string& uid = std::string(),
                    int recipesDone = -1, const std::string& variant = std::string());
 
+    // An operator OVERRIDE worth tracing on the part (xcan_operator's force
+    // pass): a `$`-prefixed event entry, stamped with the signed-in operator
+    // like $run. Soft no-op when no DUT is open, like RecordRun; the key must
+    // start with '$' (events are the reserved namespace).
+    void RecordEvent(const std::string& eventKey, nlohmann::json value);
+
     // Every record that CLOSED — by Close, or auto-closed by the next Open — for
     // the OEE quality ratio (core/OeeTracker). Close runs on engine workers as
     // well as the UI, so it is queued here and App::Update drains it. `status`

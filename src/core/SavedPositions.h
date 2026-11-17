@@ -15,7 +15,7 @@ namespace firedog {
 // One POSITION VARIANT's own values for a saved position. A product made in
 // models that are almost the same part keeps ONE position (one name, one uid,
 // every recipe reference) and teaches only what differs per model. A run picks
-// the variant (the program header / the editor's combo) and the values are
+// the variant (the header's ACTIVE variant, App::posVariant_) and the values are
 // swapped in ONCE, when its Env is built (ApplyPositionVariant), so no mover
 // ever learns what a variant is. docs/position-variants-design.md.
 struct SavedPosVariant {
