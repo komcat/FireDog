@@ -835,6 +835,35 @@ void App::DrawMotionPositionsPanel()
     DrawMotionPositionsTab(static_cast<size_t>(selectedMotion_), m);
 }
 
+// The working position variant's combo: base + the product's declared
+// variants. Shared by this page and the Recipe Editor's run strip (one member,
+// posVariant_, so the two can never disagree about which model is on the
+// bench). A working variant the product stopped declaring reads as base.
+void App::DrawPosVariantCombo(const char* id, float width, bool enabled)
+{
+    if (!session_.HasPositionVariant(posVariant_)) posVariant_.clear();
+    const bool on = !posVariant_.empty();
+    ImGui::BeginDisabled(!enabled);
+    ImGui::SetNextItemWidth(width);
+    if (on) ImGui::PushStyleColor(ImGuiCol_Text, kVariantViolet);
+    const bool open = ImGui::BeginCombo(id, on ? posVariant_.c_str() : "base");
+    if (on) ImGui::PopStyleColor();
+    if (open) {
+        if (ImGui::Selectable("base", !on)) posVariant_.clear();
+        for (const std::string& v : session_.PositionVariants())
+            if (ImGui::Selectable(v.c_str(), posVariant_ == v)) posVariant_ = v;
+        if (session_.PositionVariants().empty())
+            ImGui::TextDisabled("(no variants - Motion page > Variants...)");
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Working position variant: what the Motion table shows and\n"
+                          "Update / Edit write, what the Recipe Editor runs and teaches,\n"
+                          "and what the Jog pad's Go drives to. A position not taught for\n"
+                          "it uses its base values. Program runs use their own header.");
+}
+
 void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
 {
     const std::vector<std::string> axes = m->Axes();
@@ -842,6 +871,83 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
     // Laid out for the narrow right panel: a title, then one row of buttons,
     // then the selection and its tools, then the table.
     ImGui::TextUnformatted("Saved positions");
+    // The WORKING position variant: the table shows, Move drives to, and
+    // Update / Edit write THIS variant's values. A program run ignores it (its
+    // header names its own). docs/position-variants-design.md.
+    ImGui::SameLine();
+    ImGui::TextDisabled("variant");
+    ImGui::SameLine();
+    DrawPosVariantCombo("##posvar", 110.0f, true);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Variants...")) {
+        posVarMsg_.clear();
+        posVarDelArm_.clear();
+        ImGui::OpenPopup("posvariants");
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Declare or delete this product's position variants (models\n"
+                          "whose positions are almost the same: teach only what differs)");
+    if (ImGui::BeginPopup("posvariants")) {
+        const bool busy = orch_.Busy();
+        ImGui::TextUnformatted("Position variants of this product");
+        ImGui::TextDisabled("base = the positions' own values; a variant falls back to\n"
+                            "base wherever it has not been taught.");
+        ImGui::Separator();
+        ImGui::BeginDisabled(busy);
+        if (session_.PositionVariants().empty()) ImGui::TextDisabled("(none declared)");
+        for (const std::string& v : session_.PositionVariants()) {
+            ImGui::PushID(v.c_str());
+            std::size_t taught = 0;
+            for (const auto& [d, list] : session_.Positions())
+                for (const SavedPos& p : list) taught += HasVariant(p, v) ? 1 : 0;
+            ImGui::TextColored(kVariantViolet, "%s", v.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%zu position%s taught)", taught, taught == 1 ? "" : "s");
+            ImGui::SameLine();
+            // Two presses: the first arms, the second drops every taught entry.
+            const bool armed = posVarDelArm_ == v;
+            if (ImGui::SmallButton(armed ? "Really delete" : "Delete")) {
+                if (!armed) {
+                    posVarDelArm_ = v;
+                } else {
+                    std::string err;
+                    const std::string name = v;   // v dies with the erase below
+                    if (session_.DeletePositionVariant(name, &err)) {
+                        if (posVariant_ == name) posVariant_.clear();
+                        posVarMsg_ = "deleted '" + name + "'";
+                    } else {
+                        posVarMsg_ = err;
+                    }
+                    posVarDelArm_.clear();
+                    ImGui::PopID();
+                    break;   // the list just changed under the loop
+                }
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Delete the variant and every position's values for it.\n"
+                                  "Refused while a program header names it.");
+            ImGui::PopID();
+        }
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(140.0f);
+        const bool enter = ImGui::InputTextWithHint("##newvar", "new variant", posVarBuf_,
+                                                    sizeof(posVarBuf_),
+                                                    ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Add") || enter) {
+            std::string err;
+            if (session_.AddPositionVariant(posVarBuf_, &err)) {
+                posVarMsg_ = "declared '" + std::string(posVarBuf_) + "'";
+                posVarBuf_[0] = '\0';
+            } else {
+                posVarMsg_ = err;
+            }
+        }
+        ImGui::EndDisabled();
+        if (busy) ImGui::TextDisabled("A run is active - variants are locked.");
+        if (!posVarMsg_.empty()) ImGui::TextWrapped("%s", posVarMsg_.c_str());
+        ImGui::EndPopup();
+    }
     ImGui::Separator();
 
     // The starting "Home" row for a device with no positions is seeded by
@@ -849,6 +955,7 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
     // mutate the document.
     const std::string      devName = hardware_.MotionName(idx);
     std::vector<SavedPos>& saved   = session_.Positions()[devName];
+    const std::string&     pv      = posVariant_;   // "" = base
 
     if (ImGui::SmallButton("+ Add current")) {
         // Ask for the name first — the live position is read when OK is
@@ -900,17 +1007,27 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
     if (sel >= 0 && saved[static_cast<size_t>(sel)].hidden && !showHiddenPos_)
         sel = -1;   // a hidden selection is not a visible target
     const SavedPos* selPos = (sel >= 0) ? &saved[static_cast<size_t>(sel)] : nullptr;
+    // Untaught UNDER THE WORKING VARIANT: a variant entry carries its own flag.
+    const bool selUntaught = selPos && EffectiveUntaught(*selPos, pv);
 
-    if (selPos) ImGui::Text("Selected: %s", selPos->name);
-    else        ImGui::TextDisabled("Selected: (click a row; double-click = Move)");
+    if (selPos) {
+        ImGui::Text("Selected: %s", selPos->name);
+        if (!pv.empty()) {
+            ImGui::SameLine();
+            if (HasVariant(*selPos, pv)) ImGui::TextColored(kVariantViolet, "[%s]", pv.c_str());
+            else                         ImGui::TextDisabled("[base - %s not taught]", pv.c_str());
+        }
+    } else {
+        ImGui::TextDisabled("Selected: (click a row; double-click = Move)");
+    }
     ImGui::BeginDisabled(!selPos);
     // Move and Update both hand off to a confirmation dialog below: one
     // drives the machine, the other overwrites a taught place, and neither
     // should happen on a single click. A placeholder (untaught) is never
     // driven to: Update is how it gets taught - jog there, then Update.
-    ImGui::BeginDisabled(selPos && selPos->untaught);
+    ImGui::BeginDisabled(selUntaught);
     if (IconToolButton(UiIcon("mo_move_to"), "posMove", "Move",
-                       selPos && selPos->untaught
+                       selUntaught
                            ? "Not taught on this machine - jog to the spot and Update it"
                            : "Move the device to this position (asks first)")) {
         moveRow_     = sel;
@@ -919,7 +1036,9 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (IconToolButton(UiIcon("tb_reload"), "posUpd", "Update",
-                       "Update: overwrite this position with where the device is now (asks first)")) {
+                       pv.empty() ? "Update: overwrite this position with where the device is now (asks first)"
+                                  : "Update: write where the device is now as this position's values\n"
+                                    "for the working variant (asks first; base untouched)")) {
         updRow_     = sel;
         updSecond_  = false;
         openUpdPos_ = true;
@@ -929,11 +1048,26 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                        "Edit: type the axis values directly")) {
         editRow_ = sel;
         editVals_.clear();
+        const std::map<std::string, double>& cur = EffectiveVals(*selPos, pv);
         for (const auto& a : axes) {
-            const auto it = selPos->vals.find(a);
-            editVals_[a] = (it != selPos->vals.end()) ? it->second : 0.0;
+            const auto it = cur.find(a);
+            editVals_[a] = (it != cur.end()) ? it->second : 0.0;
         }
         openEditPos_ = true;
+    }
+    // Back to base: drop this row's entry for the working variant, so it
+    // follows the base values again. Only where there is an entry to drop.
+    if (!pv.empty() && selPos && HasVariant(*selPos, pv)) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Use base")) {
+            FD_INFO("saved", "'%s' (%s) variant %s reverted to base", selPos->name,
+                    devName.c_str(), pv.c_str());
+            session_.RevertPositionVariant(devName, selPos->uid, pv);   // the row stays put
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Forget this position's '%s' values: variant %s then\n"
+                              "uses the base values here (journalled; History restores).",
+                              pv.c_str(), pv.c_str());
     }
     ImGui::SameLine();
     if (IconToolButton(UiIcon("tb_rename"), "posRen", "Rename", "Rename this position")) {
@@ -971,11 +1105,19 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             ImGui::PushID(static_cast<int>(r));
             // A revealed hidden row is dimmed; a placeholder is orange, the
             // teach colour, because teaching it is what it is waiting for.
-            const bool tinted = sp.hidden || sp.untaught;
-            if (sp.untaught)
+            // Under a working variant: a row with its own values for it is
+            // violet, a row falling back to base is dimmed (the numbers shown
+            // are then the base's - exactly what a run on the variant uses).
+            const bool untaught = EffectiveUntaught(sp, pv);
+            const bool ownVar   = HasVariant(sp, pv);
+            const bool fallback = !pv.empty() && !ownVar;
+            const bool tinted = sp.hidden || untaught || ownVar || fallback;
+            if (untaught)
                 ImGui::PushStyleColor(ImGuiCol_Text, kTeachOrange);
-            else if (sp.hidden)
+            else if (sp.hidden || fallback)
                 ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            else if (ownVar)
+                ImGui::PushStyleColor(ImGuiCol_Text, kVariantViolet);
 
             ImGui::TableSetColumnIndex(0);
             const bool isSel = static_cast<int>(r) == sel;
@@ -985,25 +1127,35 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                 posSelUid_ = sp.uid;
                 // A double-click is the one-gesture Move; it still lands on
                 // the confirmation dialog, never straight on the axes.
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !sp.untaught) {
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !untaught) {
                     moveRow_     = static_cast<int>(r);
                     openMovePos_ = true;
                 }
             }
             if (ImGui::IsItemHovered()) {
-                if (sp.untaught)
+                std::string vtip;
+                if (ownVar)
+                    vtip = "\nvariant " + pv + ": its own values";
+                else if (fallback)
+                    vtip = "\nvariant " + pv + ": not taught - uses the base values";
+                if (!sp.variants.empty()) {
+                    vtip += "\ntaught for:";
+                    for (const auto& [vn, vv] : sp.variants) vtip += " " + vn;
+                }
+                if (untaught)
                     ImGui::SetTooltip("uid: %s\nNOT TAUGHT on this machine (a POR deploy placeholder;\n"
-                                      "the values are the master's). Jog to the spot and Update.",
-                                      sp.uid.c_str());
+                                      "the values are the master's). Jog to the spot and Update.%s",
+                                      sp.uid.c_str(), vtip.c_str());
                 else
-                    ImGui::SetTooltip("uid: %s", sp.uid.c_str());
+                    ImGui::SetTooltip("uid: %s%s", sp.uid.c_str(), vtip.c_str());
             }
 
+            const std::map<std::string, double>& vals = EffectiveVals(sp, pv);
             int c = 1;
             for (const auto& a : axes) {
                 ImGui::TableSetColumnIndex(c++);
-                const auto it = sp.vals.find(a);
-                ImGui::Text("%.4f", (it != sp.vals.end()) ? it->second : 0.0);
+                const auto it = vals.find(a);
+                ImGui::Text("%.4f", (it != vals.end()) ? it->second : 0.0);
             }
             if (tinted) ImGui::PopStyleColor();
             ImGui::PopID();
@@ -1024,6 +1176,9 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             ImGui::Text("Delete position '%s' on %s?", sp.name, devName.c_str());
             ImGui::TextDisabled("uid %s — anything referencing it will break. This cannot be undone.",
                                 sp.uid.c_str());
+            if (!sp.variants.empty())
+                ImGui::TextColored(kVariantViolet, "Its values for %zu variant%s go with it.",
+                                   sp.variants.size(), sp.variants.size() == 1 ? "" : "s");
             ImGui::Spacing();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.72f, 0.20f, 0.20f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.25f, 0.25f, 1.0f));
@@ -1048,7 +1203,9 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
     // Saved vs live, one row per axis, with the delta and the largest |delta|
     // handed back. Shared by the Move and Update dialogs, which show the same
     // table and differ only in which column the machine ends up on.
-    const auto drawDiffTable = [&](const SavedPos& sp, const std::map<std::string, double>& live,
+    // `saved` is the row's values under the working variant (EffectiveVals).
+    const auto drawDiffTable = [&](const std::map<std::string, double>& savedVals,
+                                   const std::map<std::string, double>& live,
                                    const char* savedHdr, const char* liveHdr) -> double {
         double maxAbs = 0.0;
         if (ImGui::BeginTable("posdiff", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
@@ -1058,9 +1215,9 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             ImGui::TableSetupColumn("Delta");
             ImGui::TableHeadersRow();
             for (const auto& a : axes) {
-                const auto si = sp.vals.find(a);
+                const auto si = savedVals.find(a);
                 const auto li = live.find(a);
-                const double s = (si != sp.vals.end()) ? si->second : 0.0;
+                const double s = (si != savedVals.end()) ? si->second : 0.0;
                 const double l = (li != live.end())    ? li->second : 0.0;
                 const double d = l - s;
                 if (std::fabs(d) > maxAbs) maxAbs = std::fabs(d);
@@ -1089,10 +1246,14 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             ImGui::CloseCurrentPopup();
         } else {
             const SavedPos& sp = saved[static_cast<size_t>(moveRow_)];
-            if (sp.untaught) { moveRow_ = -1; ImGui::CloseCurrentPopup(); }
+            if (EffectiveUntaught(sp, pv)) { moveRow_ = -1; ImGui::CloseCurrentPopup(); }
+            const std::map<std::string, double>& spVals = EffectiveVals(sp, pv);
             ImGui::Text("Move %s to '%s'?", devName.c_str(), sp.name);
+            if (!pv.empty())
+                ImGui::TextColored(kVariantViolet, "Variant %s%s", pv.c_str(),
+                                   HasVariant(sp, pv) ? "" : " (not taught here - base values)");
             ImGui::TextDisabled("All axes travel together. Make sure the path is clear.");
-            drawDiffTable(sp, m->Positions(), "Target", "Now");
+            drawDiffTable(spVals, m->Positions(), "Target", "Now");
             // The dynamic profile, shown BEFORE the move from the cached VEL so
             // the operator sees the numbers; the driver re-reads VEL itself.
             // Never while a run is active: the run's own next move would put
@@ -1122,8 +1283,8 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             if (ImGui::Button("Move", ImVec2(120.0f, 0.0f))) {
                 std::vector<std::pair<std::string, double>> tgt;
                 for (const auto& a : axes) {
-                    const auto it = sp.vals.find(a);
-                    if (it != sp.vals.end()) tgt.emplace_back(a, it->second);
+                    const auto it = spVals.find(a);
+                    if (it != spVals.end()) tgt.emplace_back(a, it->second);
                 }
                 const bool ok =
                     dynMove ? workflow_.MoveToPositionDynamic(static_cast<size_t>(selectedMotion_),
@@ -1162,7 +1323,10 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             // row records where the machine stands when Update is pressed.
             const std::map<std::string, double> live = m->Positions();
             ImGui::Text("Overwrite '%s' on %s with the current position?", sp.name, devName.c_str());
-            const double maxAbs = drawDiffTable(sp, live, "Saved", "Current");
+            if (!pv.empty())
+                ImGui::TextColored(kVariantViolet, "Writes variant %s's values%s - base untouched.",
+                                   pv.c_str(), HasVariant(sp, pv) ? "" : " (first teach of it here)");
+            const double maxAbs = drawDiffTable(EffectiveVals(sp, pv), live, "Saved", "Current");
             const bool big = maxAbs > kPosUpdWarnMm;
             ImGui::Spacing();
             if (big) {
@@ -1185,6 +1349,20 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             if (ImGui::Button(label, ImVec2(120.0f, 0.0f))) {
                 if (big && !updSecond_) {
                     updSecond_ = true;    // acknowledged; the next press writes
+                } else if (!pv.empty()) {
+                    // The variant's values: what it shows now, overwritten axis
+                    // by axis with the live pose (an axis the row never had
+                    // stays out, exactly like the base branch).
+                    std::map<std::string, double> nv = EffectiveVals(sp, pv);
+                    for (const auto& a : axes) {
+                        const auto it = live.find(a);
+                        if (it != live.end()) nv[a] = it->second;
+                    }
+                    FD_INFO("saved", "updated '%s' variant %s from current position (max delta %.4f)",
+                            sp.name, pv.c_str(), maxAbs);
+                    session_.SetPositionVariantVals(devName, sp.uid, pv, nv);
+                    updRow_ = -1; updSecond_ = false;
+                    ImGui::CloseCurrentPopup();
                 } else {
                     for (const auto& a : axes) {
                         const auto it = live.find(a);
@@ -1219,8 +1397,12 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
         } else {
             SavedPos& sp = saved[static_cast<size_t>(editRow_)];
             ImGui::Text("Edit '%s' on %s", sp.name, devName.c_str());
+            if (!pv.empty())
+                ImGui::TextColored(kVariantViolet, "Variant %s's values%s - base untouched.",
+                                   pv.c_str(), HasVariant(sp, pv) ? "" : " (starting from base)");
             ImGui::TextDisabled("uid %s — values are written on Save only.", sp.uid.c_str());
             ImGui::Spacing();
+            const std::map<std::string, double>& spVals = EffectiveVals(sp, pv);
             bool first = true;
             for (const auto& a : axes) {
                 ImGui::PushID(a.c_str());
@@ -1235,8 +1417,8 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                 TuneButton(a.c_str(), editVals_[a], edTuneMm_, tuneEdited);
                 if (tuneEdited) SaveUiSettings();
                 ImGui::SameLine();
-                const auto it = sp.vals.find(a);
-                const double cur = (it != sp.vals.end()) ? it->second : 0.0;
+                const auto it = spVals.find(a);
+                const double cur = (it != spVals.end()) ? it->second : 0.0;
                 ImGui::Text("%s", a.c_str());
                 ImGui::SameLine();
                 ImGui::TextDisabled("(saved %.4f)", cur);
@@ -1246,10 +1428,19 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.55f, 0.26f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.68f, 0.34f, 1.0f));
             if (ImGui::Button("Save", ImVec2(120.0f, 0.0f))) {
-                for (const auto& a : axes) sp.vals[a] = editVals_[a];
-                sp.untaught = false;   // typed values are a teach, by whoever typed them
-                FD_INFO("saved", "edited '%s' (uid %s, %s) by hand", sp.name, sp.uid.c_str(), devName.c_str());
-                session_.SavePositions();
+                if (!pv.empty()) {
+                    std::map<std::string, double> nv = spVals;
+                    for (const auto& a : axes) nv[a] = editVals_[a];
+                    FD_INFO("saved", "edited '%s' (uid %s, %s) variant %s by hand", sp.name,
+                            sp.uid.c_str(), devName.c_str(), pv.c_str());
+                    session_.SetPositionVariantVals(devName, sp.uid, pv, nv);
+                } else {
+                    for (const auto& a : axes) sp.vals[a] = editVals_[a];
+                    sp.untaught = false;   // typed values are a teach, by whoever typed them
+                    FD_INFO("saved", "edited '%s' (uid %s, %s) by hand", sp.name, sp.uid.c_str(),
+                            devName.c_str());
+                    session_.SavePositions();
+                }
                 editRow_ = -1;
                 ImGui::CloseCurrentPopup();
             }
@@ -1297,6 +1488,9 @@ void App::DrawMotionPositionsTab(std::size_t idx, IMotionController* m)
                             ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("New Position", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Save the current %s position as:", devName.c_str());
+        if (!pv.empty())
+            ImGui::TextDisabled("A new position is saved as its BASE values (every variant\n"
+                                "uses them until one is taught its own).");
         ImGui::SetNextItemWidth(320.0f);
         if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         const bool submit = ImGui::InputText("##newpos", newPosBuf_, sizeof(newPosBuf_),

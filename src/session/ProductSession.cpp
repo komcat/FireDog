@@ -6,6 +6,7 @@
 #include "core/Paths.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -47,7 +48,7 @@ bool ProductSession::LoadProduct(const std::string& name)
     const ManifestFile* e = m.Entry("positions");
     if (e) {
         std::string fileUid;
-        positions_ = LoadSavedPositionsFile(m.FilePath("positions"), &fileUid);
+        positions_ = LoadSavedPositionsFile(m.FilePath("positions"), &fileUid, &posVariants_);
         if (fileUid != e->uid)
             FD_WARN("product", "positions uid mismatch: manifest %s vs file '%s'",
                     e->uid.c_str(), fileUid.c_str());
@@ -149,7 +150,7 @@ void ProductSession::SaveProduct()
     for (const ManifestFile& e : product_.files) {
         const std::string path = product_.Dir() + "/" + e.file;
         if (e.role == "positions") {
-            SaveSavedPositionsFile(path, positions_, e.uid);
+            SaveSavedPositionsFile(path, positions_, e.uid, posVariants_);
         } else if (e.role == "recipes") {
             SaveRecipesTo(path, e.uid);
         } else if (e.role == "programs") {
@@ -204,7 +205,7 @@ void ProductSession::LoadScriptsList()
 
 void ProductSession::LoadPositions()
 {
-    positions_         = LoadSavedPositions();   // config fallback (no product yet)
+    positions_         = LoadSavedPositions(&posVariants_);   // config fallback (no product yet)
     positionsBaseline_ = positions_;
 }
 
@@ -218,9 +219,9 @@ void ProductSession::SavePositions(const std::string& source)
     // Product loaded -> autosave into the product's positions file (with its
     // uid); otherwise the machine-global config fallback. Warns if unwritable.
     if (const ManifestFile* e = product_.Entry("positions"))
-        SaveSavedPositionsFile(product_.FilePath("positions"), positions_, e->uid);
+        SaveSavedPositionsFile(product_.FilePath("positions"), positions_, e->uid, posVariants_);
     else
-        SaveSavedPositions(positions_);
+        SaveSavedPositions(positions_, posVariants_);
     // The journal: whatever changed since the last load / save, attributed.
     const std::vector<PosChange> changes =
         DiffPositions(positionsBaseline_, positions_, positionAuthor_, source);
@@ -244,6 +245,28 @@ bool ProductSession::RestorePosition(const PosChange& entry)
     SavedPos* row = nullptr;
     for (SavedPos& e : list) if (e.uid == entry.uid) { row = &e; break; }
     const std::string source = "restore of " + entry.action + " @ " + entry.at;
+
+    // A variant entry: put the variant's OWN values back (or remove the entry
+    // an "add" created). The row must exist - restore the row first.
+    if (!entry.variant.empty()) {
+        if (!row) return false;
+        if (entry.action == "add") {
+            if (!row->variants.erase(entry.variant)) return false;
+        } else if (entry.action == "update" || entry.action == "delete") {
+            if (entry.before.empty()) return false;
+            SavedPosVariant& var = row->variants[entry.variant];
+            var.vals     = entry.before;
+            var.untaught = entry.untaughtBefore;
+            if (!HasPositionVariant(entry.variant)) posVariants_.push_back(entry.variant);
+        } else {
+            return false;
+        }
+        FD_INFO("saved", "restored '%s' variant %s (%s, %s) from the %s of %s", row->name,
+                entry.variant.c_str(), entry.device.c_str(), entry.uid.c_str(),
+                entry.action.c_str(), entry.at.c_str());
+        SavePositions(source);
+        return true;
+    }
 
     if (entry.action == "rename") {
         if (!row || entry.nameBefore.empty()) return false;
@@ -884,10 +907,11 @@ void ProductSession::CopyVisionTemplates(const std::string& fromDir,
 
 // ---- Engine hand-off -------------------------------------------------------
 
-RecipeEngine::Env ProductSession::MakeRecipeEnv() const
+RecipeEngine::Env ProductSession::MakeRecipeEnv(const std::string& variant) const
 {
     RecipeEngine::Env env;
-    env.positions = positions_;
+    env.positions  = ApplyPositionVariant(positions_, variant);
+    env.posVariant = variant;
     env.maps      = maps_;
     env.library   = recipes_;
     env.aligns    = aligns_;
@@ -902,10 +926,11 @@ RecipeEngine::Env ProductSession::MakeRecipeEnv() const
     return env;
 }
 
-LuaEngine::Env ProductSession::MakeLuaEnv() const
+LuaEngine::Env ProductSession::MakeLuaEnv(const std::string& variant) const
 {
     LuaEngine::Env env;
-    env.positions = positions_;
+    env.positions  = ApplyPositionVariant(positions_, variant);
+    env.posVariant = variant;
     env.maps      = maps_;
     env.library   = recipes_;   // fd.run_recipe / sub_recipe resolve against this
     env.aligns    = aligns_;
@@ -944,6 +969,20 @@ void ProductSession::MergeTaughtPositions(
     if (taught.empty()) return;
     for (const auto& [dev, sp] : taught) {
         std::vector<SavedPos>& list = positions_[dev];
+        // Taught under a variant: the one entry ExecutionContext::QueueTaught
+        // put there names it. Its values are the variant's, never the base's.
+        const std::string variant = sp.variants.empty() ? std::string()
+                                                        : sp.variants.begin()->first;
+        const auto write = [&](SavedPos& e) {
+            if (variant.empty()) {
+                e.vals     = sp.vals;
+                e.untaught = false;   // taught now, on this machine
+            } else {
+                SavedPosVariant& var = e.variants[variant];
+                var.vals     = sp.variants.begin()->second.vals;
+                var.untaught = false;
+            }
+        };
         bool found = false;
         // Uid first: a teach INTO a row (the movers' `teach` param) must land on
         // that row even if it was renamed while the run held its copy. The name
@@ -952,9 +991,8 @@ void ProductSession::MergeTaughtPositions(
         if (!sp.uid.empty()) {
             for (SavedPos& e : list) {
                 if (e.uid == sp.uid) {
-                    e.vals     = sp.vals;
-                    e.untaught = false;   // taught now, on this machine
-                    found      = true;
+                    write(e);
+                    found = true;
                     break;
                 }
             }
@@ -962,16 +1000,112 @@ void ProductSession::MergeTaughtPositions(
         if (!found) {
             for (SavedPos& e : list) {
                 if (std::string(e.name) == sp.name) {
-                    e.vals     = sp.vals;
-                    e.untaught = false;
-                    found      = true;
+                    write(e);
+                    found = true;
                     break;
                 }
             }
         }
-        if (!found) list.push_back(sp);
+        if (!found) {
+            // A row the run CREATED: nothing to differ from yet, so its values
+            // are its base, whatever variant taught it.
+            SavedPos np = sp;
+            if (!variant.empty()) np.vals = sp.variants.begin()->second.vals;
+            np.variants.clear();
+            np.untaught = false;
+            list.push_back(std::move(np));
+        }
+        if (!variant.empty() && !HasPositionVariant(variant)) {
+            // Only reachable if the variant was deleted while the run held it.
+            posVariants_.push_back(variant);
+            FD_WARN("saved", "variant '%s' was taught by a run but no longer declared - "
+                             "declared again", variant.c_str());
+        }
     }
     SavePositions(source);
+}
+
+// ---- Position variants -----------------------------------------------------
+
+bool ProductSession::HasPositionVariant(const std::string& v) const
+{
+    return v.empty() || std::find(posVariants_.begin(), posVariants_.end(), v) != posVariants_.end();
+}
+
+bool ProductSession::AddPositionVariant(const std::string& name, std::string* err)
+{
+    std::string n = name;
+    while (!n.empty() && std::isspace(static_cast<unsigned char>(n.front()))) n.erase(n.begin());
+    while (!n.empty() && std::isspace(static_cast<unsigned char>(n.back()))) n.pop_back();
+    const auto fail = [&](const char* why) {
+        if (err) *err = why;
+        return false;
+    };
+    if (n.empty()) return fail("a variant needs a name");
+    if (n.size() > 31) return fail("a variant name is at most 31 characters");
+    std::string lower = n;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower == "base") return fail("'base' is the positions' own values, not a variant");
+    if (HasPositionVariant(n)) return fail("that variant already exists");
+    posVariants_.push_back(n);
+    SavePositions("variant add " + n);
+    FD_INFO("saved", "position variant '%s' declared", n.c_str());
+    return true;
+}
+
+bool ProductSession::DeletePositionVariant(const std::string& name, std::string* err)
+{
+    if (name.empty() || !HasPositionVariant(name)) {
+        if (err) *err = "no such variant";
+        return false;
+    }
+    std::string users;
+    for (const Program& p : programs_)
+        if (p.posVariant == name) users += (users.empty() ? "" : ", ") + p.name;
+    if (!users.empty()) {
+        if (err) *err = "program(s) " + users + " run variant '" + name + "' - change them first";
+        return false;
+    }
+    std::size_t dropped = 0;
+    for (auto& [dev, list] : positions_)
+        for (SavedPos& p : list) dropped += p.variants.erase(name);
+    std::erase(posVariants_, name);
+    SavePositions("variant delete " + name);
+    FD_INFO("saved", "position variant '%s' deleted (%zu position entr%s dropped)", name.c_str(),
+            dropped, dropped == 1 ? "y" : "ies");
+    return true;
+}
+
+bool ProductSession::SetPositionVariantVals(const std::string& device, const std::string& uid,
+                                            const std::string& variant,
+                                            const std::map<std::string, double>& vals)
+{
+    if (variant.empty() || !HasPositionVariant(variant)) return false;
+    const auto it = positions_.find(device);
+    if (it == positions_.end()) return false;
+    for (SavedPos& p : it->second) {
+        if (p.uid != uid) continue;
+        SavedPosVariant& var = p.variants[variant];
+        var.vals     = vals;
+        var.untaught = false;
+        SavePositions();
+        return true;
+    }
+    return false;
+}
+
+bool ProductSession::RevertPositionVariant(const std::string& device, const std::string& uid,
+                                           const std::string& variant)
+{
+    const auto it = positions_.find(device);
+    if (it == positions_.end()) return false;
+    for (SavedPos& p : it->second) {
+        if (p.uid != uid) continue;
+        if (!p.variants.erase(variant)) return false;
+        SavePositions();
+        return true;
+    }
+    return false;
 }
 
 } // namespace firedog

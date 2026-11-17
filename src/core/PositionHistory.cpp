@@ -74,6 +74,50 @@ std::vector<PosChange> DiffPositions(const SavedPosMap& before, const SavedPosMa
         c.source = source;
     };
 
+    // A row's variant entries, old (null = row did not exist) vs new (null =
+    // row is gone): each added, changed or removed entry is its own change,
+    // so each is restorable on its own.
+    auto diffVariants = [&](const std::string& dev, const SavedPos* op, const SavedPos* np) {
+        const SavedPos& id = np ? *np : *op;
+        if (np) {
+            for (const auto& [v, nv] : np->variants) {
+                const SavedPosVariant* ov = nullptr;
+                if (op) {
+                    const auto it = op->variants.find(v);
+                    if (it != op->variants.end()) ov = &it->second;
+                }
+                if (ov && SameVals(ov->vals, nv.vals) && ov->untaught == nv.untaught) continue;
+                PosChange c;
+                stamp(c);
+                c.action  = ov ? "update" : "add";
+                c.device  = dev;
+                c.uid     = id.uid;
+                c.name    = id.name;
+                c.variant = v;
+                if (ov) c.before = ov->vals;
+                c.after   = nv.vals;
+                c.untaught       = nv.untaught;
+                c.untaughtBefore = ov && ov->untaught;
+                out.push_back(std::move(c));
+            }
+        }
+        if (op) {
+            for (const auto& [v, ov] : op->variants) {
+                if (np && np->variants.count(v)) continue;
+                PosChange c;
+                stamp(c);
+                c.action  = "delete";
+                c.device  = dev;
+                c.uid     = id.uid;
+                c.name    = id.name;
+                c.variant = v;
+                c.before  = ov.vals;
+                c.untaughtBefore = ov.untaught;
+                out.push_back(std::move(c));
+            }
+        }
+    };
+
     // Adds, updates, renames: walk the new map.
     for (const auto& [dev, rows] : after) {
         const auto oldDev = before.find(dev);
@@ -94,8 +138,10 @@ std::vector<PosChange> DiffPositions(const SavedPosMap& before, const SavedPosMa
                 c.after  = np.vals;
                 c.untaught = np.untaught;
                 out.push_back(std::move(c));
+                diffVariants(dev, nullptr, &np);
                 continue;
             }
+            diffVariants(dev, op, &np);
             if (!SameVals(op->vals, np.vals) || op->untaught != np.untaught) {
                 PosChange c;
                 stamp(c);
@@ -140,6 +186,9 @@ std::vector<PosChange> DiffPositions(const SavedPosMap& before, const SavedPosMa
             c.name   = op.name;
             c.before = op.vals;
             out.push_back(std::move(c));
+            // Its variants go with it, each journalled so a restore of the row
+            // can be followed by a restore of each variant.
+            diffVariants(dev, &op, nullptr);
         }
     }
     return out;
@@ -167,9 +216,11 @@ bool AppendPositionHistory(const std::string& path, const std::vector<PosChange>
         if (!c.after.empty())      j["after"]       = ValsToJson(c.after);
         if (c.untaught)            j["untaught"]        = true;
         if (c.untaughtBefore)      j["untaught_before"] = true;
+        if (!c.variant.empty())    j["variant"] = c.variant;
         f << j.dump() << '\n';
-        FD_INFO("saved", "history: %s '%s' (%s, %s) by %s via %s", c.action.c_str(),
-                c.name.c_str(), c.device.c_str(), c.uid.c_str(),
+        FD_INFO("saved", "history: %s '%s'%s%s (%s, %s) by %s via %s", c.action.c_str(),
+                c.name.c_str(), c.variant.empty() ? "" : " variant ", c.variant.c_str(),
+                c.device.c_str(), c.uid.c_str(),
                 c.by.empty() ? "-" : c.by.c_str(), c.source.c_str());
     }
     return static_cast<bool>(f);
@@ -200,6 +251,7 @@ std::vector<PosChange> LoadPositionHistory(const std::string& path)
             if (j.contains("after"))  c.after  = ValsFromJson(j["after"]);
             c.untaught       = j.value("untaught", false);
             c.untaughtBefore = j.value("untaught_before", false);
+            c.variant        = j.value("variant", "");
             out.push_back(std::move(c));
         } catch (const std::exception& e) {
             FD_WARN("saved", "%s:%d: bad history line skipped (%s)", path.c_str(), lineNo,

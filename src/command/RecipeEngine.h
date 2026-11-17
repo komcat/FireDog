@@ -56,6 +56,10 @@ public:
         std::vector<WaffleTray>  trays;          // waffle trays (move_to_cell, tray_*)
         std::string              visionDir;      // where their template patches live
         std::string              scriptsDir;     // product scripts win over config/scripts
+        // The position variant `positions` was overlaid with ("" = base). Set
+        // only by ProductSession::MakeRecipeEnv; the run reads it for the teach
+        // hand-off and the DUT $run record, never to resolve a position.
+        std::string              posVariant;
     };
 
     // Step-mode start options: with stepMode the worker pauses BEFORE every

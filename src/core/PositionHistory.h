@@ -41,6 +41,11 @@ struct PosChange {
     // even when the values did not move; an add of a placeholder has untaught.
     bool untaught       = false;
     bool untaughtBefore = false;
+    // The POSITION VARIANT the entry is about ("" = the base values). With a
+    // variant, "add" = the variant got its own values (restore: back to base),
+    // "update" = its values changed, "delete" = its entry was removed (restore:
+    // re-create it). A rename is always of the row, never of a variant.
+    std::string variant;
 };
 
 // Diff two maps into journal entries (stamped with `at`/`by`/`source`).

@@ -152,9 +152,28 @@ void ExecutionContext::RecordPosition(const std::string& device,
     }
     tgt->vals     = vals;
     tgt->untaught = false;
-    wf_.QueueSavedPosition(device, *tgt);
+    QueueTaught(device, *tgt);
     FD_INFO("recipe", "taught '%s' on %s (%zu axes)", tgt->name, device.c_str(),
             vals.size());
+}
+
+// The run copy is FLAT (ApplyPositionVariant): its `vals` are the run's
+// variant's. A teach under a variant is therefore handed back as a row whose
+// `variants` holds exactly that one entry, and an empty `variants` means base -
+// MergeTaughtPositions reads nothing else to know where the values belong.
+void ExecutionContext::QueueTaught(const std::string& device, const SavedPos& sp)
+{
+    if (posVariant_.empty()) {
+        wf_.QueueSavedPosition(device, sp);
+        return;
+    }
+    SavedPos out = sp;
+    SavedPosVariant var;
+    var.vals     = sp.vals;
+    var.untaught = false;
+    out.variants.clear();
+    out.variants[posVariant_] = std::move(var);
+    wf_.QueueSavedPosition(device, out);
 }
 
 bool ExecutionContext::RecordPositionByUid(const std::string& device,
@@ -167,9 +186,10 @@ bool ExecutionContext::RecordPositionByUid(const std::string& device,
         if (sp.uid != uid) continue;
         for (const auto& [axis, v] : vals) sp.vals[axis] = v;
         sp.untaught = false;   // the run's copy too: a later step may drive to it
-        wf_.QueueSavedPosition(device, sp);
-        FD_INFO("recipe", "taught '%s' on %s by uid (%zu axes)", sp.name, device.c_str(),
-                vals.size());
+        QueueTaught(device, sp);
+        FD_INFO("recipe", "taught '%s' on %s by uid (%zu axes)%s%s", sp.name, device.c_str(),
+                vals.size(), posVariant_.empty() ? "" : " - variant ",
+                posVariant_.c_str());
         return true;
     }
     FD_WARN("recipe", "teach: position uid '%s' not found on %s - nothing written",

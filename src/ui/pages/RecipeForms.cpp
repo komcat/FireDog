@@ -742,7 +742,7 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
         bool untaught = false;   // a placeholder: Teach here, never Go
         if (!v.empty() && it != session_.Positions().end())
             for (const SavedPos& sp : it->second)
-                if (sp.uid == v) { untaught = sp.untaught; break; }
+                if (sp.uid == v) { untaught = EffectiveUntaught(sp, posVariant_); break; }
         if (showPair) {
             ImGui::SameLine();
             ImGui::BeginDisabled(!canTeach || untaught);
@@ -751,11 +751,14 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
                 // it->second, not Positions()[dev]: operator[] would INSERT an
                 // empty device list for a name that has none. canTeach already
                 // required the lookup above to have found this position.
+                // The working position variant's values (the run strip's
+                // combo): Go goes where Run would.
                 for (const SavedPos& sp : it->second) {
                     if (sp.uid != v) continue;
+                    const std::map<std::string, double>& sv = EffectiveVals(sp, posVariant_);
                     for (const std::string& ax : mc->Axes()) {
-                        const auto av = sp.vals.find(ax);
-                        if (av != sp.vals.end()) tgt.emplace_back(ax, av->second);
+                        const auto av = sv.find(ax);
+                        if (av != sv.end()) tgt.emplace_back(ax, av->second);
                     }
                     break;
                 }

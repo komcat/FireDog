@@ -104,6 +104,9 @@ public:
         std::vector<WaffleTray>  trays;          // waffle trays (move_to_cell, tray_*)
         std::string              visionDir;      // where their template patches live
         std::string              scriptsDir;     // product scripts win over config/scripts
+        // The position variant `positions` was overlaid with ("" = base); see
+        // RecipeEngine::Env::posVariant.
+        std::string              posVariant;
         // Seeded into the run's ctx before the script starts — the UI-side
         // parameter injection (fd.param reads these exactly like values a
         // recipe injected with ctx_set steps).

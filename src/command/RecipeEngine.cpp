@@ -507,6 +507,7 @@ void RecipeEngine::ThreadMain(Recipe recipe, Recipe onFail, Env env)
                 else    EndWaitLocked();
             },
         });
+    ctx.SetPositionVariant(env.posVariant);
     {
         const std::scoped_lock lock(mu_);
         runCtx_ = &ctx;
@@ -659,10 +660,12 @@ void RecipeEngine::ThreadMain(Recipe recipe, Recipe onFail, Env env)
         // A teach run drove the machine but proved nothing about a part; nor
         // did a dry run, which skipped every step that touches one.
         if (!teach_.load() && !dryRun_.load()) {
-            DutSession::Instance().RecordRun("recipe", recipeName_, StateName(state_));
+            DutSession::Instance().RecordRun("recipe", recipeName_, StateName(state_), "", -1,
+                                             env.posVariant);
             // The cleanup moved the machine with the part in it: on the record too.
             if (!onFailResult.empty())
-                DutSession::Instance().RecordRun("on_fail", onFail.name, onFailResult);
+                DutSession::Instance().RecordRun("on_fail", onFail.name, onFailResult, "", -1,
+                                                 env.posVariant);
         }
     }
     running_.store(false);

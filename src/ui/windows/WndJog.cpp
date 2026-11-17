@@ -21,6 +21,7 @@
 
 #include "imgui.h"
 
+#include "ui/Theme.h"     // kVariantViolet
 #include "ui/Widgets.h"
 #include "core/Log.h"
 
@@ -389,10 +390,29 @@ void App::DrawJogPosTab()
     }
     ImGui::Separator();
     if (IMotionController* dev = hardware_.MotionDevice(di)) {
+        // Named against the WORKING position variant's values, like the Go
+        // buttons below drive to them.
+        std::vector<SavedPos> viewList;
+        if (saved) {
+            if (posVariant_.empty()) {
+                viewList = *saved;
+            } else {
+                SavedPosMap one;
+                one.emplace(devName, *saved);
+                viewList = std::move(ApplyPositionVariant(one, posVariant_)[devName]);
+            }
+        }
         double          dist = 0.0;
-        const SavedPos* here = saved ? NearestSavedPos(*saved, dev->Positions(), &dist) : nullptr;
+        const SavedPos* here = saved ? NearestSavedPos(viewList, dev->Positions(), &dist) : nullptr;
         if (here) ImGui::TextDisabled("at %s  (%.3f mm)", here->name, dist);
         else      ImGui::TextDisabled("at (nothing taught to name it)");
+        if (!posVariant_.empty()) {
+            ImGui::SameLine();
+            ImGui::TextColored(kVariantViolet, "[%s]", posVariant_.c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Working position variant (Motion page): the pad drives to\n"
+                                  "its values, base where a position has none.");
+        }
     }
 
     // --- The pad -------------------------------------------------------------
@@ -416,7 +436,7 @@ void App::DrawJogPosTab()
 
         // An unresolved uid must never be clickable: it names a position this
         // product does not contain, and the pad has no idea where that is.
-        ImGui::BeginDisabled(!ready || !p || p->untaught);
+        ImGui::BeginDisabled(!ready || !p || EffectiveUntaught(*p, posVariant_));
         if (empty)         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
         else if (dangling) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.30f, 0.20f, 1.0f));
         const char* label = p ? p->name : (dangling ? "?" : "--");
@@ -439,12 +459,15 @@ void App::DrawJogPosTab()
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
             if (p) {
                 std::string tip = std::string(p->name) + "\n";
-                for (const auto& av : p->vals) {
+                if (!posVariant_.empty())
+                    tip += HasVariant(*p, posVariant_) ? "variant " + posVariant_ + "\n"
+                                                       : "base (" + posVariant_ + " not taught)\n";
+                for (const auto& av : EffectiveVals(*p, posVariant_)) {
                     char b[64];
                     std::snprintf(b, sizeof(b), "%s %9.4f\n", av.first.c_str(), av.second);
                     tip += b;
                 }
-                if (p->untaught)
+                if (EffectiveUntaught(*p, posVariant_))
                     tip += "NOT TAUGHT on this machine - teach it before driving to it\n";
                 tip += "right-click to reassign";
                 ImGui::SetTooltip("%s", tip.c_str());
@@ -1256,9 +1279,22 @@ void App::DrawJogPositionRow(IMotionController& dev, const std::vector<std::stri
     const std::map<std::string, double> live = dev.Positions();
     SavedPosMap& all = session_.Positions();
     const auto  it   = all.find(devName);
+    // "Where am I" is judged against the WORKING position variant's values
+    // (base where a row has none): a stage parked on variant B's pick point is
+    // AT that position, not 0.2 mm off its base.
+    std::vector<SavedPos> viewList;
+    if (it != all.end()) {
+        if (posVariant_.empty()) {
+            viewList = it->second;
+        } else {
+            SavedPosMap one;
+            one.emplace(devName, it->second);
+            viewList = std::move(ApplyPositionVariant(one, posVariant_)[devName]);
+        }
+    }
     double dist = 0.0;
     const SavedPos* nearest = (it != all.end())
-                               ? NearestSavedPos(it->second, live, &dist, /*includeHidden=*/false)
+                               ? NearestSavedPos(viewList, live, &dist, /*includeHidden=*/false)
                                : nullptr;
     const bool at = nearest && dist <= kSavedPosAtTolMM;
 
@@ -1297,16 +1333,18 @@ void App::DrawJogPositionRow(IMotionController& dev, const std::vector<std::stri
     ImGui::BeginDisabled(!held);
     if (ImGui::SmallButton("Upd") && held) {
         // Stage only — the modal shows this table and writes on confirm.
-        jogUpd_      = JogPosUpdate{};
-        jogUpd_.dev  = devName;
-        jogUpd_.uid  = held->uid;
-        jogUpd_.name = held->name;
+        jogUpd_         = JogPosUpdate{};
+        jogUpd_.dev     = devName;
+        jogUpd_.uid     = held->uid;
+        jogUpd_.name    = held->name;
+        jogUpd_.variant = posVariant_;
+        const std::map<std::string, double>& heldVals = EffectiveVals(*held, posVariant_);
         double sq = 0.0;
         for (const std::string& a : axes) {
             const auto li = live.find(a);
             if (li == live.end()) continue;
-            const auto oi = held->vals.find(a);
-            const double o = (oi != held->vals.end()) ? oi->second : li->second;
+            const auto oi = heldVals.find(a);
+            const double o = (oi != heldVals.end()) ? oi->second : li->second;
             const double d = li->second - o;
             // Distance over the linear axes only: a degree of U added to a
             // millimetre of X is not a length.
@@ -1348,6 +1386,9 @@ void App::DrawJogUpdatePosModal()
 
     const JogPosUpdate& u = jogUpd_;
     ImGui::Text("Overwrite position '%s' on %s with the current position?", u.name.c_str(), u.dev.c_str());
+    if (!u.variant.empty())
+        ImGui::TextColored(kVariantViolet, "Writes variant %s's values - base untouched.",
+                           u.variant.c_str());
     ImGui::Spacing();
     if (ImGui::BeginTable("updrows", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                             ImGuiTableFlags_SizingFixedFit)) {
@@ -1384,9 +1425,14 @@ void App::DrawJogUpdatePosModal()
             for (SavedPos& p : it->second) if (p.uid == u.uid) { rec = &p; break; }
         if (rec) {
             std::string from, to;
-            rec->untaught = false;   // written from the live pose: taught here
+            // The variant staged at Upd: its values start from what it showed
+            // (base where it had none) and take the jogged axes.
+            std::map<std::string, double> nv =
+                u.variant.empty() ? std::map<std::string, double>{} : EffectiveVals(*rec, u.variant);
+            if (u.variant.empty()) rec->untaught = false;   // written from the live pose: taught here
             for (const JogPosUpdate::Row& r : u.rows) {
-                rec->vals[r.axis] = r.after;
+                if (u.variant.empty()) rec->vals[r.axis] = r.after;
+                else                   nv[r.axis]        = r.after;
                 char b[48];
                 std::snprintf(b, sizeof(b), "%s%.4f", from.empty() ? "" : " ", r.before); from += b;
                 std::snprintf(b, sizeof(b), "%s%.4f", to.empty()   ? "" : " ", r.after);  to += b;
@@ -1398,9 +1444,11 @@ void App::DrawJogUpdatePosModal()
             jogPosStatus_      = line;
             jogPosStatusFull_  = full;
             jogPosStatusUntil_ = ImGui::GetTime() + kJogPosStatusSec;
-            FD_INFO("saved", "jog: updated '%s' on %s from [%s] to [%s] (delta %.4f mm)",
-                    rec->name, u.dev.c_str(), from.c_str(), to.c_str(), u.deltaMM);
-            session_.SavePositions();
+            FD_INFO("saved", "jog: updated '%s' on %s%s%s from [%s] to [%s] (delta %.4f mm)",
+                    rec->name, u.dev.c_str(), u.variant.empty() ? "" : " variant ",
+                    u.variant.c_str(), from.c_str(), to.c_str(), u.deltaMM);
+            if (u.variant.empty()) session_.SavePositions();
+            else session_.SetPositionVariantVals(u.dev, u.uid, u.variant, nv);
         } else {
             jogPosStatus_      = "position not updated: record is gone";
             jogPosStatusFull_  = "The held position is no longer in the loaded product; nothing was written.";

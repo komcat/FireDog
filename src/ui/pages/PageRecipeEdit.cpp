@@ -151,10 +151,16 @@ void App::DrawRecipeEditPanel()
     // Live author-time validation of the selected recipe (WITHOUT the
     // devices-Connected requirement — that stays a run-start check, so
     // authoring offline doesn't drown in noise).
+    // Judged against the positions Run would get: the working variant applied
+    // (an untaught placeholder is per variant). Copied only when one is set.
+    SavedPosMap varPositions;
+    if (haveSel && !posVariant_.empty())
+        varPositions = ApplyPositionVariant(session_.Positions(), posVariant_);
+    const SavedPosMap& valPositions = posVariant_.empty() ? session_.Positions() : varPositions;
     std::vector<RecipeIssue> issues;
     if (haveSel)
         issues = ValidateRecipe(session_.Recipes()[recipeSel_], orch_.registry, hardware_,
-                                session_.Positions(), session_.Maps(), session_.Aligns(),
+                                valPositions, session_.Maps(), session_.Aligns(),
                                 session_.VisionModels(), session_.Grips(),
                                 session_.Trays(), session_.Recipes(), false);
     // The issues list lives in its own band at the BOTTOM of the page (the
@@ -996,6 +1002,12 @@ void App::DrawTeachPositionModal()
     const std::map<std::string, double> live = m->Positions();
 
     ImGui::Text("Re-teach '%s' from the live %s pose?", tgt->name, teachPosDev_.c_str());
+    // Under the working variant (the run strip's combo) only that variant's
+    // values are written; the base and every other variant stay as they are.
+    if (!posVariant_.empty())
+        ImGui::TextColored(kVariantViolet, "Variant %s%s - base untouched.", posVariant_.c_str(),
+                           HasVariant(*tgt, posVariant_) ? "" : " (first teach of it here)");
+    const std::map<std::string, double>& tgtVals = EffectiveVals(*tgt, posVariant_);
     ImGui::Separator();
     if (ImGui::BeginTable("teachpos", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("Axis");
@@ -1007,8 +1019,8 @@ void App::DrawTeachPositionModal()
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(ax.c_str());
             ImGui::TableSetColumnIndex(1);
-            const auto sv = tgt->vals.find(ax);
-            if (sv != tgt->vals.end()) ImGui::Text("%.4f", sv->second);
+            const auto sv = tgtVals.find(ax);
+            if (sv != tgtVals.end()) ImGui::Text("%.4f", sv->second);
             else                       ImGui::TextDisabled("--");
             ImGui::TableSetColumnIndex(2);
             const auto lv = live.find(ax);
@@ -1051,6 +1063,18 @@ bool App::TeachPositionByUid(const std::string& device, const std::string& uid)
     for (SavedPos& sp : it->second) {
         if (sp.uid != uid) continue;
         const std::map<std::string, double> live = m->Positions();
+        // The working variant: write ITS values (starting from what it shows,
+        // so an axis the row never had stays out the same way), never the base.
+        if (!posVariant_.empty()) {
+            std::map<std::string, double> nv = EffectiveVals(sp, posVariant_);
+            for (const std::string& ax : m->Axes()) {
+                const auto lv = live.find(ax);
+                nv[ax] = (lv != live.end()) ? lv->second : 0.0;
+            }
+            FD_INFO("saved", "re-taught '%s' (uid %s, %s) variant %s from the live pose",
+                    sp.name, uid.c_str(), device.c_str(), posVariant_.c_str());
+            return session_.SetPositionVariantVals(device, uid, posVariant_, nv);
+        }
         for (const std::string& ax : m->Axes()) {
             const auto lv = live.find(ax);
             sp.vals[ax] = (lv != live.end()) ? lv->second : 0.0;
@@ -1881,8 +1905,11 @@ void App::DrawRecipeRunStrip(float height)
     const float btnW  = 110.0f;
     const float chkW  = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x +
                         ImGui::CalcTextSize("Step").x;
-    // Run / Run Step / Run From / Next / Pause / Stop / Save.
-    const float ctrlW = btnW * 7.0f + chkW + style.ItemSpacing.x * 7.0f;
+    // The working position variant's combo sits first: it qualifies what Run
+    // moves to, like Step qualifies how.
+    const float varW  = 100.0f;
+    // Variant / Run / Run Step / Run From / Next / Pause / Stop / Save.
+    const float ctrlW = varW + btnW * 7.0f + chkW + style.ItemSpacing.x * 8.0f;
     const float rightEdge =
         ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
 
@@ -1924,6 +1951,11 @@ void App::DrawRecipeRunStrip(float height)
     }
 
     ImGui::SameLine(rightEdge - ctrlW);
+    // Which model Run / Run Step / Run From move by (App::posVariant_, shared
+    // with the Motion page). Locked while anything runs: the run in flight
+    // already holds its copy, and the combo must not claim otherwise.
+    DrawPosVariantCombo("##edPosVar", varW, !orch_.Busy());
+    ImGui::SameLine();
     // Step mode: Run starts paused at the selected step; Next executes one
     // leaf at a time. Toggling while a run is active pauses/resumes it live.
     ImGui::BeginDisabled(progRun);
@@ -1941,7 +1973,7 @@ void App::DrawRecipeRunStrip(float height)
                         recipeSel_ < static_cast<int>(session_.Recipes().size());
     ImGui::BeginDisabled(!canRun);
     if (IconButton(UiIcon("run_execute"), "Run", ImVec2(btnW, 0.0f))) {
-        RecipeEngine::Env env = session_.MakeRecipeEnv();
+        RecipeEngine::Env env = session_.MakeRecipeEnv(posVariant_);
         RecipeEngine::StartOpts opts = RecipeStartOpts();   // carries teach
         opts.stepMode = edStepMode_;
         if (edStepMode_) opts.startPath = edStepSel_;   // from the selection
@@ -1997,7 +2029,7 @@ void App::DrawRecipeRunStrip(float height)
         if (runPaths.size() == 1)
             one.steps.front().enabled = true;   // a disabled row can still be tested
         // Full Env, not just these steps: sub_recipe references still resolve.
-        RecipeEngine::Env env = session_.MakeRecipeEnv();
+        RecipeEngine::Env env = session_.MakeRecipeEnv(posVariant_);
         recipeStartErr_.clear();
         if (!orch_.recipe.Start(one, std::move(env), &recipeStartErr_, RecipeStartOpts()))
             FD_WARN("recipe", "step run rejected: %s", recipeStartErr_.c_str());
@@ -2026,7 +2058,7 @@ void App::DrawRecipeRunStrip(float height)
     // With Step ticked it pauses before each step, as Run does.
     ImGui::BeginDisabled(!canRun || edStepSel_.empty());
     if (ImGui::Button("Run From", ImVec2(btnW, 0.0f))) {
-        RecipeEngine::Env env = session_.MakeRecipeEnv();
+        RecipeEngine::Env env = session_.MakeRecipeEnv(posVariant_);
         RecipeEngine::StartOpts opts = RecipeStartOpts();   // carries teach
         opts.stepMode  = edStepMode_;
         opts.startPath = edStepSel_;

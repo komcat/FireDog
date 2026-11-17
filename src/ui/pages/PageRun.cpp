@@ -342,6 +342,14 @@ void App::StartDeckRun(RunScope scope, const std::set<std::string>* teachOnly)
         return;
     }
     const Program& prog = session_.Programs()[progSel_];
+    // The program's position variant must still be one the product declares:
+    // refused here, before the frames and the cycle are touched, rather than
+    // silently running on base values the header did not ask for.
+    if (!session_.HasPositionVariant(prog.posVariant)) {
+        runStartErr_ = "program '" + prog.name + "' runs position variant '" + prog.posVariant +
+                       "', which this product does not declare (Motion page > Variants)";
+        return;
+    }
 
     RunQueue q = BuildRunQueue(prog, scope, deckSlot_, deckNode_,
                                session_.Recipes(), &runStartErr_);
@@ -408,7 +416,9 @@ void App::StartDeckRun(RunScope scope, const std::set<std::string>* teachOnly)
         }
     }
 
-    RecipeEngine::Env env = session_.MakeRecipeEnv();
+    // The PROGRAM's variant, never the working one: what a deck runs is a
+    // property of the program, not of whoever last touched the Motion page.
+    RecipeEngine::Env env = session_.MakeRecipeEnv(prog.posVariant);
     RecipeEngine::StartOpts opts = RecipeStartOpts();
     if (opts.teach && teachOnly) {
         opts.teachPick = true;
@@ -1347,6 +1357,25 @@ void App::DrawRunPanel()
     centerNext(ImGui::GetTextLineHeight());
     if (haveProg) ImGui::Text("%s", session_.Programs()[progSel_].name.c_str());
     else          ImGui::TextDisabled("(no program)");
+    // Which MODEL the deck runs: the program header's position variant. Shown
+    // beside the name because it is part of the answer to "what am I running?";
+    // red when the product no longer declares it (Execute then refuses).
+    if (haveProg && !session_.Programs()[progSel_].posVariant.empty()) {
+        const std::string& pv = session_.Programs()[progSel_].posVariant;
+        const bool known = session_.HasPositionVariant(pv);
+        ImGui::SameLine();
+        centerNext(ImGui::GetTextLineHeight());
+        ImGui::TextColored(known ? kVariantViolet : ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+                           "VARIANT %s", pv.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(known ? "Every run of this program moves by variant '%s':\n"
+                                      "a position taught for it uses those values, any other\n"
+                                      "its base values. Set in the Program Organizer."
+                                    : "Variant '%s' is not declared by this product - Execute\n"
+                                      "refuses. Declare it on the Motion page or change the\n"
+                                      "program header in the Program Organizer.",
+                              pv.c_str());
+    }
     // Edit no longer grows buttons in the deck: it opens the Program Organizer
     // window. The checkbox mirrors that window's own close box, so the two can
     // never disagree about whether it is up.
@@ -1484,6 +1513,36 @@ void App::DrawRunPanel()
         ImGui::EndDisabled();
     }
     ImGui::EndDisabled();
+    // Which MODEL Execute runs: the program header's position variant, in the
+    // deck's big text right under the slot - the strip's VARIANT tag is the
+    // first thing a narrow window cuts off. Shown whenever the product has
+    // variants at all (so "base" is a statement, not an absence) or the program
+    // names one; changed only in the Program Organizer. Red = not declared by
+    // this product any more, and Execute refuses.
+    if (haveProg) {
+        const std::string& pv = session_.Programs()[progSel_].posVariant;
+        if (!pv.empty() || !session_.PositionVariants().empty()) {
+            const bool known = session_.HasPositionVariant(pv);
+            if (pv.empty())
+                ImGui::TextDisabled("base");
+            else
+                ImGui::TextColored(known ? kVariantViolet : ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+                                   "%s", pv.c_str());
+            const bool hov = ImGui::IsItemHovered();
+            ImGui::SameLine();
+            ImGui::TextDisabled("variant");
+            if (hov || ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", pv.empty()
+                    ? "This program runs the BASE positions. Set a variant in the\n"
+                      "Program Organizer header (Edit) to run a model's positions."
+                    : known
+                        ? "Every run of this program moves by this position variant:\n"
+                          "a position taught for it uses those values, any other its\n"
+                          "base values. Set in the Program Organizer header (Edit)."
+                        : "This variant is not declared by the product - Execute refuses.\n"
+                          "Declare it on the Motion page or change the program header.");
+        }
+    }
 
     // ---- Mode buttons: Teach | Inspect Motion, under the slot they act on ----
     // Body-size text (the big run text would not fit two labels in a column

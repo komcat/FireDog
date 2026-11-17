@@ -1045,6 +1045,7 @@ void LuaEngine::ThreadMain(std::string path, Env env)
             },
         });
     for (const auto& [key, val] : env.initialCtx) ctx.CtxSet(key, val);
+    ctx.SetPositionVariant(env.posVariant);
     {
         const std::scoped_lock lock(mu_);
         runCtx_ = &ctx;
@@ -1068,7 +1069,8 @@ void LuaEngine::ThreadMain(std::string path, Env env)
         FD_INFO("script", "run '%s' finished: %s%s%s", scriptName_.c_str(),
                 StateName(state_), error_.empty() ? "" : " - ", error_.c_str());
         // Traceability: attribute this run to the open DUT (soft no-op if none).
-        DutSession::Instance().RecordRun("script", scriptName_, StateName(state_));
+        DutSession::Instance().RecordRun("script", scriptName_, StateName(state_), "", -1,
+                                         env.posVariant);
     }
     curLine_.store(0);
     running_.store(false);

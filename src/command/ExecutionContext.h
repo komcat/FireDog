@@ -392,6 +392,14 @@ public:
     bool RecordPositionByUid(const std::string& device, const std::string& uid,
                              const std::map<std::string, double>& vals);
 
+    // The POSITION VARIANT this run's positions were overlaid with ("" = base,
+    // set by the engine from Env::posVariant before the first step). The movers
+    // never read it - the run copy already holds the variant's values; only the
+    // teach hand-off does, so a teach under variant B writes B's values and
+    // never the base. docs/position-variants-design.md.
+    void SetPositionVariant(std::string v) { posVariant_ = std::move(v); }
+    const std::string& PositionVariant() const { return posVariant_; }
+
     // ---- Operator prompts (block; false = cancelled or stopped) -------------
     // autoOkMs > 0: the prompt answers OK by itself after that long, so an
     // operator gets a glance and a Cancel, not a stop. 0 waits for them.
@@ -419,6 +427,9 @@ private:
     std::string         visionDir_;                  // by value: they are paths,
     std::string         scriptsDir_;                  // not live documents
     Hooks               hooks_;
+    std::string         posVariant_;                  // "" = base
+    // Hand a taught row to Workflow, tagged with the run's variant (see .cpp).
+    void QueueTaught(const std::string& device, const SavedPos& sp);
 
     mutable std::mutex              ctxMu_;
     std::map<std::string, CtxValue> ctx_;

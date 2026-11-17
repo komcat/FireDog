@@ -321,7 +321,7 @@ bool DutSession::InsertImage(const std::string& key, const std::string& relPath,
 
 void DutSession::RecordRun(const std::string& kind, const std::string& name,
                            const std::string& result, const std::string& uid,
-                           int recipesDone)
+                           int recipesDone, const std::string& variant)
 {
     const std::scoped_lock lock(mu_);
     if (!open_) return;   // deliberate soft path: runs without a part are fine
@@ -331,6 +331,7 @@ void DutSession::RecordRun(const std::string& kind, const std::string& name,
     v["result"] = result;
     if (!uid.empty()) v["uid"] = uid;
     if (recipesDone >= 0) v["recipes_done"] = recipesDone;
+    if (!variant.empty()) v["variant"] = variant;
     // The "who ran this" answer, on the run rather than only on the record: a
     // record open across a shift change has runs belonging to two people.
     if (!opId_.empty()) v["operator"] = opId_;

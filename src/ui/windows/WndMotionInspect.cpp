@@ -21,6 +21,8 @@
 #include "command/CommandRegistry.h"
 #include "command/Program.h"
 #include "command/Recipe.h"
+#include "core/SavedPositions.h"   // ApplyPositionVariant
+#include "ui/Theme.h"              // kVariantViolet
 
 #include <cstdio>
 #include <map>
@@ -345,7 +347,15 @@ void App::DrawMotionInspectWindow()
                         "camera);  current = not set in this scope.");
     ImGui::Separator();
 
-    InspectWalk w{orch_.registry, session_.Positions(), session_.VisionModels(),
+    // The targets the run would ACTUALLY drive to: the program's position
+    // variant applied exactly as MakeRecipeEnv applies it.
+    if (!prog->posVariant.empty()) {
+        ImGui::TextColored(kVariantViolet, "Variant %s", prog->posVariant.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("- targets are this variant's values where taught, else base.");
+    }
+    const SavedPosMap viewPos = ApplyPositionVariant(session_.Positions(), prog->posVariant);
+    InspectWalk w{orch_.registry, viewPos, session_.VisionModels(),
                   motionInspectAll_, {}, {}, 0};
 
     constexpr ImGuiTableFlags kFlags =

@@ -62,13 +62,15 @@ bool App::StartWatchedMove(const std::string& device, const std::string& posUid,
     for (const SavedPos& sp : pit->second)
         if (sp.uid == posUid) { pos = &sp; break; }
     if (!pos) return false;
-    // A placeholder's values are another machine's: never driven to. Its own
-    // button is already disabled; this is the backstop for every caller.
-    if (pos->untaught) {
+    // A hand-driven move goes where the WORKING position variant says
+    // (posVariant_; base for a row not taught for it - and private rows never
+    // are). A placeholder's values are another machine's: never driven to. Its
+    // own button is already disabled; this is the backstop for every caller.
+    if (EffectiveUntaught(*pos, posVariant_)) {
         FD_WARN("ui", "%s", UntaughtPositionMessage(device, *pos).c_str());
         return false;
     }
-    return StartWatchedMove(device, pos->vals, what);
+    return StartWatchedMove(device, EffectiveVals(*pos, posVariant_), what);
 }
 
 bool App::StartWatchedMove(const std::string& device,

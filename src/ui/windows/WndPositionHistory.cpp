@@ -13,6 +13,7 @@
 #include "imgui.h"
 
 #include "core/PositionHistory.h"
+#include "ui/Theme.h"   // kVariantViolet
 
 #include <charconv>
 #include <cmath>
@@ -224,6 +225,16 @@ void App::DrawPositionHistoryWindow()
             if (ImGui::IsItemHovered() && c.source.size() > 24) ImGui::SetTooltip("%s", c.source.c_str());
             ImGui::TableSetColumnIndex(3);
             ImGui::TextColored(ActionColor(c.action), "%s", c.action.c_str());
+            // A variant entry names its variant under the action: "update B"
+            // changed B's values, the base was not touched.
+            if (!c.variant.empty()) {
+                ImGui::TextColored(kVariantViolet, "%s", c.variant.c_str());
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Position variant %s: %s", c.variant.c_str(),
+                                      c.action == "add"    ? "got its own values here"
+                                      : c.action == "delete" ? "its values were removed (back to base)"
+                                                             : "its values changed; base untouched");
+            }
             ImGui::TableSetColumnIndex(4);
             ImGui::TextUnformatted(c.device.c_str());
             ImGui::TableSetColumnIndex(5);
@@ -237,8 +248,11 @@ void App::DrawPositionHistoryWindow()
             ImGui::TableSetColumnIndex(6);
             ImGui::TextUnformatted(DescribeChange(c).c_str());
             ImGui::TableSetColumnIndex(7);
+            // A variant "add" is restorable too: restoring it removes the
+            // variant's values, so the row falls back to base again.
             const bool restorable = c.action == "update" || c.action == "rename" ||
-                                    c.action == "delete";
+                                    c.action == "delete" ||
+                                    (c.action == "add" && !c.variant.empty());
             if (restorable) {
                 ImGui::BeginDisabled(busy);
                 if (ImGui::SmallButton("Restore")) {
@@ -250,6 +264,12 @@ void App::DrawPositionHistoryWindow()
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                     if (busy)
                         ImGui::SetTooltip("Not while a run is active");
+                    else if (!c.variant.empty() && c.action == "add")
+                        ImGui::SetTooltip("Remove variant %s's values here (back to base)",
+                                          c.variant.c_str());
+                    else if (!c.variant.empty() && c.action == "delete")
+                        ImGui::SetTooltip("Give variant %s these values here again",
+                                          c.variant.c_str());
                     else if (c.action == "delete")
                         ImGui::SetTooltip("Re-create the row under its old uid with these values");
                     else if (c.action == "rename")

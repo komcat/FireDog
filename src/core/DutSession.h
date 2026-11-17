@@ -88,10 +88,11 @@ public:
     // Automatic run attribution ($run event) from the engines' terminal
     // states and the ProgramRunner. Deliberately a soft no-op when no DUT is
     // open: testing without a part must not fail runs. `uid` (program uid)
-    // and `recipesDone` (>= 0) are included when provided.
+    // and `recipesDone` (>= 0) are included when provided; so is the position
+    // `variant` the run moved by (empty = base, omitted).
     void RecordRun(const std::string& kind, const std::string& name,
                    const std::string& result, const std::string& uid = std::string(),
-                   int recipesDone = -1);
+                   int recipesDone = -1, const std::string& variant = std::string());
 
     // Every record that CLOSED — by Close, or auto-closed by the next Open — for
     // the OEE quality ratio (core/OeeTracker). Close runs on engine workers as

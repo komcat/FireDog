@@ -12,6 +12,17 @@
 
 namespace firedog {
 
+// One POSITION VARIANT's own values for a saved position. A product made in
+// models that are almost the same part keeps ONE position (one name, one uid,
+// every recipe reference) and teaches only what differs per model. A run picks
+// the variant (the program header / the editor's combo) and the values are
+// swapped in ONCE, when its Env is built (ApplyPositionVariant), so no mover
+// ever learns what a variant is. docs/position-variants-design.md.
+struct SavedPosVariant {
+    std::map<std::string, double> vals;   // axis -> value
+    bool untaught = false;                // a placeholder, same meaning as SavedPos::untaught
+};
+
 // A saved/taught device position (name + per-axis values).
 struct SavedPos {
     char name[32] = "Pos";                // display label — freely renameable
@@ -26,6 +37,9 @@ struct SavedPos {
     // stands. Any write of real values (a teach, Update, Edit) clears it.
     // docs/por-design.md §7.8.
     bool untaught = false;
+    // Variant name -> that variant's own values. `vals` above IS the base
+    // variant; a variant with no entry here falls back to it (EffectiveVals).
+    std::map<std::string, SavedPosVariant> variants;
 };
 
 // Device name -> ordered list of taught positions.
@@ -37,15 +51,33 @@ using SavedPosMap = std::map<std::string, std::vector<SavedPos>>;
 // panels never disagree about whether the stage has arrived.
 inline constexpr double kSavedPosAtTolMM = 0.050;
 
+// The values a position has under `variant` ("" = base): the variant's own
+// entry when the row has one, else the base values. The ONE place a variant is
+// resolved - the run overlay below and every hand-driven surface call it.
+const std::map<std::string, double>& EffectiveVals(const SavedPos& p, const std::string& variant);
+bool EffectiveUntaught(const SavedPos& p, const std::string& variant);
+// True when the row carries its own entry for `variant` (never for base).
+bool HasVariant(const SavedPos& p, const std::string& variant);
+
+// The positions a run under `variant` sees: a copy whose every row holds its
+// EFFECTIVE values and untaught flag, with `variants` emptied (the run copy is
+// flat, so a teach inside it writes plain `vals`). "" flattens to base. Called
+// by ProductSession::MakeRecipeEnv / MakeLuaEnv and by the views that preview
+// a run (teach pick, Inspect Motion).
+SavedPosMap ApplyPositionVariant(const SavedPosMap& positions, const std::string& variant);
+
 // The one refusal text for driving to an untaught position, so a recipe step, a
 // script and a page button say the same thing.
 std::string UntaughtPositionMessage(const std::string& device, const SavedPos& p);
 
 // Reads config/positions.local.json, falling back to config/positions.json.
-SavedPosMap LoadSavedPositions();
+// `variantsOut` (if given) receives the file's declared variant names.
+SavedPosMap LoadSavedPositions(std::vector<std::string>* variantsOut = nullptr);
 
 // Writes config/positions.local.json. Best-effort; false if unwritable.
-bool SaveSavedPositions(const SavedPosMap& positions);
+// `variants` is the declared variant list, written at the top level.
+bool SaveSavedPositions(const SavedPosMap& positions,
+                        const std::vector<std::string>& variants = {});
 
 // The saved position closest to a live device pose — what turns four decimal
 // places of axis readout into a name an operator recognises. Distance is
@@ -69,8 +101,12 @@ const SavedPos* NearestSavedPos(const std::vector<SavedPos>& positions,
 // Explicit-path variants used by the product system. `uidOut` (if given)
 // receives the file's own "uid" field so the caller can check it against the
 // product manifest; `uid` (if non-empty) is written into the file.
-SavedPosMap LoadSavedPositionsFile(const std::string& path, std::string* uidOut = nullptr);
+// `variantsOut` / `variants`: the declared variant names (top-level
+// "variants"; base is implicit and never listed).
+SavedPosMap LoadSavedPositionsFile(const std::string& path, std::string* uidOut = nullptr,
+                                   std::vector<std::string>* variantsOut = nullptr);
 bool SaveSavedPositionsFile(const std::string& path, const SavedPosMap& positions,
-                            const std::string& uid);
+                            const std::string& uid,
+                            const std::vector<std::string>& variants = {});
 
 } // namespace firedog

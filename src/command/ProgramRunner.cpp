@@ -78,9 +78,11 @@ bool ProgramRunner::Start(std::string kind, std::string label, std::string uid,
         status_.items.push_back(std::move(st));
     }
 
-    FD_INFO("program", "%s '%s' started (%zu recipe run(s))%s%s", kind_.c_str(),
+    FD_INFO("program", "%s '%s' started (%zu recipe run(s))%s%s%s%s", kind_.c_str(),
             label_.c_str(), queue_.size(), opts_.teach ? " [TEACH]" : "",
-            status_.dryRun ? " [DRY RUN]" : "");
+            status_.dryRun ? " [DRY RUN]" : "",
+            env_.posVariant.empty() ? "" : " [VARIANT ",
+            env_.posVariant.empty() ? "" : (env_.posVariant + "]").c_str());
     Tick();   // start the first item immediately
     return active_;
 }
@@ -158,7 +160,7 @@ void ProgramRunner::Finish(const char* result, const std::string& detail)
     // the part and leaves no trace on it; nor is an all-dry one.
     if (kind_ != "recipe" && !opts_.teach && !status_.dryRun) {
         DutSession::Instance().RecordRun(kind_, label_, result, uid_,
-                                         static_cast<int>(done));
+                                         static_cast<int>(done), env_.posVariant);
     }
 }
 

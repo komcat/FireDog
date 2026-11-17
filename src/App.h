@@ -1336,6 +1336,11 @@ private:
     // button per row. A uid rather than an index, so a device switch, a
     // delete or a reorder cannot land the action on a different row.
     std::string posSelUid_;
+    // The Positions tab's Variants... popup: the new name, the last outcome,
+    // and the variant whose Delete was pressed once (a second press deletes).
+    char        posVarBuf_[32] = "";
+    std::string posVarMsg_;
+    std::string posVarDelArm_;
 
     // Rename-position dialog (name is a label; the uid never changes).
     bool openRenamePos_ = false;    // row Rename button -> popup handoff
@@ -1459,6 +1464,9 @@ private:
         struct Row { std::string axis; double before, after; };
         std::vector<Row> rows;
         double deltaMM = 0.0;   // XYZ distance
+        // The working position variant at the moment Upd was pressed: the
+        // write goes there ("" = base), whatever the combo says by confirm.
+        std::string variant;
     };
     JogPosUpdate jogUpd_;
     bool jogOpenUpdPos_ = false;   // row -> panel-level OpenPopup handoff
@@ -2214,6 +2222,18 @@ private:
     // NOT in UiSettings - a mode that survives a restart would make every
     // launch silently teach - and cleared on LogOut like jogArmed_.
     bool teachMode_     = false;
+    // The WORKING position variant ("" = base): what the hand-driven surfaces
+    // show, move to and teach - the Motion page's positions table, the Recipe
+    // Editor's Run / Run Step / Run From and Teach here, the form's Go, the Jog
+    // pad's Go and Upd. A PROGRAM run never reads it: its variant is the
+    // program header's (Program::posVariant). Runtime only, like teachMode_,
+    // and cleared on product load (another product's variants mean nothing).
+    // docs/position-variants-design.md.
+    std::string posVariant_;
+    // The working variant's combo (Motion page, Recipe Editor strip): base +
+    // the product's declared variants. A working variant the product no longer
+    // declares falls back to base here (drawn every frame, so it self-heals).
+    void DrawPosVariantCombo(const char* id, float width, bool enabled);
     // The ONE place a launch's StartOpts pick up the toggle; every Run/Execute
     // surface builds its opts from this, or one of them forgets the flag.
     RecipeEngine::StartOpts RecipeStartOpts() const;

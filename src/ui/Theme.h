@@ -23,6 +23,12 @@ inline constexpr ImVec4 kTeachOrangeAct = ImVec4(0.75f, 0.36f, 0.03f, 1.0f);
 // part like a teach run, and must look like neither.
 inline constexpr ImVec4 kDryRunCyan     = ImVec4(0.30f, 0.80f, 0.95f, 1.0f);
 
+// A POSITION VARIANT's tag (docs/position-variants-design.md): the Run strip's
+// VARIANT, the Motion table's override badge, the editor's combo when not base.
+// Violet: a run on a variant is an ordinary run of the part - it must read as
+// "which model", never as a teach or a dry run.
+inline constexpr ImVec4 kVariantViolet  = ImVec4(0.72f, 0.55f, 1.00f, 1.0f);
+
 // A destructive tool button's hover / press (IconToolButton `danger`): the
 // one control on a toolbar that throws work away warns before it is clicked.
 inline constexpr ImVec4 kDangerHov      = ImVec4(0.75f, 0.20f, 0.20f, 1.0f);

@@ -572,6 +572,33 @@ void App::DrawProgramOrganizer()
         ImGui::SetNextItemWidth(220.0f);
         if (ImGui::InputText("program", nbuf, sizeof(nbuf))) prog.name = nbuf;
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rename: type here");
+        // The program's POSITION VARIANT: which model every run of it moves by.
+        // Picked from the product's declared list (Motion page > Variants), so a
+        // typo cannot invent one; an undeclared value (deleted since) is listed
+        // in red so it can be changed from the same combo.
+        ImGui::SameLine();
+        {
+            const std::string& pv = prog.posVariant;
+            const bool known = session_.HasPositionVariant(pv);
+            const std::string shown = pv.empty() ? std::string("base") : pv;
+            ImGui::SetNextItemWidth(120.0f);
+            if (!pv.empty())
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                                      known ? kVariantViolet : ImVec4(1.0f, 0.4f, 0.3f, 1.0f));
+            const bool open = ImGui::BeginCombo("variant", shown.c_str());
+            if (!pv.empty()) ImGui::PopStyleColor();
+            if (open) {
+                if (ImGui::Selectable("base", pv.empty())) prog.posVariant.clear();
+                for (const std::string& v : session_.PositionVariants())
+                    if (ImGui::Selectable(v.c_str(), pv == v)) prog.posVariant = v;
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Position variant this program runs: a position taught\n"
+                                  "for it moves to those values, any other to its base\n"
+                                  "values. Variants are declared on the Motion page.%s",
+                                  known ? "" : "\n\nNOT declared by this product - Execute refuses.");
+        }
         ImGui::SameLine();
         ImGui::TextDisabled("uid: %s", prog.uid.c_str());
     } else {

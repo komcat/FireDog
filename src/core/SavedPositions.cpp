@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -18,13 +19,28 @@ namespace {
 std::string LocalPath() { return MachinePath("config/positions.local.json"); }
 constexpr const char* kBasePath = "config/positions.json";   // shipped default, beside the exe
 
-SavedPosMap ParsePositions(std::ifstream& f, const std::string& path, std::string* uidOut)
+// "axes": {axis: number} -> map; non-numbers dropped.
+void ParseAxes(const nlohmann::json& obj, std::map<std::string, double>& vals)
+{
+    if (!obj.contains("axes") || !obj["axes"].is_object()) return;
+    for (const auto& [axis, v] : obj["axes"].items())
+        if (v.is_number()) vals[axis] = v.get<double>();
+}
+
+SavedPosMap ParsePositions(std::ifstream& f, const std::string& path, std::string* uidOut,
+                           std::vector<std::string>* variantsOut)
 {
     SavedPosMap out;
     try {
         nlohmann::json j;
         f >> j;
         if (uidOut) *uidOut = j.value("uid", "");
+        if (variantsOut && j.contains("variants") && j["variants"].is_array())
+            for (const auto& v : j["variants"])
+                if (v.is_string() && !v.get<std::string>().empty() &&
+                    std::find(variantsOut->begin(), variantsOut->end(), v.get<std::string>()) ==
+                        variantsOut->end())
+                    variantsOut->push_back(v.get<std::string>());
         if (!j.contains("positions") || !j["positions"].is_object()) return out;
         size_t total = 0;
         for (const auto& [dev, rows] : j["positions"].items()) {
@@ -39,9 +55,14 @@ SavedPosMap ParsePositions(std::ifstream& f, const std::string& path, std::strin
                 if (p.uid.empty()) p.uid = GenerateUid();   // legacy row — assign once
                 p.hidden   = row.value("hidden", false);
                 p.untaught = row.value("untaught", false);
-                if (row.contains("axes") && row["axes"].is_object()) {
-                    for (const auto& [axis, v] : row["axes"].items()) {
-                        if (v.is_number()) p.vals[axis] = v.get<double>();
+                ParseAxes(row, p.vals);
+                if (row.contains("variants") && row["variants"].is_object()) {
+                    for (const auto& [vname, vrow] : row["variants"].items()) {
+                        if (vname.empty() || !vrow.is_object()) continue;
+                        SavedPosVariant var;
+                        var.untaught = vrow.value("untaught", false);
+                        ParseAxes(vrow, var.vals);
+                        p.variants[vname] = std::move(var);
                     }
                 }
                 list.push_back(std::move(p));
@@ -59,6 +80,48 @@ SavedPosMap ParsePositions(std::ifstream& f, const std::string& path, std::strin
 
 } // namespace
 
+const std::map<std::string, double>& EffectiveVals(const SavedPos& p, const std::string& variant)
+{
+    if (!variant.empty()) {
+        const auto it = p.variants.find(variant);
+        if (it != p.variants.end()) return it->second.vals;
+    }
+    return p.vals;
+}
+
+bool EffectiveUntaught(const SavedPos& p, const std::string& variant)
+{
+    if (!variant.empty()) {
+        const auto it = p.variants.find(variant);
+        if (it != p.variants.end()) return it->second.untaught;
+    }
+    return p.untaught;
+}
+
+bool HasVariant(const SavedPos& p, const std::string& variant)
+{
+    return !variant.empty() && p.variants.count(variant) != 0;
+}
+
+SavedPosMap ApplyPositionVariant(const SavedPosMap& positions, const std::string& variant)
+{
+    SavedPosMap out;
+    for (const auto& [dev, list] : positions) {
+        std::vector<SavedPos>& dst = out[dev];
+        dst.reserve(list.size());
+        for (const SavedPos& p : list) {
+            SavedPos q;
+            std::snprintf(q.name, sizeof(q.name), "%s", p.name);
+            q.uid      = p.uid;
+            q.hidden   = p.hidden;
+            q.vals     = EffectiveVals(p, variant);
+            q.untaught = EffectiveUntaught(p, variant);
+            dst.push_back(std::move(q));
+        }
+    }
+    return out;
+}
+
 std::string UntaughtPositionMessage(const std::string& device, const SavedPos& p)
 {
     return "position '" + std::string(p.name) + "' on " + device +
@@ -66,8 +129,9 @@ std::string UntaughtPositionMessage(const std::string& device, const SavedPos& p
            "first: the deck's Teach run, or Update on the Motion page";
 }
 
-SavedPosMap LoadSavedPositions()
+SavedPosMap LoadSavedPositions(std::vector<std::string>* variantsOut)
 {
+    if (variantsOut) variantsOut->clear();
     std::string path = LocalPath();
     std::ifstream f(path);
     if (!f.is_open()) {
@@ -75,19 +139,21 @@ SavedPosMap LoadSavedPositions()
         f.open(path);
         if (!f.is_open()) return SavedPosMap{};   // first run / no file — start empty
     }
-    return ParsePositions(f, path, nullptr);
+    return ParsePositions(f, path, nullptr, variantsOut);
 }
 
-SavedPosMap LoadSavedPositionsFile(const std::string& path, std::string* uidOut)
+SavedPosMap LoadSavedPositionsFile(const std::string& path, std::string* uidOut,
+                                   std::vector<std::string>* variantsOut)
 {
     if (uidOut) uidOut->clear();
+    if (variantsOut) variantsOut->clear();
     std::ifstream f(path);
     if (!f.is_open()) return SavedPosMap{};
-    return ParsePositions(f, path, uidOut);
+    return ParsePositions(f, path, uidOut, variantsOut);
 }
 
 bool SaveSavedPositionsFile(const std::string& path, const SavedPosMap& positions,
-                            const std::string& uid)
+                            const std::string& uid, const std::vector<std::string>& variants)
 {
     nlohmann::json devs = nlohmann::json::object();
     for (const auto& [dev, list] : positions) {
@@ -99,12 +165,23 @@ bool SaveSavedPositionsFile(const std::string& path, const SavedPosMap& position
             if (p.hidden)   row["hidden"]   = true;
             if (p.untaught) row["untaught"] = true;
             row["axes"] = p.vals;
+            if (!p.variants.empty()) {
+                nlohmann::json vs = nlohmann::json::object();
+                for (const auto& [vname, var] : p.variants) {
+                    nlohmann::json vrow;
+                    if (var.untaught) vrow["untaught"] = true;
+                    vrow["axes"] = var.vals;
+                    vs[vname] = std::move(vrow);
+                }
+                row["variants"] = std::move(vs);
+            }
             rows.push_back(std::move(row));
         }
         devs[dev] = std::move(rows);
     }
     nlohmann::json j;
     if (!uid.empty()) j["uid"] = uid;
+    if (!variants.empty()) j["variants"] = variants;
     j["positions"] = std::move(devs);
 
     std::ofstream f(path);
@@ -116,9 +193,9 @@ bool SaveSavedPositionsFile(const std::string& path, const SavedPosMap& position
     return true;
 }
 
-bool SaveSavedPositions(const SavedPosMap& positions)
+bool SaveSavedPositions(const SavedPosMap& positions, const std::vector<std::string>& variants)
 {
-    return SaveSavedPositionsFile(LocalPath(), positions, {});
+    return SaveSavedPositionsFile(LocalPath(), positions, {}, variants);
 }
 
 const SavedPos* NearestSavedPos(const std::vector<SavedPos>& positions,

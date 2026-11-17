@@ -795,6 +795,8 @@ void App::ResetDocumentSelections()
     trayMsg_.clear();
     workflow_.InvalidateDetector("");
     SyncScriptSelection();
+    // The working position variant names one of the OLD product's variants.
+    posVariant_.clear();
 }
 
 // Scripts page selection, after the session rescanned the scripts dir: keep

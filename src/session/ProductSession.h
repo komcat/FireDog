@@ -93,6 +93,26 @@ public:
     void SavePositions(const std::string& source = "hand");
     void SaveMaps();        // machine-global: maps reference stable position uids
 
+    // ---- position variants (docs/position-variants-design.md) ----
+    // The product's DECLARED variant names, saved in the positions file. Base
+    // is implicit ("") and never listed. A program header, the editor's combo
+    // and a teach can only name one of these, so a typo never makes a variant.
+    const std::vector<std::string>& PositionVariants() const { return posVariants_; }
+    bool HasPositionVariant(const std::string& v) const;   // "" (base) always true
+    // Declare a variant (trimmed, <= 31 chars, unique, not "base"). Saves.
+    bool AddPositionVariant(const std::string& name, std::string* err);
+    // Drop a declared variant AND every position's entry for it (journalled).
+    // Refused while a program header names it - `err` lists which.
+    bool DeletePositionVariant(const std::string& name, std::string* err);
+    // One row's entry for `variant`: set its values (creating the entry,
+    // clearing its untaught) or remove it (the row falls back to base). Both
+    // save like any edit. False when the row or the variant is unknown.
+    bool SetPositionVariantVals(const std::string& device, const std::string& uid,
+                                const std::string& variant,
+                                const std::map<std::string, double>& vals);
+    bool RevertPositionVariant(const std::string& device, const std::string& uid,
+                               const std::string& variant);
+
     // ---- position change journal (core/PositionHistory.h) ----
     void        SetPositionAuthor(std::string operatorId) { positionAuthor_ = std::move(operatorId); }
     std::string PositionHistoryPath() const;   // beside the positions file in use
@@ -231,13 +251,20 @@ public:
     // session again, so a run is immune to edits made while it executes.
     // Every launch site goes through these — hand-copying the three fields is
     // how a caller ends up forgetting the library and breaking sub_recipe.
-    RecipeEngine::Env MakeRecipeEnv() const;
-    LuaEngine::Env    MakeLuaEnv() const;
+    // `variant` is the POSITION VARIANT the run moves by ("" = base): the
+    // positions are overlaid HERE, once (ApplyPositionVariant), so no mover
+    // learns what a variant is. An undeclared variant is the caller's refusal
+    // to make (HasPositionVariant) - this only builds.
+    RecipeEngine::Env MakeRecipeEnv(const std::string& variant = std::string()) const;
+    LuaEngine::Env    MakeLuaEnv(const std::string& variant = std::string()) const;
 
     // Teach hand-backs from save_position steps (queued on Workflow by engine
     // worker threads, drained on the UI thread): merge by name — the app-side
     // uid wins for existing names so recipe references stay stable — then
-    // persist once per batch. No-op for an empty batch.
+    // persist once per batch. No-op for an empty batch. A row handed back with
+    // ONE `variants` entry was taught under that variant
+    // (ExecutionContext::QueueTaught): its values land in the variant, never
+    // the base; a row it would CREATE gets them as its base values.
     // `source` names the run for the journal ("recipe <name>" / "script <name>").
     void MergeTaughtPositions(const std::vector<std::pair<std::string, SavedPos>>& taught,
                               const std::string& source);
@@ -259,6 +286,7 @@ private:
     // loaded or written. SavePositions diffs against it, then adopts the new
     // map. Not a dirty baseline — positions autosave — but the same idea.
     SavedPosMap     positionsBaseline_;
+    std::vector<std::string> posVariants_;  // declared variant names (positions file)
     std::string     positionAuthor_;        // signed-in operator id (App::LogIn)
     unsigned        positionHistoryVer_ = 0;
     MotionMapSet    maps_;
