@@ -310,6 +310,45 @@ void App::DrawRecipeEditPanel()
     // picked from a list ever after, and "show"/"hide" says which way the
     // chosen tag cuts. Persisted in UiSettings: it is how THIS operator looks
     // at the library, not a fact about it.
+    // The quick search first: it narrows every group (Recent too) and opens the
+    // collapsed ones while it holds text. Enter opens the first match. It edits
+    // nothing, so it stays live during a run.
+    {
+        const float clearW = ImGui::GetFrameHeight();
+        const float sp     = ImGui::GetStyle().ItemInnerSpacing.x;
+        ImGui::SetNextItemWidth(-(clearW + sp));
+        if (ImGui::InputTextWithHint("##edListFilter", "search recipes...", edListFilter_,
+                                     sizeof(edListFilter_),
+                                     ImGuiInputTextFlags_EnterReturnsTrue) &&
+            edListFilter_[0]) {
+            // First match in display order: Working, then Loose.
+            int first = -1;
+            for (int pass = 0; pass < 2 && first < 0; ++pass) {
+                const bool working = pass == 0;
+                if (working && edLooseOnly_) continue;
+                for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
+                    const Recipe& r = session_.Recipes()[i];
+                    if ((workingWhy(r) != nullptr) != working || !RecipeListed(r)) continue;
+                    first = i;
+                    break;
+                }
+            }
+            if (first >= 0 && first != recipeSel_) {
+                recipeSel_ = first;
+                ClearStepSel();
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("List only the recipes whose name or a tag contains this text.\n"
+                              "Enter opens the first match.");
+        ImGui::SameLine(0.0f, sp);
+        ImGui::BeginDisabled(!edListFilter_[0]);
+        if (ImGui::Button("X##edListFilterClear", ImVec2(clearW, 0.0f)))
+            edListFilter_[0] = '\0';
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Clear the search");
+    }
     {
         bool filterChanged = false;
         if (ImGui::Checkbox("show hidden", &edShowHidden_)) filterChanged = true;
@@ -389,12 +428,16 @@ void App::DrawRecipeEditPanel()
     const MarkIcon* workIcon = UiIcon("run_execute");
     const ImVec4 workText = Theme::IsLight() ? kWorkingTextLt : kWorkingText;
     // A collapsible group header holding its count; the open state is the
-    // App member, persisted when the header is clicked.
+    // App member, persisted when the header is clicked. While the quick search
+    // holds text every group is drawn open and a click is not persisted - a
+    // match hidden in a collapsed group is a search that found nothing.
+    const bool searching = edListFilter_[0] != '\0';
     const auto groupHeader = [&](const char* name, const char* id, int count, bool& open) {
         char label[64];
         std::snprintf(label, sizeof(label), "%s (%d)###%s", name, count, id);
-        ImGui::SetNextItemOpen(open, ImGuiCond_Always);
+        ImGui::SetNextItemOpen(open || searching, ImGuiCond_Always);
         const bool now = ImGui::CollapsingHeader(label);
+        if (searching) return true;
         if (now != open) {
             open = now;
             SaveUiSettings();
@@ -403,13 +446,14 @@ void App::DrawRecipeEditPanel()
     };
     // Recent: resolved by uid; another product's uids simply do not resolve.
     // The list filter does not apply - it is a history, not a view of the
-    // library - but a hidden recipe still reads dimmed.
+    // library - but a hidden recipe still reads dimmed. The quick search DOES
+    // apply: a search is asking for names, wherever they are listed.
     std::vector<int> recent;
     for (const std::string& uid : edRecent_) {
         if (static_cast<int>(recent.size()) >= kEdRecentShow) break;
         for (int i = 0; i < static_cast<int>(session_.Recipes().size()); ++i) {
             if (session_.Recipes()[i].uid == uid) {
-                recent.push_back(i);
+                if (RecipeSearchHit(session_.Recipes()[i])) recent.push_back(i);
                 break;
             }
         }
@@ -886,11 +930,23 @@ void App::DrawRecipeEditPanel()
     DrawTeachPositionModal();
 }
 
-// The recipe list's filter: hidden recipes only on request, then the tag
-// filter either way it cuts. The organizer's library applies the hidden half
-// only — its text filter already does the narrowing there.
+// The recipe list's quick search: the name or any tag contains the text,
+// case-insensitive ("" = everything).
+bool App::RecipeSearchHit(const Recipe& r) const
+{
+    if (!edListFilter_[0]) return true;
+    if (PaletteMatch(r.name, edListFilter_)) return true;
+    for (const std::string& t : r.tags)
+        if (PaletteMatch(t, edListFilter_)) return true;
+    return false;
+}
+
+// The recipe list's filter: the quick search, hidden recipes only on request,
+// then the tag filter either way it cuts. The organizer's library applies the
+// hidden half only — its text filter already does the narrowing there.
 bool App::RecipeListed(const Recipe& r) const
 {
+    if (!RecipeSearchHit(r)) return false;
     if (r.hidden && !edShowHidden_) return false;
     if (edTagFilter_.empty()) return true;
     return RecipeHasTag(r, edTagFilter_) != edTagHide_;

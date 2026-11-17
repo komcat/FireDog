@@ -1582,6 +1582,10 @@ private:
     int  edTreeHits_          = 0;       // matches drawn last frame
     bool edTreeFilterScroll_  = false;   // the text changed: bring the first hit into view
     char edTagBuf_[160]       = "";      // Tag modal: comma-separated tags
+    // Recipe list quick search: name or tag contains this text (case-
+    // insensitive). Runtime only - a search, not a way of looking at the
+    // library - so unlike the filter below it is NOT persisted.
+    char edListFilter_[64]    = "";
     // The recipe list's filter (persisted in UiSettings, see there). A recipe
     // that fails it still draws while SELECTED, dimmed: the editor beside the
     // list is showing it, and a list that cannot say which one would lie.
@@ -1600,6 +1604,7 @@ private:
     std::string edTagFilter_;
     bool        edTagHide_    = false;
     bool RecipeListed(const Recipe& r) const;   // passes the filter above
+    bool RecipeSearchHit(const Recipe& r) const;   // matches edListFilter_
     // The list's groups (persisted): recently OPENED recipe uids, newest
     // first, kept to kEdRecentKeep across products (another product's uids
     // simply do not resolve) and shown up to kEdRecentShow; plus which group

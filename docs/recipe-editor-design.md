@@ -204,7 +204,13 @@ combo), op combo (the 10 ops), value field shown only for comparison ops.
   recipes file. A recipe the filter would drop still draws while SELECTED,
   dimmed: the editor beside the list is showing it. `App::RecipeListed` is
   the one predicate; the organizer applies the hidden half and lets its text
-  filter match a tag as well as the name.
+  filter match a tag as well as the name. Above the filter sits a **quick
+  search** (`edListFilter_`, `App::RecipeSearchHit`: name or a tag contains
+  the text, case-insensitive) — runtime only, NOT persisted, because it is a
+  search rather than a way of looking. It is part of `RecipeListed` and also
+  narrows *Recent* (which otherwise ignores the filter); while it holds text
+  every group draws open without persisting that, and Enter opens the first
+  match in display order.
 - **Working vs loose recipes — derived, never stored.** A WORKING recipe is
   one a program deck can reach: named by a node in any slot of any program,
   or transitively called as a `sub_recipe` / named as the `on_fail` of one
