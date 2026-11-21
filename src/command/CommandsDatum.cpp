@@ -153,10 +153,27 @@ CommandResult ExecDatumReference(ExecutionContext& ctx, const ParamValues& p,
             return CommandResult::Fail("datum '" + name + "': " + why);
 
     // ---- 1 the points ----------------------------------------------------------
+    // Each found point goes to the progress slot at once, so the Aux view shows
+    // E1 while E2 is still being looked for. Erased on EVERY exit by the guard:
+    // a half-measured datum must not sit on the picture after the step.
+    DatumProgress prog;
+    prog.name   = name;
+    prog.device = p.GetString("camera_device");
+    prog.points = n;
+    struct ProgressGuard {
+        Workflow&   wf;
+        std::string name;
+        ~ProgressGuard() { wf.EraseDatumProgress(name); }
+    } progressGuard{ctx.Wf(), name};
+    ctx.Wf().SetDatumProgress(prog);
+
     AlignPoint pts[3];
     for (int i = 1; i <= n; ++i) {
         const CommandResult r = MeasurePoint(ctx, reg, p, i, &pts[i - 1]);
         if (!r.ok) return r;
+        prog.pts[i - 1] = pts[i - 1];
+        prog.have       = i;
+        ctx.Wf().SetDatumProgress(prog);
     }
 
     // ---- the raw measurement, for the helper's Use as reference -----------------

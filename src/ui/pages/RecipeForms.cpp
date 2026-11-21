@@ -180,7 +180,25 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
         // at - read-only, outside the canEdit dimming so a run does not grey them.
         if (s.type == "detect_object") {
             ImGui::EndDisabled();
-            DrawDetectStepThumbs(s);
+            DrawDetectStepThumbs(s.params.value("model", std::string()), stepTmplTex_,
+                                 stepViewTex_, 96.0f);
+            ImGui::BeginDisabled(!canEdit);
+            ImGui::Spacing();
+        }
+        // datum_reference: the same pair per point, smaller - two or three
+        // rows, E1 / E2 / E3 named on the left.
+        if (s.type == "datum_reference") {
+            ImGui::EndDisabled();
+            const int n = s.params.value("mode", std::string("2pt")) == "3pt" ? 3 : 2;
+            for (int i = 0; i < n; ++i) {
+                ImGui::AlignTextToFramePadding();
+                ImGui::Text("E%d", i + 1);
+                ImGui::SameLine();
+                ImGui::PushID(i);
+                DrawDetectStepThumbs(s.params.value("model" + std::to_string(i + 1), std::string()),
+                                     stepDatumTmplTex_[i], stepDatumViewTex_[i], 64.0f);
+                ImGui::PopID();
+            }
             ImGui::BeginDisabled(!canEdit);
             ImGui::Spacing();
         }

@@ -502,7 +502,10 @@ private:
     bool EnsureViewThumbTex(PatchTex& pt, const VisionModel& m);   // reloaded on change
     // The detect_object step form's read-only pair: the taught template and
     // the taught view thumbnail of the step's private model, side by side.
-    void DrawDetectStepThumbs(const RecipeStep& s);
+    // One model's pair, into the given texture slots (a detect_object's model,
+    // or one point of a datum_reference), `tileH` tall.
+    void DrawDetectStepThumbs(const std::string& modelUid, PatchTex& tmplTex, PatchTex& viewTex,
+                              float tileH);
     std::string AutoNickname(const RecipeStep& s) const;   // live label from params
     void DrawRecipeTreeToolbar(Recipe& r, bool canEdit);   // move/delete row
     void DrawRecipePalette(Recipe& r, bool canEdit);
@@ -2074,6 +2077,8 @@ private:
     PatchTex visionViewTex_;    // Vision detect helper: the step's view thumbnail
     PatchTex stepTmplTex_;      // Recipe Editor detect_object form: template ...
     PatchTex stepViewTex_;      // ... and view thumbnail
+    PatchTex stepDatumTmplTex_[3];   // Recipe Editor datum_reference form: E1..E3 templates
+    PatchTex stepDatumViewTex_[3];   // ... and their view thumbnails
     PatchTex alignTmpl_[2];     // grip page ([0]; [1] spare)
     // Alignment page station cards: one thumbnail per station x detection tier,
     // index (station - 1) * kAlignDetectTiers + (tier - 1).

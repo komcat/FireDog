@@ -1746,8 +1746,9 @@ void App::DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
 void App::DrawAuxDatums(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
 {
     if (pixelToMmX_ <= 0.0f || pixelToMmY_ <= 0.0f) return;
-    const std::vector<Datum> datums = workflow_.Datums();
-    if (datums.empty()) return;
+    const std::vector<Datum>         datums   = workflow_.Datums();
+    const std::vector<DatumProgress> progress = workflow_.DatumProgresses();
+    if (datums.empty() && progress.empty()) return;
     double gx = 0.0, gy = 0.0;
     if (!workflow_.GantryXY(gx, gy)) return;
     const std::string refName = workflow_.GantryName();
@@ -1791,6 +1792,26 @@ void App::DrawAuxDatums(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
         mark(f.e1, "E1", kE1Col);
         mark(f.e2, "E2", kE2Col);
         if (d.points == 3) mark(d.e3, "E3", kDatumE3Col);
+    }
+
+    // A datum being measured: the points found so far, no axes yet (there is
+    // no frame until the last point), labelled so they cannot pass for a
+    // solved datum.
+    static const ImU32 kPtCol[3] = {kE1Col, kE2Col, kDatumE3Col};
+    for (const DatumProgress& pr : progress) {
+        if (pr.device != refName) continue;
+        for (int i = 0; i < pr.have && i < 3; ++i) {
+            char lbl[96];
+            std::snprintf(lbl, sizeof(lbl), "%s E%d  (measuring %d/%d)", pr.name.c_str(), i + 1,
+                          pr.have, pr.points);
+            CameraMark cm;
+            cm.wx    = pr.pts[i].wx;
+            cm.wy    = pr.pts[i].wy;
+            cm.have  = true;
+            cm.label = lbl;
+            cm.col   = kPtCol[i];
+            DrawWorldMark(dl, wv, cm, 14.0f);
+        }
     }
 }
 

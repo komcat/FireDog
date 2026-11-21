@@ -1108,6 +1108,27 @@ void Workflow::ClearDatumMeasures()
     datumMeasures_.clear();
 }
 
+void Workflow::SetDatumProgress(const DatumProgress& p)
+{
+    const std::lock_guard<std::mutex> lock(datumMu_);
+    datumProgress_[p.name] = p;
+}
+
+void Workflow::EraseDatumProgress(const std::string& name)
+{
+    const std::lock_guard<std::mutex> lock(datumMu_);
+    datumProgress_.erase(name);
+}
+
+std::vector<DatumProgress> Workflow::DatumProgresses() const
+{
+    const std::lock_guard<std::mutex> lock(datumMu_);
+    std::vector<DatumProgress> v;
+    v.reserve(datumProgress_.size());
+    for (const auto& [name, p] : datumProgress_) v.push_back(p);
+    return v;
+}
+
 // ---- Gripped objects -------------------------------------------------------
 
 void Workflow::SetGrippedObject(const GrippedObject& o)

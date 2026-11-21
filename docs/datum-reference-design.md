@@ -159,6 +159,10 @@ work on (`App::datumPointSel_`), through the same functions `detect_object`
 uses, pointed at `model<i>` / `view_point<i>`. Below the strip: the mode, the
 reference (+ Use as reference), and the guards.
 
+The Recipe Editor's step form shows each point's template and view thumbnail
+(read-only, one row per point, `App::stepDatumTmplTex_` / `stepDatumViewTex_`),
+the same pair a `detect_object` form shows.
+
 **Ownership.** A step's private models are found through ONE table,
 `StepDetectorParams(type)` (`command/StepDetectors.h`): `detect_object` →
 `model`; `datum_reference` → `model1`, `model2`, `model3`. `SyncStepDetectors`,
@@ -180,6 +184,14 @@ datum on the device posing the picture:
   faint - and the **Y axis** the same along theta + 90°. The lines are what stay
   useful when no point is on screen: the X line crossing the view shows the
   part's angle wherever the camera is.
+
+**While the step measures**, the points found so far are drawn too, labelled
+`(measuring k/n)` and with no axes - there is no frame until the last point.
+They come from a progress slot (`Workflow::SetDatumProgress`, `core/Datum.h`
+`DatumProgress`) the command fills point by point and erases on EVERY exit, so
+a half-measured datum never stays on the picture. The alignment's
+`QueueAlignPoint` reason: the moment an operator wants to see E1 landed is
+while E2 is still being looked for.
 
 Projection is `WorldToScreen` (`ui/Widgets`), the one machine-mm → screen
 function `DrawWorldMark` and `DrawWorldBox` also use.

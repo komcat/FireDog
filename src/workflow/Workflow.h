@@ -739,6 +739,12 @@ public:
     void SetDatumMeasure(const DatumMeasure& m);
     bool DatumMeasureFor(const std::string& name, DatumMeasure* out) const;
     void ClearDatumMeasures();
+    // The points of a datum being measured RIGHT NOW (datum_reference sets it
+    // per point and erases it on every exit). The Aux view draws it; nothing
+    // else reads it.
+    void SetDatumProgress(const DatumProgress& p);
+    void EraseDatumProgress(const std::string& name);
+    std::vector<DatumProgress> DatumProgresses() const;
 
     // ---- Gripped objects (grip_register_object -> the Aux diamond) ----------
     // An object registered to the gripper holding it: object - tip in XYZ
@@ -1037,6 +1043,7 @@ private:
     mutable std::mutex                       datumMu_;
     std::map<std::string, Datum>             datums_;
     std::map<std::string, DatumMeasure>      datumMeasures_;
+    std::map<std::string, DatumProgress>     datumProgress_;
     mutable std::mutex                       gripObjMu_;
     std::map<std::string, GrippedObject>     grippedObjects_;
 

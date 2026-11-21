@@ -727,19 +727,20 @@ bool App::EnsureViewThumbTex(PatchTex& pt, const VisionModel& m)
     return pt.tex != 0 && pt.w > 0 && pt.h > 0;
 }
 
-// The Recipe Editor's step form for a detect_object: what the step's private
-// model looks for (the taught template) beside what the camera saw when the
-// view was taught (the centre-half thumbnail). Read-only - teaching both is
-// the helper's job - so an author scanning a recipe sees which part each step
-// finds without opening anything. Own texture slots (stepTmplTex_ /
-// stepViewTex_): the teach page and the helper may be showing another model,
-// and two surfaces sharing one keyed slot would re-upload every frame.
-void App::DrawDetectStepThumbs(const RecipeStep& s)
+// The Recipe Editor's step form for a detect_object (and each point of a
+// datum_reference): what the step's private model looks for (the taught
+// template) beside what the camera saw when the view was taught (the
+// centre-half thumbnail). Read-only - teaching both is the helper's job - so an
+// author scanning a recipe sees which part each step finds without opening
+// anything. Own texture slots (stepTmplTex_ / stepViewTex_, a datum's
+// stepDatum*Tex_[i]): the teach page and the helper may be showing another
+// model, and two surfaces sharing one keyed slot would re-upload every frame.
+void App::DrawDetectStepThumbs(const std::string& uid, PatchTex& tmplTex, PatchTex& viewTex,
+                               float tileH)
 {
-    const std::string uid = s.params.value("model", std::string());
     const VisionModel* m = uid.empty() ? nullptr : FindVisionModel(session_.VisionModels(), uid);
 
-    constexpr float kTileH = 96.0f;
+    const float kTileH = tileH;
     const float gap  = ImGui::GetStyle().ItemSpacing.x;
     float       half = (ImGui::GetContentRegionAvail().x - gap) * 0.5f;
     half = std::clamp(half, 60.0f, 180.0f);
@@ -770,13 +771,13 @@ void App::DrawDetectStepThumbs(const RecipeStep& s)
         ImGui::EndGroup();
     };
 
-    const bool haveTmpl = m && EnsurePatchTex(stepTmplTex_, *m);
-    const bool haveView = m && EnsureViewThumbTex(stepViewTex_, *m);
-    tile(&stepTmplTex_, haveTmpl, m ? "no template" : "no model", "template",
+    const bool haveTmpl = m && EnsurePatchTex(tmplTex, *m);
+    const bool haveView = m && EnsureViewThumbTex(viewTex, *m);
+    tile(&tmplTex, haveTmpl, m ? "no template" : "no model", "template",
          "What this step's detection model looks for - the patch it was\n"
          "taught on (NCC / corner). Teach it in the Vision detect helper.");
     ImGui::SameLine(0.0f, gap);
-    tile(&stepViewTex_, haveView, "no view taught", "view",
+    tile(&viewTex, haveView, "no view taught", "view",
          "What the camera saw when this step's view was taught: the\n"
          "centre half of the frame, snapped by Teach here in the helper.");
 }

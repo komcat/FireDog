@@ -57,6 +57,18 @@ struct DatumMeasure {
     std::string at;
 };
 
+// A datum WHILE its step measures it: the points found so far, so the Aux view
+// can show E1 landed while E2 is still being looked for (the alignment's
+// QueueAlignPoint reason). Exists only for the life of the step - the command
+// erases it on every exit, solved or not. Display only.
+struct DatumProgress {
+    std::string name;
+    std::string device;
+    int         points = 2;    // how many the step will measure
+    int         have = 0;      // how many are in pts so far
+    AlignPoint  pts[3];
+};
+
 inline double DatumMinutesLeft(const Datum& d,
                                std::chrono::steady_clock::time_point now =
                                    std::chrono::steady_clock::now())
