@@ -897,7 +897,8 @@ CommandResult ExecCaptureImage(ExecutionContext& ctx, const ParamValues& p)
                         (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '.';
         if (!ok) c = '_';
     }
-    const std::string stem = (tag.empty() ? std::string() : tag + "_") + FileStamp();
+    const std::string stem =
+        (tag.empty() ? std::string() : tag + "_") + FileStamp(/*localTime*/ true);
 
     // The exposure, with its undo armed before anything else can fail.
     const double expo     = p.GetDouble("exposure_us");
@@ -1113,7 +1114,7 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                        "(created if missing); an absolute path is used as written; "
                        "{key} takes a ctx value"},
                       {"tag", PT::String, false, "", 0, 0, {},
-                       "file name prefix: <tag>_<YYYYMMDD_HHMMSS_mmm>.png (UTC); "
+                       "file name prefix: <tag>_<YYYYMMDD_HHMMSS_mmm>.png (local time); "
                        "{key} takes a ctx value"},
                       {"fresh_frames", PT::Int, false, 1, 0, 10, {},
                        "new frames required before saving (0 = the latest frame; "
