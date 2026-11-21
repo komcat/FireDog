@@ -183,6 +183,12 @@ std::string ValidateParams(const CommandSpec& spec, const nlohmann::json& params
         out[p.name] = v;
     }
 
+    // The rule between params, once each one is known to be well-formed.
+    if (spec.check) {
+        const std::string e = spec.check(out);
+        if (!e.empty()) return e;
+    }
+
     if (merged) *merged = std::move(out);
     return {};
 }

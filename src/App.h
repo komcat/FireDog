@@ -489,9 +489,11 @@ private:
     // camera's exposure into the step's model and a centre-half thumbnail
     // beside the model (ViewThumbFile).
     // `viewKey` names the step's PointXyz param: "view_point" for detect_object,
-    // "view_point<i>" for a datum's point i.
+    // "view_point<i>" for a datum's point i. `offerCurrent` draws the
+    // "Use current position" switch (detect_object's use_current_position).
     void DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, VisionModel& m,
-                               bool busy, bool canTeach, const std::string& viewKey);
+                               bool busy, bool canTeach, const std::string& viewKey,
+                               bool offerCurrent);
     // Go: the same legs a run takes (safe Z, XY, Z - or one XYZ move), as an
     // ad-hoc recipe of move_axis_to steps, so Busy, Stop and the safety abort
     // come with it.
@@ -778,6 +780,9 @@ private:
     // Right column: the matched scene beside the taught patch, the detection as
     // a key/value table, and the status line.
     void DrawVisionResultPanel(const VisionModel& m);
+    // The pre-process preview (Preview button + the filtered ROI picture), at
+    // the top of the result column.
+    void DrawVisionFilterPreview(const VisionModel& m);
     // Recompute the filtered plane (and the overlay built from it) when the
     // chain, the ROI or the frame has moved on. `force` is the Preview button.
     void RefreshVisionPreview(const VisionModel& m, bool force);

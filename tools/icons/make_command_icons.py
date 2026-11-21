@@ -436,6 +436,36 @@ def _(g):
     g.disc(13, 13, 2.8, Y)
 
 
+# The three DETECTION METHODS (not commands - the teach panel's method combo,
+# PageVisionTeach.cpp). Vision tiles, yellow = the point the method reports.
+@icon("Vision", "vi_method_circle", "detection method: Circle / fiducial")
+def _(g):
+    g.ring(16, 16, 11.0, 7.5, W)              # the fiducial's edge
+    for x0, y0, x1, y1 in ((16, 2, 16, 7), (16, 25, 16, 30),
+                           (2, 16, 7, 16), (25, 16, 30, 16)):
+        g.line(x0, y0, x1, y1, L, 2.2)        # the fitted crosshair
+    g.disc(16, 16, 3.0, Y)                    # its centre
+
+
+@icon("Vision", "vi_method_ncc", "detection method: Pattern (NCC)")
+def _(g):
+    g.rect(9, 3, 28, 22, L)                   # the image ...
+    g.rect(11, 5, 26, 20, scale(CATS["Vision"], 0.55))
+    g.poly([(14, 17), (18.5, 8), (23, 17)], L)
+    g.frame(3, 10, 21, 28, W)                 # ... and the template sliding over it
+    g.poly([(7, 25), (12, 15), (17, 25)], W)
+    g.disc(12, 21, 2.6, Y)                    # the matched point
+
+
+@icon("Vision", "vi_method_corner", "detection method: Square corner")
+def _(g):
+    g.rect(10, 10, 29, 29, W)                 # a square, cut by the tile ...
+    g.rect(14, 14, 29, 29, L)
+    g.line(10, 4, 10, 8, L, 2.0)              # ... its two edges carried on
+    g.line(4, 10, 8, 10, L, 2.0)
+    g.disc(10.5, 10.5, 3.6, Y)                # the corner it reports
+
+
 @icon("Vision", "vi_mosaic", "mosaic_capture, mosaic_calibrate")
 def _(g):
     for i, (x, y) in enumerate(((3, 3), (16, 3), (3, 16), (16, 16))):

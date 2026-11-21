@@ -441,7 +441,10 @@ CommandResult ExecVisionDetect(ExecutionContext& ctx, const ParamValues& p)
 //     the move to the camera view taught into the step (`view_point`, the
 //     helper's Teach here): with `z_lift` (default) Z goes to `safe_z_mm`
 //     first, XY across, Z down to the taught height last; without it, one
-//     direct XYZ move. The view is REQUIRED - an untaught step is refused.
+//     direct XYZ move. The view is REQUIRED - an untaught step is refused -
+//     unless the step says `use_current_position`: then nothing moves and the
+//     camera detects wherever the steps before left it. An explicit choice in
+//     the step, never a fallback for a view nobody taught.
 //   2 DETECTION  with the STEP'S OWN model. On a miss, `manual_fallback` asks the
 //     operator to put the crosshair on the object (the alignment pick window)
 //     and that point IS the result, P = 0, marked manual; otherwise `require`
@@ -530,20 +533,28 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
     if (!cam) return CommandResult::Fail(err);
     const ParamValues mv = DetectMoveParams(p);
 
-    // The taught view is REQUIRED, and checked before the light or the
-    // exposure changes: validation at Start already refuses a step without
-    // one, but Lua and RunRegistered skip validation, so the command refuses
-    // again here rather than detecting wherever the camera happens to stand.
-    if (!p.Has("view_point"))
-        return CommandResult::Fail("detect_object: the camera view is not taught - "
-                                   "Teach here in the step's Vision detect helper");
-    const nlohmann::json& vp = p.Raw().at("view_point");
-    if (!vp.is_object() || !vp.contains("X") || !vp.contains("Y") || !vp.contains("Z") ||
-        !vp.at("X").is_number() || !vp.at("Y").is_number() || !vp.at("Z").is_number())
-        return CommandResult::Fail("detect_object: view_point is not an X/Y/Z pose - "
-                                   "Teach here again");
-    const double vx = vp.at("X").get<double>(), vy = vp.at("Y").get<double>(),
-                 vz = vp.at("Z").get<double>();
+    // The taught view is REQUIRED unless the step asked for where the camera
+    // stands, and checked before the light or the exposure changes: validation
+    // (CommandSpec::check) already refuses an untaught step, and the command
+    // refuses again here rather than detecting wherever the camera happens to
+    // be. A taught view on a use_current_position step is kept but not driven
+    // to - switching the option back restores it.
+    const bool useCurrent = p.GetBool("use_current_position");
+    double vx = 0.0, vy = 0.0, vz = 0.0;
+    if (!useCurrent) {
+        if (!p.Has("view_point"))
+            return CommandResult::Fail("detect_object: the camera view is not taught - "
+                                       "Teach here in the step's Vision detect helper, or "
+                                       "tick Use current position");
+        const nlohmann::json& vp = p.Raw().at("view_point");
+        if (!vp.is_object() || !vp.contains("X") || !vp.contains("Y") || !vp.contains("Z") ||
+            !vp.at("X").is_number() || !vp.at("Y").is_number() || !vp.at("Z").is_number())
+            return CommandResult::Fail("detect_object: view_point is not an X/Y/Z pose - "
+                                       "Teach here again");
+        vx = vp.at("X").get<double>();
+        vy = vp.at("Y").get<double>();
+        vz = vp.at("Z").get<double>();
+    }
 
     // ---- 1 pre-detection: camera, light, then the view ------------------------
     // Light, then exposure, BEFORE the move, so the picture is ready on arrival
@@ -558,15 +569,21 @@ CommandResult ExecDetectObject(ExecutionContext& ctx, const ParamValues& p)
         return CommandResult::Fail("detect_object: camera exposure change rejected "
                                    "(camera connected?)");
     {
-        const CommandResult mvr =
-            MoveCameraToView(ctx, cam, idx, vx, vy, vz, p.GetBool("z_lift"),
-                             p.GetDouble("safe_z_mm"), mv);
-        if (!mvr.ok) return mvr;
-        FD_INFO("vision", "detect_object '%s': at the taught view (%.4f, %.4f, %.4f)%s",
-                prefix.c_str(), vx, vy, vz, p.GetBool("z_lift") ? " via the safe Z" : "");
-        // The stage has arrived and settled (MoveWithApproach's two signals),
-        // but what sits on it may still be ringing: a fixed pause before the
-        // fresh-frame gate starts counting.
+        if (useCurrent) {
+            FD_INFO("vision", "detect_object '%s': detecting where %s stands (use current "
+                              "position - no move)",
+                    prefix.c_str(), cam->Name().c_str());
+        } else {
+            const CommandResult mvr =
+                MoveCameraToView(ctx, cam, idx, vx, vy, vz, p.GetBool("z_lift"),
+                                 p.GetDouble("safe_z_mm"), mv);
+            if (!mvr.ok) return mvr;
+            FD_INFO("vision", "detect_object '%s': at the taught view (%.4f, %.4f, %.4f)%s",
+                    prefix.c_str(), vx, vy, vz, p.GetBool("z_lift") ? " via the safe Z" : "");
+        }
+        // The stage has arrived and settled (MoveWithApproach's two signals -
+        // this step's, or the move before it), but what sits on it may still
+        // be ringing: a fixed pause before the fresh-frame gate starts counting.
         const int settle = p.GetInt("settle_ms");
         if (settle > 0 && !ctx.Sleep(settle)) return CommandResult::Fail("stopped");
     }
@@ -1234,16 +1251,25 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                        "deg, clockwise positive on the camera picture (ncc / corner "
                        "models with an angle tolerance)",
                        PinDir::Any, kVisionDetectHelper},
-                      // REQUIRED (2026-11-13): a detection is only as good as
-                      // the view it was tuned at, so every step drives there
-                      // first and an untaught step is refused at Start.
-                      {"view_point", PT::PointXyz, true, {}, 0, 0, {},
+                      // Off: drive to the taught view first (required - see
+                      // check below). On: detect where the camera stands - the
+                      // steps before put it there.
+                      {"use_current_position", PT::Bool, false, false, 0, 0, {},
+                       "detect where the camera stands now (no move to view_point) - the "
+                       "steps before this one put it there",
+                       PinDir::Any, kVisionDetectHelper},
+                      // REQUIRED unless use_current_position (2026-11-13: a
+                      // detection is only as good as the view it was tuned at,
+                      // so a step drives there first and an untaught one is
+                      // refused at Start) - enforced by detectSpec.check.
+                      {"view_point", PT::PointXyz, false, {}, 0, 0, {},
                        "the camera pose to detect from, in the camera device's axis space - "
-                       "taught in the helper (Teach here); required",
+                       "taught in the helper (Teach here); required unless "
+                       "use_current_position",
                        PinDir::Any, kVisionDetectHelper},
                       {"settle_ms", PT::Int, false, 100, 0, 10000, {},
-                       "after arriving at view_point, wait this long before the frames "
-                       "are taken (ms; 0 = none)",
+                       "wait this long before the frames are taken - after arriving at "
+                       "view_point, or at once with use_current_position (ms; 0 = none)",
                        PinDir::Any, kVisionDetectHelper},
                       {"pre_center_ms", PT::Int, false, 100, 0, 10000, {},
                        "after the detection, wait this long before the centring move "
@@ -1300,6 +1326,15 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                   },
                   CommandSpec::Needs::Camera, ExecDetectObject,
                   /*parallelBy*/ "", /*helper*/ kVisionDetectHelper};
+    // The view is required unless the step detects where the camera stands -
+    // a rule between two params, so it is the spec's check, refused at Start.
+    detectSpec.check = [](const nlohmann::json& m) -> std::string {
+        if (m.value("use_current_position", false)) return std::string();
+        if (!m.contains("view_point") || m["view_point"].is_null())
+            return "point 'view_point' not taught - Teach here in the Vision detect helper, "
+                   "or tick Use current position";
+        return std::string();
+    };
     // What it writes, from the ticks and the prefix: ONE object result named
     // after the prefix, on the camera's device, carrying the ticked axes - and
     // the ctx mirrors for this recipe.

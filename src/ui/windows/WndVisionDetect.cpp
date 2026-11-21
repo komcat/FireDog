@@ -232,7 +232,7 @@ void App::DrawVisionDetectHelperWindow()
             ImGui::TableSetColumnIndex(col++);
             // Where the camera goes before it looks. Go is the editor's; Teach
             // here writes the model, so it carries the Admin gate itself.
-            DrawDetectViewSection(*s, merged, *m, busy, canTeach, viewKey);
+            DrawDetectViewSection(*s, merged, *m, busy, canTeach, viewKey, !datum);
         }
         ImGui::TableSetColumnIndex(col++);
         if (datum) {
@@ -413,16 +413,42 @@ void App::DrawVisionDetectHelperWindow()
 // ---- Camera position + run options --------------------------------------------
 
 void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, VisionModel& m,
-                                bool busy, bool canTeach, const std::string& viewKey)
+                                bool busy, bool canTeach, const std::string& viewKey,
+                                bool offerCurrent)
 {
     const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
     double vp[3] = {0.0, 0.0, 0.0};
     const bool taught = ViewPointOf(merged, viewKey, vp);
+    const bool useCurrent = offerCurrent && merged.value("use_current_position", false);
+    const bool missing = !taught && !useCurrent;   // the one state a run refuses
 
-    if (!taught) ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+    if (missing) ImGui::PushStyleColor(ImGuiCol_Text, kBad);
     ImGui::SeparatorText("Camera position");
-    if (!taught) ImGui::PopStyleColor();
-    if (taught) {
+    if (missing) ImGui::PopStyleColor();
+
+    // Where the step looks from: the taught view (driven to first), or where
+    // the camera stands when the step runs (no move). Editing the recipe, so
+    // the editor's gate, not the teach gate.
+    if (offerCurrent) {
+        bool cur = useCurrent;
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Checkbox("Use current position (no move)", &cur))
+            s.params["use_current_position"] = cur;
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("On: the step detects wherever %s stands when it runs -\n"
+                              "nothing moves, so the steps before it must put the camera\n"
+                              "over the object. A taught view is kept but not driven to.\n"
+                              "Off: drive to the taught view first (Z safe lift, settle).",
+                              camDev.c_str());
+    }
+    if (useCurrent) {
+        ImGui::TextColored(kGood, "CURRENT POSITION");
+        ImGui::TextWrapped("Detects wherever the camera stands when the step runs - no move.");
+        if (taught)
+            ImGui::TextDisabled("taught view kept, not used: X %.4f  Y %.4f  Z %.4f", vp[0], vp[1],
+                                vp[2]);
+    } else if (taught) {
         ImGui::Text("X %.4f  Y %.4f", vp[0], vp[1]);
         ImGui::Text("Z %.4f", vp[2]);
         ImGui::SameLine();
@@ -433,7 +459,8 @@ void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, Vis
         ImGui::PushStyleColor(ImGuiCol_Text, kBad);
         ImGui::TextUnformatted("NOT TAUGHT");
         ImGui::TextWrapped("A run refuses this step until the camera view is taught - "
-                           "put the camera over the object, focus, then Teach here.");
+                           "put the camera over the object, focus, then Teach here%s.",
+                           offerCurrent ? " (or tick Use current position)" : "");
         ImGui::PopStyleColor();
     }
 
@@ -559,8 +586,10 @@ void App::DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool
     const float numW = 90.0f;
     ImGui::BeginDisabled(busy);
     if (ImGui::BeginTable("dvRunOpts", cols, ImGuiTableFlags_SizingStretchSame)) {
-        // -- the travel to the taught view --
+        // -- the travel to the taught view (none with use_current_position) --
         ImGui::TableNextColumn();
+        const bool noMove = merged.value("use_current_position", false);
+        ImGui::BeginDisabled(noMove);
         bool zLift = merged.value("z_lift", true);
         if (ImGui::Checkbox("Z safe lift", &zLift)) s.params["z_lift"] = zLift;
         if (ImGui::IsItemHovered())
@@ -572,6 +601,7 @@ void App::DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool
         if (ImGui::InputDouble("safe Z (axis)", &safeZ, 0.0, 0.0, "%.3f"))
             s.params["safe_z_mm"] = safeZ;
         ImGui::EndDisabled();
+        ImGui::EndDisabled();   // noMove
 
         // -- settle on arrival, before the frames --
         ImGui::TableNextColumn();
@@ -586,7 +616,8 @@ void App::DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool
             ImGui::SetTooltip("After arriving at the taught view, wait this long before\n"
                               "the frames are taken - the stage has stopped moving, but\n"
                               "the part on it may still be ringing. Then fresh_frames.\n"
-                              "0 = none. Only when the step moves to a taught view.");
+                              "With Use current position: waited at once (the move before\n"
+                              "this step). 0 = none.");
 
         // -- the miss --
         ImGui::TableNextColumn();

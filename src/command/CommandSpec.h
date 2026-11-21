@@ -221,6 +221,15 @@ struct CommandSpec {
     // and the ResultName picker - never by the engine. Set after construction:
     //     CommandSpec s{...}; s.outputs = [](const nlohmann::json& p) {...};
     std::function<CommandOutputs(const nlohmann::json&)> outputs;
+
+    // A rule BETWEEN params that no single ParamSpec can say ("view_point is
+    // required unless use_current_position"), run by ValidateParams on the
+    // MERGED params (defaults in) after every per-param check passed. "" = ok,
+    // else the refusal - so it refuses at Start, in Lua and in RunRegistered,
+    // and the step form shows it like any other validation error. Null = none.
+    // Set after construction, like `outputs`. The command still re-checks what
+    // it depends on: this is the early answer, not the only one.
+    std::function<std::string(const nlohmann::json& merged)> check;
 };
 
 // "" on success, else a human-readable error naming the parameter. Unknown

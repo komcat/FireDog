@@ -651,6 +651,14 @@ button, never a side effect of opening the window. Teaching is Admin
    at Start refuses an untaught step (`point 'view_point' not taught`), the
    command refuses it again for Lua / `RunRegistered`, the helper's Camera
    position section and the step form's summary say it in red.
+   **Use current position** (`use_current_position`, 2026-11-21) is the one
+   way out, and it is the step's explicit choice: nothing moves, the camera
+   detects where the steps before left it (light, exposure and `settle_ms`
+   still apply). Not a fallback - an untaught step WITHOUT the tick is still
+   refused. "Required unless" is a rule between two params, so it is the
+   spec's `CommandSpec::check`, which `ValidateParams` runs last (Start, Lua,
+   `RunRegistered`, the step form's red line); a taught view on a
+   current-position step is kept and simply not driven to.
    The legs run with `DetectMoveParams` (the movers' 0.01 mm arrival, the step's
    `velocity_mm_s`, no approach) through `ApplyPreMove` + `MoveWithApproach`.
    On arrival the step waits `settle_ms` (default 100) before the fresh-frame

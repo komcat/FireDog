@@ -1186,9 +1186,6 @@ void App::RefreshVisionPreview(const VisionModel& m, bool force)
 
 void App::DrawVisionFilterBand(VisionModel& m)
 {
-    std::string why;
-    const bool halcon = HalconDetector::Available(&why);
-
     // The section's header is the caller's (a collapsing header in
     // DrawVisionTeachParams).
     const char* kinds[]= {"None", "Binary threshold", "Gaussian", "Canny edge"};
@@ -1237,50 +1234,6 @@ void App::DrawVisionFilterBand(VisionModel& m)
         ImGui::PopID();
     }
 
-    // Preview sits directly above the picture it refreshes, so the button reads
-    // as "redraw this" rather than as another parameter.
-    ImGui::BeginDisabled(!halcon);
-    if (ImGui::Button("Preview")) {
-        RefreshVisionPreview(m, true);
-        visionStatus_ = visionFilterErr_.empty() ? "preview updated"
-                                                 : ("preview: " + visionFilterErr_);
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (visionFilterW_ > 0)
-        ImGui::TextDisabled("%d x %d px   %.0f ms", visionFilterW_, visionFilterH_,
-                            visionFilterMs_);
-    else
-        ImGui::TextDisabled("no picture yet");
-
-    // The picture. Same chain, same pixels the detector will see — the whole
-    // point of routing the preview through HalconDetector::Preprocess rather
-    // than reimplementing three filters over here.
-    const float availW = ImGui::GetContentRegionAvail().x;
-    const float boxH   = 150.0f;
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        origin, ImVec2(origin.x + availW, origin.y + boxH), IM_COL32(20, 20, 22, 255));
-    if (visionFilterTex_ != 0 && visionFilterW_ > 0 && visionFilterH_ > 0) {
-        const float sc = fminf(availW / static_cast<float>(visionFilterW_),
-                               boxH / static_cast<float>(visionFilterH_));
-        const ImVec2 sz(static_cast<float>(visionFilterW_) * sc,
-                        static_cast<float>(visionFilterH_) * sc);
-        ImGui::SetCursorScreenPos(ImVec2(origin.x + (availW - sz.x) * 0.5f,
-                                         origin.y + (boxH - sz.y) * 0.5f));
-        ImGui::Image((ImTextureID)(intptr_t)visionFilterTex_, sz);
-    }
-    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + boxH));
-    ImGui::Dummy(ImVec2(availW, 0.0f));
-
-    // The chain is HALCON operators, so a licence problem takes the picture with
-    // it — said here, verbatim, rather than leaving an empty box to interpret.
-    // The parameters above stay editable and still save.
-    if (!halcon || !visionFilterErr_.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kBad);
-        ImGui::TextWrapped("%s", halcon ? visionFilterErr_.c_str() : why.c_str());
-        ImGui::PopStyleColor();
-    }
 }
 
 // ---- The parameter column ---------------------------------------------------
@@ -1355,15 +1308,37 @@ void App::DrawVisionTeachParams(VisionModel& m, bool runControls)
 
     // ---- 1. Search ROI ----
     if (ImGui::CollapsingHeader("Search ROI", kOpen)) {
-        ImGui::Checkbox("limit the search to a region", &m.roi.enabled);
+        // Ticking it SHOWS a box at once: the region it had before (unticking
+        // keeps the numbers), or - when it never had one - the centre half of
+        // the frame. A tick that drew nothing read as "it did not take".
+        if (ImGui::Checkbox("limit the search to a region", &m.roi.enabled) &&
+            m.roi.enabled && (m.roi.w <= 0 || m.roi.h <= 0)) {
+            const int fw = cameraW_ > 0 ? cameraW_ : 1024;
+            const int fh = cameraH_ > 0 ? cameraH_ : 1024;
+            m.roi.w = fw / 2;
+            m.roi.h = fh / 2;
+            m.roi.x = (fw - m.roi.w) / 2;
+            m.roi.y = (fh - m.roi.h) / 2;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("x / y / w / h in camera pixels. An ROI is the cheapest speed-up\n"
+                              "there is, and usually the difference between a detector that\n"
+                              "can run live and one that cannot.");
         ImGui::BeginDisabled(!m.roi.enabled);
         int roi[4] = {m.roi.x, m.roi.y, m.roi.w, m.roi.h};
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::DragInt4("##roi", roi, 1.0f, 0, 100000, "%d")) {
             m.roi.x = roi[0]; m.roi.y = roi[1]; m.roi.w = roi[2]; m.roi.h = roi[3];
         }
-        if (ImGui::Button(visionDragMode_ == 1 ? "drag it on the image..." : "Set ROI by drag"))
-            visionDragMode_ = (visionDragMode_ == 1) ? 0 : 1;
+        // Armed, the button stays lit - the strip above the image already says
+        // "drag a rectangle on the image" while it is.
+        const bool armed = visionDragMode_ == 1;
+        if (armed) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button("Set ROI")) visionDragMode_ = armed ? 0 : 1;
+        if (armed) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(armed ? "Drag a rectangle on the image (click again to cancel)"
+                                    : "Then drag a rectangle on the image to set the region");
         ImGui::SameLine();
         if (ImGui::Button("Full frame")) {
             m.roi = VisionRoi{};
@@ -1371,17 +1346,51 @@ void App::DrawVisionTeachParams(VisionModel& m, bool runControls)
             visionFocusY_ = static_cast<float>(cameraH_) * 0.5f;
         }
         ImGui::EndDisabled();
-        HelpText("x / y / w / h in camera pixels. An ROI is the cheapest speed-up there "
-                 "is, and usually the difference between a detector that can run live "
-                 "and one that cannot.");
     }
 
     // ---- 2. Method ----
     if (ImGui::CollapsingHeader("Detection method", kOpen)) {
         int method = (m.method == "ncc") ? 1 : (m.method == "corner") ? 2 : 0;
         const char* methods[] = {"Circle / fiducial", "Pattern (NCC)", "Square corner"};
+        // assets/recipe_icons, drawn by tools/icons/make_command_icons.py.
+        const char* methodIcons[] = {"vi_method_circle", "vi_method_ncc", "vi_method_corner"};
+        // A combo with an icon on every row and in the closed preview.
+        // BeginCombo's own preview is text only (the custom-preview API is in
+        // imgui_internal.h, which only WndPrompts.cpp may include), so the
+        // preview is left empty and drawn over the frame after the call, into
+        // the WINDOW's draw list captured before it - an open combo makes the
+        // popup the current window.
+        ImDrawList*  dl = ImGui::GetWindowDrawList();
+        const ImVec2 fp = ImGui::GetCursorScreenPos();
+        int chosen = -1;
         ImGui::SetNextItemWidth(itemW);
-        if (ImGui::Combo("detection method", &method, methods, 3)) {
+        if (ImGui::BeginCombo("detection method", "")) {
+            for (int i = 0; i < 3; ++i) {
+                ImGui::PushID(i);
+                const ImVec2 rp = ImGui::GetCursorPos();
+                if (ImGui::Selectable("##method", method == i)) chosen = i;
+                if (method == i) ImGui::SetItemDefaultFocus();
+                ImGui::SetCursorPos(rp);
+                DrawStepIconInline(UiIcon(methodIcons[i]));
+                ImGui::TextUnformatted(methods[i]);
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+        {
+            const ImGuiStyle& st = ImGui::GetStyle();
+            const float h = ImGui::GetTextLineHeight();
+            ImVec2 p(fp.x + st.FramePadding.x, fp.y + st.FramePadding.y);
+            if (const MarkIcon* ic = UiIcon(methodIcons[method]); ic && ic->tex) {
+                dl->AddImage((ImTextureID)(intptr_t)ic->tex, p, ImVec2(p.x + h, p.y + h),
+                             ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
+                             ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f)));
+                p.x += h + st.ItemInnerSpacing.x;
+            }
+            dl->AddText(p, ImGui::GetColorU32(ImGuiCol_Text), methods[method]);
+        }
+        if (chosen >= 0 && chosen != method) {
+            method   = chosen;
             m.method = (method == 1) ? "ncc" : (method == 2) ? "corner" : "circle";
             visionHaveDet_    = false;
             visionAnchorOpen_ = false;   // the picker belongs to the NCC form
@@ -1661,8 +1670,64 @@ void App::DrawVisionReliability(VisionModel& m)
 // for" side by side is the comparison an operator actually makes, and it is the
 // one a single number (score 0.83) never quite answers.
 
+// The pre-process chain's picture: Preview + the filtered ROI. At the TOP of
+// the result column (above Matched location), beside the image it explains,
+// rather than under the filter rows - there it pushed the method's own form
+// below the fold. The filter rows stay in the parameter column.
+void App::DrawVisionFilterPreview(const VisionModel& m)
+{
+    // Preview sits directly above the picture it refreshes, so the button reads
+    // as "redraw this" rather than as another parameter.
+    std::string why;
+    const bool halcon = HalconDetector::Available(&why);
+    ImGui::BeginDisabled(!halcon);
+    if (ImGui::Button("Preview")) {
+        RefreshVisionPreview(m, true);
+        visionStatus_ = visionFilterErr_.empty() ? "preview updated"
+                                                 : ("preview: " + visionFilterErr_);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (visionFilterW_ > 0)
+        ImGui::TextDisabled("%d x %d px   %.0f ms", visionFilterW_, visionFilterH_,
+                            visionFilterMs_);
+    else
+        ImGui::TextDisabled("no picture yet");
+
+    // The picture. Same chain, same pixels the detector will see — the whole
+    // point of routing the preview through HalconDetector::Preprocess rather
+    // than reimplementing three filters over here.
+    const float availW = ImGui::GetContentRegionAvail().x;
+    const float boxH   = 150.0f;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        origin, ImVec2(origin.x + availW, origin.y + boxH), IM_COL32(20, 20, 22, 255));
+    if (visionFilterTex_ != 0 && visionFilterW_ > 0 && visionFilterH_ > 0) {
+        const float sc = fminf(availW / static_cast<float>(visionFilterW_),
+                               boxH / static_cast<float>(visionFilterH_));
+        const ImVec2 sz(static_cast<float>(visionFilterW_) * sc,
+                        static_cast<float>(visionFilterH_) * sc);
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + (availW - sz.x) * 0.5f,
+                                         origin.y + (boxH - sz.y) * 0.5f));
+        ImGui::Image((ImTextureID)(intptr_t)visionFilterTex_, sz);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + boxH));
+    ImGui::Dummy(ImVec2(availW, 0.0f));
+
+    // The chain is HALCON operators, so a licence problem takes the picture with
+    // it — said here, verbatim, rather than leaving an empty box to interpret.
+    // The filter rows in the parameter column stay editable and still save.
+    if (!halcon || !visionFilterErr_.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+        ImGui::TextWrapped("%s", halcon ? visionFilterErr_.c_str() : why.c_str());
+        ImGui::PopStyleColor();
+    }
+}
+
 void App::DrawVisionResultPanel(const VisionModel& m)
 {
+    ImGui::SeparatorText("Filtered preview");
+    DrawVisionFilterPreview(m);
     ImGui::SeparatorText("Matched location");
 
     const float half = (ImGui::GetContentRegionAvail().x - 8.0f) * 0.5f;
