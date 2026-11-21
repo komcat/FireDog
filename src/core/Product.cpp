@@ -39,7 +39,7 @@ std::string NowStamp()
     return buf;
 }
 
-std::string FileStamp(bool localTime)
+std::string FileStamp()
 {
     using namespace std::chrono;
     const auto        now = system_clock::now();
@@ -47,8 +47,7 @@ std::string FileStamp(bool localTime)
     const int         ms  = static_cast<int>(
         duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000);
     std::tm tm{};
-    if (localTime) localtime_s(&tm, &t);
-    else           gmtime_s(&tm, &t);
+    localtime_s(&tm, &t);
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%04d%02d%02d_%02d%02d%02d_%03d",
                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,

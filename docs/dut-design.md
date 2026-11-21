@@ -161,7 +161,7 @@ scripted path, where scripts had a private context and no serial).
    events), the five `dut_*` commands, `prompt_input` + modal upgrade,
    engine `$run` events, Overview DUT block + run-strip serial display.
 2. **D2 (IMPLEMENTED)**: `dut_capture_image` — latest camera frame → PNG in
-   the record's `images/` (stb_image_write; filename `<key>_<UTC stamp>.png`,
+   the record's `images/` (stb_image_write; filename `<key>_<local stamp>.png`,
    fixing bobcat's unlinked date-less names) + a `type="image"` entry with the
    record-relative path. **DUT Records** viewer (View menu, read-only): serial
    list from the product's `data/`, entry table, header + run history.

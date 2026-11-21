@@ -897,8 +897,7 @@ CommandResult ExecCaptureImage(ExecutionContext& ctx, const ParamValues& p)
                         (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '.';
         if (!ok) c = '_';
     }
-    const std::string stem =
-        (tag.empty() ? std::string() : tag + "_") + FileStamp(/*localTime*/ true);
+    const std::string stem = (tag.empty() ? std::string() : tag + "_") + FileStamp();
 
     // The exposure, with its undo armed before anything else can fail.
     const double expo     = p.GetDouble("exposure_us");

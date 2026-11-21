@@ -44,11 +44,11 @@ struct ProductManifest {
 
 std::string GenerateUid();   // 8 random hex chars
 std::string NowStamp();      // "YYYY-MM-DDTHH:MM:SS", local time
-// A filename piece to the millisecond: "20260728_193104_120". Dated so names
-// never collide across days (bobcat's time-only names did). The one stamp every
-// saved camera picture carries: UTC by default (dut_capture_image), LOCAL time
-// when asked (capture_image - read by an operator browsing the folder).
-std::string FileStamp(bool localTime = false);
+// A filename piece to the millisecond, LOCAL time: "20260728_193104_120".
+// Dated so names never collide across days (bobcat's time-only names did);
+// local because the people reading it are operators browsing a folder. The one
+// stamp every saved camera picture carries (dut_capture_image, capture_image).
+std::string FileStamp();
 
 // Scan products/ for folders containing a manifest.json (sorted by name).
 std::vector<std::string> ListProducts();

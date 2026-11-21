@@ -219,8 +219,8 @@ Three commands fill it:
 
 `capture_image` saves a PNG to `<data root>/captures` (a `folder` name is a
 sub-folder of it, created if missing; an absolute path is used as written), named
-`<tag>_<YYYYMMDD_HHMMSS_mmm>.png` in LOCAL time (`FileStamp(true)`;
-`dut_capture_image` keeps UTC); `{key}` in `folder`/`tag` takes a ctx value. An
+`<tag>_<YYYYMMDD_HHMMSS_mmm>.png` in local time (`FileStamp`, the same stamp
+as `dut_capture_image`); `{key}` in `folder`/`tag` takes a ctx value. An
 `exposure_us` is set through `Workflow::SetCameraExposure`, waited out with at
 least two fresh frames (no new frame fails the step - the one in hand was
 integrated at the old exposure), and put back on every exit unless
