@@ -5,6 +5,7 @@
 
 #include "command/CommandRegistry.h"
 #include "command/CommandSpec.h"
+#include "command/StepDetectors.h"   // IsStepDetectorParam
 #include "core/Product.h"     // GenerateUid
 
 #include <algorithm>
@@ -269,13 +270,13 @@ struct Translator {
                     }
                     continue;
                 }
-                if (ms.type == "detect_object" && p.name == "model") {
-                    const std::string tm = ts ? ts->params.value("model", std::string()) : std::string();
+                if (IsStepDetectorParam(ms.type, p.name)) {
+                    const std::string tm = ts ? ts->params.value(p.name, std::string()) : std::string();
                     if (!tm.empty() && FindVisionModel(t.vision, tm)) {
-                        out.params["model"] = tm;
+                        out.params[p.name] = tm;
                         ++plan.carriedModels;
                     } else {
-                        out.params["model"] = "";
+                        out.params[p.name] = "";
                         plan.untaughtModels.push_back(label);
                         ++recipeModelsUntaught;
                     }

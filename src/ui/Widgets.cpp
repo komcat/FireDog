@@ -274,11 +274,7 @@ bool ResolveWorldBox(const WorldMarkView& wv, double ax, double ay, double adx, 
 
     // The anchor, through the same projection DrawWorldMark uses - a second
     // copy of it would put the outline off the cross it belongs to.
-    const float px = static_cast<float>((ax - wv.gx) / static_cast<double>(wv.pixelToMmX)) +
-                     static_cast<float>(wv.imgW) * 0.5f;
-    const float py = static_cast<float>((ay - wv.gy) / static_cast<double>(wv.pixelToMmY)) +
-                     static_cast<float>(wv.imgH) * 0.5f;
-    const ImVec2 a = wv.view.ToScreen(px, py);
+    const ImVec2 a = WorldToScreen(wv, ax, ay);
 
     const float th = static_cast<float>(deg) * 3.14159265358979f / 180.0f;
     g->cs = cosf(th);
@@ -290,6 +286,15 @@ bool ResolveWorldBox(const WorldMarkView& wv, double ax, double ay, double adx, 
 }
 
 } // namespace
+
+ImVec2 WorldToScreen(const WorldMarkView& wv, double wx, double wy)
+{
+    const float px = static_cast<float>((wx - wv.gx) / static_cast<double>(wv.pixelToMmX)) +
+                     static_cast<float>(wv.imgW) * 0.5f;
+    const float py = static_cast<float>((wy - wv.gy) / static_cast<double>(wv.pixelToMmY)) +
+                     static_cast<float>(wv.imgH) * 0.5f;
+    return wv.view.ToScreen(px, py);
+}
 
 void DrawWorldBox(ImDrawList* dl, const WorldMarkView& wv, double ax, double ay,
                   double adx, double ady, double wMm, double lMm, double deg,
@@ -354,11 +359,7 @@ void DrawWorldMark(ImDrawList* dl, const WorldMarkView& wv, const CameraMark& m,
     const ImU32 col = m.col ? m.col : kPtCol;
 
     // Machine mm -> camera px, through the pose the image centre sits at.
-    const float px = static_cast<float>((m.wx - wv.gx) / static_cast<double>(wv.pixelToMmX)) +
-                     static_cast<float>(wv.imgW) * 0.5f;
-    const float py = static_cast<float>((m.wy - wv.gy) / static_cast<double>(wv.pixelToMmY)) +
-                     static_cast<float>(wv.imgH) * 0.5f;
-    const ImVec2 s = wv.view.ToScreen(px, py);
+    const ImVec2 s = WorldToScreen(wv, m.wx, m.wy);
 
     const float pad = 2.0f;
     if (s.x >= wv.boxMin.x - pad && s.x <= wv.boxMax.x + pad &&
@@ -586,6 +587,8 @@ const char* StepIconFile(const char* type)
         // Vision
         {"capture_view",              "vi_camera"},
         {"capture_image",             "vi_camera"},
+        {"datum_reference",           "al_align"},
+        {"datum_clear",               "al_align"},
         {"auto_focus",                "vi_focus"},
         {"pick_point",                "vi_detect"},
         {"halcon_status",             "vi_detect"},

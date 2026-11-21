@@ -409,6 +409,7 @@ void App::Update(float dt)
     // once, rather than leaving the first reader to discover it.
     workflow_.ExpireBeacons();
     workflow_.ExpireGrippedObjects();   // same lifetime, same once-only log
+    workflow_.ExpireDatums();           // and the datums' 30 minutes
     UpdateAuxRaster();                  // a finished raster's heatmap, and its expiry
 
     // A NEW DUT is a new physical part, so any taught frame stops meaning
@@ -419,6 +420,11 @@ void App::Update(float dt)
         const DutSession::Info di = DutSession::Instance().GetInfo();
         const std::string key = di.open ? di.serial + "|" + di.openedAt : std::string();
         if (key != dutOpenKey_) {
+            // The DUT that WAS open is not any more - closed, or replaced by
+            // another (opening one auto-closes the last). A closed DUT is a
+            // finished part, and a datum describes one part: every datum goes.
+            // docs/datum-reference-design.md §4.
+            if (!dutOpenKey_.empty()) workflow_.ClearDatums("DUT closed");
             dutOpenKey_ = key;
             if (!key.empty()) {
                 workflow_.ClearLiveFrames("new DUT opened");
@@ -790,6 +796,9 @@ void App::ResetDocumentSelections()
     // Beacons are not part-scoped (program start and DUT open keep them), but
     // a different product's locations mean nothing.
     workflow_.ClearBeacons("product loaded");
+    // A datum is part-scoped and a measurement belongs to the product's steps.
+    workflow_.ClearDatums("product loaded");
+    workflow_.ClearDatumMeasures();
     // And a different product's trays are different trays: the cursor is
     // rebuilt from what THIS product's records say is used — the persisted
     // set is the truth, the cursor its live mirror.

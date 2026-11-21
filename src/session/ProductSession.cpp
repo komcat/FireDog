@@ -1,6 +1,7 @@
 #include "session/ProductSession.h"
 
 #include "command/ExecutionContext.h"   // MachineScriptsDir
+#include "command/StepDetectors.h"      // StepDetectorParams (SyncStepDetectors)
 #include "core/DutSession.h"
 #include "core/Log.h"
 #include "core/Paths.h"
@@ -842,8 +843,12 @@ bool ProductSession::SyncStepDetectors()
     std::set<std::string> owned;   // model uids some step already owns
     std::function<void(std::vector<RecipeStep>&)> walk = [&](std::vector<RecipeStep>& steps) {
         for (RecipeStep& s : steps) {
-            if (s.type == "detect_object" && s.params.is_object()) {
-                const auto it = s.params.find("model");
+            // Every param that holds one of this step's private models - ONE
+            // table (command/StepDetectors.h), so a datum step's three models
+            // are owned exactly like a detect_object's one.
+            for (const std::string& key : StepDetectorParams(s.type)) {
+                if (!s.params.is_object()) break;
+                const auto it = s.params.find(key);
                 if (it != s.params.end() && it->is_string() && !it->get<std::string>().empty()) {
                     const std::string uid = it->get<std::string>();
                     if (!owned.insert(uid).second) {
@@ -854,12 +859,12 @@ bool ProductSession::SyncStepDetectors()
                             std::string nu = CopyVisionModelAs(snapshot, std::string());
                             if (VisionModel* fresh = FindVisionModel(vision_, nu))
                                 fresh->name = StepDetectorName(nu);
-                            s.params["model"] = nu;
+                            s.params[key] = nu;
                             owned.insert(nu);
                             changed = true;
-                            FD_INFO("vision", "a copied detect_object step got its own "
-                                              "model (%s, copied from %s)",
-                                    nu.c_str(), uid.c_str());
+                            FD_INFO("vision", "a copied %s step got its own model for '%s' "
+                                              "(%s, copied from %s)",
+                                    s.type.c_str(), key.c_str(), nu.c_str(), uid.c_str());
                         }
                     }
                 }

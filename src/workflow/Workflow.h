@@ -9,6 +9,7 @@
 #include "core/DeviceReg.h"            // DeviceReg (a gripper tip in gantry space)
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
 #include "core/Beacon.h"               // Beacon (temporary camera-pose markers)
+#include "core/Datum.h"                // Datum (a part frame taught by one step)
 #include "core/GrippedObject.h"        // GrippedObject (object registered to a gripper)
 #include "core/Interlock.h"            // IlConfig (conditional motion interlocks)
 #include "core/RasterMap.h"            // RasterMap (raster scan -> Aux heatmap)
@@ -715,6 +716,30 @@ public:
     void ClearBeacons(const char* reason);
     void ExpireBeacons();
 
+    // ---- Datums (datum_reference -> move_local {datum}) ----------------------
+    // A part's local frame taught by one step (core/Datum.h). Lives
+    // kDatumLifeMin, until datum_clear, DUT close (ClearDatums, App::Update's
+    // edge), product load; a datum solved with NO DUT open also goes at the
+    // next program start (ClearDatumsWithoutDut). Program start otherwise KEEPS
+    // it. Expired reads as absent; ExpireDatums (App::Update) erases and logs
+    // once. Mutex-guarded: engine workers write, workers and the Aux read.
+    // docs/datum-reference-design.md.
+    void SetDatum(const Datum& d);
+    bool EraseDatum(const std::string& name);
+    // false + *why ("no datum 'x'" / "datum 'x' expired") when unusable.
+    bool DatumFor(const std::string& name, Datum* out, std::string* why) const;
+    std::vector<Datum> Datums() const;   // snapshot of the unexpired, by name
+    void ClearDatums(const char* reason);
+    void ClearDatumsWithoutDut(const char* reason);
+    void ExpireDatums();
+    // The last RAW measurement under a name - what the helper's "Use as
+    // reference" adopts. Written every run before the solve; no move reads it.
+    // Cleared with the product (ClearDatums does not touch it: a DUT close
+    // must not lose the measurement the engineer is about to adopt).
+    void SetDatumMeasure(const DatumMeasure& m);
+    bool DatumMeasureFor(const std::string& name, DatumMeasure* out) const;
+    void ClearDatumMeasures();
+
     // ---- Gripped objects (grip_register_object -> the Aux diamond) ----------
     // An object registered to the gripper holding it: object - tip in XYZ
     // (core/GrippedObject.h). A BEACON's lifetime: program start and DUT open
@@ -1009,6 +1034,9 @@ private:
     mutable std::mutex                       beaconMu_;
     std::map<std::string, Beacon>            beacons_;
     int                                      beaconColorNext_ = 0;   // SetBeacon's colour cycle
+    mutable std::mutex                       datumMu_;
+    std::map<std::string, Datum>             datums_;
+    std::map<std::string, DatumMeasure>      datumMeasures_;
     mutable std::mutex                       gripObjMu_;
     std::map<std::string, GrippedObject>     grippedObjects_;
 

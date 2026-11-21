@@ -4,6 +4,7 @@
 #include "command/CommandRegistry.h"
 #include "command/CommandSpec.h"
 #include "command/ExecutionContext.h"   // IsSystemScript
+#include "command/StepDetectors.h"         // IsStepDetectorParam
 #include "command/StepSummary.h"
 #include "core/LightCallout.h"          // ChannelInLight
 
@@ -402,9 +403,10 @@ PorParam CompareParam(const Ctx& c, const std::string& cmd, const std::string& n
     const nlohmann::json& mv = out.hasMaster ? mm[name] : nul;
     const nlohmann::json& tv = out.hasTarget ? tm[name] : nul;
 
-    // detect_object's model is the step's PRIVATE detector (a String, not a
-    // VisionUid): taught on each machine, so only its existence is judged.
-    if (cmd == "detect_object" && name == "model") {
+    // A step's PRIVATE detector (detect_object's model, a datum's model1..3 -
+    // a String, not a VisionUid): taught on each machine, so only its
+    // existence is judged.
+    if (IsStepDetectorParam(cmd, name)) {
         out.cls = PorParamClass::Measured;
         const auto exists = [](const PorSide& s, const nlohmann::json& v) {
             return v.is_string() && !v.get<std::string>().empty() &&

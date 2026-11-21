@@ -244,6 +244,19 @@ inline constexpr int kAlignRepeatDefault = 30;
 bool SolveAlignFrame(const AlignPoint& e1, const AlignPoint& e2,
                      AlignResult* out, std::string* err = nullptr);
 
+// The 3-point frame (datum_reference, docs/datum-reference-design.md §2): a
+// least-squares RIGID fit - origin + rotation, never scale or shear - of the
+// taught reference shape E1 = (0,0), E2 = (refSpan, 0), E3 = (refE3x, refE3y)
+// in local coordinates onto the three MEASURED points. `out` is an ordinary
+// frame: originX/Y is where local (0,0) lands (the FITTED E1, not the raw
+// mark), thetaDeg the fitted X+ direction, spanMm the MEASURED |E1 -> E2|, e1/e2
+// the measured points, z the mean of E1/E2's Z when both carry one. `resid`
+// (may be null) gets each point's distance from its fitted reference, mm.
+// False + `err` for a reference span or a measured span below kAlignMinSpanMM.
+bool FitAlignFrame3(const AlignPoint& e1, const AlignPoint& e2, const AlignPoint& e3,
+                    double refSpan, double refE3x, double refE3y,
+                    AlignResult* out, double resid[3], std::string* err = nullptr);
+
 // ---- the guard band ------------------------------------------------------
 // The span and direction of E1->E2, without the refusal or the timestamp
 // SolveAlignFrame carries. It exists so a CANDIDATE point — a crosshair the

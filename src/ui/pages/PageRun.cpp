@@ -387,6 +387,10 @@ void App::StartDeckRun(RunScope scope, const std::set<std::string>* teachOnly)
     // Object results have no "keep": each was measured on the part that was on
     // the machine then, and nothing yet says the next part sits where it did.
     workflow_.ClearObjectResults("program start");
+    // A datum survives a program start - the DUT boundary says when the part
+    // changed - EXCEPT one solved with no DUT open: on a station without DUTs
+    // nothing else would ever say so. docs/datum-reference-design.md §4.
+    workflow_.ClearDatumsWithoutDut("program start");
 
     // A queue that is dry from end to end (a dry-run folder, or a recipe in
     // one) is a motion soak, not a part: like a teach run it leaves the cycle

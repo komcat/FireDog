@@ -987,6 +987,127 @@ void Workflow::ExpireBeacons()
                 kBeaconLifeMin);
 }
 
+// ---- Datums ------------------------------------------------------------------
+
+void Workflow::SetDatum(const Datum& d)
+{
+    const std::lock_guard<std::mutex> lock(datumMu_);
+    datums_[d.name] = d;
+}
+
+bool Workflow::EraseDatum(const std::string& name)
+{
+    const std::lock_guard<std::mutex> lock(datumMu_);
+    return datums_.erase(name) > 0;
+}
+
+bool Workflow::DatumFor(const std::string& name, Datum* out, std::string* why) const
+{
+    const std::lock_guard<std::mutex> lock(datumMu_);
+    const auto it = datums_.find(name);
+    if (it == datums_.end()) {
+        if (why) *why = "no datum '" + name + "' - run its datum_reference step first";
+        return false;
+    }
+    if (DatumExpired(it->second)) {
+        if (why) {
+            char buf[160];
+            std::snprintf(buf, sizeof(buf), "datum '%s' expired (solved %s, good for %d min)",
+                          name.c_str(), it->second.at.c_str(), kDatumLifeMin);
+            *why = buf;
+        }
+        return false;
+    }
+    if (out) *out = it->second;
+    return true;
+}
+
+std::vector<Datum> Workflow::Datums() const
+{
+    const auto now = std::chrono::steady_clock::now();
+    const std::lock_guard<std::mutex> lock(datumMu_);
+    std::vector<Datum> v;
+    v.reserve(datums_.size());
+    for (const auto& [name, d] : datums_)
+        if (!DatumExpired(d, now)) v.push_back(d);
+    return v;
+}
+
+void Workflow::ClearDatums(const char* reason)
+{
+    std::size_t n = 0;
+    {
+        const std::lock_guard<std::mutex> lock(datumMu_);
+        n = datums_.size();
+        datums_.clear();
+    }
+    if (n > 0)
+        FD_INFO("datum", "datum(s) cleared: %s (%zu dropped)", reason ? reason : "reset", n);
+}
+
+void Workflow::ClearDatumsWithoutDut(const char* reason)
+{
+    std::vector<std::string> gone;
+    {
+        const std::lock_guard<std::mutex> lock(datumMu_);
+        for (auto it = datums_.begin(); it != datums_.end();) {
+            if (!it->second.withDut) {
+                gone.push_back(it->first);
+                it = datums_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    // Said per datum: "why did move_local lose its datum" must be answerable
+    // from the log, and the answer here is "no DUT was open when it was made".
+    for (const std::string& name : gone)
+        FD_INFO("datum", "datum '%s' cleared: %s (it was solved with no DUT open, so "
+                         "nothing else says the part changed)",
+                name.c_str(), reason ? reason : "reset");
+}
+
+void Workflow::ExpireDatums()
+{
+    std::vector<std::string> gone;
+    {
+        const auto now = std::chrono::steady_clock::now();
+        const std::lock_guard<std::mutex> lock(datumMu_);
+        for (auto it = datums_.begin(); it != datums_.end();) {
+            if (DatumExpired(it->second, now)) {
+                gone.push_back(it->first);
+                it = datums_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const std::string& name : gone)
+        FD_INFO("datum", "datum '%s' expired after %d min - removed", name.c_str(),
+                kDatumLifeMin);
+}
+
+void Workflow::SetDatumMeasure(const DatumMeasure& m)
+{
+    const std::lock_guard<std::mutex> lock(datumMu_);
+    datumMeasures_[m.name] = m;
+}
+
+bool Workflow::DatumMeasureFor(const std::string& name, DatumMeasure* out) const
+{
+    const std::lock_guard<std::mutex> lock(datumMu_);
+    const auto it = datumMeasures_.find(name);
+    if (it == datumMeasures_.end()) return false;
+    if (out) *out = it->second;
+    return true;
+}
+
+void Workflow::ClearDatumMeasures()
+{
+    const std::lock_guard<std::mutex> lock(datumMu_);
+    datumMeasures_.clear();
+}
+
 // ---- Gripped objects -------------------------------------------------------
 
 void Workflow::SetGrippedObject(const GrippedObject& o)

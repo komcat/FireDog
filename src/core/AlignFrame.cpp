@@ -270,6 +270,69 @@ bool SolveAlignFrame(const AlignPoint& e1, const AlignPoint& e2,
     return true;
 }
 
+bool FitAlignFrame3(const AlignPoint& e1, const AlignPoint& e2, const AlignPoint& e3,
+                    double refSpan, double refE3x, double refE3y,
+                    AlignResult* out, double resid[3], std::string* err)
+{
+    const auto fail = [err](const char* fmt, double v) {
+        if (err) {
+            char buf[160];
+            std::snprintf(buf, sizeof(buf), fmt, v, kAlignMinSpanMM);
+            *err = buf;
+        }
+        return false;
+    };
+    if (refSpan < kAlignMinSpanMM)
+        return fail("the reference E1-E2 span is %.4f mm (need >= %.3f mm) - teach the "
+                    "reference", refSpan);
+    const double mdx = e2.wx - e1.wx, mdy = e2.wy - e1.wy;
+    const double span = std::sqrt(mdx * mdx + mdy * mdy);
+    if (span < kAlignMinSpanMM)
+        return fail("E1 and E2 are only %.4f mm apart (need >= %.3f mm)", span);
+
+    // 2-D Procrustes without scale: centre both sets, the rotation that best
+    // turns the reference onto the measurement is atan2(sum cross, sum dot),
+    // and the translation puts the turned reference centroid on the measured one.
+    const double dX[3] = {0.0, refSpan, refE3x};
+    const double dY[3] = {0.0, 0.0, refE3y};
+    const double mX[3] = {e1.wx, e2.wx, e3.wx};
+    const double mY[3] = {e1.wy, e2.wy, e3.wy};
+    const double dcx = (dX[0] + dX[1] + dX[2]) / 3.0, dcy = (dY[0] + dY[1] + dY[2]) / 3.0;
+    const double mcx = (mX[0] + mX[1] + mX[2]) / 3.0, mcy = (mY[0] + mY[1] + mY[2]) / 3.0;
+    double sDot = 0.0, sCross = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        const double ax = dX[i] - dcx, ay = dY[i] - dcy;
+        const double bx = mX[i] - mcx, by = mY[i] - mcy;
+        sDot   += ax * bx + ay * by;
+        sCross += ax * by - ay * bx;
+    }
+    const double th = std::atan2(sCross, sDot);
+    const double c = std::cos(th), s = std::sin(th);
+    const double ox = mcx - (dcx * c - dcy * s);
+    const double oy = mcy - (dcx * s + dcy * c);
+
+    if (resid) {
+        for (int i = 0; i < 3; ++i) {
+            const double fx = ox + dX[i] * c - dY[i] * s;
+            const double fy = oy + dX[i] * s + dY[i] * c;
+            resid[i] = std::sqrt((fx - mX[i]) * (fx - mX[i]) + (fy - mY[i]) * (fy - mY[i]));
+        }
+    }
+    if (!out) return true;
+
+    out->e1       = e1;
+    out->e2       = e2;
+    out->originX  = ox;
+    out->originY  = oy;
+    out->thetaDeg = th * 180.0 / 3.14159265358979323846;
+    out->spanMm   = span;
+    out->hasZ     = e1.hasZ && e2.hasZ;
+    out->z        = out->hasZ ? 0.5 * (e1.gz + e2.gz) : 0.0;
+    out->capturedAt = NowStamp();
+    out->valid    = true;
+    return true;
+}
+
 // ---- the guard band ------------------------------------------------------
 
 void AlignSpanTheta(const AlignPoint& e1, const AlignPoint& e2,

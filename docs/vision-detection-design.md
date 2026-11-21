@@ -617,7 +617,9 @@ with the same panels as a station's.
 named **`vdet_step_<modelUid>`** (`kStepDetectorPrefix`, `vision/VisionModel.h`)
 and the step holds the uid in its `model` param. The prefix is the ownership
 record. Copy / Paste / Duplicate copy a step's params verbatim, so a pasted step
-references its original's model; **`ProductSession::SyncStepDetectors`** — run by
+references its original's model (which params hold a step's models is ONE table,
+`StepDetectorParams` in `command/StepDetectors.h` — `detect_object`'s `model`, a
+`datum_reference`'s `model1..3`); **`ProductSession::SyncStepDetectors`** — run by
 `SaveRecipes` and `SaveProduct` before anything is written — gives the second
 step found referencing a model its own copy (patch included, through the one
 `ProductSession::CopyVisionModelAs`) and deletes step-owned models no step

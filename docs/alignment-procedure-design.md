@@ -6,6 +6,10 @@ shipped code:
 `src/core/AlignFrame.{h,cpp}`, `src/command/CommandsAlign.cpp`,
 `src/ui/pages/PageAlign.cpp`, `config/scripts/alignment_procedure.lua`.*
 
+*The same frame as ONE recipe step - its points owned by the step, 2 points or
+a 3-point rigid fit, consumed by `move_local {datum}` - is a datum:
+`docs/datum-reference-design.md`.*
+
 ---
 
 ## 1. The problem

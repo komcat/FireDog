@@ -13,8 +13,13 @@
 // writes the recipes (which syncs step-owned models - a copied step gets its
 // own) and the models.
 //
+// A datum_reference step (docs/datum-reference-design.md §6) uses this same
+// window: a band on top picks the point (E1 / E2 / E3, App::datumPointSel_),
+// and everything below works on THAT point's model<i> / view_point<i> through
+// the same functions a detect_object uses.
+//
 // Ownership: the model is named vdet_step_<uid> (kStepDetectorPrefix) and the
-// step holds the uid. Creating one is a button, never a side effect of opening
+// step holds the uid (command/StepDetectors.h says which params). Creating one is a button, never a side effect of opening
 // the window - a Draw function must not mutate the document. A model another
 // step also references (a pasted copy, not yet saved) is shown but not tuned
 // until it is made this step's own: tuning it would re-tune the other step.
@@ -25,6 +30,7 @@
 #include "command/CommandRegistry.h"
 #include "command/Commands.h"   // kVisionDetectHelper
 #include "command/Recipe.h"     // kElseBranchBase
+#include "command/StepDetectors.h" // StepDetectorParams - which params own a model
 #include "core/AlignLighting.h" // AlignLightingSummary
 #include "core/Log.h"
 #include "core/Product.h"       // GenerateUid
@@ -34,10 +40,13 @@
 #include "vision/VisionModel.h"
 #include "ui/RoiFilter.h"       // RoiFilterFrame (MainCameraFrame)
 #include "ui/Widgets.h"
+#include "workflow/Workflow.h"  // the live datum + its last measurement
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -53,18 +62,21 @@ const ImVec4 kWarn(0.98f, 0.72f, 0.32f, 1.0f);
 const ImVec4 kBad (0.95f, 0.45f, 0.35f, 1.0f);
 const ImVec4 kGood(0.55f, 0.85f, 0.55f, 1.0f);
 
-// How many detect_object steps in the library reference `uid`.
+// How many step-owned model params in the library reference `uid` (every
+// owner StepDetectorParams names - a datum's three as well).
 int CountStepOwners(const std::vector<Recipe>& recipes, const std::string& uid)
 {
     int n = 0;
     std::function<void(const std::vector<RecipeStep>&)> walk =
         [&](const std::vector<RecipeStep>& steps) {
             for (const RecipeStep& s : steps) {
-                if (s.type == "detect_object" && s.params.is_object()) {
-                    const auto it = s.params.find("model");
-                    if (it != s.params.end() && it->is_string() &&
-                        it->get<std::string>() == uid)
-                        ++n;
+                if (s.params.is_object()) {
+                    for (const std::string& key : StepDetectorParams(s.type)) {
+                        const auto it = s.params.find(key);
+                        if (it != s.params.end() && it->is_string() &&
+                            it->get<std::string>() == uid)
+                            ++n;
+                    }
                 }
                 walk(s.children);
                 walk(s.elseChildren);
@@ -82,11 +94,12 @@ int MotionIndexOf(const HardwareManager& hw, const std::string& name)
     return -1;
 }
 
-// The step's taught view, from its effective params.
-bool ViewPointOf(const nlohmann::json& merged, double* xyz)
+// The step's taught view (`key`: "view_point", or a datum's "view_point<i>"),
+// from its effective params.
+bool ViewPointOf(const nlohmann::json& merged, const std::string& key, double* xyz)
 {
-    if (!merged.contains("view_point")) return false;
-    const nlohmann::json& v = merged["view_point"];
+    if (!merged.contains(key)) return false;
+    const nlohmann::json& v = merged[key];
     if (!v.is_object()) return false;
     static const char* kAx[3] = {"X", "Y", "Z"};
     for (int a = 0; a < 3; ++a) {
@@ -111,15 +124,16 @@ void App::DrawVisionDetectHelperWindow()
     }
 
     RecipeStep* s = EditorSelectedStep();
-    const CommandSpec* spec = orch_.registry.Find("detect_object");
-    if (!spec || !s || s->type != "detect_object") {
-        ImGui::TextDisabled("Select a detect_object step in the Recipe Editor - this window "
-                            "edits the step that is selected there.");
+    const bool datum = s && s->type == "datum_reference";
+    const CommandSpec* spec =
+        s && (datum || s->type == "detect_object") ? orch_.registry.Find(s->type) : nullptr;
+    if (!spec) {
+        ImGui::TextDisabled("Select a detect_object or datum_reference step in the Recipe "
+                            "Editor - this window edits the step that is selected there.");
         ImGui::End();
         return;
     }
     const bool busy = orch_.Busy();
-    const nlohmann::json merged = EffectiveParams(*spec, s->params);
 
     // ---- Which step; Save; Close ----------------------------------------------
     std::string path;
@@ -129,7 +143,7 @@ void App::DrawVisionDetectHelperWindow()
         else                      path += std::to_string(c + 1);
     }
     const Recipe& rec = session_.Recipes()[static_cast<std::size_t>(recipeSel_)];
-    char owner[192];
+    char owner[208];
     std::snprintf(owner, sizeof(owner), "recipe '%s'  -  step %s%s%s", rec.name.c_str(),
                   path.c_str(), s->nickname.empty() ? "" : "  ", s->nickname.c_str());
     ImGui::TextUnformatted(owner);
@@ -143,9 +157,13 @@ void App::DrawVisionDetectHelperWindow()
     if (IconButton(UiIcon("Save"), dirty ? "Save*" : "Save")) {
         session_.SaveRecipes();
         session_.SaveVision();
-        if (const std::string u = EffectiveParams(*spec, s->params).value("model", std::string());
-            !u.empty())
-            workflow_.InvalidateDetector(u);   // the next detect rebuilds from the saved model
+        // The next detect rebuilds from the saved model - every model the step
+        // owns (a datum's three), read AFTER the save: a copied step may just
+        // have been given its own.
+        const nlohmann::json now = EffectiveParams(*spec, s->params);
+        for (const std::string& key : StepDetectorParams(s->type))
+            if (const std::string u = now.value(key, std::string()); !u.empty())
+                workflow_.InvalidateDetector(u);
         visionStatus_ = "saved";
     }
     ImGui::EndDisabled();
@@ -157,11 +175,27 @@ void App::DrawVisionDetectHelperWindow()
     if (ImGui::Button("Close")) showVisionDetHelper_ = false;
     if (busy) ImGui::TextColored(kWarn, "A run is active - read-only until it ends.");
 
+    // ---- A datum: which point (and the datum's own settings) -----------------
+    // Drawn BEFORE `merged` is taken, so a mode or point change this frame is
+    // what the rest of the window works on.
+    if (datum) DrawDatumHelperBand(*s, EffectiveParams(*spec, s->params), busy);
+    const nlohmann::json merged = EffectiveParams(*spec, s->params);
+    const int point = datum ? datumPointSel_ + 1 : 0;   // 1..3, 0 = detect_object
+    const std::string modelKey = datum ? "model" + std::to_string(point) : "model";
+    const std::string viewKey  = datum ? "view_point" + std::to_string(point) : "view_point";
+    if (datum) {
+        // The owner label the teach panels show says WHICH point too.
+        const std::size_t len = std::strlen(owner);
+        std::snprintf(owner + len, sizeof(owner) - len, "  E%d", point);
+    }
+
     // ---- What the step reports ------------------------------------------------
-    const std::string uid = merged.value("model", std::string());
+    const std::string uid = merged.value(modelKey, std::string());
     VisionModel* m = uid.empty() ? nullptr : FindVisionModel(session_.VisionModels(), uid);
     const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
-    const std::string prefix = merged.value("ctx_prefix", std::string("det"));
+    const std::string prefix =
+        datum ? merged.value("name", std::string("datum1")) + "_E" + std::to_string(point)
+              : merged.value("ctx_prefix", std::string("det"));
 
     // ---- The top band: camera position | report + run | detect + statistics ----
     // Side by side, because stacked they pushed the teach panels half way down
@@ -198,9 +232,17 @@ void App::DrawVisionDetectHelperWindow()
             ImGui::TableSetColumnIndex(col++);
             // Where the camera goes before it looks. Go is the editor's; Teach
             // here writes the model, so it carries the Admin gate itself.
-            DrawDetectViewSection(*s, merged, *m, busy, canTeach);
+            DrawDetectViewSection(*s, merged, *m, busy, canTeach, viewKey);
         }
         ImGui::TableSetColumnIndex(col++);
+        if (datum) {
+            // A datum point always reports X / Y - the frame is built from them.
+            ImGui::SeparatorText("Report");
+            ImGui::TextDisabled("E%d -> object result '%s' (XY on %s), then the datum",
+                                point, prefix.c_str(), camDev.c_str());
+            ImGui::TextDisabled("X / Y = '%s' axis position at the crosshair + the point's "
+                                "offset in the picture, mm", camDev.c_str());
+        } else {
         ImGui::SeparatorText("Report");
         {
             bool tx = merged.value("take_x", true), ty = merged.value("take_y", true),
@@ -242,8 +284,10 @@ void App::DrawVisionDetectHelperWindow()
                     ImGui::TextColored(kWarn, "P is ticked but %s", why.c_str());
             }
         }
-        // The run options: anybody who may edit the recipe may set them.
-        if (modelOk) DrawDetectRunOptions(*s, merged, busy);
+        }   // detect_object's Report
+        // The run options: anybody who may edit the recipe may set them. A
+        // datum's are shared by its points and it never centres.
+        if (modelOk) DrawDetectRunOptions(*s, merged, busy, !datum);
         if (tunable) {
             // The trial detections, beside the options they are judged with -
             // the same two functions the teach page's column draws.
@@ -259,7 +303,10 @@ void App::DrawVisionDetectHelperWindow()
     // ---- The step's model ------------------------------------------------------
     if (!m) {
         ImGui::SeparatorText("Detection model");
-        if (uid.empty()) ImGui::TextUnformatted("This step has no detection model yet.");
+        if (uid.empty()) {
+            if (datum) ImGui::Text("E%d has no detection model yet.", point);
+            else       ImGui::TextUnformatted("This step has no detection model yet.");
+        }
         else ImGui::TextColored(kWarn, "Its model (%s) is not in this product - create a new "
                                        "one and teach it.", uid.c_str());
         ImGui::BeginDisabled(busy || !canTeach);
@@ -267,7 +314,7 @@ void App::DrawVisionDetectHelperWindow()
             VisionModel fresh;
             fresh.uid  = GenerateUid();
             fresh.name = StepDetectorName(fresh.uid);
-            s->params["model"] = fresh.uid;
+            s->params[modelKey] = fresh.uid;
             session_.VisionModels().push_back(std::move(fresh));
             // The model is saved now, the step's reference to it with the
             // recipes. A SaveRecipes in between keeps it: this step, in
@@ -293,7 +340,7 @@ void App::DrawVisionDetectHelperWindow()
             const std::string nu = session_.CopyVisionModelAs(snapshot, std::string());
             if (VisionModel* fresh = FindVisionModel(session_.VisionModels(), nu))
                 fresh->name = StepDetectorName(nu);
-            s->params["model"] = nu;
+            s->params[modelKey] = nu;
             session_.SaveVision();
         }
         ImGui::EndDisabled();
@@ -366,11 +413,11 @@ void App::DrawVisionDetectHelperWindow()
 // ---- Camera position + run options --------------------------------------------
 
 void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, VisionModel& m,
-                                bool busy, bool canTeach)
+                                bool busy, bool canTeach, const std::string& viewKey)
 {
     const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
     double vp[3] = {0.0, 0.0, 0.0};
-    const bool taught = ViewPointOf(merged, vp);
+    const bool taught = ViewPointOf(merged, viewKey, vp);
 
     if (!taught) ImGui::PushStyleColor(ImGuiCol_Text, kBad);
     ImGui::SeparatorText("Camera position");
@@ -428,7 +475,7 @@ void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, Vis
 
     // Go drives a device: the jog arm and the whole orchestration gate it.
     ImGui::BeginDisabled(busy || !taught || !jogArmed_);
-    if (ImGui::Button("Go")) StartDetectViewGo(merged);
+    if (ImGui::Button("Go")) StartDetectViewGo(merged, viewKey);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         if (!jogArmed_)
@@ -440,7 +487,7 @@ void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, Vis
     ImGui::SameLine();
     ImGui::BeginDisabled(busy || !hasLive || !canTeach);
     if (ImGui::Button("Teach here")) {
-        s.params["view_point"] = {{"X", live[0]}, {"Y", live[1]}, {"Z", live[2]}};
+        s.params[viewKey] = {{"X", live[0]}, {"Y", live[1]}, {"Z", live[2]}};
         // The exposure the camera is at now goes into the step's model - the
         // one place a run reads it from. The light is the model's already: it
         // is set (and lit) in the camera strip under the image.
@@ -485,7 +532,7 @@ void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, Vis
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(busy || !taught);
-    if (ImGui::Button("Clear")) s.params.erase("view_point");
+    if (ImGui::Button("Clear")) s.params.erase(viewKey);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Forget the taught view. The step will not run until it is "
@@ -498,7 +545,8 @@ void App::DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, Vis
 }
 
 // The left column's lower half: how the step runs around the detection.
-void App::DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool busy)
+void App::DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool busy,
+                               bool centring)
 {
     const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
     ImGui::SeparatorText("Run");
@@ -553,7 +601,8 @@ void App::DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool
                               merged.value("ctx_prefix", std::string("det")).c_str());
         ImGui::TextDisabled("%s", manual ? "result = the crosshair, P = 0" : "a miss fails the step");
 
-        // -- the centring after the detection --
+        // -- the centring after the detection (detect_object only) --
+        if (centring) {
         ImGui::TableNextColumn();
         bool center = merged.value("center_after", false);
         if (ImGui::Checkbox("Center on result", &center)) s.params["center_after"] = center;
@@ -603,16 +652,17 @@ void App::DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool
         offRow("dZ mm (axis)", "center_dz_mm");
         ImGui::EndDisabled();
         ImGui::EndDisabled();
+        }   // centring
 
         ImGui::EndTable();
     }
     ImGui::EndDisabled();
 }
 
-void App::StartDetectViewGo(const nlohmann::json& merged)
+void App::StartDetectViewGo(const nlohmann::json& merged, const std::string& viewKey)
 {
     double vp[3] = {0.0, 0.0, 0.0};
-    if (!ViewPointOf(merged, vp)) return;
+    if (!ViewPointOf(merged, viewKey, vp)) return;
     const std::string camDev = merged.value("camera_device", std::string("gantry-main"));
     const bool   zLift = merged.value("z_lift", true);
     const double safeZ = merged.value("safe_z_mm", 25.0);
@@ -729,6 +779,155 @@ void App::DrawDetectStepThumbs(const RecipeStep& s)
     tile(&stepViewTex_, haveView, "no view taught", "view",
          "What the camera saw when this step's view was taught: the\n"
          "centre half of the frame, snapped by Teach here in the helper.");
+}
+
+
+// ---- The datum step's band (datum_reference) -------------------------------------
+// Three columns above the point's own panels: the mode and WHICH point the rest
+// of the window works on; the reference shape (+ Use as reference); the guards
+// and the live datum. docs/datum-reference-design.md §2, §6.
+void App::DrawDatumHelperBand(RecipeStep& s, const nlohmann::json& merged, bool busy)
+{
+    const std::string name = merged.value("name", std::string("datum1"));
+    const bool three = merged.value("mode", std::string("2pt")) == "3pt";
+    const int  nPts  = three ? 3 : 2;
+    datumPointSel_ = std::clamp(datumPointSel_, 0, nPts - 1);   // UI state, not the document
+
+    const float numW = 100.0f;
+    if (!ImGui::BeginTable("dtmBand", 3, ImGuiTableFlags_BordersInnerV |
+                                         ImGuiTableFlags_SizingStretchSame))
+        return;
+    ImGui::TableNextRow();
+
+    // -- the mode and the points --
+    ImGui::TableSetColumnIndex(0);
+    ImGui::SeparatorText(("Datum '" + name + "'").c_str());
+    ImGui::BeginDisabled(busy);
+    int mode = three ? 1 : 0;
+    if (ImGui::RadioButton("2 points", &mode, 0)) s.params["mode"] = "2pt";
+    ImGui::SameLine();
+    if (ImGui::RadioButton("3 points", &mode, 1)) s.params["mode"] = "3pt";
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("3 points: a rigid least-squares fit of the reference shape onto\n"
+                          "E1 / E2 / E3 - less angle noise when E3 is away from the E1-E2\n"
+                          "line, and a residual per point to catch a wrong feature.");
+    // The point strip: green once a point has its model AND its view.
+    static const char* kRole[3] = {"origin", "X+", "anchor"};
+    for (int i = 0; i < nPts; ++i) {
+        const std::string mk = "model" + std::to_string(i + 1);
+        const std::string vk = "view_point" + std::to_string(i + 1);
+        const std::string mu = merged.value(mk, std::string());
+        const bool ready = !mu.empty() && FindVisionModel(session_.VisionModels(), mu) &&
+                           merged.contains(vk) && merged[vk].is_object() && !merged[vk].empty();
+        if (i > 0) ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, ready ? kGood : kBad);
+        char lbl[32];
+        std::snprintf(lbl, sizeof(lbl), "E%d %s##dtmPt%d", i + 1, kRole[i], i);
+        if (ImGui::RadioButton(lbl, datumPointSel_ == i)) datumPointSel_ = i;
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("E%d: %s", i + 1,
+                              ready ? "model and view taught - select it to tune it below"
+                                    : "NOT ready - a run refuses the step before anything "
+                                      "moves; create the model and Teach here below");
+    }
+    ImGui::TextDisabled("Below: E%d's view, run options, detection model.", datumPointSel_ + 1);
+
+    // -- the reference shape --
+    ImGui::TableSetColumnIndex(1);
+    ImGui::SeparatorText("Reference");
+    const double refSpan = merged.value("ref_span_mm", 0.0);
+    const double refX    = merged.value("ref_e3_lx", 0.0);
+    const double refY    = merged.value("ref_e3_ly", 0.0);
+    ImGui::BeginDisabled(busy);
+    const auto num = [&](const char* label, const char* key, double v, const char* fmt) {
+        ImGui::SetNextItemWidth(numW);
+        if (ImGui::InputDouble(label, &v, 0.0, 0.0, fmt)) s.params[key] = v;
+    };
+    num("E1-E2 span mm", "ref_span_mm", refSpan, "%.4f");
+    if (three) {
+        num("E3 local X mm", "ref_e3_lx", refX, "%.4f");
+        num("E3 local Y mm", "ref_e3_ly", refY, "%.4f");
+    }
+    DatumMeasure meas;
+    const bool haveMeas = workflow_.DatumMeasureFor(name, &meas);
+    ImGui::BeginDisabled(!haveMeas || (three && !meas.hasE3));
+    if (ImGui::Button("Use as reference")) {
+        s.params["ref_span_mm"] = meas.spanMm;
+        if (three && meas.hasE3) {
+            s.params["ref_e3_lx"] = meas.e3lx;
+            s.params["ref_e3_ly"] = meas.e3ly;
+        }
+        visionStatus_ = "datum reference taken from the run at " + meas.at;
+    }
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Copy the last run's measurement of this datum into the step:\n"
+                          "the E1-E2 span%s. Run the step once on a GOOD part first -\n"
+                          "the reference is what every later part is fitted to.",
+                          three ? " and where E3 sat in the E1-E2 frame" : "");
+    if (haveMeas) {
+        if (meas.hasE3)
+            ImGui::TextDisabled("last run %s: span %.4f, E3 (%.4f, %.4f)", meas.at.c_str(),
+                                meas.spanMm, meas.e3lx, meas.e3ly);
+        else
+            ImGui::TextDisabled("last run %s: span %.4f", meas.at.c_str(), meas.spanMm);
+    } else {
+        ImGui::TextDisabled("no run yet - run the step on a good part, then Use as reference");
+    }
+    if (three) {
+        const bool haveRef = refSpan > 0.0 && (refX != 0.0 || refY != 0.0);
+        if (!haveRef) {
+            ImGui::TextColored(kBad, "NO REFERENCE - a run measures, then fails");
+        } else {
+            // What E3 buys: angle noise ~ 1 / sqrt(sum r^2) about the centroid,
+            // against the two-point 0.5 L^2 (design doc §2).
+            const double cx = (refSpan + refX) / 3.0, cy = refY / 3.0;
+            const double r2 = cx * cx + cy * cy + (refSpan - cx) * (refSpan - cx) + cy * cy +
+                              (refX - cx) * (refX - cx) + (refY - cy) * (refY - cy);
+            const double ratio = r2 > 0.0 ? std::sqrt(0.5 * refSpan * refSpan / r2) : 1.0;
+            const bool weak = std::fabs(refY) < 0.25 * refSpan;
+            ImGui::TextColored(weak ? kWarn : kGood, "angle noise x%.2f of 2 points%s", ratio,
+                               weak ? " - E3 is near the E1-E2 line" : "");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("E3 adds precision only through LEVER: the further it sits\n"
+                                  "from the E1-E2 line, the less the fitted angle wanders.\n"
+                                  "On the line it adds nothing to the angle.");
+        }
+    }
+
+    // -- the guards and the live datum --
+    ImGui::TableSetColumnIndex(2);
+    ImGui::SeparatorText("Guards (0 = off) - a breach fails the step");
+    ImGui::BeginDisabled(busy);
+    num("span tol mm", "span_tol_mm", merged.value("span_tol_mm", 0.0), "%.4f");
+    num("theta ref deg", "theta_ref_deg", merged.value("theta_ref_deg", 0.0), "%.3f");
+    num("theta tol deg", "theta_tol_deg", merged.value("theta_tol_deg", 0.0), "%.3f");
+    if (three) num("residual tol mm", "resid_tol_mm", merged.value("resid_tol_mm", 0.0), "%.4f");
+    ImGui::EndDisabled();
+    if (merged.value("span_tol_mm", 0.0) > 0.0 && refSpan <= 0.0)
+        ImGui::TextColored(kWarn, "span tol needs a reference span");
+
+    ImGui::SeparatorText("Live");
+    Datum d;
+    std::string why;
+    if (workflow_.DatumFor(name, &d, &why)) {
+        ImGui::TextColored(kGood, "origin %.4f, %.4f  theta %.4f deg", d.frame.originX,
+                           d.frame.originY, d.frame.thetaDeg);
+        if (d.points == 3)
+            ImGui::TextDisabled("span %.4f  resid %.4f / %.4f / %.4f", d.frame.spanMm,
+                                d.resid[0], d.resid[1], d.resid[2]);
+        else
+            ImGui::TextDisabled("span %.4f mm", d.frame.spanMm);
+        ImGui::TextDisabled("%d min left, %s", static_cast<int>(DatumMinutesLeft(d)),
+                            d.withDut ? "or until the DUT closes"
+                                      : "or the next program start (no DUT)");
+    } else {
+        ImGui::TextDisabled("%s", why.c_str());
+    }
+    ImGui::EndTable();
 }
 
 } // namespace firedog

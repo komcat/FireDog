@@ -476,19 +476,29 @@ private:
     // The Vision detect helper (WndVisionDetect.cpp): a detect_object step's
     // X / Y / P ticks and its private detection model, taught with the
     // alignment teach panels (DrawVisionTeachBody). Edits the selected step.
+    // A datum_reference step uses the same window with a point strip (E1 / E2
+    // / E3, datumPointSel_) on top: the selected point's model and view are
+    // what the rest of the window works on.
     void DrawVisionDetectHelperWindow();
+    // The datum step's own band: mode, point strip, the reference (+ Use as
+    // reference from Workflow::DatumMeasureFor), the guards, the live datum.
+    void DrawDatumHelperBand(RecipeStep& s, const nlohmann::json& merged, bool busy);
     // Its "Camera position" section: the view taught into the step (Go / Teach
     // here / Clear, the thumbnail) and the run options (safe-Z lift, centring,
     // the manual fallback). Teach here records the pose into the step, the
     // camera's exposure into the step's model and a centre-half thumbnail
     // beside the model (ViewThumbFile).
+    // `viewKey` names the step's PointXyz param: "view_point" for detect_object,
+    // "view_point<i>" for a datum's point i.
     void DrawDetectViewSection(RecipeStep& s, const nlohmann::json& merged, VisionModel& m,
-                               bool busy, bool canTeach);
+                               bool busy, bool canTeach, const std::string& viewKey);
     // Go: the same legs a run takes (safe Z, XY, Z - or one XYZ move), as an
     // ad-hoc recipe of move_axis_to steps, so Busy, Stop and the safety abort
     // come with it.
-    void DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool busy);
-    void StartDetectViewGo(const nlohmann::json& merged);
+    // `centring` = draw detect_object's centre-after cells (a datum has none).
+    void DrawDetectRunOptions(RecipeStep& s, const nlohmann::json& merged, bool busy,
+                              bool centring);
+    void StartDetectViewGo(const nlohmann::json& merged, const std::string& viewKey);
     bool EnsureViewThumbTex(PatchTex& pt, const VisionModel& m);   // reloaded on change
     // The detect_object step form's read-only pair: the taught template and
     // the taught view thumbnail of the step's private model, side by side.
@@ -958,6 +968,11 @@ private:
     // beacon, labelled with the minutes left; an edge arrow when off the image.
     // Draw only - reads Workflow::Beacons(), changes nothing.
     void DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS);
+    // The live datums (datum_reference) on the device posing the picture: the
+    // measured E1/E2/E3 as labelled crosses (edge arrows off the image) and the
+    // local X / Y axes as lines through the frame origin. Draw only - reads
+    // Workflow::Datums(), changes nothing. docs/datum-reference-design.md §7.
+    void DrawAuxDatums(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS);
     // Objects registered to a gripper (grip_register_object): a diamond at the
     // gripper's LIVE tip + (dx, dy), in the gripper's colour, labelled with its
     // height against the focused plane. Nothing when the tip cannot be
@@ -1525,6 +1540,7 @@ private:
     bool showDispHelper_ = false;   // the Dispense helper window (follows edStepSel_)
     bool showRoiViewHelper_ = false;   // the ROI Filter view setup helper (follows edStepSel_)
     bool showVisionDetHelper_ = false; // the Vision detect helper (follows edStepSel_)
+    int  datumPointSel_ = 0;           // that helper on a datum step: E1 / E2 / E3 (0..2)
     // That helper's preview of the step's filter: its own texture, never the
     // Aux view's (that one shows what a RUN asked for).
     RoiFilterState rfvFilterSt_;

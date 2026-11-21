@@ -202,6 +202,12 @@ struct WorldMarkView {
     int        imgW = 0, imgH = 0;
 };
 
+// A machine-mm point on screen: mm -> camera px through the pose the image
+// centre sits at, then the view. THE projection - DrawWorldMark, DrawWorldBox
+// and the Aux datum axes all go through it, so a mark, an outline and a line
+// can never disagree about where a point is. No clipping.
+ImVec2 WorldToScreen(const WorldMarkView& wv, double wx, double wy);
+
 // Draw one such point. Inside the box it is a labelled cross; OUTSIDE it is an
 // arrow on the box edge pointing at it, labelled with the distance.
 //

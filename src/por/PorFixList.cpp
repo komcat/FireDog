@@ -5,6 +5,7 @@
 
 #include "command/CommandRegistry.h"
 #include "command/CommandSpec.h"
+#include "command/StepDetectors.h"   // IsStepDetectorParam
 #include "command/ExecutionContext.h"   // IsSystemScript
 #include "core/LightCallout.h"          // ChannelInLight
 
@@ -284,14 +285,15 @@ struct Builder {
                 const std::string v = jv.get<std::string>();
                 if (v.empty() && p.type != ParamType::DevicePsu) continue;
 
-                // detect_object's own detector: taught on each machine.
-                if (s.type == "detect_object" && p.name == "model") {
+                // A step's own detector (detect_object, datum_reference):
+                // taught on each machine.
+                if (IsStepDetectorParam(s.type, p.name)) {
                     if (!FindVisionModel(m.vision, v)) {
                         broken("detection model of step '" + StepName(s) + "' in '" + owner.name + "'");
                         continue;
                     }
                     const RecipeStep* tw = Twin(owner, s);
-                    const std::string tm = tw ? tw->params.value("model", std::string()) : std::string();
+                    const std::string tm = tw ? tw->params.value(p.name, std::string()) : std::string();
                     if (tm.empty() || !FindVisionModel(t.vision, tm))
                         teach("detection model of step '" + StepName(s) + "' in recipe '" + owner.name + "'",
                               "teach it in the step's Vision detect helper on this machine", true);

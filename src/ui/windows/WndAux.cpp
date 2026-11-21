@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace firedog {
@@ -396,6 +397,59 @@ void PlateText(ImDrawList* dl, const ImVec2& origin, const ImVec2& avail,
     dl->AddText(at, col, text);
 }
 
+// ---- datum axes (App::DrawAuxDatums) -------------------------------------------
+// Red X, aqua Y: neither the E points' blue/violet, the detection's green nor
+// the tips' amber. E3 (the anchor) gets its own pink.
+constexpr ImU32 kDatumXCol  = IM_COL32(255, 96, 96, 255);
+constexpr ImU32 kDatumYCol  = IM_COL32(90, 230, 200, 255);
+constexpr ImU32 kDatumE3Col = IM_COL32(255, 160, 210, 255);
+
+// One local axis: the infinite line through the frame origin along (ux, uy)
+// (machine mm), clipped to the image box. The positive ray solid and labelled
+// where it leaves the picture, the negative ray faint. The direction is taken
+// through the projection itself (origin and origin + 1 mm), so a mirrored
+// pixel calibration turns the line exactly as it turns every mark.
+void DrawDatumAxis(ImDrawList* dl, const WorldMarkView& wv, double ox, double oy,
+                   double ux, double uy, ImU32 col, const char* label)
+{
+    const ImVec2 o = WorldToScreen(wv, ox, oy);
+    const ImVec2 t = WorldToScreen(wv, ox + ux, oy + uy);
+    float dx = t.x - o.x, dy = t.y - o.y;
+    const float len = sqrtf(dx * dx + dy * dy);
+    if (len < 1e-6f) return;
+    dx /= len;
+    dy /= len;
+
+    // Where the line o + s * (dx, dy) is inside the box: the slab method.
+    float sLo = -FLT_MAX, sHi = FLT_MAX;
+    const auto slab = [&](float p, float d, float lo, float hi) {
+        if (fabsf(d) < 1e-6f) return p >= lo && p <= hi;
+        float a = (lo - p) / d, b = (hi - p) / d;
+        if (a > b) std::swap(a, b);
+        sLo = fmaxf(sLo, a);
+        sHi = fminf(sHi, b);
+        return sLo <= sHi;
+    };
+    if (!slab(o.x, dx, wv.boxMin.x, wv.boxMax.x) || !slab(o.y, dy, wv.boxMin.y, wv.boxMax.y))
+        return;   // the line misses the picture entirely
+    const auto at = [&](float s) { return ImVec2(o.x + dx * s, o.y + dy * s); };
+
+    dl->PushClipRect(wv.boxMin, wv.boxMax, true);
+    const float pLo = fmaxf(0.0f, sLo);
+    if (sHi > pLo) dl->AddLine(at(pLo), at(sHi), col, 2.0f);                  // + ray
+    const float nHi = fminf(0.0f, sHi);
+    if (nHi > sLo) dl->AddLine(at(sLo), at(nHi), (col & 0x00FFFFFFu) | 0x50000000u, 1.0f);
+    dl->PopClipRect();
+
+    // The label just inside where the positive ray leaves the picture.
+    if (sHi > pLo) {
+        const ImVec2 e = at(sHi - 24.0f > pLo ? sHi - 24.0f : sHi);
+        PlateText(dl, wv.boxMin,
+                  ImVec2(wv.boxMax.x - wv.boxMin.x, wv.boxMax.y - wv.boxMin.y),
+                  ImVec2(e.x + 6.0f, e.y - 18.0f), col, label);
+    }
+}
+
 // The stages the position plate names, in the order it lists them. Config
 // names, resolved through Workflow::DevicePose — a device the machine does not
 // have simply drops out of the list.
@@ -591,6 +645,10 @@ void App::DrawAuxWindow()
         // Always on: a beacon is something a run will send a tool to, and the
         // operator should see where before it goes.
         if (haveImg) DrawAuxBeacons(dl, imgO, imgS);
+
+        // ---- Datums: a part's local frame (datum_reference) ----
+        // Always on, like the beacons: it is what a move_local will drive by.
+        if (haveImg) DrawAuxDatums(dl, imgO, imgS);
 
         // ---- Objects registered to a gripper: a diamond riding the tip ----
         // Always on, like the beacons: it says what the tool is holding.
@@ -1676,6 +1734,63 @@ void App::DrawAuxBeacons(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
         cm.glyph        = CameraMark::Glyph::Pulse;
         cm.pulsePeriodS = 60.0f / kBeaconBpm;
         DrawWorldMark(dl, wv, cm, 16.0f);
+    }
+}
+
+// The live datums (datum_reference), on the device posing the picture: the
+// local X / Y axes through the frame origin, and the MEASURED E points as
+// labelled crosses - edge arrows with the distance when off the picture, which
+// is the usual case (a span is normally larger than the field of view). The
+// axes are what stay useful then: the X line crossing the view shows the part's
+// angle wherever the camera is. Draw only. docs/datum-reference-design.md §7.
+void App::DrawAuxDatums(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
+{
+    if (pixelToMmX_ <= 0.0f || pixelToMmY_ <= 0.0f) return;
+    const std::vector<Datum> datums = workflow_.Datums();
+    if (datums.empty()) return;
+    double gx = 0.0, gy = 0.0;
+    if (!workflow_.GantryXY(gx, gy)) return;
+    const std::string refName = workflow_.GantryName();
+    if (refName.empty()) return;
+
+    WorldMarkView wv;
+    wv.view       = MakeCameraView(imgO, imgS, cameraW_, cameraH_,
+                                   static_cast<float>(cameraW_) * 0.5f,
+                                   static_cast<float>(cameraH_) * 0.5f, 1.0f);
+    wv.boxMin     = imgO;
+    wv.boxMax     = ImVec2(imgO.x + imgS.x, imgO.y + imgS.y);
+    wv.gx         = gx;
+    wv.gy         = gy;
+    wv.pixelToMmX = pixelToMmX_;
+    wv.pixelToMmY = pixelToMmY_;
+    wv.imgW       = cameraW_;
+    wv.imgH       = cameraH_;
+
+    for (const Datum& d : datums) {
+        if (d.device != refName) continue;   // another device's axis space
+        const AlignResult& f = d.frame;
+        const double th = f.thetaDeg * 3.14159265358979323846 / 180.0;
+        const double c = std::cos(th), s = std::sin(th);
+        // Local Y+ is X+ turned +90 deg in machine coordinates - exactly what
+        // AlignLocalToMachine does with (0, 1).
+        const std::string xl = d.name + " X+";
+        const std::string yl = d.name + " Y+";
+        DrawDatumAxis(dl, wv, f.originX, f.originY, c, s, kDatumXCol, xl.c_str());
+        DrawDatumAxis(dl, wv, f.originX, f.originY, -s, c, kDatumYCol, yl.c_str());
+
+        const auto mark = [&](const AlignPoint& e, const char* tag, ImU32 col) {
+            const std::string lbl = d.name + " " + tag;
+            CameraMark cm;
+            cm.wx    = e.wx;
+            cm.wy    = e.wy;
+            cm.have  = true;
+            cm.label = lbl.c_str();
+            cm.col   = col;
+            DrawWorldMark(dl, wv, cm, 14.0f);
+        };
+        mark(f.e1, "E1", kE1Col);
+        mark(f.e2, "E2", kE2Col);
+        if (d.points == 3) mark(d.e3, "E3", kDatumE3Col);
     }
 }
 

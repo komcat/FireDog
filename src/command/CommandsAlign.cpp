@@ -22,6 +22,7 @@
 #include "command/MotionWaits.h"    // WaitArrive / WaitSettle / ResolveMotion
 #include "command/WorldPoint.h"     // CaptureWorldPoint - declared for detect_object too
 #include "core/AlignFrame.h"
+#include "core/Datum.h"              // move_local {datum}
 #include "core/DutSession.h"         // ImagesDir / InsertImage — the attempt crops
 #include "core/Log.h"
 #include "core/Paths.h"                // DataPath — the attempt crops without a DUT
@@ -758,9 +759,10 @@ CommandResult ExecNominalPoint(ExecutionContext& ctx, const ParamValues& p)
 // The one body behind move_local and move_to_nominal: local (lx, ly) through
 // the live frame to machine XY, plus the optional machine Z, on `device` (empty
 // = the procedure's own). One copy, so the two cannot drift on velocity,
-// approach or the Z rule.
+// approach or the Z rule. `frameName` is for the log only - an alignment's
+// name, or "datum '<name>'" (move_local {datum}).
 CommandResult MoveToLocalPoint(ExecutionContext& ctx, const ParamValues& p,
-                               const AlignProc& proc, const AlignResult& frame,
+                               const std::string& frameName, const AlignResult& frame,
                                const std::string& device,
                                double lx, double ly, const char* what,
                                const double* defaultZ = nullptr)
@@ -784,20 +786,41 @@ CommandResult MoveToLocalPoint(ExecutionContext& ctx, const ParamValues& p,
         return CommandResult::Fail("velocity change rejected");
 
     FD_INFO("align", "'%s': %s local (%.4f, %.4f) -> machine (%.4f, %.4f) on %s",
-            proc.name.c_str(), what, lx, ly, mx, my, device.c_str());
+            frameName.c_str(), what, lx, ly, mx, my, device.c_str());
     return MoveWithApproach(ctx, m, idx, targets, p, what);
 }
 
 CommandResult ExecMoveLocal(ExecutionContext& ctx, const ParamValues& p)
 {
+    // An alignment OR a datum - exactly one, refused before anything moves.
+    // Both hand over the same AlignResult; everything after the lookup is the
+    // one body. docs/datum-reference-design.md §5.
+    const std::string alignName = p.GetString("alignment");
+    const std::string datumName = p.GetString("datum");
+    if (alignName.empty() == datumName.empty())
+        return CommandResult::Fail(alignName.empty()
+                                       ? "move_local names no frame - set alignment OR datum"
+                                       : "move_local names both an alignment and a datum - "
+                                         "keep one");
     std::string err;
     AlignResult frame;
-    const AlignProc* proc = LiveProc(ctx, p.GetString("alignment"), &frame, &err,
+    if (!datumName.empty()) {
+        // A datum's lifetime is its own (30 min, DUT close, ...): there is no
+        // carried/kept state to opt into, so use_kept_frame means nothing here.
+        Datum d;
+        if (!ctx.Wf().DatumFor(datumName, &d, &err)) return CommandResult::Fail(err);
+        const std::string device = p.GetString("device").empty() ? d.device
+                                                                 : p.GetString("device");
+        return MoveToLocalPoint(ctx, p, "datum '" + d.name + "'", d.frame, device,
+                                p.GetDouble("x_mm"), p.GetDouble("y_mm"),
+                                "the local coordinate");
+    }
+    const AlignProc* proc = LiveProc(ctx, alignName, &frame, &err,
                                       p.GetBool("use_kept_frame"));
     if (!proc) return CommandResult::Fail(err);
     const std::string device = p.GetString("device").empty() ? proc->device
                                                              : p.GetString("device");
-    return MoveToLocalPoint(ctx, p, *proc, frame, device, p.GetDouble("x_mm"),
+    return MoveToLocalPoint(ctx, p, proc->name, frame, device, p.GetDouble("x_mm"),
                             p.GetDouble("y_mm"), "the local coordinate");
 }
 
@@ -834,7 +857,7 @@ CommandResult ExecMoveToNominal(ExecutionContext& ctx, const ParamValues& p)
                     proc->name.c_str());
         }
     }
-    return MoveToLocalPoint(ctx, p, *proc, frame, proc->device, nom->lx, nom->ly,
+    return MoveToLocalPoint(ctx, p, proc->name, frame, proc->device, nom->lx, nom->ly,
                             what.c_str(), defZ);
 }
 
@@ -1113,12 +1136,15 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                   CommandSpec::Needs::None, ExecNominalPoint});
 
     reg.Register({"move_local", "Align",
-                  "Move to a coordinate expressed in an alignment's local frame",
+                  "Move to a coordinate expressed in an alignment's or a datum's local frame",
                   {
-                      {"alignment", PT::AlignUid, true, {}, 0, 0, {},
-                       "alignment procedure (uid or name)"},
+                      {"alignment", PT::AlignUid, false, "", 0, 0, {},
+                       "alignment procedure (uid or name) - OR a datum below, not both"},
+                      {"datum", PT::String, false, "", 0, 0, {},
+                       "a datum made by datum_reference (its name) - OR an alignment "
+                       "above, not both"},
                       {"device", PT::DeviceMotion, false, "", 0, 0, {},
-                       "motion device; empty = the procedure's own device"},
+                       "motion device; empty = the procedure's (or the datum's) own device"},
                       {"x_mm", PT::Double, true, {}, 0, 0, {}, "local X (mm)"},
                       {"y_mm", PT::Double, true, {}, 0, 0, {}, "local Y (mm)"},
                       {"z_mm", PT::Double, false, {}, 0, 0, {},
