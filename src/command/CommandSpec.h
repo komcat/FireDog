@@ -46,6 +46,9 @@ enum class ParamType {
     DeviceIo,       // IO fleet device name
     DevicePsu,      // PSU fleet device name; "" = the first configured PSU
                     // (so a step saved before there were several still runs)
+    DeviceCamera,   // camera config id (hardware.json "cameras" id); "" = the
+                    // camera the machine drives. Today that is ONE camera, the
+                    // first enabled entry, so a named one must be it
     Slide,          // pneumatic slide name
     LightName,      // a light on the lighting controller: a channel group
                     // ("main_camera_light") or an ungrouped channel's name

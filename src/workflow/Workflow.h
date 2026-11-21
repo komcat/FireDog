@@ -582,7 +582,7 @@ public:
     void QueueGripResult(const GripMeasurement& m);
     std::vector<GripMeasurement> TakeGripResults();
 
-    // ---- Captured view hand-back (capture_view / dut_capture_image) ---------
+    // ---- Captured view hand-back (capture_view / dut_capture_image / capture_image)
     // One frame, parked for the Run page's image box. Same worker->UI route as
     // the two above and for the same reason — a command runs on an engine
     // worker and must never touch GL — but a SLOT, not a queue: a 5 MP frame is
@@ -598,7 +598,7 @@ public:
         int         w = 0, h = 0;
         std::string label;       // what the operator was asked to look at
         std::string stamp;       // when it was taken
-        std::string savedPath;   // record-relative path, "" if display-only
+        std::string savedPath;   // where it was saved (DUT: record-relative), "" = display-only
     };
     void SetCapturedView(CapturedView v);
     bool TakeCapturedView(CapturedView* out);   // false = nothing new

@@ -683,7 +683,7 @@ void App::DrawRunShotPanel()
     ImGui::TextDisabled("%dx%d  %s%s", runShotW_, runShotH_, runShotStamp_.c_str(),
                         runShotPath_.empty() ? "" : "  saved");
     if (!runShotPath_.empty() && ImGui::IsItemHovered())
-        ImGui::SetTooltip("Filed in the DUT record as %s", runShotPath_.c_str());
+        ImGui::SetTooltip("Saved as %s", runShotPath_.c_str());
     ImGui::EndChild();
 }
 

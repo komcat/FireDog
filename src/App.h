@@ -1048,7 +1048,7 @@ private:
     int          runShotW_ = 0, runShotH_ = 0;   // the FRAME's size in pixels
     std::string  runShotLabel_;   // caption the step asked for
     std::string  runShotStamp_;   // when it was taken
-    std::string  runShotPath_;    // record-relative path, "" if display-only
+    std::string  runShotPath_;    // where it was saved (DUT: record-relative), "" = display-only
     // The BOX's height on screen, dragged by the splitter under it and
     // persisted like every other panel size (0 = seed on the first frame). A
     // fixed height would be wrong for the one thing this box is for: how tall

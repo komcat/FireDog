@@ -663,13 +663,17 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
     case ParamType::DeviceHexapod:
     case ParamType::DeviceIo:
     case ParamType::DevicePsu:
+    case ParamType::DeviceCamera:
     case ParamType::LightName:
     case ParamType::Slide: {
         const std::string v = cur.is_string() ? cur.get<std::string>() : "";
         // An empty PSU is a real choice, not an unset one: the first supply.
-        // So is an empty light: every configured channel.
+        // So is an empty light: every configured channel, and an empty camera:
+        // the one the machine drives.
         const std::string preview =
             !v.empty() ? v
+            : p.type == ParamType::DeviceCamera
+                ? "(the camera: " + hardware_.CameraName() + ")"
             : p.type == ParamType::DevicePsu
                 ? (hardware_.PsuCount() > 0 ? "(first: " + hardware_.PsuName(0) + ")"
                                             : std::string("(first PSU)"))
@@ -699,6 +703,13 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             } else if (p.type == ParamType::DevicePsu) {
                 for (std::size_t i = 0; i < hardware_.PsuCount(); ++i)
                     item(hardware_.PsuName(i));
+            } else if (p.type == ParamType::DeviceCamera) {
+                if (ImGui::Selectable("(the camera)", v.empty())) {
+                    params[p.name] = std::string();
+                    changed = true;
+                }
+                if (!hardware_.CameraId().empty()) item(hardware_.CameraId());
+                else ImGui::TextDisabled("no enabled camera in hardware.json");
             } else if (p.type == ParamType::LightName) {
                 // The same list the Light page and the call-out pickers offer.
                 if (ImGui::Selectable("(every light)", v.empty())) {

@@ -585,6 +585,7 @@ const char* StepIconFile(const char* type)
         {"camera_exposure",           "in_camera"},
         // Vision
         {"capture_view",              "vi_camera"},
+        {"capture_image",             "vi_camera"},
         {"auto_focus",                "vi_focus"},
         {"pick_point",                "vi_detect"},
         {"halcon_status",             "vi_detect"},

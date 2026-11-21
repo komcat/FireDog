@@ -29,16 +29,25 @@
 #include "core/LightCallout.h"  // LightColorNames (roi_filter_view_setup)
 #include "core/Log.h"
 #include "core/ProcessMemory.h"   // the memory probe on every detect_object
-#include "core/Product.h"   // NowStamp (reliability timestamp)
+#include "core/Paths.h"     // DataPath (capture_image's default folder)
+#include "core/Product.h"   // NowStamp (reliability timestamp), FileStamp
 #include "hardware/HardwareManager.h"
 #include "vision/HalconEngine.h"
 #include "vision/VisionModel.h"     // DetectionImageRotation (detect_object P)
 #include "hardware/motion/IMotionController.h"
 #include "workflow/Workflow.h"
 
+// The implementation is compiled in CommandsDut.cpp; this TU only calls it.
+#pragma warning(push)
+#pragma warning(disable : 4244 4456 4996)
+#include <stb_image_write.h>
+#pragma warning(pop)
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <system_error>
 #include <map>
 #include <string>
 #include <utility>
@@ -834,6 +843,139 @@ CommandResult ExecCaptureView(ExecutionContext& ctx, const ParamValues& p)
     return CommandResult::Success();
 }
 
+// capture_image's default folder: production output, so under the DATA root,
+// and machine-level - it works with no product loaded and no DUT open.
+std::string CaptureImageRoot() { return DataPath("captures"); }
+
+// Save a camera frame as a PNG wherever the step says, at the exposure it says.
+//
+// Not dut_capture_image: that one files evidence into one part's record and so
+// needs an open DUT. This is the general "take a picture" - a setup shot, a
+// reference image, a frame for later offline work - and it needs nothing but a
+// camera.
+//
+// The exposure is set through Workflow::SetCameraExposure (the one exposure
+// path) and, by default, put back afterwards on EVERY exit, so a photo step
+// never leaves a later detect or the operator's live view at its exposure.
+// After a change the frame in hand was integrated under the OLD exposure, which
+// is why the fresh-frame wait is not optional then: no new frame -> no picture.
+CommandResult ExecCaptureImage(ExecutionContext& ctx, const ParamValues& p)
+{
+    namespace fs = std::filesystem;
+
+    // The camera. Validation already refused a name that is not this machine's;
+    // this is the same check for the paths that skip it (Lua, RunRegistered).
+    const std::string cam = p.GetString("camera");
+    if (!cam.empty() && cam != ctx.Hw().CameraId())
+        return CommandResult::Fail("unknown camera '" + cam + "' (this machine drives '" +
+                                   ctx.Hw().CameraId() + "')");
+    if (ctx.Hw().CameraState() != ConnState::Connected)
+        return CommandResult::Fail("camera is not connected");
+
+    // Where it goes, resolved BEFORE anything changes on the camera: a folder
+    // that cannot be made fails the step with the exposure untouched.
+    // `folder` empty = the default; a relative name is a sub-folder of the
+    // default; an absolute path is used as written. {key} takes a ctx value
+    // (e.g. {serial}), as does the tag.
+    const std::string folder = ctx.Substitute(p.GetString("folder"));
+    fs::path dir = fs::path(CaptureImageRoot());
+    if (!folder.empty()) {
+        const fs::path f(folder);
+        dir = f.is_absolute() ? f : dir / f;
+    }
+    dir = dir.lexically_normal();
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec || !fs::is_directory(dir))
+        return CommandResult::Fail("cannot create folder '" + dir.string() + "'" +
+                                   (ec ? ": " + ec.message() : std::string()));
+
+    // Filesystem-safe tag; the stamp makes the name unique.
+    std::string tag = ctx.Substitute(p.GetString("tag"));
+    for (char& c : tag) {
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                        (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '.';
+        if (!ok) c = '_';
+    }
+    const std::string stem = (tag.empty() ? std::string() : tag + "_") + FileStamp();
+
+    // The exposure, with its undo armed before anything else can fail.
+    const double expo     = p.GetDouble("exposure_us");
+    const bool   setExpo  = expo > 0.0;
+    const double prevExpo = setExpo ? ctx.Hw().Camera().ExposureUs() : 0.0;
+    struct Restore {
+        ExecutionContext& ctx;
+        double            us;
+        bool              armed;
+        ~Restore()
+        {
+            if (armed && !ctx.Wf().SetCameraExposure(us))
+                FD_WARN("vision", "capture_image: could not restore exposure %.0f us", us);
+        }
+    } restore{ctx, prevExpo, false};
+    if (setExpo) {
+        if (!ctx.Wf().SetCameraExposure(expo))
+            return CommandResult::Fail("camera refused exposure " +
+                                       std::to_string(static_cast<long long>(expo)) + " us");
+        restore.armed = p.GetBool("restore_exposure") && prevExpo > 0.0;
+    }
+
+    // A frame that is certainly from now (and, after a change, at the new
+    // exposure). The frame counter is the evidence - never isNew (one-shot).
+    const int fresh = setExpo ? std::max(2, p.GetInt("fresh_frames")) : p.GetInt("fresh_frames");
+    if (fresh > 0) {
+        const unsigned long long seq0      = ctx.Wf().CameraFrameSeq();
+        const int                timeoutMs = p.GetInt("frame_timeout_ms");
+        const auto r = ctx.WaitUntil(
+            [&] {
+                return ctx.Wf().CameraFrameSeq() >= seq0 + static_cast<unsigned long long>(fresh);
+            },
+            timeoutMs, 10);
+        if (r == ExecutionContext::WaitResult::Stopped) return CommandResult::Fail("stopped");
+        if (r == ExecutionContext::WaitResult::Timeout)
+            return CommandResult::Fail("camera produced no new frame within " +
+                                       std::to_string(timeoutMs) + " ms (feed stalled?)");
+    }
+
+    std::vector<unsigned char> rgb;
+    int  w = 0, h = 0;
+    bool isNew = false;
+    if (!ctx.Hw().Camera().GetLatestFrame(rgb, w, h, isNew) || w <= 0 || h <= 0)
+        return CommandResult::Fail("no camera frame available (camera grabbing?)");
+
+    // Two captures inside one millisecond must not overwrite each other.
+    fs::path path = dir / (stem + ".png");
+    for (int n = 2; fs::exists(path, ec) && n < 100; ++n)
+        path = dir / (stem + "_" + std::to_string(n) + ".png");
+    const std::string file = path.string();
+    if (!stbi_write_png(file.c_str(), w, h, 3, rgb.data(), w * 3))
+        return CommandResult::Fail("png write failed: " + file);
+    if (setExpo)
+        FD_INFO("vision", "captured %dx%d frame at %.0f us -> %s", w, h, expo, file.c_str());
+    else
+        FD_INFO("vision", "captured %dx%d frame -> %s", w, h, file.c_str());
+
+    const std::string pre = p.GetString("ctx_prefix");
+    if (!pre.empty()) {
+        ctx.CtxSet(pre + "_path", file);
+        ctx.CtxSet(pre + "_file", path.filename().string());
+    }
+
+    // Shown as well as saved, AFTER the write - the box never shows a picture
+    // that failed to be saved. Same slot as capture_view / dut_capture_image.
+    if (p.GetBool("show")) {
+        Workflow::CapturedView v;
+        v.rgb       = std::move(rgb);
+        v.w         = w;
+        v.h         = h;
+        v.label     = tag.empty() ? path.filename().string() : tag;
+        v.stamp     = NowStamp();
+        v.savedPath = file;
+        ctx.Wf().SetCapturedView(std::move(v));
+    }
+    return CommandResult::Success();
+}
+
 } // namespace
 
 // ---- roi_filter_view_setup -------------------------------------------------
@@ -955,6 +1097,46 @@ void RegisterVisionCommands(CommandRegistry& reg, Workflow& /*wf*/, HardwareMana
                        "caption under the picture, e.g. 'serial number'"},
                   },
                   CommandSpec::Needs::Camera, ExecCaptureView});
+
+    CommandSpec captureSpec{"capture_image", "Vision",
+                  "Save a camera frame as a PNG (optional exposure; default folder "
+                  "<data root>/captures)",
+                  {
+                      {"camera", PT::DeviceCamera, false, "", 0, 0, {},
+                       "camera to capture from; empty = the machine's camera"},
+                      {"exposure_us", PT::Double, false, 0.0, 0.0, 1.0e7, {},
+                       "exposure for this picture (us); 0 = leave it as it is"},
+                      {"restore_exposure", PT::Bool, false, true, 0, 0, {},
+                       "put the previous exposure back afterwards"},
+                      {"folder", PT::String, false, "", 0, 0, {},
+                       "empty = <data root>/captures; a name = a sub-folder of it "
+                       "(created if missing); an absolute path is used as written; "
+                       "{key} takes a ctx value"},
+                      {"tag", PT::String, false, "", 0, 0, {},
+                       "file name prefix: <tag>_<YYYYMMDD_HHMMSS_mmm>.png (UTC); "
+                       "{key} takes a ctx value"},
+                      {"fresh_frames", PT::Int, false, 1, 0, 10, {},
+                       "new frames required before saving (0 = the latest frame; "
+                       "at least 2 when the exposure is changed)"},
+                      {"frame_timeout_ms", PT::Int, false, 2000, 50, 30000, {},
+                       "fail when the camera produces no new frame within this"},
+                      {"show", PT::Bool, false, true, 0, 0, {},
+                       "also show it in the Run page's image box"},
+                      {"ctx_prefix", PT::String, false, "capture", 0, 0, {},
+                       "writes <prefix>_path and <prefix>_file; empty = none"},
+                      PreDelayParam(),
+                      PostDelayParam(),
+                  },
+                  CommandSpec::Needs::Camera, ExecCaptureImage};
+    captureSpec.outputs = [](const nlohmann::json& p) {
+        CommandOutputs o;
+        const std::string pre = p.value("ctx_prefix", std::string("capture"));
+        if (pre.empty()) return o;
+        o.keys.push_back({pre + "_path", "text", "full path of the saved PNG"});
+        o.keys.push_back({pre + "_file", "text", "file name of the saved PNG"});
+        return o;
+    };
+    reg.Register(std::move(captureSpec));
 
     reg.Register({"auto_focus", "Vision",
                   "Sweep one axis, score sharpness per step, move to the sharpest Z",

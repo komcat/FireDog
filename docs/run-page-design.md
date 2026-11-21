@@ -209,12 +209,25 @@ second question, which is the whole reason the box exists — the motivating cas
 is driving the camera to a serial-number label, capturing, and letting the
 operator read it off a picture that no longer moves.
 
-Two commands fill it:
+Three commands fill it:
 
 | | Requires a DUT | Writes a file | For |
 |---|---|---|---|
 | `capture_view` | no | no | look at something |
 | `dut_capture_image` | yes | yes | file it as evidence |
+| `capture_image` | no | yes | keep a picture (setup shot, reference) |
+
+`capture_image` saves a PNG to `<data root>/captures` (a `folder` name is a
+sub-folder of it, created if missing; an absolute path is used as written), named
+`<tag>_<YYYYMMDD_HHMMSS_mmm>.png` (UTC, the same `FileStamp` as
+`dut_capture_image`); `{key}` in `folder`/`tag` takes a ctx value. An
+`exposure_us` is set through `Workflow::SetCameraExposure`, waited out with at
+least two fresh frames (no new frame fails the step - the one in hand was
+integrated at the old exposure), and put back on every exit unless
+`restore_exposure` is off. `camera` (`ParamType::DeviceCamera`, the
+hardware.json id, empty = the machine's camera) exists for when there is more
+than one; today one camera is driven and a step naming another is refused. It
+shows the picture in the box (`show`) only after the write succeeded.
 
 `capture_view` deliberately does **not** require an open DUT. Reading the serial
 is how you learn *which* DUT to open, so a command that failed without one would

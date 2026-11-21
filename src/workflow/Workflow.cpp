@@ -1449,6 +1449,7 @@ void Workflow::StartCamera(const HardwareConfig& hw)
     camCfg_      = *cam;   // kept so the Camera page can reconnect later
     camCfgValid_ = true;
     hw_.SetCameraName(cam->displayName.empty() ? cam->id : cam->displayName);
+    hw_.SetCameraId(cam->id);
     LaunchCameraConnect();
 }
 

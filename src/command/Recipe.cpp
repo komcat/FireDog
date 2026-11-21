@@ -519,6 +519,17 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             // Needs::Psu below). Connection is checked there too, per device.
             if (env.hw.PsuIndex(v) < 0) Issue(env, where, path, "unknown PSU '" + v + "'");
             break;
+        case ParamType::DeviceCamera:
+            // Only a NAMED camera reaches here (empty = the machine's camera).
+            // One camera is driven - the first enabled in hardware.json - so a
+            // step naming another would photograph through the wrong one.
+            if (v != env.hw.CameraId())
+                Issue(env, where, path,
+                      "unknown camera '" + v + "'" +
+                          (env.hw.CameraId().empty()
+                               ? std::string(" (no camera configured)")
+                               : " (this machine drives '" + env.hw.CameraId() + "')"));
+            break;
         case ParamType::Slide:
             if (!SlideKnown(env.hw, v)) Issue(env, where, path, "unknown slide '" + v + "'");
             break;

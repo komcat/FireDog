@@ -112,6 +112,10 @@ public:
     const std::string& CldName()      const { return cldName_; }
     const std::string& LightName()    const { return lightName_; }
     void SetCameraName(std::string n)   { camName_ = std::move(n); }
+    // The camera's hardware.json id ("main_camera") - what a DeviceCamera
+    // param names. "" until Workflow::StartCamera finds an enabled camera.
+    const std::string& CameraId() const { return camId_; }
+    void SetCameraId(std::string id)    { camId_ = std::move(id); }
     void SetKeithleyName(std::string n) { keiName_ = std::move(n); }
     void SetCldName(std::string n)      { cldName_ = std::move(n); }
     void SetLightName(std::string n)    { lightName_ = std::move(n); }
@@ -160,6 +164,7 @@ private:
     std::atomic<ConnState>        cldState_{ConnState::Disconnected};
     std::atomic<ConnState>        lightState_{ConnState::Disconnected};
     std::string                   camName_ = "Camera";
+    std::string                   camId_;
     std::string                   keiName_ = "Keithley";
     std::string                   cldName_ = "CLD101x";
     std::string                   lightName_ = "Light";

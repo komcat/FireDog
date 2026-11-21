@@ -44,6 +44,10 @@ struct ProductManifest {
 
 std::string GenerateUid();   // 8 random hex chars
 std::string NowStamp();      // "YYYY-MM-DDTHH:MM:SS", local time
+// A filename piece, UTC, to the millisecond: "20260728_193104_120". Dated so
+// names never collide across days (bobcat's time-only names did). The one
+// stamp every saved camera picture carries (dut_capture_image, capture_image).
+std::string FileStamp();
 
 // Scan products/ for folders containing a manifest.json (sorted by name).
 std::vector<std::string> ListProducts();
