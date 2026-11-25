@@ -32,6 +32,7 @@
 #include "command/Commands.h"   // kVisionDetectHelper
 #include "command/Recipe.h"     // kElseBranchBase
 #include "command/StepDetectors.h" // StepDetectorParams - which params own a model
+#include "core/AlignFrame.h"    // AlignMachineToLocal - inspect_object's local x / y
 #include "core/AlignLighting.h" // AlignLightingSummary
 #include "core/Log.h"
 #include "core/Product.h"       // GenerateUid
@@ -131,12 +132,18 @@ void App::DrawVisionDetectHelperWindow()
     }
 
     RecipeStep* s = EditorSelectedStep();
-    const bool datum = s && s->type == "datum_reference";
+    const bool datum   = s && s->type == "datum_reference";
+    // inspect_object is detect_object plus a datum and criteria: the same one
+    // model and view under the same param names, so everything below treats it
+    // as a detect_object except the Report section and the centring.
+    const bool inspect = s && s->type == "inspect_object";
     const CommandSpec* spec =
-        s && (datum || s->type == "detect_object") ? orch_.registry.Find(s->type) : nullptr;
+        s && (datum || inspect || s->type == "detect_object") ? orch_.registry.Find(s->type)
+                                                               : nullptr;
     if (!spec) {
-        ImGui::TextDisabled("Select a detect_object or datum_reference step in the Recipe "
-                            "Editor - this window edits the step that is selected there.");
+        ImGui::TextDisabled("Select a detect_object, inspect_object or datum_reference step in "
+                            "the Recipe Editor - this window edits the step that is selected "
+                            "there.");
         ImGui::End();
         return;
     }
@@ -252,6 +259,30 @@ void App::DrawVisionDetectHelperWindow()
                                 point, prefix.c_str(), camDev.c_str());
             ImGui::TextDisabled("X / Y = '%s' axis position at the crosshair + the point's "
                                 "offset in the picture, mm", camDev.c_str());
+        } else if (inspect) {
+            // Always X / Y - the local coordinates are made from them. P is
+            // optional and reported as detect_object reports it.
+            ImGui::SeparatorText("Report");
+            const std::string dn = merged.value("datum", std::string());
+            if (dn.empty())
+                ImGui::TextColored(kBad, "no datum - pick one on the step form");
+            else
+                ImGui::TextDisabled("X / Y -> local x / y in datum '%s' (%s_lx / _ly), judged "
+                                    "on the step form's Criteria", dn.c_str(), prefix.c_str());
+            bool tp = merged.value("take_p", false);
+            ImGui::BeginDisabled(busy);
+            if (ImGui::Checkbox("also P (theta)", &tp)) s->params["take_p"] = tp;
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The rotation from the taught orientation, as the picture\n"
+                                  "shows it (deg, clockwise positive) - NOT corrected by the\n"
+                                  "datum's rotation. Needs an ncc or corner model with an\n"
+                                  "angle tolerance above 0.");
+            if (tp && m) {
+                std::string why;
+                if (!DetectionImageRotation(*m, VisionDetection{}, nullptr, &why))
+                    ImGui::TextColored(kWarn, "P is ticked but %s", why.c_str());
+            }
         } else {
         ImGui::SeparatorText("Report");
         {
@@ -297,7 +328,7 @@ void App::DrawVisionDetectHelperWindow()
         }   // detect_object's Report
         // The run options: anybody who may edit the recipe may set them. A
         // datum's are shared by its points and it never centres.
-        if (modelOk) DrawDetectRunOptions(*s, merged, busy, !datum);
+        if (modelOk) DrawDetectRunOptions(*s, merged, busy, !datum && !inspect);
         if (tunable) {
             // The trial detections, beside the options they are judged with -
             // the same two functions the teach page's column draws.
@@ -403,6 +434,53 @@ void App::DrawVisionDetectHelperWindow()
         else if (!havePose)
             ImGui::TextColored(kWarn, "'%s' not connected - no X / Y to report",
                                camDev.c_str());
+
+        // inspect_object: the same detection in the datum's local frame, the
+        // verdict against the step's criteria, and Use as nominal - teach the
+        // nominal by detecting a good part. Needs the datum live (run its
+        // datum_reference step first).
+        if (inspect && havePose) {
+            const std::string dn = merged.value("datum", std::string());
+            Datum dt;
+            std::string why;
+            if (dn.empty()) {
+                ImGui::TextDisabled("no datum on the step - no local coordinates");
+            } else if (!workflow_.DatumFor(dn, &dt, &why)) {
+                ImGui::TextDisabled("%s", why.c_str());
+            } else if (dt.device != camDev) {
+                ImGui::TextColored(kWarn, "datum '%s' is on '%s', the camera on '%s'", dn.c_str(),
+                                   dt.device.c_str(), camDev.c_str());
+            } else {
+                double lx = 0.0, ly = 0.0;
+                AlignMachineToLocal(dt.frame, pose["X"] + visionDet_.dxMM,
+                                    pose["Y"] + visionDet_.dyMM, &lx, &ly);
+                const double dlx = lx - merged.value("nominal_lx", 0.0);
+                const double dly = ly - merged.value("nominal_ly", 0.0);
+                const double dr  = std::sqrt(dlx * dlx + dly * dly);
+                const double tx = merged.value("tol_x_mm", 0.0), ty = merged.value("tol_y_mm", 0.0),
+                             tr = merged.value("tol_r_mm", 0.0);
+                const bool judged = tx > 0.0 || ty > 0.0 || tr > 0.0;
+                const bool pass   = judged && (tx <= 0.0 || std::fabs(dlx) <= tx) &&
+                                  (ty <= 0.0 || std::fabs(dly) <= ty) && (tr <= 0.0 || dr <= tr);
+                ImGui::TextColored(!judged ? kWarn : pass ? kGood : kBad,
+                                   "in datum '%s': x %+.4f  y %+.4f   d (%+.4f, %+.4f) r %.4f  "
+                                   "-> %s", dn.c_str(), lx, ly, dlx, dly, dr,
+                                   !judged ? "no tolerance set" : pass ? "PASS" : "REJECT");
+                ImGui::SameLine();
+                ImGui::BeginDisabled(busy);
+                if (ImGui::SmallButton("Use as nominal")) {
+                    s->params["nominal_lx"] = lx;
+                    s->params["nominal_ly"] = ly;
+                    visionStatus_ = "nominal set from the last detection";
+                }
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Copy this detection's local x / y into the step's\n"
+                                      "nominal_lx / nominal_ly (x %.4f, y %.4f). Detect a GOOD\n"
+                                      "part. The tolerances are set on the step form.",
+                                      lx, ly);
+            }
+        }
     }
 
     // The two lines the teach page's strip carries: the last failure, and what a

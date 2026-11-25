@@ -292,6 +292,125 @@ CommandResult ExecDatumReference(ExecutionContext& ctx, const ParamValues& p,
     return CommandResult::Success();
 }
 
+// ---- inspect_object --------------------------------------------------------
+//
+// Where an object sits on the PART: detect_object itself (the step's own model
+// and view, through RunRegistered - no second copy of drive / light / detect /
+// fallback), then its X / Y through the named datum into local coordinates, and
+// the criteria: local offset from the nominal against per-axis and radial
+// tolerances. The datum is checked before anything moves (live, and measured on
+// the camera's own device - another device's axis space would turn a correct
+// measurement into a wrong number). docs/datum-reference-design.md §5a.
+CommandResult ExecInspectObject(ExecutionContext& ctx, const ParamValues& p,
+                                const CommandRegistry& reg)
+{
+    const std::string prefix = p.GetString("ctx_prefix");
+    // Written FIRST: every failing path below leaves a recipe branching on
+    // <prefix>_pass reading false, never the previous part's verdict.
+    ctx.CtxSet(prefix + "_pass", false);
+    ctx.CtxSet(prefix + "_why", std::string("not inspected"));
+
+    // An inspection that cannot pass is a VERDICT, not a broken step: by
+    // default it is reported (<prefix>_pass = false, _why) and the program goes
+    // on - the part failed, the machine did not. fail_on_reject opts into
+    // failing the step instead. A Stop, a refused move or a camera error is
+    // NOT a verdict and still fails (detect_object's own result, below).
+    const auto reject = [&](const std::string& why) {
+        ctx.CtxSet(prefix + "_why", why);
+        FD_INFO("datum", "inspect '%s': FAIL - %s", prefix.c_str(), why.c_str());
+        return p.GetBool("fail_on_reject") ? CommandResult::Fail("inspect '" + prefix + "': " + why)
+                                           : CommandResult::Success();
+    };
+
+    const std::string dn  = p.GetString("datum");
+    const std::string cam = p.GetString("camera_device");
+    if (dn.empty()) return reject("no datum named");
+    Datum d;
+    std::string err;
+    if (!ctx.Wf().DatumFor(dn, &d, &err)) return reject(err);
+    if (d.device != cam)
+        return reject("datum '" + dn + "' was measured on '" + d.device +
+                      "', the camera here rides on '" + cam + "' - another axis space");
+
+    nlohmann::json args = {
+        {"model", p.GetString("model")},
+        {"take_x", true},
+        {"take_y", true},
+        {"take_p", p.GetBool("take_p")},
+        // A miss is judged here (a verdict), so detect_object never fails on
+        // one; `require` decides what this step does with it.
+        {"require", false},
+        {"center_after", false},
+        {"ctx_prefix", prefix},
+    };
+    // The detection options the step shares with detect_object, handed on.
+    for (const char* k : {"view_point", "use_current_position", "camera_device",
+                          "velocity_mm_s", "z_lift", "safe_z_mm", "settle_ms",
+                          "manual_fallback", "apply_lighting", "fresh_frames",
+                          "frame_timeout_ms"})
+        if (p.Has(k)) args[k] = p.Raw().at(k);
+
+    const CommandResult r = RunRegistered(ctx, reg, "detect_object", args);
+    if (!r.ok) return CommandResult::Fail("inspect '" + prefix + "': " + r.error);
+
+    ObjectResult res;
+    if (!ctx.Wf().ObjectResultFor(prefix, &res) || !res.hasX || !res.hasY) {
+        // Nothing found: detect_object said so in <prefix>_ok / _error.
+        // Nothing to judge - and not a pass.
+        ctx.CtxSet(prefix + "_why", std::string("object not found"));
+        FD_INFO("datum", "inspect '%s': FAIL - object not found", prefix.c_str());
+        return p.GetBool("require")
+                   ? CommandResult::Fail("inspect '" + prefix + "': object not found")
+                   : CommandResult::Success();
+    }
+    // The detection moved and waited: the datum may have expired meanwhile.
+    if (!ctx.Wf().DatumFor(dn, &d, &err)) return reject(err);
+
+    double lx = 0.0, ly = 0.0;
+    AlignMachineToLocal(d.frame, res.x, res.y, &lx, &ly);
+    const double dlx = lx - p.GetDouble("nominal_lx");
+    const double dly = ly - p.GetDouble("nominal_ly");
+    const double dr  = std::sqrt(dlx * dlx + dly * dly);
+    ctx.CtxSet(prefix + "_lx", lx);
+    ctx.CtxSet(prefix + "_ly", ly);
+    ctx.CtxSet(prefix + "_dlx", dlx);
+    ctx.CtxSet(prefix + "_dly", dly);
+    ctx.CtxSet(prefix + "_dr", dr);
+
+    // ---- the criteria: every tolerance set (> 0) must hold ---------------------
+    const double tx = p.GetDouble("tol_x_mm"), ty = p.GetDouble("tol_y_mm"),
+                 tr = p.GetDouble("tol_r_mm");
+    std::string why;
+    const auto check = [&](double tol, double v, const char* what) {
+        if (tol <= 0.0 || std::fabs(v) <= tol) return;
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "%s%s %+.4f outside +/-%.4f", why.empty() ? "" : "; ",
+                      what, v, tol);
+        why += buf;
+    };
+    check(tx, dlx, "dX");
+    check(ty, dly, "dY");
+    check(tr, dr, "dR");
+    const bool judged = tx > 0.0 || ty > 0.0 || tr > 0.0;
+    // No tolerance set = report only, and NOT a pass: a default pass is how an
+    // unchecked inspection ends up trusted.
+    const bool pass = judged && why.empty();
+    if (!judged) why = "no tolerance set - report only";
+    ctx.CtxSet(prefix + "_pass", pass);
+    ctx.CtxSet(prefix + "_why", pass ? std::string() : why);
+
+    FD_INFO("datum", "inspect '%s' in datum '%s': local (%.4f, %.4f) mm, nominal (%.4f, %.4f), "
+                     "d (%+.4f, %+.4f) r %.4f - %s%s%s",
+            prefix.c_str(), dn.c_str(), lx, ly, p.GetDouble("nominal_lx"),
+            p.GetDouble("nominal_ly"), dlx, dly, dr,
+            pass ? "PASS" : (judged ? "REJECT" : "not judged"), pass ? "" : ": ",
+            pass ? "" : why.c_str());
+
+    if (judged && !pass && p.GetBool("fail_on_reject"))
+        return CommandResult::Fail("inspect '" + prefix + "': " + why);
+    return CommandResult::Success();
+}
+
 CommandResult ExecDatumClear(ExecutionContext& ctx, const ParamValues& p)
 {
     if (p.GetBool("all")) {
@@ -413,6 +532,115 @@ void RegisterDatumCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
         return o;
     };
     reg.Register(std::move(spec));
+
+    // ---- inspect_object: detect_object + the datum's local frame + criteria ----
+    // The helper params share detect_object's NAMES, so the Vision detect
+    // helper edits them with the same functions; it never centres.
+    const char* C = "Criteria";
+    CommandSpec insp{"inspect_object", "Vision",
+        "Find an object with this step's own detection model and report where it sits in a "
+        "datum's local frame; judge it against a nominal and tolerances",
+        {
+            {"datum", PT::DatumName, false, "", 0, 0, {},
+             "the datum (datum_reference) the object is measured against - REQUIRED; it must "
+             "be live and measured on camera_device"},
+            {"ctx_prefix", PT::String, false, "insp", 0, 0, {},
+             "NAMES the object result and prefixes the ctx keys: _lx / _ly (local mm), "
+             "_dlx / _dly / _dr (from the nominal), _pass, _why, plus detect_object's own"},
+            {"model", PT::String, false, "", 0, 0, {},
+             "this step's private detection model (uid) - created and taught in the helper",
+             PinDir::Any, H},
+            {"take_p", PT::Bool, false, false, 0, 0, {},
+             "also report P (rotation from the taught orientation, deg, clockwise positive "
+             "on the picture - NOT corrected by the datum's rotation)",
+             PinDir::Any, H},
+            {"use_current_position", PT::Bool, false, false, 0, 0, {},
+             "detect where the camera stands now (no move to view_point)", PinDir::Any, H},
+            {"view_point", PT::PointXyz, false, {}, 0, 0, {},
+             "the camera pose to detect from (camera device axis space) - Teach here in the "
+             "helper; required unless use_current_position",
+             PinDir::Any, H},
+            {"settle_ms", PT::Int, false, 100, 0, 10000, {},
+             "wait this long before the frames are taken (ms)", PinDir::Any, H},
+            {"z_lift", PT::Bool, false, true, 0, 0, {},
+             "travel to view_point via safe_z_mm (Z first, XY, then Z down)", PinDir::Any, H},
+            {"safe_z_mm", PT::Double, false, 25.0, 0, 0, {},
+             "the Z travelled at when z_lift is on - a camera-device AXIS value",
+             PinDir::Any, H},
+            {"manual_fallback", PT::Bool, false, false, 0, 0, {},
+             "nothing found: ask the operator for the crosshair instead of failing",
+             PinDir::Any, H},
+            {"camera_device", PT::DeviceMotion, false, "gantry-main", 0, 0, {},
+             "the device the camera rides on - must be the datum's"},
+            VelocityParam(),
+            {"apply_lighting", PT::Bool, false, true, 0, 0, {},
+             "set the light the model was taught under first"},
+            {"fresh_frames", PT::Int, false, 2, 0, 10, {},
+             "new frames required before detecting (0 = use the latest)"},
+            {"frame_timeout_ms", PT::Int, false, 2000, 50, 30000, {},
+             "ceiling on the fresh-frame wait; then the latest frame is used"},
+            // Off: a miss is a failed INSPECTION, reported - not a failed
+            // program (2026-11-24).
+            {"require", PT::Bool, false, false, 0, 0, {},
+             "fail the STEP when nothing is found; off (default) = report it "
+             "(<prefix>_ok / _pass = false) and go on"},
+            {"nominal_lx", PT::Double, false, 0.0, 0, 0, {},
+             "where the object should be, datum-local X (mm) - Use as nominal in the helper",
+             PinDir::Any, C},
+            {"nominal_ly", PT::Double, false, 0.0, 0, 0, {},
+             "where the object should be, datum-local Y (mm)", PinDir::Any, C},
+            {"tol_x_mm", PT::Double, false, 0.0, 0.0, 1000.0, {},
+             "|local X - nominal| must be within this (0 = not checked)", PinDir::Any, C},
+            {"tol_y_mm", PT::Double, false, 0.0, 0.0, 1000.0, {},
+             "|local Y - nominal| must be within this (0 = not checked)", PinDir::Any, C},
+            {"tol_r_mm", PT::Double, false, 0.0, 0.0, 1000.0, {},
+             "the radial distance from the nominal must be within this (0 = not checked)",
+             PinDir::Any, C},
+            {"fail_on_reject", PT::Bool, false, false, 0, 0, {},
+             "a reject (out of tolerance, or no live datum) FAILS the step; off (default) "
+             "= report it in <prefix>_pass / _why and go on",
+             PinDir::Any, C},
+            PreDelayParam(),
+            PostDelayParam(),
+        },
+        CommandSpec::Needs::Camera,
+        [rp](ExecutionContext& c, const ParamValues& p) { return ExecInspectObject(c, p, *rp); },
+        /*parallelBy*/ "", /*helper*/ H};
+    // Rules BETWEEN params, refused at Start: a datum, and a taught view unless
+    // the step detects where the camera stands.
+    insp.check = [](const nlohmann::json& m) -> std::string {
+        if (m.value("datum", std::string()).empty())
+            return "no datum - pick the datum_reference this object is measured against";
+        if (!m.value("use_current_position", false) &&
+            (!m.contains("view_point") || m["view_point"].is_null()))
+            return "point 'view_point' not taught - Teach here in the Vision detect helper, "
+                   "or tick Use current position";
+        return std::string();
+    };
+    insp.outputs = [](const nlohmann::json& p) {
+        const std::string pre = p.value("ctx_prefix", std::string("insp"));
+        const std::string dev = p.value("camera_device", std::string("gantry-main"));
+        const std::string dn  = p.value("datum", std::string());
+        const bool tp = p.value("take_p", false);
+        CommandOutputs o;
+        o.results.push_back({pre, dev, tp ? "XYP" : "XY",
+                             "the inspected object, '" + dev + "' axis mm"});
+        o.keys.push_back({pre + "_lx", "mm", "object X in datum '" + dn + "' (local)"});
+        o.keys.push_back({pre + "_ly", "mm", "object Y in datum '" + dn + "' (local)"});
+        o.keys.push_back({pre + "_dlx", "mm", "local X - nominal_lx"});
+        o.keys.push_back({pre + "_dly", "mm", "local Y - nominal_ly"});
+        o.keys.push_back({pre + "_dr", "mm", "distance from the nominal"});
+        o.keys.push_back({pre + "_pass", "bool",
+                          "inside every set tolerance (false when none is set)"});
+        o.keys.push_back({pre + "_why", "text", "why not a pass"});
+        o.keys.push_back({pre + "_ok", "bool", "the object was found"});
+        o.keys.push_back({pre + "_x", "mm", "object X, '" + dev + "' axis mm"});
+        o.keys.push_back({pre + "_y", "mm", "object Y, '" + dev + "' axis mm"});
+        if (tp) o.keys.push_back({pre + "_p", "deg", "rotation from the taught orientation"});
+        o.keys.push_back({pre + "_score", "number", "detection score 0..1"});
+        return o;
+    };
+    reg.Register(std::move(insp));
 
     reg.Register({"datum_clear", "Align",
                   "Cancel a datum made by datum_reference (or every datum)",

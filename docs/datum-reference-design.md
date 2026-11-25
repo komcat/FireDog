@@ -183,6 +183,45 @@ Each option says where it is made (earlier here / LATER here / another recipe,
 DISABLED); a name nothing makes is drawn stale, and a step `device` other than
 the datum's own is warned - the frame is in the measuring device's axis space.
 
+## 5a. `inspect_object` - where an object sits on the part
+
+`detect_object` reports machine coordinates and stays exactly as it is.
+`inspect_object` is a separate step that REQUIRES a datum (`datum`, the same
+`DatumName` picker; `check` refuses it empty at Start) and:
+
+1. checks the datum before anything moves - live, and measured on the step's
+   `camera_device` (another device's axis space is refused);
+2. runs `detect_object` itself through `RunRegistered` with the step's own
+   private model / view (`StepDetectorParams`: `model`) and the shared run
+   options - never centring. So the object is also an object result `<prefix>`;
+3. turns X / Y into the datum's local frame with `AlignMachineToLocal` and
+   writes `<prefix>_lx` / `_ly`, `_dlx` / `_dly` (minus the nominal), `_dr`;
+4. judges the **Criteria** group: `nominal_lx` / `nominal_ly`, `tol_x_mm`,
+   `tol_y_mm`, `tol_r_mm` (each 0 = not checked). Every set tolerance must hold
+   for `<prefix>_pass`. With NO tolerance set it reports only and `_pass` is
+   false (`_why` says so) - a default pass is how an unchecked inspection ends
+   up trusted.
+
+**A failed inspection is a verdict, not a failed program.** By default every
+reason the part cannot pass - out of tolerance, object not found, the datum not
+live (expired, or never made this run) or on another device - is REPORTED in
+`_pass` = false / `_why`, logged, and the step succeeds, so the program goes on
+and the recipe (or the DUT record) decides. `fail_on_reject` (default off) fails
+the step on a reject or a dead datum; `require` (default off) on a miss. What
+still fails the step is the machine, not the part: a Stop, a refused or failed
+move, a camera that cannot be set, an untaught model or view, an operator
+cancelling the manual pick. An empty `datum` is refused at Start.
+
+`_pass` = false and `_why` are written first, so every failing path leaves no
+previous verdict. P (`take_p`) is reported as `detect_object` reports it -
+from the taught orientation on the picture, NOT corrected by the datum's
+rotation, and not judged.
+
+The helper is the same Vision detect helper: the Report section names the
+datum, and the last trial detection is shown in local coordinates with the
+verdict and **Use as nominal** (copies its local x / y into the step - detect
+a GOOD part). A record of the numbers is `dut_record_all {prefix}`.
+
 ## 6. The helper
 
 The datum step names `kVisionDetectHelper`: the SAME Vision detect helper. On

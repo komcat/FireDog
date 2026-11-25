@@ -21,6 +21,7 @@ inline const std::vector<std::string>& StepDetectorParams(const std::string& com
     static const std::vector<std::string> kDetect = {"model"};
     static const std::vector<std::string> kDatum  = {"model1", "model2", "model3"};
     if (commandType == "detect_object")   return kDetect;
+    if (commandType == "inspect_object")  return kDetect;
     if (commandType == "datum_reference") return kDatum;
     return kNone;
 }

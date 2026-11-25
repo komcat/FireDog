@@ -180,7 +180,7 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
         ImGui::Spacing();
         // detect_object: what its model looks for, and the view it was taught
         // at - read-only, outside the canEdit dimming so a run does not grey them.
-        if (s.type == "detect_object") {
+        if (s.type == "detect_object" || s.type == "inspect_object") {
             ImGui::EndDisabled();
             DrawDetectStepThumbs(s.params.value("model", std::string()), stepTmplTex_,
                                  stepViewTex_, 96.0f);
@@ -1573,7 +1573,11 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             ImGui::EndCombo();
         }
         const ImVec4 kAmber(0.98f, 0.72f, 0.32f, 1.0f);
-        const std::string stepDev = params.value("device", std::string());
+        // inspect_object detects on its camera_device (default gantry-main);
+        // move_local moves `device` (empty = the datum's own).
+        const std::string stepDev = spec.name == "inspect_object"
+                                        ? EffectiveString(spec, params, "camera_device")
+                                        : params.value("device", std::string());
         if (!resolved)
             ImGui::TextColored(kStaleRed, "no enabled datum_reference step makes '%s' - re-pick",
                                v.c_str());

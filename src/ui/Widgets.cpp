@@ -567,6 +567,7 @@ const char* StepIconFile(const char* type)
         {"plant_beacon_here",         "rg_device_reg"},
         {"remove_beacon",             "rg_device_reg"},
         {"detect_object",             "vi_detect"},
+        {"inspect_object",            "vi_detect"},
         // IO. wait_input has its own glyph - the pin is the news there.
         {"set_output",                "io_output"},
         {"toggle_output",             "io_output"},
