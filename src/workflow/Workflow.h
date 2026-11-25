@@ -10,6 +10,7 @@
 #include "core/NeedleCal.h"            // NeedleCal (the dispense needle's lever arm)
 #include "core/Beacon.h"               // Beacon (temporary camera-pose markers)
 #include "core/Datum.h"                // Datum (a part frame taught by one step)
+#include "core/Inspection.h"           // InspectionSample (inspect_object -> the view)
 #include "core/GrippedObject.h"        // GrippedObject (object registered to a gripper)
 #include "core/Interlock.h"            // IlConfig (conditional motion interlocks)
 #include "core/RasterMap.h"            // RasterMap (raster scan -> Aux heatmap)
@@ -732,6 +733,11 @@ public:
     void ClearDatums(const char* reason);
     void ClearDatumsWithoutDut(const char* reason);
     void ExpireDatums();
+    // inspect_object's verdicts, worker -> UI: queued by the command, drained
+    // in App::Update into the Inspection View's collector (core/Inspection.h).
+    // docs/inspection-view-design.md.
+    void QueueInspection(const InspectionSample& s);
+    std::vector<InspectionSample> TakeInspections();
     // The last RAW measurement under a name - what the helper's "Use as
     // reference" adopts. Written every run before the solve; no move reads it.
     // Cleared with the product (ClearDatums does not touch it: a DUT close
@@ -1044,6 +1050,8 @@ private:
     std::map<std::string, Datum>             datums_;
     std::map<std::string, DatumMeasure>      datumMeasures_;
     std::map<std::string, DatumProgress>     datumProgress_;
+    std::mutex                               inspMu_;
+    std::vector<InspectionSample>            inspQueue_;
     mutable std::mutex                       gripObjMu_;
     std::map<std::string, GrippedObject>     grippedObjects_;
 

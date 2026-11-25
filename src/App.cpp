@@ -256,6 +256,7 @@ int App::Run()
             if (showPosHist_ && CanUse(kRoleJog)) DrawPositionHistoryWindow();
             if (showTray_  && CanUse(kRoleTray)) DrawTrayWindow();
             if (showPosRec_ && CanUse(kRolePosRecords)) DrawPositionRecordsWindow();
+            if (showInspection_ && CanUse(kRoleInspection)) DrawInspectionWindow();
             if (showMotionInspect_ && CanUse(kRoleInspect)) DrawMotionInspectWindow();
             if (showInterlocks_ && CanUse(kRoleInterlockView)) DrawInterlocksWindow();
             if (showDispHelper_ && CanAccess(Page::RecipeEdit)) DrawDispenseHelperWindow();
@@ -387,6 +388,15 @@ void App::Update(float dt)
     // is the document catching up so the used cells survive a restart. The
     // cursor is not touched here — it is the worker's, and re-applying its
     // own change would be a second writer.
+    // inspect_object's verdicts into the Inspection View's collector. A
+    // collection STARTING (the first sample into an empty collector) opens
+    // the window; one closed mid-collection stays closed until a Clear.
+    for (const InspectionSample& s : workflow_.TakeInspections()) {
+        if (insp_.Empty()) showInspection_ = true;
+        insp_.Add(s);
+        if (inspSel_.empty()) inspSel_ = s.name;
+    }
+
     for (const Workflow::TrayUsedEvent& ev : workflow_.TakeTrayUsed()) {
         std::vector<TrayCell> cells;
         if (!ev.all) cells.push_back(ev.cell);

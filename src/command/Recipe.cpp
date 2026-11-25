@@ -78,6 +78,16 @@ static void MigrateStepParams(RecipeStep& s)
                 if (v == from) { *it = to; break; }
         }
     }
+    // inspect_object `require` + `fail_on_reject` (2026-11-24) became ONE
+    // switch, `continue_on_fail` (default on). The two lived a day and their
+    // stored `true` came from the old defaults, not from a choice - so they are
+    // dropped and the step takes the new default (a failed inspection is
+    // reported, the recipe goes on). A step that already says
+    // continue_on_fail keeps it.
+    if (s.type == "inspect_object" && s.params.is_object()) {
+        s.params.erase("require");
+        s.params.erase("fail_on_reject");
+    }
 }
 
 RecipeStep StepFromJson(const nlohmann::json& j)

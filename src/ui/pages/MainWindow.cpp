@@ -523,6 +523,8 @@ void App::DrawMainWindow()
                 if (CanUse(kRoleTray)) ImGui::MenuItem("Waffle Tray window", nullptr, &showTray_);
                 if (CanUse(kRolePosRecords))
                     ImGui::MenuItem("Position Records", nullptr, &showPosRec_);
+                if (CanUse(kRoleInspection))
+                    ImGui::MenuItem("Inspection View", nullptr, &showInspection_);
                 if (CanUse(kRoleInterlockView))
                     ImGui::MenuItem("Interlocks", nullptr, &showInterlocks_);
                 if (ImGui::BeginMenu("Theme")) {   // same picker as Display header

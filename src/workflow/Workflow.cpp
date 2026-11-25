@@ -1087,6 +1087,20 @@ void Workflow::ExpireDatums()
                 kDatumLifeMin);
 }
 
+void Workflow::QueueInspection(const InspectionSample& s)
+{
+    const std::lock_guard<std::mutex> lock(inspMu_);
+    // A ceiling, not a policy: the UI drains every frame, so this only bites
+    // when nothing drains (FireDogRig / FireDogPor never call Take).
+    if (inspQueue_.size() < 10000) inspQueue_.push_back(s);
+}
+
+std::vector<InspectionSample> Workflow::TakeInspections()
+{
+    const std::lock_guard<std::mutex> lock(inspMu_);
+    return std::exchange(inspQueue_, {});
+}
+
 void Workflow::SetDatumMeasure(const DatumMeasure& m)
 {
     const std::lock_guard<std::mutex> lock(datumMu_);

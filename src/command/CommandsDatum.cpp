@@ -312,14 +312,38 @@ CommandResult ExecInspectObject(ExecutionContext& ctx, const ParamValues& p,
 
     // An inspection that cannot pass is a VERDICT, not a broken step: by
     // default it is reported (<prefix>_pass = false, _why) and the program goes
-    // on - the part failed, the machine did not. fail_on_reject opts into
-    // failing the step instead. A Stop, a refused move or a camera error is
+    // on - the part failed, the machine did not. Unticking continue_on_fail
+    // fails the step instead. A Stop, a refused move or a camera error is
     // NOT a verdict and still fails (detect_object's own result, below).
+    // Every verdict - pass, reject, not found, no datum - also goes to the
+    // Inspection View's collector (Workflow queue, drained in App::Update). A
+    // machine failure is not a verdict and posts nothing.
+    InspectionSample smp;
+    smp.name   = prefix;
+    smp.datum  = p.GetString("datum");
+    smp.at     = NowStamp();
+    smp.tolX   = p.GetDouble("tol_x_mm");
+    smp.tolY   = p.GetDouble("tol_y_mm");
+    smp.tolR   = p.GetDouble("tol_r_mm");
+    smp.nomX   = p.GetDouble("nominal_lx");
+    smp.nomY   = p.GetDouble("nominal_ly");
+    smp.judged = smp.tolX > 0.0 || smp.tolY > 0.0 || smp.tolR > 0.0;
+    {
+        const DutSession::Info di = DutSession::Instance().GetInfo();
+        if (di.open) smp.serial = di.serial;
+    }
+
+    // Out of spec, not found, no live datum: reported, then the step goes on
+    // (continue_on_fail, default) or fails.
+    const bool goOn   = p.GetBool("continue_on_fail");
     const auto reject = [&](const std::string& why) {
         ctx.CtxSet(prefix + "_why", why);
-        FD_INFO("datum", "inspect '%s': FAIL - %s", prefix.c_str(), why.c_str());
-        return p.GetBool("fail_on_reject") ? CommandResult::Fail("inspect '" + prefix + "': " + why)
-                                           : CommandResult::Success();
+        FD_INFO("datum", "inspect '%s': FAIL - %s%s", prefix.c_str(), why.c_str(),
+                goOn ? " (continue_on_fail: the recipe goes on)" : "");
+        smp.why = why;
+        ctx.Wf().QueueInspection(smp);
+        return goOn ? CommandResult::Success()
+                    : CommandResult::Fail("inspect '" + prefix + "': " + why);
     };
 
     const std::string dn  = p.GetString("datum");
@@ -338,7 +362,7 @@ CommandResult ExecInspectObject(ExecutionContext& ctx, const ParamValues& p,
         {"take_y", true},
         {"take_p", p.GetBool("take_p")},
         // A miss is judged here (a verdict), so detect_object never fails on
-        // one; `require` decides what this step does with it.
+        // one; continue_on_fail decides what this step does with it.
         {"require", false},
         {"center_after", false},
         {"ctx_prefix", prefix},
@@ -357,11 +381,7 @@ CommandResult ExecInspectObject(ExecutionContext& ctx, const ParamValues& p,
     if (!ctx.Wf().ObjectResultFor(prefix, &res) || !res.hasX || !res.hasY) {
         // Nothing found: detect_object said so in <prefix>_ok / _error.
         // Nothing to judge - and not a pass.
-        ctx.CtxSet(prefix + "_why", std::string("object not found"));
-        FD_INFO("datum", "inspect '%s': FAIL - object not found", prefix.c_str());
-        return p.GetBool("require")
-                   ? CommandResult::Fail("inspect '" + prefix + "': object not found")
-                   : CommandResult::Success();
+        return reject("object not found");
     }
     // The detection moved and waited: the datum may have expired meanwhile.
     if (!ctx.Wf().DatumFor(dn, &d, &err)) return reject(err);
@@ -399,6 +419,19 @@ CommandResult ExecInspectObject(ExecutionContext& ctx, const ParamValues& p,
     ctx.CtxSet(prefix + "_pass", pass);
     ctx.CtxSet(prefix + "_why", pass ? std::string() : why);
 
+    smp.found = true;
+    smp.pass  = pass;
+    smp.why   = pass ? std::string() : why;
+    smp.lx    = lx;
+    smp.ly    = ly;
+    smp.dlx   = dlx;
+    smp.dly   = dly;
+    smp.dr    = dr;
+    smp.hasP  = res.hasP;
+    smp.p     = res.p;
+    smp.score = res.score;
+    ctx.Wf().QueueInspection(smp);
+
     FD_INFO("datum", "inspect '%s' in datum '%s': local (%.4f, %.4f) mm, nominal (%.4f, %.4f), "
                      "d (%+.4f, %+.4f) r %.4f - %s%s%s",
             prefix.c_str(), dn.c_str(), lx, ly, p.GetDouble("nominal_lx"),
@@ -406,7 +439,7 @@ CommandResult ExecInspectObject(ExecutionContext& ctx, const ParamValues& p,
             pass ? "PASS" : (judged ? "REJECT" : "not judged"), pass ? "" : ": ",
             pass ? "" : why.c_str());
 
-    if (judged && !pass && p.GetBool("fail_on_reject"))
+    if (judged && !pass && !goOn)
         return CommandResult::Fail("inspect '" + prefix + "': " + why);
     return CommandResult::Success();
 }
@@ -547,6 +580,13 @@ void RegisterDatumCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
             {"ctx_prefix", PT::String, false, "insp", 0, 0, {},
              "NAMES the object result and prefixes the ctx keys: _lx / _ly (local mm), "
              "_dlx / _dly / _dr (from the nominal), _pass, _why, plus detect_object's own"},
+            // On top, not folded into a group: whether a bad part stops the
+            // run is the one thing to know about this step at a glance.
+            // Replaces require + fail_on_reject (2026-11-24; MigrateStepParams).
+            {"continue_on_fail", PT::Bool, false, true, 0, 0, {},
+             "a FAILED inspection (out of spec, not found, no live datum) is reported "
+             "(<prefix>_pass = false, _why, the Inspection View) and the recipe goes on. "
+             "Off = the step fails and the recipe stops. A machine error always fails"},
             {"model", PT::String, false, "", 0, 0, {},
              "this step's private detection model (uid) - created and taught in the helper",
              PinDir::Any, H},
@@ -579,11 +619,6 @@ void RegisterDatumCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
              "new frames required before detecting (0 = use the latest)"},
             {"frame_timeout_ms", PT::Int, false, 2000, 50, 30000, {},
              "ceiling on the fresh-frame wait; then the latest frame is used"},
-            // Off: a miss is a failed INSPECTION, reported - not a failed
-            // program (2026-11-24).
-            {"require", PT::Bool, false, false, 0, 0, {},
-             "fail the STEP when nothing is found; off (default) = report it "
-             "(<prefix>_ok / _pass = false) and go on"},
             {"nominal_lx", PT::Double, false, 0.0, 0, 0, {},
              "where the object should be, datum-local X (mm) - Use as nominal in the helper",
              PinDir::Any, C},
@@ -595,10 +630,6 @@ void RegisterDatumCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
              "|local Y - nominal| must be within this (0 = not checked)", PinDir::Any, C},
             {"tol_r_mm", PT::Double, false, 0.0, 0.0, 1000.0, {},
              "the radial distance from the nominal must be within this (0 = not checked)",
-             PinDir::Any, C},
-            {"fail_on_reject", PT::Bool, false, false, 0, 0, {},
-             "a reject (out of tolerance, or no live datum) FAILS the step; off (default) "
-             "= report it in <prefix>_pass / _why and go on",
              PinDir::Any, C},
             PreDelayParam(),
             PostDelayParam(),

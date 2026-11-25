@@ -206,8 +206,10 @@ the datum's own is warned - the frame is in the measuring device's axis space.
 reason the part cannot pass - out of tolerance, object not found, the datum not
 live (expired, or never made this run) or on another device - is REPORTED in
 `_pass` = false / `_why`, logged, and the step succeeds, so the program goes on
-and the recipe (or the DUT record) decides. `fail_on_reject` (default off) fails
-the step on a reject or a dead datum; `require` (default off) on a miss. What
+and the recipe (or the DUT record) decides. That is the **`continue_on_fail`**
+checkbox (default ON), at the top of the step form rather than in a group;
+unticked, any of those fails the step and stops the recipe. (It replaced
+`require` + `fail_on_reject`, which `MigrateStepParams` drops on load.) What
 still fails the step is the machine, not the part: a Stop, a refused or failed
 move, a camera that cannot be set, an untaught model or view, an operator
 cancelling the manual pick. An empty `datum` is refused at Start.

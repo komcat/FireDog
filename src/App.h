@@ -36,6 +36,7 @@
 #include "core/MosaicConfig.h"
 #include "core/PanelSwitches.h"
 #include "core/PositionRecords.h"
+#include "core/Inspection.h"
 #include "core/CycleTimes.h"
 #include "mosaic/MosaicDoc.h"
 #include "mosaic/MosaicWorker.h"
@@ -197,6 +198,10 @@ inline constexpr UserRole kRolePosRecords = UserRole::Technician;
 //   full - what an operator does as parts come and go. Its Drive here is
 //   kRoleJog, like every other move.
 inline constexpr UserRole kRoleTray = UserRole::Operator;
+//   The Inspection View shows and saves inspect_object's results - what an
+//   operator watches while parts are inspected. Its Open folder (leaves the
+//   application) is kRoleData.
+inline constexpr UserRole kRoleInspection = UserRole::Operator;
 //   Inspect Motion only reads recipes, but it reads them step by step - the
 //   level that may open the Recipe Editor at all.
 inline constexpr UserRole kRoleInspect = UserRole::Technician;
@@ -2509,6 +2514,20 @@ private:
     bool                        posRecTrendTime_ = true;  // trend x: time, else unit
     int                         posRecSel_   = -1;   // index into posRecRows_
     std::string                 posRecMsg_;          // load warning
+    // Inspection View (View menu, and it opens itself when a collection
+    // starts). inspect_ holds every inspect_object verdict since the last
+    // Clear - memory only, UI thread only; App::Update drains
+    // Workflow::TakeInspections into it. docs/inspection-view-design.md.
+    bool                        showInspection_ = false;
+    InspectionCollector         insp_;
+    std::string                 inspSel_;            // component whose samples show
+    char                        inspName_[96] = {};  // the save name, typed
+    std::string                 inspMsg_;            // last save / copy result
+    bool                        inspMsgBad_ = false;
+    double                      inspClearArmAt_ = -1.0;   // Clear's confirm window
+    std::string                 inspLastDir_;        // where the last save went
+    void DrawInspectionWindow();
+    std::string InspectionDir() const;   // <product data>/inspection, else <data>/inspection
     std::string              dataDir_;
     std::vector<DutDataRow>  dataRows_;
     std::vector<std::string> dataKeys_;       // union of keys, first-seen order
