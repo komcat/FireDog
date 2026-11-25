@@ -483,6 +483,9 @@ private:
     // The datum step's own band: mode, point strip, the reference (+ Use as
     // reference from Workflow::DatumMeasureFor), the guards, the live datum.
     void DrawDatumHelperBand(RecipeStep& s, const nlohmann::json& merged, bool busy);
+    // One tab per point (E1 / E2 / E3) under the band; the selected tab is
+    // datumPointSel_, and the rest of the window is that point's.
+    void DrawDatumPointTabs(const nlohmann::json& merged);
     // Its "Camera position" section: the view taught into the step (Go / Teach
     // here / Clear, the thumbnail) and the run options (safe-Z lift, centring,
     // the manual fallback). Teach here records the pose into the step, the
@@ -981,6 +984,10 @@ private:
     // local X / Y axes as lines through the frame origin. Draw only - reads
     // Workflow::Datums(), changes nothing. docs/datum-reference-design.md §7.
     void DrawAuxDatums(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS);
+    // Where the CROSSHAIR (the camera centre = the device's axis X/Y) sits in
+    // each live datum's local frame, one line per datum, top-centre under the W
+    // key box: local x / y and dZ against the frame's focus Z. Draw only.
+    void DrawAuxDatumReadout(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS);
     // Objects registered to a gripper (grip_register_object): a diamond at the
     // gripper's LIVE tip + (dx, dy), in the gripper's colour, labelled with its
     // height against the focused plane. Nothing when the tip cannot be
@@ -1549,6 +1556,8 @@ private:
     bool showRoiViewHelper_ = false;   // the ROI Filter view setup helper (follows edStepSel_)
     bool showVisionDetHelper_ = false; // the Vision detect helper (follows edStepSel_)
     int  datumPointSel_ = 0;           // that helper on a datum step: E1 / E2 / E3 (0..2)
+    int  datumTabShown_ = -1;          // the point tab the bar showed last frame (DrawDatumPointTabs)
+    bool focusVisionDetHelper_ = false; // raise the helper next frame (the form's E1/E2/E3 buttons)
     // That helper's preview of the step's filter: its own texture, never the
     // Aux view's (that one shows what a RUN asked for).
     RoiFilterState rfvFilterSt_;

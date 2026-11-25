@@ -150,18 +150,56 @@ otherwise (the `dispense_run` point/position shape). With a datum, an empty
 existing body (`MoveToLocalPoint`): the same transform, Z rule, velocity and
 `MoveWithApproach`. `use_kept_frame` means nothing for a datum and is ignored.
 
+`x_mm` / `y_mm` default to 0 - the origin, E1.
+
+**Z.** The frame is 2-D, but it carries its working height: the mean gantry Z
+E1 and E2 were focused at (`AlignResult::z`). `z_from_frame` (off by default, so
+a step saved before it existed does not start driving Z) drives Z there. A typed
+or taught `z_mm` wins over it, and must sit within **±`kLocalZBandMm` (2.5 mm)**
+of the frame's Z or the step fails before moving: the part was in focus there,
+so a Z further off is a mistyped number or a Z taught on another part, and
+either can put the camera into the part. Both are checked only when moving the
+frame's OWN device (another device's Z is another axis space): `z_from_frame`
+on another device is refused, the band is not checked. A frame with no recorded
+Z refuses `z_from_frame` and lets a `z_mm` through with a warning. This applies
+to an alignment's `move_local` as well as a datum's. The step form shows the
+frame's Z and where `z_mm` sits in the band - for a datum, while it is live.
+
+`z_mm` is absolute, so it describes the part it was taught on. **`z_offset_mm`**
+is the RELATIVE form: Z = the frame's Z + offset, bounded to ±`kLocalZBandMm`
+(validation, and again at run time for Lua / `RunRegistered`), so a height above
+or below the focus plane follows every part. It implies `z_from_frame` (same
+refusals: own device only, a frame with a Z), and with `z_mm` it is refused
+rather than ranked - two answers to one question. Its Teach here stores the
+device's current Z minus the frame's Z, so it needs that Z on screen (a live
+datum, or the alignment's last result); each Teach here clears the other field.
+The Jog / Aux readout's `dZ` (§7) is exactly the number it would store.
+
+The `datum` param is `ParamType::DatumName`: a plain string on the wire, picked
+in the editor from the datums some step DECLARES - `datum_reference`'s
+`outputs` puts its name and camera device in `CommandOutputs::datums`, the
+same way a detection declares an object result for the `ResultName` picker.
+Each option says where it is made (earlier here / LATER here / another recipe,
+DISABLED); a name nothing makes is drawn stale, and a step `device` other than
+the datum's own is warned - the frame is in the measuring device's axis space.
+
 ## 6. The helper
 
-The datum step names `kVisionDetectHelper`: the SAME Vision detect helper, with
-a point strip (E1 / E2 / E3) at the top. The selected point's model and view are
-what the helper's camera-position section, trial detections and teach panels
-work on (`App::datumPointSel_`), through the same functions `detect_object`
-uses, pointed at `model<i>` / `view_point<i>`. Below the strip: the mode, the
-reference (+ Use as reference), and the guards.
+The datum step names `kVisionDetectHelper`: the SAME Vision detect helper. On
+top, the datum's own band: the mode, the reference (+ Use as reference), the
+guards and the live datum. Under it, ONE TAB PER POINT (`E1 origin`, `E2 X+`,
+`E3 anchor`; green when the point has its model and view, red with
+`(not taught)` otherwise - `App::DrawDatumPointTabs`). Each point has its own
+taught camera view, so everything under the tabs - the camera-position section
+and Teach here, the run options, the trial detections, the teach panels - is
+the selected point's (`App::datumPointSel_`), through the same functions
+`detect_object` uses, pointed at `model<i>` / `view_point<i>`. The run options
+are the step's, shared by every point.
 
 The Recipe Editor's step form shows each point's template and view thumbnail
 (read-only, one row per point, `App::stepDatumTmplTex_` / `stepDatumViewTex_`),
-the same pair a `detect_object` form shows.
+the same pair a `detect_object` form shows. Each row is led by an `E1` / `E2` /
+`E3` button that opens (and raises) the helper on that point's tab.
 
 **Ownership.** A step's private models are found through ONE table,
 `StepDetectorParams(type)` (`command/StepDetectors.h`): `detect_object` →
@@ -192,6 +230,17 @@ They come from a progress slot (`Workflow::SetDatumProgress`, `core/Datum.h`
 a half-measured datum never stays on the picture. The alignment's
 `QueueAlignPoint` reason: the moment an operator wants to see E1 landed is
 while E2 is still being looked for.
+
+**Where the crosshair is, in local coordinates.** The picture centre is the
+camera device's axis X/Y - the same space the E points were captured in - so
+`AlignMachineToLocal` turns the live pose into the datum's local x / y: exactly
+what `move_local {datum}` would take as `x_mm` / `y_mm` to come back here.
+`App::DrawAuxDatumReadout` prints one line per live datum on the picture's
+device, top-centre under the W key box (at the top edge when jog is disarmed):
+`<name>  x … y …  dZ …`, dZ being axis Z minus the frame's focus Z, green inside
+`kLocalZBandMm`, red outside. The Jog window shows the same, one column per
+datum beside the axis readout, when the selected device is the datum's. Both
+display only.
 
 Projection is `WorldToScreen` (`ui/Widgets`), the one machine-mm → screen
 function `DrawWorldMark` and `DrawWorldBox` also use.

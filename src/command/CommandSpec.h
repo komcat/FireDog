@@ -83,6 +83,11 @@ enum class ParamType {
                     // DECLARES (CommandSpec::outputs) on the step's "device";
                     // at run time the record must exist and carry that device.
                     // A plain string on the wire
+    DatumName,      // a live DATUM by name (Workflow's datum store, filled by
+                    // datum_reference). The editor offers the datums some step
+                    // DECLARES (CommandOutputs::datums), like ResultName; at run
+                    // time the datum must exist and be unexpired. A plain string
+                    // on the wire
     Enum,           // one of `options`
 };
 
@@ -116,9 +121,17 @@ struct ResultOutput {
     std::string axes;      // which it carries: letters of "XYP"
     std::string help;
 };
+// A DATUM (datum_reference): a part's local frame in Workflow's datum store,
+// in `device`'s axis space - what a DatumName picker offers.
+struct DatumOutput {
+    std::string name;      // the datum's name in the store
+    std::string device;    // the camera device whose axis space the frame is in
+    std::string help;
+};
 struct CommandOutputs {
     std::vector<CtxOutput>    keys;
     std::vector<ResultOutput> results;
+    std::vector<DatumOutput>  datums;
 };
 
 struct ParamSpec {
@@ -218,7 +231,7 @@ struct CommandSpec {
     // its EFFECTIVE params (stored + defaults: a prefix or a tick changes
     // them). Null = the command declares nothing (it may still write ctx; it
     // is just not offered). Read by the editor only - the Context keys panel
-    // and the ResultName picker - never by the engine. Set after construction:
+    // and the ResultName / DatumName pickers - never by the engine. Set after construction:
     //     CommandSpec s{...}; s.outputs = [](const nlohmann::json& p) {...};
     std::function<CommandOutputs(const nlohmann::json&)> outputs;
 

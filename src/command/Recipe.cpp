@@ -313,7 +313,7 @@ std::vector<StepOutputs> CollectStepOutputs(const std::vector<RecipeStep>& steps
             const bool on = parentOn && s.enabled;
             if (const CommandSpec* spec = reg.Find(s.type); spec && spec->outputs) {
                 CommandOutputs o = spec->outputs(EffectiveParams(*spec, s.params));
-                if (!o.keys.empty() || !o.results.empty())
+                if (!o.keys.empty() || !o.results.empty() || !o.datums.empty())
                     out.push_back({path, s.type, s.nickname, on, std::move(o)});
             }
             self(self, s.children, 0, on);

@@ -804,24 +804,87 @@ CommandResult ExecMoveLocal(ExecutionContext& ctx, const ParamValues& p)
                                          "keep one");
     std::string err;
     AlignResult frame;
+    std::string frameName, frameDevice;
     if (!datumName.empty()) {
         // A datum's lifetime is its own (30 min, DUT close, ...): there is no
         // carried/kept state to opt into, so use_kept_frame means nothing here.
         Datum d;
         if (!ctx.Wf().DatumFor(datumName, &d, &err)) return CommandResult::Fail(err);
-        const std::string device = p.GetString("device").empty() ? d.device
-                                                                 : p.GetString("device");
-        return MoveToLocalPoint(ctx, p, "datum '" + d.name + "'", d.frame, device,
-                                p.GetDouble("x_mm"), p.GetDouble("y_mm"),
-                                "the local coordinate");
+        frame       = d.frame;
+        frameName   = "datum '" + d.name + "'";
+        frameDevice = d.device;
+    } else {
+        const AlignProc* proc = LiveProc(ctx, alignName, &frame, &err,
+                                          p.GetBool("use_kept_frame"));
+        if (!proc) return CommandResult::Fail(err);
+        frameName   = proc->name;
+        frameDevice = proc->device;
     }
-    const AlignProc* proc = LiveProc(ctx, alignName, &frame, &err,
-                                      p.GetBool("use_kept_frame"));
-    if (!proc) return CommandResult::Fail(err);
-    const std::string device = p.GetString("device").empty() ? proc->device
+    const std::string device = p.GetString("device").empty() ? frameDevice
                                                              : p.GetString("device");
-    return MoveToLocalPoint(ctx, p, proc->name, frame, device, p.GetDouble("x_mm"),
-                            p.GetDouble("y_mm"), "the local coordinate");
+
+    // ---- Z: the frame's working height, and the band around it --------------
+    // Both read and command the frame's OWN device in its axis space (the Z
+    // the points were focused at) - on another device the number means
+    // nothing, so z_from_frame is refused there and the band is not checked.
+    // All of it before anything moves.
+    //
+    // Three ways to say Z, at most one of the first two:
+    //   z_mm         absolute axis Z (a number taught on ONE part)
+    //   z_offset_mm  the frame's Z + offset (follows every part's height)
+    //   z_from_frame the frame's Z (= offset 0)
+    // z_mm with z_offset_mm is ambiguous and refused rather than ranked.
+    const bool ownDevice = device == frameDevice;
+    const bool hasOff    = p.Has("z_offset_mm");
+    if (hasOff && p.Has("z_mm"))
+        return CommandResult::Fail("move_local: z_mm (absolute) and z_offset_mm (from the "
+                                   "frame's Z) are both set - keep one");
+    const double off = hasOff ? p.GetDouble("z_offset_mm") : 0.0;
+    // Validation bounds it too, but Lua / RunRegistered skip validation.
+    if (std::fabs(off) > kLocalZBandMm) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "move_local: z_offset_mm %+.4f is outside +/-%.1f mm of the frame's Z",
+                      off, kLocalZBandMm);
+        return CommandResult::Fail(buf);
+    }
+    const bool        fromFrame = p.GetBool("z_from_frame") || hasOff;
+    const std::string zWhat     = hasOff ? "z_offset_mm" : "z_from_frame";
+    if (fromFrame && !ownDevice)
+        return CommandResult::Fail("move_local: " + zWhat + " - " + frameName +
+                                   " was measured on '" + frameDevice +
+                                   "'; its Z means nothing on '" + device + "'");
+    if (fromFrame && !frame.hasZ)
+        return CommandResult::Fail("move_local: " + zWhat + " - " + frameName +
+                                   " has no recorded Z (taught before Z was recorded, or "
+                                   "the device has none) - re-run it, or clear " + zWhat);
+    if (p.Has("z_mm") && ownDevice) {
+        if (frame.hasZ) {
+            const double dz = p.GetDouble("z_mm") - frame.z;
+            if (std::fabs(dz) > kLocalZBandMm) {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                              "move_local: z_mm %.4f is %+.4f mm from %s's working Z %.4f - "
+                              "outside +/-%.1f mm (mistyped, or taught on another part?)",
+                              p.GetDouble("z_mm"), dz, frameName.c_str(), frame.z,
+                              kLocalZBandMm);
+                return CommandResult::Fail(buf);
+            }
+        } else {
+            FD_WARN("align", "'%s' has no recorded Z - z_mm %.4f is NOT checked against "
+                             "the +/-%.1f mm band",
+                    frameName.c_str(), p.GetDouble("z_mm"), kLocalZBandMm);
+        }
+    }
+    // A typed z_mm wins over the frame's (MoveToLocalPoint), as on move_to_nominal;
+    // here it can only meet z_from_frame, z_offset_mm having been refused above.
+    const double zFrame = frame.z + off;
+    if (fromFrame && !p.Has("z_mm"))
+        FD_INFO("align", "'%s': Z = frame Z %.4f %+.4f (%s) = %.4f", frameName.c_str(), frame.z,
+                off, zWhat.c_str(), zFrame);
+    const double* defZ = fromFrame ? &zFrame : nullptr;
+    return MoveToLocalPoint(ctx, p, frameName, frame, device, p.GetDouble("x_mm"),
+                            p.GetDouble("y_mm"), "the local coordinate", defZ);
 }
 
 // ---- move_to_nominal -----------------------------------------------------
@@ -1140,15 +1203,31 @@ void RegisterAlignCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
                   {
                       {"alignment", PT::AlignUid, false, "", 0, 0, {},
                        "alignment procedure (uid or name) - OR a datum below, not both"},
-                      {"datum", PT::String, false, "", 0, 0, {},
+                      {"datum", PT::DatumName, false, "", 0, 0, {},
                        "a datum made by datum_reference (its name) - OR an alignment "
                        "above, not both"},
                       {"device", PT::DeviceMotion, false, "", 0, 0, {},
                        "motion device; empty = the procedure's (or the datum's) own device"},
-                      {"x_mm", PT::Double, true, {}, 0, 0, {}, "local X (mm)"},
-                      {"y_mm", PT::Double, true, {}, 0, 0, {}, "local Y (mm)"},
+                      // Default 0: the frame's origin (E1) is the commonest
+                      // target, and a required number showed a "0" that was
+                      // not stored - retyping 0 over it changed nothing.
+                      {"x_mm", PT::Double, false, 0.0, 0, 0, {},
+                       "local X (mm); 0 = the origin (E1)"},
+                      {"y_mm", PT::Double, false, 0.0, 0, 0, {},
+                       "local Y (mm); 0 = the origin (E1)"},
+                      // Off by default: a step saved before it existed must
+                      // not start driving Z.
+                      {"z_from_frame", PT::Bool, false, false, 0, 0, {},
+                       "drive Z to the frame's working height - the gantry Z E1/E2 were "
+                       "focused at (their mean). Off = leave Z where it is"},
+                      {"z_offset_mm", PT::Double, false, {}, -kLocalZBandMm, kLocalZBandMm, {},
+                       "optional Z RELATIVE to the frame's working height: Z = frame Z + "
+                       "this, so it follows each part (+/-2.5 mm). Teach here stores the "
+                       "current Z minus the live frame's. Not with z_mm"},
                       {"z_mm", PT::Double, false, {}, 0, 0, {},
-                       "optional machine Z (the frame is 2-D; Z is not transformed)"},
+                       "optional ABSOLUTE machine Z (the frame is 2-D; Z is not transformed); "
+                       "WINS over z_from_frame, must be within +/-2.5 mm of the frame's Z. "
+                       "Not with z_offset_mm"},
                       UseKeptFrameParam(),
                       {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "arrival timeout"},
                       {"tol_mm", PT::Double, false, kMoveTolMM, 0.0001, 1.0, {},

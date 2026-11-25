@@ -103,6 +103,13 @@ struct AlignResult {
     bool        hasZ = false;
 };
 
+// How far a TYPED z_mm on move_local may sit from the frame's working height
+// (`AlignResult::z`), either way: the part was in focus there, so a Z more
+// than this off it is a mistyped number or a Z taught on another part, and
+// either one can drive the camera into the part. Checked only on the frame's
+// own device - another device's Z is another axis space.
+inline constexpr double kLocalZBandMm = 2.5;
+
 // ---- the guard band, and the record of what each run measured -------------
 // A solved frame is always geometrically valid — two points that are not on top
 // of each other always define an origin and a direction. What `SolveAlignFrame`

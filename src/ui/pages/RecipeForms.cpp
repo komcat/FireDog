@@ -12,7 +12,9 @@
 #include "ui/Theme.h"     // kTeachOrange (an untaught position)
 #include "ui/Widgets.h"
 #include "command/StepSummary.h"   // FormatDurationMs
+#include "core/AlignFrame.h"    // kLocalZBandMm, FindAlignProc
 #include "core/DataBus.h"
+#include "core/Datum.h"         // move_local's z band against a live datum
 #include "core/Log.h"
 #include "core/Topics.h"
 
@@ -186,13 +188,23 @@ void App::DrawRecipeInspector(RecipeStep& s, bool canEdit)
             ImGui::Spacing();
         }
         // datum_reference: the same pair per point, smaller - two or three
-        // rows, E1 / E2 / E3 named on the left.
+        // rows, each led by an E1 / E2 / E3 button that opens the Vision
+        // detect helper on THAT point's tab (each point has its own view and
+        // model). A view like the big button below, so outside the dimming.
         if (s.type == "datum_reference") {
             ImGui::EndDisabled();
             const int n = s.params.value("mode", std::string("2pt")) == "3pt" ? 3 : 2;
             for (int i = 0; i < n; ++i) {
-                ImGui::AlignTextToFramePadding();
-                ImGui::Text("E%d", i + 1);
+                char lbl[16];
+                std::snprintf(lbl, sizeof(lbl), "E%d##dtmOpen", i + 1);
+                if (ImGui::Button(lbl, ImVec2(ImGui::GetFrameHeight() * 1.6f, 64.0f))) {
+                    datumPointSel_ = i;
+                    focusVisionDetHelper_ = true;
+                    OpenCommandHelper(spec->helper);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Open the %s on E%d - its own camera view\n"
+                                      "and detection model", spec->helper.c_str(), i + 1);
                 ImGui::SameLine();
                 ImGui::PushID(i);
                 DrawDetectStepThumbs(s.params.value("model" + std::to_string(i + 1), std::string()),
@@ -573,12 +585,28 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
         // resolution the commands use. Clear unsets an optional value, which
         // for move_to_nominal means "back to the frame's Z"; a stored 0 is not
         // the same thing as no value, and the box alone cannot show which.
-        if (p.name == "z_mm") {
+        //
+        // move_local also has `z_offset_mm`: Z RELATIVE to the frame's working
+        // height (frame Z + offset), so it follows each part. Its Teach here
+        // stores the current Z minus the frame's Z - possible only while that
+        // Z is known (a live datum, or the alignment's last saved result). The
+        // two are exclusive (the run refuses both), so each Teach here clears
+        // the other, like the dispense point/position pair.
+        const bool isZOff = spec.name == "move_local" && p.name == "z_offset_mm";
+        if (p.name == "z_mm" || isZOff) {
             std::string dev = EffectiveString(spec, params, "device");
             if (dev.empty())
                 if (const AlignProc* ap = FindAlignProc(session_.Aligns(),
                                                         EffectiveString(spec, params, "alignment")))
                     dev = ap->device;
+            // move_local {datum} with no device moves the datum's own - known
+            // here only while the datum is live.
+            if (dev.empty())
+                if (const std::string dn = EffectiveString(spec, params, "datum"); !dn.empty()) {
+                    Datum d;
+                    std::string why;
+                    if (workflow_.DatumFor(dn, &d, &why)) dev = d.device;
+                }
             IMotionController* mc = nullptr;
             for (std::size_t i = 0; i < hardware_.MotionCount(); ++i)
                 if (hardware_.MotionName(i) == dev) { mc = hardware_.MotionDevice(i); break; }
@@ -592,17 +620,61 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
                 const auto it = pos.find("Z");
                 if (it != pos.end()) { z = it->second; hz = true; }
             }
+
+            // move_local: the frame's working Z. A datum's is only known while
+            // it is live; an alignment's comes from its last saved result -
+            // display (and the offset's Teach here) only, the run reads its own.
+            const std::string dn = EffectiveString(spec, params, "datum");
+            const std::string an = EffectiveString(spec, params, "alignment");
+            double fz = 0.0;
+            bool   hfz = false;
+            std::string fdev, src;
+            if (spec.name == "move_local") {
+                if (!dn.empty()) {
+                    Datum d;
+                    std::string why;
+                    if (workflow_.DatumFor(dn, &d, &why) && d.frame.hasZ) {
+                        fz = d.frame.z; hfz = true; fdev = d.device; src = "live datum";
+                    }
+                } else if (const AlignProc* ap = FindAlignProc(session_.Aligns(), an);
+                           ap && ap->result.hasZ) {
+                    fz = ap->result.z; hfz = true; fdev = ap->device; src = "last taught";
+                }
+            }
+            const bool sameDev = dev.empty() || dev == fdev;
+            const bool hasVal  = params.contains(p.name) && params[p.name].is_number();
+            const char* other  = isZOff ? "z_mm" : "z_offset_mm";
+
             ImGui::SameLine();
-            ImGui::BeginDisabled(!hz);
+            const bool canTeach = isZOff ? (hz && hfz && sameDev) : hz;
+            ImGui::BeginDisabled(!canTeach);
             if (ImGui::SmallButton("Teach here")) {
-                params[p.name] = z;
+                params[p.name] = isZOff ? z - fz : z;
+                if (spec.name == "move_local") params.erase(other);
                 changed = true;
             }
             ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip(hz ? "Set z_mm to %s's current Z: %.4f (absolute, axis space)"
-                                     : "%s: not connected, or reports no Z",
-                                  dev.empty() ? "(no device)" : dev.c_str(), z);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (isZOff) {
+                    if (canTeach)
+                        ImGui::SetTooltip("Set z_offset_mm to %s's current Z minus the frame Z:\n"
+                                          "%.4f - %.4f = %+.4f mm (clears z_mm)",
+                                          dev.c_str(), z, fz, z - fz);
+                    else if (!hz)
+                        ImGui::SetTooltip("%s: not connected, or reports no Z",
+                                          dev.empty() ? "(no device)" : dev.c_str());
+                    else if (!hfz)
+                        ImGui::SetTooltip("The frame's Z is not known here - run the datum step "
+                                          "first (a datum is live 30 min), or teach the alignment");
+                    else
+                        ImGui::SetTooltip("'%s' is not the device the frame was measured on (%s)",
+                                          dev.c_str(), fdev.c_str());
+                } else {
+                    ImGui::SetTooltip(hz ? "Set z_mm to %s's current Z: %.4f (absolute, axis space)"
+                                         : "%s: not connected, or reports no Z",
+                                      dev.empty() ? "(no device)" : dev.c_str(), z);
+                }
+            }
             if (!p.required) {
                 ImGui::SameLine();
                 ImGui::BeginDisabled(!params.contains(p.name));
@@ -611,11 +683,62 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
                     changed = true;
                 }
                 ImGui::EndDisabled();
-                if (!params.contains(p.name))
+            }
+
+            const bool bothSet = spec.name == "move_local" && params.contains("z_mm") &&
+                                 params.contains("z_offset_mm");
+            if (bothSet) {
+                ImGui::TextColored(kStaleRed, "   z_mm AND z_offset_mm are set - the run refuses; "
+                                              "Clear one");
+            } else if (isZOff) {
+                if (!hasVal) {
+                    ImGui::TextDisabled("   z_offset_mm not set");
+                } else if (std::fabs(params[p.name].get<double>()) > kLocalZBandMm) {
+                    // A Teach here can store one outside the band (the field's
+                    // clamp only acts on typing); validation refuses it at Start.
+                    ImGui::TextColored(kStaleRed, "   z_offset_mm %+.4f is OUTSIDE +/-%.1f mm - the "
+                                                  "run refuses", params[p.name].get<double>(),
+                                       kLocalZBandMm);
+                } else if (hfz && sameDev) {
+                    const double off = params[p.name].get<double>();
+                    ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f),
+                                       "   Z = frame Z %.4f (%s) %+.4f = %.4f", fz, src.c_str(),
+                                       off, fz + off);
+                } else {
+                    ImGui::TextDisabled("   Z = the frame's Z + this, worked out when the step runs");
+                }
+            } else {
+                if (!p.required && !hasVal) {
+                    const bool offSet    = params.contains("z_offset_mm");
+                    const bool fromFrame = params.contains("nominal") ||
+                                           EffectiveParams(spec, params).value("z_from_frame", false);
                     ImGui::TextDisabled("   z_mm not set - %s",
-                                        params.contains("nominal")
-                                            ? "Z from the frame (z_from_frame)"
-                                            : "Z is left where it is");
+                                        offSet      ? "Z = frame Z + z_offset_mm"
+                                        : fromFrame ? "Z from the frame (z_from_frame)"
+                                                    : "Z is left where it is");
+                }
+                // move_local: the +/-kLocalZBandMm band a typed z_mm must sit in
+                // (the run refuses outside it, before moving).
+                if (spec.name == "move_local") {
+                    if (hfz && sameDev) {
+                        if (hasVal) {
+                            const double dz = params[p.name].get<double>() - fz;
+                            const bool ok = std::fabs(dz) <= kLocalZBandMm;
+                            ImGui::TextColored(ok ? ImVec4(0.55f, 0.85f, 0.55f, 1.0f) : kStaleRed,
+                                               "   frame Z %.4f (%s): z_mm is %+.4f - %s +/-%.1f mm",
+                                               fz, src.c_str(), dz,
+                                               ok ? "inside" : "OUTSIDE, the run refuses -",
+                                               kLocalZBandMm);
+                        } else {
+                            ImGui::TextDisabled("   frame Z %.4f (%s); a z_mm must be within "
+                                                "+/-%.1f mm of it", fz, src.c_str(), kLocalZBandMm);
+                        }
+                    } else if (!dn.empty() && !hfz) {
+                        ImGui::TextDisabled("   datum '%s' not live - z_mm is checked against its Z "
+                                            "(+/-%.1f mm) when the step runs", dn.c_str(),
+                                            kLocalZBandMm);
+                    }
+                }
             }
         }
         break;
@@ -1382,6 +1505,87 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
                                "'%s' is only produced LATER in this recipe - unless an earlier "
                                "recipe of the program finds it, this step will fail",
                                v.c_str());
+        break;
+    }
+    case ParamType::DatumName: {
+        // The DATUMS some datum_reference step declares, across the whole
+        // library like the result picker above: a datum lives in Workflow's
+        // store past its recipe, so the step that makes it is often in another
+        // recipe of the program. Not filtered by "device": move_local's device
+        // is optional (empty = the datum's own), so a mismatch is WARNED below
+        // instead - the frame is in the measuring device's axis space only.
+        const std::string v = cur.is_string() ? cur.get<std::string>() : "";
+        struct DatOpt { std::string name, device, from; bool enabled; int where; };   // where: 0 earlier here, 1 later here, 2 other recipe
+        std::vector<DatOpt> opts;
+        const int selR = recipeSel_;
+        const auto& recipes = session_.Recipes();
+        for (std::size_t ri = 0; ri < recipes.size(); ++ri) {
+            const Recipe& r = recipes[ri];
+            const bool here = static_cast<int>(ri) == selR;
+            std::set<std::vector<std::size_t>> earlier;
+            if (here && !edStepSel_.empty())
+                for (const StepOutputs& so : CollectStepOutputs(r.steps, orch_.registry, &edStepSel_))
+                    earlier.insert(so.path);
+            for (const StepOutputs& so : CollectStepOutputs(r.steps, orch_.registry)) {
+                for (const DatumOutput& d : so.outs.datums) {
+                    const int where = !here ? 2 : (earlier.count(so.path) ? 0 : 1);
+                    std::string from = where == 2 ? "recipe '" + r.name + "'"
+                                     : where == 0 ? std::string("earlier here")
+                                                  : std::string("LATER here");
+                    from += ", step " + StepPathLabel(so.path) + ", on " + d.device;
+                    if (!so.enabled) from += ", DISABLED";
+                    opts.push_back({d.name, d.device, from, so.enabled, where});
+                }
+            }
+        }
+        bool produced = false, onlyLater = !v.empty();
+        std::string datumDev;
+        for (const DatOpt& o : opts) {
+            if (o.name != v || !o.enabled) continue;
+            produced = true;
+            datumDev = o.device;
+            if (o.where != 1) onlyLater = false;
+        }
+        const bool resolved = v.empty() || produced;
+        const std::string preview = v.empty() ? std::string("(none)") : v;
+        if (!resolved) pushStale();
+        ImGui::SetNextItemWidth(fitW(preview));
+        const bool open = ImGui::BeginCombo(label, preview.c_str());
+        if (!resolved) ImGui::PopStyleColor(4);
+        previewTip(preview);
+        if (open) {
+            if (!p.required && ImGui::Selectable("(none)", v.empty())) {
+                params[p.name] = "";
+                changed = true;
+            }
+            if (opts.empty())
+                ImGui::TextDisabled("(no datum_reference step in any recipe)");
+            for (std::size_t i = 0; i < opts.size(); ++i) {
+                const DatOpt& o = opts[i];
+                ImGui::PushID(static_cast<int>(i));
+                const std::string row = o.name + "   (" + o.from + ")";
+                if (ImGui::Selectable(row.c_str(), o.name == v)) {
+                    params[p.name] = o.name;
+                    changed = true;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+        const ImVec4 kAmber(0.98f, 0.72f, 0.32f, 1.0f);
+        const std::string stepDev = params.value("device", std::string());
+        if (!resolved)
+            ImGui::TextColored(kStaleRed, "no enabled datum_reference step makes '%s' - re-pick",
+                               v.c_str());
+        else if (produced && onlyLater)
+            ImGui::TextColored(kAmber,
+                               "'%s' is only made LATER in this recipe - unless an earlier "
+                               "recipe of the program makes it, this step will fail",
+                               v.c_str());
+        if (produced && !stepDev.empty() && stepDev != datumDev)
+            ImGui::TextColored(kAmber,
+                               "'%s' was measured on '%s' - its numbers mean nothing on '%s'",
+                               v.c_str(), datumDev.c_str(), stepDev.c_str());
         break;
     }
     case ParamType::ImageFile: {

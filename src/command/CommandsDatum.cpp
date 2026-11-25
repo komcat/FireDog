@@ -392,6 +392,10 @@ void RegisterDatumCommands(CommandRegistry& reg, Workflow& wf, HardwareManager& 
         const std::string dev = p.value("camera_device", std::string("gantry-main"));
         const bool three = p.value("mode", std::string("2pt")) == "3pt";
         CommandOutputs o;
+        // The datum itself - what move_local's datum picker offers.
+        o.datums.push_back({n, dev, std::string(three ? "3-point" : "2-point") +
+                                        " local frame (origin E1, X+ toward E2), '" + dev +
+                                        "' axis mm"});
         for (int i = 1; i <= (three ? 3 : 2); ++i)
             o.results.push_back({PointPrefix(n, i), dev, "XY",
                                  "datum point E" + std::to_string(i) + ", '" + dev +

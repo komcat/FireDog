@@ -14,9 +14,10 @@
 // own) and the models.
 //
 // A datum_reference step (docs/datum-reference-design.md §6) uses this same
-// window: a band on top picks the point (E1 / E2 / E3, App::datumPointSel_),
-// and everything below works on THAT point's model<i> / view_point<i> through
-// the same functions a detect_object uses.
+// window: the datum's band on top (mode, reference, guards), then one TAB per
+// point (E1 / E2 / E3, App::datumPointSel_), and everything under the tabs
+// works on THAT point's model<i> / view_point<i> through the same functions a
+// detect_object uses.
 //
 // Ownership: the model is named vdet_step_<uid> (kStepDetectorPrefix) and the
 // step holds the uid (command/StepDetectors.h says which params). Creating one is a button, never a side effect of opening
@@ -118,6 +119,12 @@ void App::DrawVisionDetectHelperWindow()
     if (!CanAccess(Page::RecipeEdit)) { showVisionDetHelper_ = false; return; }
 
     ImGui::SetNextWindowSize(ImVec2(1400.0f, 860.0f), ImGuiCond_FirstUseEver);
+    // The step form's per-point buttons raise it, or a click on E2 would
+    // switch a tab nobody can see behind the main window.
+    if (focusVisionDetHelper_) {
+        ImGui::SetNextWindowFocus();
+        focusVisionDetHelper_ = false;
+    }
     if (!ImGui::Begin(kVisionDetectHelper, &showVisionDetHelper_)) {
         ImGui::End();
         return;
@@ -178,7 +185,10 @@ void App::DrawVisionDetectHelperWindow()
     // ---- A datum: which point (and the datum's own settings) -----------------
     // Drawn BEFORE `merged` is taken, so a mode or point change this frame is
     // what the rest of the window works on.
-    if (datum) DrawDatumHelperBand(*s, EffectiveParams(*spec, s->params), busy);
+    if (datum) {
+        DrawDatumHelperBand(*s, EffectiveParams(*spec, s->params), busy);
+        DrawDatumPointTabs(EffectiveParams(*spec, s->params));
+    }
     const nlohmann::json merged = EffectiveParams(*spec, s->params);
     const int point = datum ? datumPointSel_ + 1 : 0;   // 1..3, 0 = detect_object
     const std::string modelKey = datum ? "model" + std::to_string(point) : "model";
@@ -815,15 +825,13 @@ void App::DrawDetectStepThumbs(const std::string& uid, PatchTex& tmplTex, PatchT
 
 
 // ---- The datum step's band (datum_reference) -------------------------------------
-// Three columns above the point's own panels: the mode and WHICH point the rest
-// of the window works on; the reference shape (+ Use as reference); the guards
-// and the live datum. docs/datum-reference-design.md §2, §6.
+// Three columns above the point tabs (DrawDatumPointTabs): the mode; the
+// reference shape (+ Use as reference); the guards and the live datum.
+// docs/datum-reference-design.md §2, §6.
 void App::DrawDatumHelperBand(RecipeStep& s, const nlohmann::json& merged, bool busy)
 {
     const std::string name = merged.value("name", std::string("datum1"));
     const bool three = merged.value("mode", std::string("2pt")) == "3pt";
-    const int  nPts  = three ? 3 : 2;
-    datumPointSel_ = std::clamp(datumPointSel_, 0, nPts - 1);   // UI state, not the document
 
     const float numW = 100.0f;
     if (!ImGui::BeginTable("dtmBand", 3, ImGuiTableFlags_BordersInnerV |
@@ -844,27 +852,8 @@ void App::DrawDatumHelperBand(RecipeStep& s, const nlohmann::json& merged, bool 
         ImGui::SetTooltip("3 points: a rigid least-squares fit of the reference shape onto\n"
                           "E1 / E2 / E3 - less angle noise when E3 is away from the E1-E2\n"
                           "line, and a residual per point to catch a wrong feature.");
-    // The point strip: green once a point has its model AND its view.
-    static const char* kRole[3] = {"origin", "X+", "anchor"};
-    for (int i = 0; i < nPts; ++i) {
-        const std::string mk = "model" + std::to_string(i + 1);
-        const std::string vk = "view_point" + std::to_string(i + 1);
-        const std::string mu = merged.value(mk, std::string());
-        const bool ready = !mu.empty() && FindVisionModel(session_.VisionModels(), mu) &&
-                           merged.contains(vk) && merged[vk].is_object() && !merged[vk].empty();
-        if (i > 0) ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, ready ? kGood : kBad);
-        char lbl[32];
-        std::snprintf(lbl, sizeof(lbl), "E%d %s##dtmPt%d", i + 1, kRole[i], i);
-        if (ImGui::RadioButton(lbl, datumPointSel_ == i)) datumPointSel_ = i;
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("E%d: %s", i + 1,
-                              ready ? "model and view taught - select it to tune it below"
-                                    : "NOT ready - a run refuses the step before anything "
-                                      "moves; create the model and Teach here below");
-    }
-    ImGui::TextDisabled("Below: E%d's view, run options, detection model.", datumPointSel_ + 1);
+    ImGui::TextWrapped("Each point has its OWN camera view and detection model - teach them "
+                       "on the point's tab below.");
 
     // -- the reference shape --
     ImGui::TableSetColumnIndex(1);
@@ -960,6 +949,55 @@ void App::DrawDatumHelperBand(RecipeStep& s, const nlohmann::json& merged, bool 
         ImGui::TextDisabled("%s", why.c_str());
     }
     ImGui::EndTable();
+}
+
+// ---- The datum step's point tabs (datum_reference) --------------------------------
+// One tab per point - E1 origin / E2 X+ / E3 anchor, green once the point has
+// its model AND its view - and everything under the bar (the view and Teach
+// here, run options, trial detections, the teach panels) is THAT point's.
+//
+// The tab items are empty on purpose: the window body below has early returns
+// (no model yet, a shared copy) that would otherwise each have to close the tab
+// bar too; drawn straight under the bar it reads as the tab's contents.
+//
+// datumPointSel_ is the selection; datumTabShown_ is what the bar showed last
+// frame. A selection made elsewhere (the step form's E1 / E2 / E3 buttons, a
+// mode change clamping E3 away) is pushed into the bar with SetSelected, and
+// until the bar has taken it the tab still showing does not overwrite it.
+void App::DrawDatumPointTabs(const nlohmann::json& merged)
+{
+    const int nPts = merged.value("mode", std::string("2pt")) == "3pt" ? 3 : 2;
+    datumPointSel_ = std::clamp(datumPointSel_, 0, nPts - 1);   // UI state, not the document
+    const int force = datumPointSel_ != datumTabShown_ ? datumPointSel_ : -1;
+
+    if (!ImGui::BeginTabBar("dtmPoints")) return;
+    static const char* kRole[3] = {"origin", "X+", "anchor"};
+    for (int i = 0; i < nPts; ++i) {
+        const std::string mk = "model" + std::to_string(i + 1);
+        const std::string vk = "view_point" + std::to_string(i + 1);
+        const std::string mu = merged.value(mk, std::string());
+        const bool hasModel = !mu.empty() && FindVisionModel(session_.VisionModels(), mu);
+        const bool hasView  = merged.contains(vk) && merged[vk].is_object() && !merged[vk].empty();
+        const bool ready    = hasModel && hasView;
+        // ### keeps the tab's id fixed while its "(not taught)" comes and goes.
+        char lbl[64];
+        std::snprintf(lbl, sizeof(lbl), "  E%d %s%s  ###dtmPt%d", i + 1, kRole[i],
+                      ready ? "" : "  (not taught)", i);
+        ImGui::PushStyleColor(ImGuiCol_Text, ready ? kGood : kBad);
+        const bool open = ImGui::BeginTabItem(
+            lbl, nullptr, i == force ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("E%d (%s): %s", i + 1, kRole[i],
+                              ready      ? "model and view taught"
+                              : hasModel ? "the camera view is NOT taught - Teach here on this tab"
+                                         : "no detection model yet - create it on this tab");
+        if (open) {
+            if (force < 0 || i == force) datumPointSel_ = datumTabShown_ = i;
+            ImGui::EndTabItem();
+        }
+    }
+    ImGui::EndTabBar();
 }
 
 } // namespace firedog

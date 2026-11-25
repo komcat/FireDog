@@ -23,6 +23,8 @@
 
 #include "ui/Theme.h"     // kVariantViolet
 #include "ui/Widgets.h"
+#include "core/AlignFrame.h"
+#include "core/Datum.h"
 #include "core/Log.h"
 
 #include <algorithm>
@@ -974,10 +976,48 @@ void App::DrawJogPanel()
     } else {
         const std::vector<std::string>      axNames = dev->Axes();
         const std::map<std::string, double> live    = dev->Positions();
+        const ImVec2 top = ImGui::GetCursorPos();
         for (const std::string& ax : axNames) {
             const auto it = live.find(ax);
             if (it != live.end()) ImGui::Text("%s %9.4f", ax.c_str(), it->second);
             else                  ImGui::TextDisabled("%s      --", ax.c_str());
+        }
+
+        // Beside the axes: where the crosshair (camera centre = this device's
+        // axis X/Y) sits in each live datum measured on THIS device - local
+        // x / y through AlignMachineToLocal, and dZ = Z minus the frame's focus
+        // Z, green inside move_local's z band. One column per datum. Display
+        // only. docs/datum-reference-design.md §7.
+        const auto ix = live.find("X"), iy = live.find("Y"), iz = live.find("Z");
+        if (ix != live.end() && iy != live.end()) {
+            const std::string devName = hardware_.MotionName(static_cast<size_t>(selectedMotion_));
+            const float colW = ImGui::CalcTextSize("W -0000.0000").x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
+            const float dW   = ImGui::CalcTextSize("dZ -0000.0000").x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
+            int k = 0;
+            for (const Datum& d : workflow_.Datums()) {
+                if (d.device != devName) continue;   // another device's axis space
+                double lx = 0.0, ly = 0.0;
+                AlignMachineToLocal(d.frame, ix->second, iy->second, &lx, &ly);
+                ImGui::SetCursorPos(ImVec2(top.x + colW + dW * static_cast<float>(k), top.y));
+                ImGui::BeginGroup();
+                ImGui::TextColored(ImVec4(1.0f, 0.63f, 0.82f, 1.0f), "%s", d.name.c_str());
+                ImGui::Text("x  %+9.4f", lx);
+                ImGui::Text("y  %+9.4f", ly);
+                if (iz != live.end() && d.frame.hasZ) {
+                    const double dz = iz->second - d.frame.z;
+                    ImGui::TextColored(std::fabs(dz) <= kLocalZBandMm ? ImVec4(0.47f, 0.90f, 0.47f, 1.0f)
+                                                                      : ImVec4(1.0f, 0.43f, 0.43f, 1.0f),
+                                       "dZ %+9.4f", dz);
+                }
+                ImGui::EndGroup();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("The crosshair (camera centre) in datum '%s''s local frame:\n"
+                                      "origin E1, X+ toward E2 (mm) - what move_local {datum} x_mm / y_mm mean.\n"
+                                      "dZ = Z minus the frame's focus Z %.4f (mean of E1/E2);\n"
+                                      "green within move_local's +/-%.1f mm z band.",
+                                      d.name.c_str(), d.frame.z, kLocalZBandMm);
+                ++k;
+            }
         }
     }
     ImGui::EndChild();

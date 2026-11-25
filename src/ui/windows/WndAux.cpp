@@ -24,7 +24,9 @@
 #include "implot.h"
 
 #include "ui/Widgets.h"
+#include "core/AlignFrame.h"
 #include "core/DataBus.h"
+#include "core/Datum.h"
 #include "core/SavedPositions.h"
 #include "core/Log.h"
 #include "core/Topics.h"
@@ -649,6 +651,7 @@ void App::DrawAuxWindow()
         // ---- Datums: a part's local frame (datum_reference) ----
         // Always on, like the beacons: it is what a move_local will drive by.
         if (haveImg) DrawAuxDatums(dl, imgO, imgS);
+        if (haveImg) DrawAuxDatumReadout(dl, imgO, imgS);
 
         // ---- Objects registered to a gripper: a diamond riding the tip ----
         // Always on, like the beacons: it says what the tool is holding.
@@ -1889,6 +1892,89 @@ void App::DrawSignalOverlay()
     DrawKeithleyChart(ImVec2(-1, -1));   // fill the overlay child
 }
 
+// The jog key boxes' size - ONE computation, for DrawAuxJogKeys and for the
+// datum readout that sits under the W box.
+struct AuxKeyGeom {
+    float L    = 0.0f;   // letter size
+    float B    = 0.0f;   // box height (and W/A/S/D width)
+    float m    = 0.0f;   // a box centre's distance from the picture's edge
+    bool  fits = false;  // false: the picture is too small, no boxes drawn
+};
+static AuxKeyGeom AuxJogKeyGeom(const ImVec2& imgS)
+{
+    AuxKeyGeom g;
+    const float fs = ImGui::GetFontSize();
+    g.L    = std::clamp((std::min)(imgS.x, imgS.y) * 0.06f, fs * 1.4f, fs * 2.6f);
+    g.B    = g.L * 1.35f;
+    g.m    = g.B * 0.5f + 8.0f;
+    g.fits = imgS.x >= 4.0f * g.B && imgS.y >= 5.0f * g.B;
+    return g;
+}
+
+// Where the crosshair is in each live datum's local frame. The crosshair is the
+// picture centre, which IS the camera device's axis X/Y: a datum's E points
+// were captured as that pose + the detection's offset (CaptureWorldPoint), so
+// the same machine space, and AlignMachineToLocal - the one inverse of the
+// frame - turns the pose into local x / y. dZ is the axis Z minus the frame's
+// focus Z (the mean of E1 / E2), coloured against move_local's z band.
+// Top-centre, under the W key box when jog is armed (else at the top edge).
+// Draw only. docs/datum-reference-design.md §7.
+void App::DrawAuxDatumReadout(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
+{
+    const std::string refName = workflow_.GantryName();
+    if (refName.empty()) return;
+    std::map<std::string, double> pose;
+    if (!workflow_.DevicePose(refName, pose)) return;
+    const auto ix = pose.find("X"), iy = pose.find("Y"), iz = pose.find("Z");
+    if (ix == pose.end() || iy == pose.end()) return;
+
+    struct Line { std::string name, xy, dz; ImU32 dzCol; };
+    std::vector<Line> lines;
+    for (const Datum& d : workflow_.Datums()) {
+        if (d.device != refName) continue;   // another device's axis space
+        double lx = 0.0, ly = 0.0;
+        AlignMachineToLocal(d.frame, ix->second, iy->second, &lx, &ly);
+        Line ln;
+        ln.name = d.name;
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "  x %+.4f   y %+.4f", lx, ly);
+        ln.xy    = buf;
+        ln.dzCol = IM_COL32(200, 200, 205, 255);
+        if (iz != pose.end() && d.frame.hasZ) {
+            const double dz = iz->second - d.frame.z;
+            std::snprintf(buf, sizeof(buf), "   dZ %+.4f mm", dz);
+            ln.dz    = buf;
+            ln.dzCol = std::fabs(dz) <= kLocalZBandMm ? IM_COL32(120, 230, 120, 255)
+                                                      : IM_COL32(255, 110, 110, 255);
+        } else {
+            ln.xy += " mm";
+        }
+        lines.push_back(std::move(ln));
+    }
+    if (lines.empty()) return;
+
+    const AuxKeyGeom g   = AuxJogKeyGeom(imgS);
+    const float      top = (jogArmed_ && g.fits) ? imgO.y + g.m + g.B * 0.5f * 1.12f + 8.0f
+                                                 : imgO.y + 8.0f;
+    const float lineH = ImGui::GetTextLineHeightWithSpacing();
+    const float cx    = imgO.x + imgS.x * 0.5f;
+    float y = top;
+    for (const Line& ln : lines) {
+        const float wName = ImGui::CalcTextSize(ln.name.c_str()).x;
+        const float wXy   = ImGui::CalcTextSize(ln.xy.c_str()).x;
+        const float wDz   = ln.dz.empty() ? 0.0f : ImGui::CalcTextSize(ln.dz.c_str()).x;
+        const float w     = wName + wXy + wDz;
+        const float x0    = cx - w * 0.5f;
+        dl->AddRectFilled(ImVec2(x0 - 6.0f, y - 2.0f), ImVec2(x0 + w + 6.0f, y + lineH),
+                          IM_COL32(0, 0, 0, 170), 4.0f);
+        dl->AddText(ImVec2(x0, y), kDatumE3Col, ln.name.c_str());
+        dl->AddText(ImVec2(x0 + wName, y), IM_COL32(235, 235, 240, 255), ln.xy.c_str());
+        if (!ln.dz.empty())
+            dl->AddText(ImVec2(x0 + wName + wXy, y), ln.dzCol, ln.dz.c_str());
+        y += lineH + 2.0f;
+    }
+}
+
 // The jog keys on the picture: W top, S bottom, A left, D right, and the Z
 // pair R (up arrow) over F (down arrow) in the bottom-right corner - where the
 // operator's eyes are while jogging, rather than on the Jog window's pad.
@@ -1905,12 +1991,12 @@ void App::DrawSignalOverlay()
 // Display only: it reads the stamps and moves nothing.
 void App::DrawAuxJogKeys(ImDrawList* dl, const ImVec2& imgO, const ImVec2& imgS)
 {
-    const float fs = ImGui::GetFontSize();
-    const float L  = std::clamp((std::min)(imgS.x, imgS.y) * 0.06f, fs * 1.4f, fs * 2.6f);
-    const float B  = L * 1.35f;                    // box height (and W/A/S/D width)
+    const AuxKeyGeom g = AuxJogKeyGeom(imgS);
+    if (!g.fits) return;
+    const float L  = g.L;
+    const float B  = g.B;                          // box height (and W/A/S/D width)
     const float BZ = B * 1.55f;                    // R/F box width: arrow + letter
-    const float m  = B * 0.5f + 8.0f;              // a box centre's distance from the edge
-    if (imgS.x < 4.0f * B || imgS.y < 5.0f * B) return;
+    const float m  = g.m;                          // a box centre's distance from the edge
 
     const bool   live = jogKeysLiveFrame_ >= 0 &&
                         jogKeysLiveFrame_ >= ImGui::GetFrameCount() - 1;   // Jog may draw after us
