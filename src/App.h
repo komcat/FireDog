@@ -1603,6 +1603,17 @@ private:
     // Step mode: Run starts paused at the selected step (or the first leaf);
     // Next executes one leaf at a time. Toggling mid-run pauses/resumes.
     bool edStepMode_ = false;
+    // Loop: the Recipe Editor's Run (only - not Run Step / Run From) runs the
+    // recipe edLoopCount_ times back to back. The loop in flight: edLoopTotal_
+    // runs (0 = none), edLoopDone_ completed, of recipe edLoopUid_. The next
+    // run is started by UpdateEditorLoop (App::Update) when the last one
+    // COMPLETED; a failure or a Stop ends the loop. Runtime only, not persisted.
+    int         edLoopCount_ = 1;
+    int         edLoopTotal_ = 0;
+    int         edLoopDone_  = 0;
+    std::string edLoopUid_;
+    bool StartEditorRun(const Recipe& r, std::string* err);   // Run's one start
+    void UpdateEditorLoop();                                   // from Update()
     // Editor dialogs/palette state (menu -> popup handoff, like the products).
     int  edAddMode_           = 0;       // palette insert: 0 after, 1 into, 2 else
     int  edConfirmAction_     = 0;       // unsaved-changes guard: 1 leave page, 2 reload

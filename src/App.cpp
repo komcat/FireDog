@@ -284,6 +284,10 @@ void App::Update(float dt)
     // recipe but the last. Ordering is the whole mechanism here.
     DrainCycleVars();
     orch_.programs.Tick();       // sequences program/slot runs between frames
+    // The Recipe Editor's Run loop: the next run starts in the same frame the
+    // last one is seen Completed - BEFORE the Pause drop below, so a Pause
+    // pressed during one run holds the next, as it does between program items.
+    UpdateEditorLoop();
     // A Pause outlives one recipe on purpose (a program's next queue item must
     // start held), so it is dropped HERE, once the whole run is over - AFTER
     // Tick, which is what starts that next item. Otherwise a Pause pressed

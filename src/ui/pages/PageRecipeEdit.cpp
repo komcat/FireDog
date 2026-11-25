@@ -39,6 +39,10 @@ namespace {
 // row — a documented quirk.
 constexpr std::size_t kElsePathBase = kElseBranchBase;
 
+// The Run loop's ceiling: a mistyped count must not commit the machine to a
+// day of runs (the same reason a program folder's loop has kMaxQueueItems).
+constexpr int kEdLoopMax = 999;
+
 const RecipeStep* FindStepByPath(const std::vector<RecipeStep>* list,
                                  const std::vector<std::size_t>& path)
 {
@@ -1917,8 +1921,11 @@ void App::DrawRecipeRunStrip(float height)
     const float btnW  = 110.0f;
     const float chkW  = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x +
                         ImGui::CalcTextSize("Step").x;
-    // Run / Run Step / Run From / Next / Pause / Stop / Save.
-    const float ctrlW = btnW * 7.0f + chkW + style.ItemSpacing.x * 7.0f;
+    // The loop count before Run: a number with its -/+ buttons.
+    const float loopW = ImGui::CalcTextSize("000").x + style.FramePadding.x * 2.0f +
+                        (ImGui::GetFrameHeight() + style.ItemInnerSpacing.x) * 2.0f;
+    // Step / loop / Run / Run Step / Run From / Next / Pause / Stop / Save.
+    const float ctrlW = btnW * 7.0f + chkW + loopW + style.ItemSpacing.x * 8.0f;
     const float rightEdge =
         ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
 
@@ -1948,6 +1955,11 @@ void App::DrawRecipeRunStrip(float height)
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.16f, 1.0f),
                            "| program run - drive it from the Run page (F1)");
+    }
+    if (edLoopTotal_ > 0) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.55f, 0.80f, 1.0f, 1.0f), "| loop %d/%d",
+                           (std::min)(edLoopDone_ + 1, edLoopTotal_), edLoopTotal_);
     }
     // Teach mode is a Run-page toggle, but it applies to Run here too: say so
     // where the button is, or "Run" quietly does something else.
@@ -1985,16 +1997,36 @@ void App::DrawRecipeRunStrip(float height)
     ImGui::SameLine();
     const bool canRun = !orch_.Busy() && recipeSel_ >= 0 &&
                         recipeSel_ < static_cast<int>(session_.Recipes().size());
+    // Loop count for Run (only): 1 = a single run. Locked while anything
+    // runs; a teach run never loops (it saves positions, once).
+    ImGui::BeginDisabled(orch_.Busy() || teachMode_);
+    ImGui::SetNextItemWidth(loopW);
+    if (ImGui::InputInt("##edLoop", &edLoopCount_, 1, 10))
+        edLoopCount_ = std::clamp(edLoopCount_, 1, kEdLoopMax);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(teachMode_ ? "Loop: a teach run is never repeated"
+                                     : "Loop: Run runs the whole recipe this many times, one\n"
+                                       "after another (1 = once). A failure or Stop ends the\n"
+                                       "loop. Run Step and Run From always run once.");
+    ImGui::SameLine();
     ImGui::BeginDisabled(!canRun);
-    if (IconButton(UiIcon("run_execute"), "Run", ImVec2(btnW, 0.0f))) {
-        RecipeEngine::Env env = session_.MakeRecipeEnv(posVariant_);
-        RecipeEngine::StartOpts opts = RecipeStartOpts();   // carries teach
-        opts.stepMode = edStepMode_;
-        if (edStepMode_) opts.startPath = edStepSel_;   // from the selection
+    const std::string runLbl = edLoopCount_ > 1 && !teachMode_
+                                   ? "Run x" + std::to_string(edLoopCount_)
+                                   : std::string("Run");
+    if (IconButton(UiIcon("run_execute"), runLbl.c_str(), ImVec2(btnW, 0.0f))) {
+        const Recipe& r = session_.Recipes()[recipeSel_];
         recipeStartErr_.clear();
-        if (!orch_.recipe.Start(session_.Recipes()[recipeSel_], std::move(env),
-                                 &recipeStartErr_, std::move(opts)))
+        if (StartEditorRun(r, &recipeStartErr_)) {
+            edLoopTotal_ = teachMode_ ? 0 : (edLoopCount_ > 1 ? edLoopCount_ : 0);
+            edLoopDone_  = 0;
+            edLoopUid_   = r.uid;
+            if (edLoopTotal_ > 0)
+                FD_INFO("recipe", "'%s': loop of %d runs - run 1", r.name.c_str(), edLoopTotal_);
+        } else {
+            edLoopTotal_ = 0;
             FD_WARN("recipe", "start rejected: %s", recipeStartErr_.c_str());
+        }
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
@@ -2135,6 +2167,54 @@ void App::DrawRecipeRunStrip(float height)
         DrawRecipeTimeLine();
     }
     ImGui::EndChild();
+}
+
+// Run's one start - the button and every later run of its loop: the active
+// variant's Env (MakeRecipeEnv, never hand-copied), teach carried, Step mode
+// from the selection exactly as the button always did.
+bool App::StartEditorRun(const Recipe& r, std::string* err)
+{
+    RecipeEngine::Env env = session_.MakeRecipeEnv(posVariant_);
+    RecipeEngine::StartOpts opts = RecipeStartOpts();   // carries teach
+    opts.stepMode = edStepMode_;
+    if (edStepMode_) opts.startPath = edStepSel_;   // from the selection
+    return orch_.recipe.Start(r, std::move(env), err, std::move(opts));
+}
+
+// The Run loop, from App::Update (after programs.Tick): when the engine is idle
+// and the last run COMPLETED, start the next - the same recipe by uid, through
+// StartEditorRun. A failure, a Stop, a program or script taking the machine,
+// or the recipe gone ends the loop; nothing is retried.
+void App::UpdateEditorLoop()
+{
+    if (edLoopTotal_ <= 0 || orch_.recipe.Running()) return;
+    const RecipeEngine::Status st = orch_.recipe.GetStatus();
+    const auto end = [&](const char* why) {
+        FD_INFO("recipe", "loop ended after %d of %d run(s): %s", edLoopDone_, edLoopTotal_, why);
+        edLoopTotal_ = 0;
+    };
+    if (st.state != RecipeEngine::State::Completed) {
+        end(st.state == RecipeEngine::State::Stopped ? "stopped" : "the run failed");
+        return;
+    }
+    ++edLoopDone_;
+    if (edLoopDone_ >= edLoopTotal_) {
+        FD_INFO("recipe", "loop of %d run(s) completed", edLoopTotal_);
+        edLoopTotal_ = 0;
+        return;
+    }
+    if (orch_.Busy()) { end("another run took the machine"); return; }
+    const auto& lib = session_.Recipes();
+    const auto it = std::find_if(lib.begin(), lib.end(),
+                                 [&](const Recipe& r) { return r.uid == edLoopUid_; });
+    if (it == lib.end()) { end("the recipe is gone"); return; }
+    std::string err;
+    if (!StartEditorRun(*it, &err)) {
+        recipeStartErr_ = err;
+        end(("next run rejected: " + err).c_str());
+        return;
+    }
+    FD_INFO("recipe", "'%s': loop run %d of %d", it->name.c_str(), edLoopDone_ + 1, edLoopTotal_);
 }
 
 } // namespace firedog
