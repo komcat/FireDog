@@ -209,7 +209,8 @@ private:
                              PromptLevel level = PromptLevel::Info,
                              const std::vector<std::string>& images = {});
     int  AwaitChoiceInternal(const std::string& message,
-                             const std::vector<std::string>& buttons, PromptLevel level);
+                             const std::vector<std::string>& buttons, PromptLevel level,
+                             int timeoutMs);
     bool AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req);
     bool AwaitPickInternal(const ExecutionContext::PickRequest& req,
                            ExecutionContext::PickResult* out);

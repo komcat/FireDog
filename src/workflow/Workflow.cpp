@@ -86,6 +86,7 @@ void Workflow::Start(const HardwareConfig& hw)
     StartCld(hw);
     StartPsu(hw);
     StartLight(hw);
+    StartTec(hw);
     StartNeedleCal();
     StartDeviceRegs();   // after StartMotion — logs against the fleet it found
     pivotDefaults_ = LoadPivotDefaults();
@@ -2105,6 +2106,137 @@ CcsPd3* Workflow::ConnectedLight() const
 {
     if (hw_.LightState() != ConnState::Connected) return nullptr;
     return hw_.Light();
+}
+
+// ---- Arroyo TEC fleet -----------------------------------------------------------
+
+void Workflow::StartTec(const HardwareConfig& hw)
+{
+    const std::vector<ArroyoTecConfig> tecs = hw.EnabledTecs();
+    if (tecs.empty()) {
+        FD_INFO("workflow", "no enabled Arroyo TEC in config");
+        return;
+    }
+    // The whole fleet is registered before any connect launches (StartPsu):
+    // a slot index must not move while a connect thread holds it.
+    for (const ArroyoTecConfig& t : tecs) {
+        if (hw_.TecIndex(t.name) >= 0 && !t.name.empty()) {
+            FD_WARN("workflow", "TEC name '%s' is used twice - the second entry is skipped "
+                                "(a step names a TEC by it)", t.name.c_str());
+            continue;
+        }
+        hw_.AddTecSlot(t.name);
+        tecCfgs_.push_back(t);   // kept so the TEC page can reconnect later
+    }
+    tecConnect_.resize(tecCfgs_.size());
+    for (std::size_t i = 0; i < tecCfgs_.size(); ++i) LaunchTecConnect(i);
+}
+
+void Workflow::LaunchTecConnect(std::size_t idx)
+{
+    const ArroyoTecConfig& tc = tecCfgs_[idx];
+    hw_.SetTecState(idx, ConnState::Connecting);
+    FD_INFO("workflow", "connecting Arroyo TEC '%s' (%s @ %d%s)", tc.name.c_str(),
+            tc.port.c_str(), tc.baud, tc.simulated ? ", simulated" : "");
+
+    ArroyoTec::Config cfg;
+    cfg.name           = tc.name;
+    cfg.port           = tc.port;
+    cfg.baud           = tc.baud;
+    cfg.pollIntervalMs = tc.pollIntervalMs;
+    cfg.simulated      = tc.simulated;
+    // Replacing the driver destroys the old one, which closes the port first -
+    // a COM port has one owner and the new driver is about to open it.
+    hw_.SetTecDevice(idx, std::make_unique<ArroyoTec>(cfg));
+
+    // Connect + poll only. Nothing is written to the output at startup.
+    const int interval = tc.pollIntervalMs;
+    tecConnect_[idx] = std::async(std::launch::async, [this, idx, interval] {
+        ArroyoTec* t = hw_.TecDevice(idx);
+        bool ok = t && t->Connect();
+        if (ok) ok = t->StartPolling(interval);
+        hw_.SetTecState(idx, ok ? ConnState::Connected : ConnState::Failed);
+        if (!ok) FD_ERROR("workflow", "Arroyo TEC '%s' bring-up failed: %s", hw_.TecName(idx).c_str(),
+                          t ? t->LastError().c_str() : "no driver");
+    });
+}
+
+bool Workflow::ConnectTec(const std::string& device)
+{
+    const int idx = hw_.TecIndex(device);
+    if (idx < 0) {
+        FD_WARN("workflow", "TEC connect: no TEC '%s' configured", device.c_str());
+        return false;
+    }
+    const std::size_t i = static_cast<std::size_t>(idx);
+    if (hw_.TecState(i) == ConnState::Connecting) return false;   // in flight
+    ArroyoTec* t = hw_.TecDevice(i);
+    if (t && t->IsConnected()) return true;                       // already up
+    LaunchTecConnect(i);   // rebuilds the driver from tecCfgs_[i]
+    return true;
+}
+
+bool Workflow::DisconnectTec(const std::string& device)
+{
+    const int idx = hw_.TecIndex(device);
+    if (idx < 0) return false;
+    const std::size_t i = static_cast<std::size_t>(idx);
+    if (hw_.TecState(i) == ConnState::Connecting) return false;   // let it finish
+    ArroyoTec* t = hw_.TecDevice(i);
+    if (!t) return false;
+    t->Disconnect();   // stops polling, LOCAL, closes the port; output left as it is
+    hw_.SetTecState(i, ConnState::Disconnected);
+    FD_INFO("workflow", "Arroyo TEC '%s' disconnected", hw_.TecName(i).c_str());
+    return true;
+}
+
+ArroyoTec* Workflow::ConnectedTec(const std::string& device) const
+{
+    const int idx = hw_.TecIndex(device);
+    if (idx < 0) return nullptr;
+    const std::size_t i = static_cast<std::size_t>(idx);
+    if (hw_.TecState(i) != ConnState::Connected) return nullptr;
+    return hw_.TecDevice(i);
+}
+
+std::string Workflow::TecLabel(const std::string& device) const
+{
+    if (!device.empty()) return "TEC '" + device + "'";
+    return hw_.TecCount() > 0 ? "TEC '" + hw_.TecName(0) + "' (the first)" : std::string("the first TEC");
+}
+
+bool Workflow::SetTecTemperature(const std::string& device, double celsius, std::string* why)
+{
+    ArroyoTec* t = ConnectedTec(device);
+    if (!t) {
+        if (why) *why = TecLabel(device) + " is not connected";
+        return false;
+    }
+    const bool ok = t->SetTemperature(celsius);
+    if (!ok && why) *why = t->LastError();
+    return ok;
+}
+
+bool Workflow::SetTecOutput(const std::string& device, bool on, std::string* why)
+{
+    ArroyoTec* t = ConnectedTec(device);
+    if (!t) {
+        if (why) *why = TecLabel(device) + " is not connected";
+        return false;
+    }
+    const bool ok = t->SetOutput(on);
+    if (!ok && why) *why = t->LastError();
+    return ok;
+}
+
+void Workflow::RequestTecTemperature(const std::string& device, double celsius)
+{
+    if (ArroyoTec* t = ConnectedTec(device)) t->RequestTemperature(celsius);
+}
+
+void Workflow::RequestTecOutput(const std::string& device, bool on)
+{
+    if (ArroyoTec* t = ConnectedTec(device)) t->RequestOutput(on);
 }
 
 std::vector<std::string> Workflow::LightNames() const

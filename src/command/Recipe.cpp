@@ -529,6 +529,10 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             // Needs::Psu below). Connection is checked there too, per device.
             if (env.hw.PsuIndex(v) < 0) Issue(env, where, path, "unknown PSU '" + v + "'");
             break;
+        case ParamType::DeviceTec:
+            // The same: empty = the first, connection checked by Needs::Tec.
+            if (env.hw.TecIndex(v) < 0) Issue(env, where, path, "unknown TEC '" + v + "'");
+            break;
         case ParamType::DeviceCamera:
             // Only a NAMED camera reaches here (empty = the machine's camera).
             // One camera is driven - the first enabled in hardware.json - so a
@@ -674,6 +678,14 @@ void CheckReferences(const ValidateEnv& env, const std::string& where,
             break;
         }
         case CommandSpec::Needs::Light:    what = "lighting"; st = env.hw.LightState();    break;
+        case CommandSpec::Needs::Tec: {
+            // The step's own TEC ("device", "" = the first), exactly like Psu.
+            const int ti = env.hw.TecIndex(device);
+            what = "TEC";
+            st   = ti >= 0 ? env.hw.TecState(static_cast<std::size_t>(ti)) : ConnState::Disconnected;
+            if (ti < 0 && !device.empty()) what = nullptr;
+            break;
+        }
         case CommandSpec::Needs::None:     break;
         }
         if (what && st != ConnState::Connected)

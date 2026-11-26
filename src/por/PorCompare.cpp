@@ -199,6 +199,7 @@ bool IsReferenceType(ParamType t)
     switch (t) {
     case ParamType::DeviceMotion: case ParamType::DeviceHexapod: case ParamType::DeviceIo:
     case ParamType::DevicePsu:    case ParamType::Slide:         case ParamType::LightName:
+    case ParamType::DeviceTec:
     case ParamType::PositionUid:  case ParamType::AlignUid:      case ParamType::NominalUid:
     case ParamType::VisionUid:    case ParamType::GripUid:       case ParamType::TrayUid:
     case ParamType::MapName:      case ParamType::PinName:       case ParamType::ScriptFile:
@@ -236,7 +237,8 @@ Ref Resolve(const Ctx& c, const PorSide& s, const ParamSpec& p, const nlohmann::
     const std::string val = v.get<std::string>();
     r.text = val;
     r.key  = val;
-    if (val.empty() && p.type != ParamType::DevicePsu) return r;   // optional and unset
+    if (val.empty() && p.type != ParamType::DevicePsu && p.type != ParamType::DeviceTec)
+        return r;   // optional and unset
 
     const std::string device = merged.value("device", std::string());
     const auto miss = [&r, &val](const std::string& why) {
@@ -310,6 +312,15 @@ Ref Resolve(const Ctx& c, const PorSide& s, const ParamSpec& p, const nlohmann::
         } else if (s.hasHardware &&
                    std::find(s.hw.psus.begin(), s.hw.psus.end(), val) == s.hw.psus.end()) {
             miss("no such PSU");
+        }
+        break;
+    case ParamType::DeviceTec:
+        if (val.empty()) {
+            r.text = r.key = "(the first TEC)";
+            if (s.hasHardware && s.hw.tecs.empty()) { r.ok = false; r.text += "  (no TEC)"; }
+        } else if (s.hasHardware &&
+                   std::find(s.hw.tecs.begin(), s.hw.tecs.end(), val) == s.hw.tecs.end()) {
+            miss("no such TEC");
         }
         break;
     case ParamType::Slide:

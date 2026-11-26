@@ -396,8 +396,10 @@ bool RecipeEngine::AwaitPromptInternal(const std::string& message, bool wantsInp
 // stop behaviour - only the answer is an index instead of OK / Cancel.
 int RecipeEngine::AwaitChoiceInternal(const std::string& message,
                                       const std::vector<std::string>& buttons,
-                                      PromptLevel level)
+                                      PromptLevel level, int timeoutMs)
 {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 0);
     std::unique_lock lock(mu_);
     prompt_           = message;
     promptWantsInput_ = false;
@@ -410,13 +412,17 @@ int RecipeEngine::AwaitChoiceInternal(const std::string& message,
     promptAutoOkAt_   = std::chrono::steady_clock::time_point{};   // a choice never answers itself
     BeginWaitLocked();
     // Wait in slices so a stop request always gets through.
+    bool timedOut = false;
     while (!promptAnswered_ && !stopReq_.load()) {
+        if (timeoutMs > 0 && std::chrono::steady_clock::now() >= deadline) { timedOut = true; break; }
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
     EndWaitLocked();
     prompt_.clear();
     promptButtons_.clear();
-    return (promptAnswered_ && !stopReq_.load()) ? promptChoice_ : -1;
+    if (stopReq_.load()) return -1;
+    if (timedOut) return ExecutionContext::kChoiceTimedOut;
+    return promptAnswered_ ? promptChoice_ : -1;
 }
 
 bool RecipeEngine::AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req)
@@ -506,8 +512,8 @@ void RecipeEngine::ThreadMain(Recipe recipe, Recipe onFail, Env env)
                 return AwaitPickInternal(r, out);
             },
             [this](const std::string& m, const std::vector<std::string>& b,
-                   PromptLevel level) {
-                return AwaitChoiceInternal(m, b, level);
+                   PromptLevel level, int timeoutMs) {
+                return AwaitChoiceInternal(m, b, level, timeoutMs);
             },
             [this](bool on) {
                 const std::scoped_lock lock(mu_);

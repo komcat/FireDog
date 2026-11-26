@@ -968,8 +968,10 @@ bool LuaEngine::AwaitPromptInternal(const std::string& message, bool wantsInput,
 // RecipeEngine::AwaitChoiceInternal - the same shape).
 int LuaEngine::AwaitChoiceInternal(const std::string& message,
                                    const std::vector<std::string>& buttons,
-                                   PromptLevel level)
+                                   PromptLevel level, int timeoutMs)
 {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 0);
     std::unique_lock lock(mu_);
     prompt_           = message;
     promptWantsInput_ = false;
@@ -980,12 +982,16 @@ int LuaEngine::AwaitChoiceInternal(const std::string& message,
     promptAnswered_   = false;
     promptAnswer_     = false;
     promptAutoOkAt_   = std::chrono::steady_clock::time_point{};   // never answers itself
+    bool timedOut = false;
     while (!promptAnswered_ && !stopReq_.load()) {
+        if (timeoutMs > 0 && std::chrono::steady_clock::now() >= deadline) { timedOut = true; break; }
         cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
     prompt_.clear();
     promptButtons_.clear();
-    return (promptAnswered_ && !stopReq_.load()) ? promptChoice_ : -1;
+    if (stopReq_.load()) return -1;
+    if (timedOut) return ExecutionContext::kChoiceTimedOut;
+    return promptAnswered_ ? promptChoice_ : -1;
 }
 
 bool LuaEngine::AwaitAdjustInternal(const ExecutionContext::AdjustRequest& req)
@@ -1043,8 +1049,8 @@ void LuaEngine::ThreadMain(std::string path, Env env)
                 return AwaitPickInternal(r, out);
             },
             [this](const std::string& m, const std::vector<std::string>& b,
-                   PromptLevel level) {
-                return AwaitChoiceInternal(m, b, level);
+                   PromptLevel level, int timeoutMs) {
+                return AwaitChoiceInternal(m, b, level, timeoutMs);
             },
         });
     for (const auto& [key, val] : env.initialCtx) ctx.CtxSet(key, val);

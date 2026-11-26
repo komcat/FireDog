@@ -27,7 +27,7 @@ void Finish(PorRow& r)
 // ---- What the master's deck uses ------------------------------------------------
 
 struct Used {
-    std::set<std::string> motion, io, psu, slide, light;   // light = the call-outs named
+    std::set<std::string> motion, io, psu, tec, slide, light;   // light = the call-outs named
     std::set<std::pair<std::string, std::string>> pins;   // (io device, pin name)
     bool camera = false, keithley = false, cld = false;
 };
@@ -57,6 +57,10 @@ void CollectSteps(const std::vector<RecipeStep>& steps, const PorSide& m,
                     // "" = the first configured supply, exactly as a run picks it.
                     if (!v.empty()) u.psu.insert(v);
                     else if (!m.hw.psus.empty()) u.psu.insert(m.hw.psus.front());
+                    break;
+                case ParamType::DeviceTec:
+                    if (!v.empty()) u.tec.insert(v);
+                    else if (!m.hw.tecs.empty()) u.tec.insert(m.hw.tecs.front());
                     break;
                 case ParamType::Slide:     if (!v.empty()) u.slide.insert(v); break;
                 case ParamType::LightName: if (!v.empty()) u.light.insert(v); break;
@@ -376,6 +380,20 @@ PorRow CldRow(const Cld101xConfig* m, const Cld101xConfig* t, const Used& u)
     return r;
 }
 
+PorRow TecRow(const ArroyoTecConfig* m, const ArroyoTecConfig* t, const Used& u)
+{
+    const std::string name = m ? m->name : t->name;
+    PorRow r = Dev(PorRowKind::Device, name, m != nullptr, t != nullptr, u.tec.count(name) > 0);
+    F(r, m, t, "type", &ArroyoTecConfig::type);
+    F(r, m, t, "enabled", &ArroyoTecConfig::enabled);
+    F(r, m, t, "simulated", &ArroyoTecConfig::simulated);
+    F(r, m, t, "poll_ms", &ArroyoTecConfig::pollIntervalMs);
+    F(r, m, t, "port", &ArroyoTecConfig::port, PorParamClass::Machine);
+    F(r, m, t, "baud", &ArroyoTecConfig::baud, PorParamClass::Machine);
+    Finish(r);
+    return r;
+}
+
 PorRow PsuRow(const PsuConfig* m, const PsuConfig* t, const Used& u)
 {
     const std::string name = m ? m->name : t->name;
@@ -623,6 +641,8 @@ PorHardwareReport CompareHardware(const PorSide& master, const PorSide& target,
         [&u](const KeithleyConfig* a, const KeithleyConfig* b) { return KeithleyRow(a, b, u); })));
     rep.sections.push_back(Section("CLD101x", PairBy(m.clds, t.clds, byName,
         [&u](const Cld101xConfig* a, const Cld101xConfig* b) { return CldRow(a, b, u); })));
+    rep.sections.push_back(Section("Arroyo TEC", PairBy(m.tecs, t.tecs, byName,
+        [&u](const ArroyoTecConfig* a, const ArroyoTecConfig* b) { return TecRow(a, b, u); })));
     rep.sections.push_back(Section("PSUs", PairBy(m.psus, t.psus, byName,
         [&u](const PsuConfig* a, const PsuConfig* b) { return PsuRow(a, b, u); })));
     rep.sections.push_back(Section("Lights", PairBy(m.lights, t.lights, byName,

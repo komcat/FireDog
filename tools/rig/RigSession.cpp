@@ -33,6 +33,7 @@ HardwareConfig FilterToDevice(const HardwareConfig& full, const DeviceRef& only)
     for (auto& c : f.clds)          c.enabled = false;
     for (auto& p : f.psus)          p.enabled = false;
     for (auto& l : f.lights)        l.enabled = false;
+    for (auto& t : f.tecs)          t.enabled = false;
 
     switch (only.kind) {
         case DeviceKind::Motion:   f.motionDevices[only.index].enabled = true; break;
@@ -42,6 +43,7 @@ HardwareConfig FilterToDevice(const HardwareConfig& full, const DeviceRef& only)
         case DeviceKind::Cld:      f.clds[only.index].enabled          = true; break;
         case DeviceKind::Psu:      f.psus[only.index].enabled          = true; break;
         case DeviceKind::Light:    f.lights[only.index].enabled        = true; break;
+        case DeviceKind::Tec:      f.tecs[only.index].enabled          = true; break;
     }
 
     // Slides and both watches reference pins by name across the whole IO fleet;
@@ -110,6 +112,9 @@ bool RigSession::AllExpectedConnected() const
         if (hw_.PsuState(i) != ConnState::Connected) return false;
     }
     if (cfg_.FirstEnabledLight()    && hw_.LightState()    != ConnState::Connected) return false;
+    for (std::size_t i = 0; i < hw_.TecCount(); ++i) {   // every enabled TEC is built
+        if (hw_.TecState(i) != ConnState::Connected) return false;
+    }
     return true;
 }
 

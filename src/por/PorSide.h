@@ -39,6 +39,7 @@ struct PorHardwareNames {
     };
     std::map<std::string, Io>        io;          // io device name -> its pin names
     std::vector<std::string>         psus;        // config order; "" in a step = the first
+    std::vector<std::string>         tecs;        // config order; "" in a step = the first
     std::set<std::string>            slides;
     std::vector<LightChannelConfig>  lightChannels;   // every enabled channel of every light
     bool                             hasLight = false;

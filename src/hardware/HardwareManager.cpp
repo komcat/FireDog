@@ -39,6 +39,23 @@ std::size_t HardwareManager::AddPsuSlot(std::string name)
     return psu_.size() - 1;
 }
 
+std::size_t HardwareManager::AddTecSlot(std::string name)
+{
+    auto slot  = std::make_unique<TecSlot>();
+    slot->name = std::move(name);
+    tec_.push_back(std::move(slot));
+    return tec_.size() - 1;
+}
+
+int HardwareManager::TecIndex(const std::string& name) const
+{
+    if (tec_.empty()) return -1;
+    if (name.empty()) return 0;
+    for (std::size_t i = 0; i < tec_.size(); ++i)
+        if (tec_[i]->name == name) return static_cast<int>(i);
+    return -1;
+}
+
 int HardwareManager::PsuIndex(const std::string& name) const
 {
     if (psu_.empty()) return -1;
@@ -99,6 +116,9 @@ std::vector<HardwareManager::DeviceStatus> HardwareManager::Snapshot() const
         out.push_back({p->name, p->state.load()});
     }
     out.push_back({lightName_, lightState_.load()});
+    for (const auto& t : tec_) {
+        out.push_back({t->name, t->state.load()});
+    }
     return out;
 }
 

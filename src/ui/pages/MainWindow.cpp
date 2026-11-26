@@ -498,6 +498,8 @@ void App::DrawMainWindow()
                     SwitchPage(Page::Keithley);
                 if (ImGui::MenuItem("CLD101x",  nullptr, currentPage_ == Page::CLD))
                     SwitchPage(Page::CLD);
+                if (ImGui::MenuItem("Arroyo TEC", nullptr, currentPage_ == Page::Tec))
+                    SwitchPage(Page::Tec);
                 if (ImGui::MenuItem("PSU",      nullptr, currentPage_ == Page::PSU))
                     SwitchPage(Page::PSU);
                 if (ImGui::MenuItem("Lighting", nullptr, currentPage_ == Page::Light))
@@ -825,6 +827,7 @@ void App::DrawMainWindow()
             case Page::Camera:    DrawCameraListPanel();    break;
             case Page::Keithley:  DrawKeithleyListPanel();  break;
             case Page::CLD:       DrawCldListPanel();       break;
+            case Page::Tec:       DrawTecListPanel();       break;
             case Page::PSU:       DrawPsuListPanel();       break;
             case Page::Light:     DrawLightListPanel();     break;
             case Page::Motion:    DrawMotionListPanel();    break;
@@ -846,6 +849,7 @@ void App::DrawMainWindow()
             case Page::Camera:    DrawCameraDetailPanel();    break;
             case Page::Keithley:  DrawKeithleyDetailPanel();  break;
             case Page::CLD:       DrawCldDetailPanel();       break;
+            case Page::Tec:       DrawTecDetailPanel();       break;
             case Page::PSU:       DrawPsuDetailPanel();       break;
             case Page::Light:     DrawLightDetailPanel();     break;
             case Page::Motion:    DrawMotionDetailPanel();    break;
@@ -870,6 +874,7 @@ void App::DrawMainWindow()
             case Page::Camera:    DrawCameraInfoPanel();    break;
             case Page::Keithley:  DrawKeithleyInfoPanel();  break;
             case Page::CLD:       DrawCldInfoPanel();       break;
+            case Page::Tec:       DrawTecInfoPanel();       break;
             case Page::PSU:       DrawPsuInfoPanel();       break;
             case Page::Light:     DrawLightInfoPanel();     break;
             case Page::Motion:    DrawMotionPositionsPanel(); break;

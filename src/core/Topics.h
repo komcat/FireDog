@@ -35,6 +35,14 @@ inline constexpr const char* kVisionOk    = "vision/ok";
 inline constexpr const char* kCldTemp    = "cld/temp";
 inline constexpr const char* kCldCurrent = "cld/current";
 
+// Arroyo TECSource streams, one set per TEC of the fleet, under its config
+// name: "tec/<device>/temp" (deg C, only while the sensor reads - a shorted or
+// open thermistor publishes nothing), ".../current" (A), ".../voltage" (V).
+// Published by the driver's poll thread.
+inline std::string TecTemp(const std::string& device)    { return "tec/" + device + "/temp"; }
+inline std::string TecCurrent(const std::string& device) { return "tec/" + device + "/current"; }
+inline std::string TecVoltage(const std::string& device) { return "tec/" + device + "/voltage"; }
+
 // UDP3305S PSU per-channel measured streams (1-based channel), volts and amps.
 // Every PSU publishes under its own name, "psu/<device>/ch1/v" / ".../i".
 // The FIRST configured PSU ALSO publishes the original device-less names

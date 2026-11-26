@@ -46,6 +46,7 @@ enum class ParamType {
     DeviceIo,       // IO fleet device name
     DevicePsu,      // PSU fleet device name; "" = the first configured PSU
                     // (so a step saved before there were several still runs)
+    DeviceTec,      // Arroyo TEC fleet device name; "" = the first configured TEC
     DeviceCamera,   // camera config id (hardware.json "cameras" id); "" = the
                     // camera the machine drives. Today that is ONE camera, the
                     // first enabled entry, so a named one must be it
@@ -193,7 +194,7 @@ private:
 struct CommandSpec {
     // Which direct-SDK instrument the command needs (checked Connected at run
     // start). Fleet devices are covered by DeviceMotion/DeviceIo/Slide params.
-    enum class Needs { None, Camera, Keithley, Cld, Psu, Light };
+    enum class Needs { None, Camera, Keithley, Cld, Psu, Light, Tec };
 
     std::string name;        // stable id, snake_case: "move_to_position"
     std::string category;    // "Motion" | "IO" | "Instruments" | "System" ...

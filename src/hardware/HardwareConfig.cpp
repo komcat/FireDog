@@ -165,6 +165,18 @@ HardwareConfig HardwareConfig::Load(const std::string& path)
             for (const auto& inst : j["instruments"]) {
                 const std::string type = inst.value("type", std::string());
 
+                if (type.find("arroyo") != std::string::npos) {
+                    ArroyoTecConfig tc;
+                    tc.name           = inst.value("name", std::string("TEC1"));
+                    tc.type           = type;
+                    tc.port           = inst.value("port", std::string("COM1"));
+                    tc.baud           = inst.value("baud", 38400);
+                    tc.enabled        = inst.value("enabled", true);
+                    tc.simulated      = inst.value("simulated", false);
+                    tc.pollIntervalMs = inst.value("poll_interval_ms", 500);
+                    hc.tecs.push_back(tc);
+                    continue;
+                }
                 if (type.find("cld") != std::string::npos) {
                     Cld101xConfig cc;
                     cc.name         = inst.value("name", std::string("laser-main"));
@@ -278,6 +290,15 @@ const LightConfig* HardwareConfig::FirstEnabledLight() const
         if (l.enabled) return &l;
     }
     return nullptr;
+}
+
+std::vector<ArroyoTecConfig> HardwareConfig::EnabledTecs() const
+{
+    std::vector<ArroyoTecConfig> out;
+    for (const auto& t : tecs) {
+        if (t.enabled) out.push_back(t);
+    }
+    return out;
 }
 
 std::vector<MotionConfig> HardwareConfig::EnabledMotionDevices() const
@@ -672,6 +693,25 @@ bool HardwareConfig::SaveInstrument(const std::string& path, const LightConfig& 
 
     (*inst)["ip_address"]       = cfg.ipAddress;
     (*inst)["port"]             = cfg.port;
+    (*inst)["enabled"]          = cfg.enabled;
+    (*inst)["simulated"]        = cfg.simulated;
+    (*inst)["poll_interval_ms"] = cfg.pollIntervalMs;
+    return WriteConfigDoc(path, j);
+}
+
+bool HardwareConfig::SaveInstrument(const std::string& path, const ArroyoTecConfig& cfg)
+{
+    nlohmann::json j;
+    if (!ReadConfigDoc(path, j)) return false;
+
+    nlohmann::json* inst = FindEntry(j, "instruments", "name", cfg.name);
+    if (!inst) {
+        ReportMissing("instruments", cfg.name, path);
+        return false;
+    }
+
+    (*inst)["port"]             = cfg.port;
+    (*inst)["baud"]             = cfg.baud;
     (*inst)["enabled"]          = cfg.enabled;
     (*inst)["simulated"]        = cfg.simulated;
     (*inst)["poll_interval_ms"] = cfg.pollIntervalMs;

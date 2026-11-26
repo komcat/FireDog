@@ -297,6 +297,48 @@ void ProbeLight(RigSession& s)
     }
 }
 
+// Read-back only. Connect sends *CLS (empties the unit's error queue) and the
+// poll sends queries; no TEC:T or TEC:OUT is ever issued from here, so probing
+// never changes the set point or the output.
+void ProbeOneTec(HardwareManager& hw, std::size_t i)
+{
+    const std::string& name = hw.TecName(i);
+    Head("tec  " + name);
+    Field("state", ConnStateName(hw.TecState(i)));
+    ArroyoTec* t = hw.TecDevice(i);
+    if (!t) { Field("driver", "(none)"); return; }
+    const ArroyoTec::Config& c = t->GetConfig();
+    Field("port", c.port + " @ " + std::to_string(c.baud) + (c.simulated ? " (simulated)" : ""));
+    if (hw.TecState(i) != ConnState::Connected) {
+        const std::string err = t->LastError();
+        Field("last_error", err.empty() ? "(none)" : err);
+        return;
+    }
+
+    const ArroyoTec::Status st = t->GetStatus();
+    Field("idn", t->DeviceId());
+    Field("link", st.linkUp ? "up" : "DOWN (reconnecting)");
+    Field("poll_data", st.valid ? "valid" : "(no successful poll yet)");
+    Field("mode", st.mode);
+    Field("output", st.outputOn ? (st.stable ? "ON, stable" : "ON, settling") : "off");
+    Field("temp", st.tempValid ? Fixed(st.tempC, 3) + " C" : std::string("(sensor invalid)"));
+    Field("set_point", Fixed(st.setC, 3) + " C");
+    Field("current", Fixed(st.currentA, 2) + " A  (limit " + Fixed(st.limItA, 2) + " A)");
+    Field("voltage", Fixed(st.voltageV, 2) + " V");
+    Field("limits", Fixed(st.limTLoC, 1) + " .. " + Fixed(st.limTHiC, 1) + " C");
+    Field("tolerance", "+/-" + Fixed(st.tolC, 2) + " C for " + Fixed(st.tolS, 1) + " s");
+    const std::string cond = ArroyoTec::CondText(st.cond);
+    Field("condition", std::to_string(st.cond) + (cond.empty() ? "" : "  (" + cond + ")"));
+    if (!st.lastUnitError.empty()) Field("unit_error", st.lastUnitError);
+    Field("stream temp", Latest(topics::TecTemp(name), "C", false));
+}
+
+void ProbeTec(RigSession& s)
+{
+    HardwareManager& hw = s.Hw();
+    for (std::size_t i = 0; i < hw.TecCount(); ++i) ProbeOneTec(hw, i);
+}
+
 } // namespace
 
 void PrintStatus(const RigSession& s)
@@ -362,6 +404,7 @@ void PrintProbe(RigSession& s)
     ProbeCld(s);
     ProbePsu(s);
     ProbeLight(s);
+    ProbeTec(s);
     ProbeVision();
     std::cout << "\n";
 }

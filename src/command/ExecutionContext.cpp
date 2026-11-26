@@ -361,10 +361,10 @@ bool ExecutionContext::AwaitPrompt(const std::string& message, int autoOkMs,
 
 int ExecutionContext::AwaitChoice(const std::string& message,
                                   const std::vector<std::string>& buttons,
-                                  PromptLevel level)
+                                  PromptLevel level, int timeoutMs)
 {
     if (!hooks_.awaitChoice || buttons.empty()) return -1;
-    return hooks_.awaitChoice(message, buttons, level);
+    return hooks_.awaitChoice(message, buttons, level, timeoutMs);
 }
 
 bool ExecutionContext::AwaitInput(const std::string& message, std::string* textOut)

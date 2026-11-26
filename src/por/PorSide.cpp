@@ -80,6 +80,8 @@ void LoadHardware(PorSide& s)
     }
     for (const PsuConfig& p : hc.psus)
         if (p.enabled) s.hw.psus.push_back(p.name);
+    for (const ArroyoTecConfig& t : hc.tecs)
+        if (t.enabled) s.hw.tecs.push_back(t.name);
     for (const PneumaticSlideConfig& sl : hc.pneumaticSlides)
         if (sl.enabled) s.hw.slides.insert(sl.name);
     for (const LightConfig& l : hc.lights) {

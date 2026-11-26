@@ -95,6 +95,22 @@ struct PsuConfig {
     int         pollIntervalMs = 500;
 };
 
+// Arroyo Instruments TECSource temperature controller (from "instruments",
+// type containing "arroyo"), on a serial port: the USB connection is a virtual
+// COM port whose baud is FIXED at 38400 (RS-232 takes the menu's rate, factory
+// 9600). Nothing is written to the output at connect - the setpoint and the
+// output state are read back from the controller. A FLEET like the PSUs: every
+// enabled entry is built, a step names one by its `name`, and "" = the first.
+struct ArroyoTecConfig {
+    std::string name = "TEC1";
+    std::string type = "arroyo_tec";
+    std::string port = "COM1";        // "COM8"
+    int         baud = 38400;
+    bool        enabled   = true;
+    bool        simulated = false;    // in-memory controller, no port opened
+    int         pollIntervalMs = 500;
+};
+
 // CCS PD3 LED lighting controller (from "instruments", type containing "pd3"),
 // raw TCP on the LAN. Channels are numbered as on the FRONT PANEL (L1..L8 =
 // 1..8). `color` drives the colour call-outs (red/green/blue mix to white,
@@ -209,6 +225,7 @@ struct HardwareConfig {
     std::vector<Cld101xConfig>  clds;           // from "instruments" (type cld*)
     std::vector<PsuConfig>      psus;           // from "instruments" (type *udp3305*); every enabled one is built
     std::vector<LightConfig>    lights;         // from "instruments" (type *pd3*)
+    std::vector<ArroyoTecConfig> tecs;          // from "instruments" (type *arroyo*); every enabled one is built
     std::vector<MotionConfig>   motionDevices;  // from "motion_devices" (PI / ACS)
     std::vector<IoDeviceConfig> ioDevices;      // from "io_devices" (eziio / wago)
     std::vector<PneumaticSlideConfig> pneumaticSlides;  // from "pneumatic_slides"
@@ -223,6 +240,7 @@ struct HardwareConfig {
     const Cld101xConfig*  FirstEnabledCld() const;
     std::vector<PsuConfig> EnabledPsus() const;                  // enabled only, config order
     const LightConfig*    FirstEnabledLight() const;
+    std::vector<ArroyoTecConfig> EnabledTecs() const;           // enabled only, config order
     std::vector<MotionConfig>   EnabledMotionDevices() const;   // enabled only
     std::vector<IoDeviceConfig> EnabledIoDevices() const;       // enabled only
     std::vector<PneumaticSlideConfig> EnabledPneumaticSlides() const;
@@ -265,6 +283,7 @@ struct HardwareConfig {
     // Identity + polling only; the "channels" array is preserved (no rig
     // command edits the channel map, exactly like io_devices[].pins).
     static bool SaveInstrument(const std::string& path, const LightConfig& cfg);
+    static bool SaveInstrument(const std::string& path, const ArroyoTecConfig& cfg);
 };
 
 } // namespace firedog

@@ -286,6 +286,15 @@
         { "channel": 7, "name": "L7", "enabled": false },
         { "channel": 8, "name": "L8", "enabled": false }
       ]
+    },
+    {
+      "name": "TEC1",
+      "type": "arroyo_tec",
+      "port": "COM8",
+      "baud": 38400,
+      "enabled": false,
+      "simulated": false,
+      "poll_interval_ms": 500
     }
   ]
 }

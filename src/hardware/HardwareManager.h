@@ -9,6 +9,7 @@
 
 #include "hardware/IDevice.h"
 #include "hardware/camera/PylonCamera.h"
+#include "hardware/instruments/ArroyoTec.h"
 #include "hardware/instruments/CLD101x.h"
 #include "hardware/instruments/ISmu.h"
 #include "hardware/instruments/UDP3305S.h"
@@ -84,6 +85,17 @@ public:
     // Fleet index of the named PSU; "" = the first one. -1 when there is none.
     int         PsuIndex(const std::string& name) const;
 
+    // --- Arroyo TEC fleet. Multiple, by name - the PSU fleet's shape. --------
+    std::size_t AddTecSlot(std::string name);
+    std::size_t TecCount() const { return tec_.size(); }
+    ArroyoTec*  TecDevice(std::size_t i) const { return tec_[i]->dev.get(); }
+    void        SetTecDevice(std::size_t i, std::unique_ptr<ArroyoTec> d) { tec_[i]->dev = std::move(d); }
+    ConnState   TecState(std::size_t i) const { return tec_[i]->state.load(); }
+    void        SetTecState(std::size_t i, ConnState s) { tec_[i]->state.store(s); }
+    const std::string& TecName(std::size_t i) const { return tec_[i]->name; }
+    // Fleet index of the named TEC; "" = the first one. -1 when there is none.
+    int         TecIndex(const std::string& name) const;
+
     // --- Pneumatic slides (synthetic devices over the IO fleet). -------------
     // No ConnState: a slide's "connection" is its underlying IO devices
     // (PneumaticSlide::IsIoConnected), which are already in Snapshot().
@@ -143,10 +155,19 @@ private:
         std::string               name;
     };
 
+    // An Arroyo TEC + its async-connect state (and again). The driver's dtor
+    // sends LOCAL; the output keeps its state.
+    struct TecSlot {
+        std::unique_ptr<ArroyoTec> dev;
+        std::atomic<ConnState>     state{ConnState::Disconnected};
+        std::string                name;
+    };
+
     std::vector<std::unique_ptr<IDevice>>        devices_;
     std::vector<std::unique_ptr<MotionSlot>>     motion_;
     std::vector<std::unique_ptr<IoSlot>>         io_;
     std::vector<std::unique_ptr<PsuSlot>>        psu_;
+    std::vector<std::unique_ptr<TecSlot>>        tec_;
     std::vector<std::unique_ptr<PneumaticSlide>> slides_;   // reference io_ devices
     std::unique_ptr<IoWatch>                     ioWatch_;  // references io_ devices;
                                                             // declared after io_ so its

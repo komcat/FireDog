@@ -105,6 +105,7 @@ const char* KindName(DeviceKind k)
         case DeviceKind::Cld:      return "cld";
         case DeviceKind::Psu:      return "psu";
         case DeviceKind::Light:    return "light";
+        case DeviceKind::Tec:      return "tec";
     }
     return "?";
 }
@@ -143,6 +144,9 @@ void ConfigStore::RebuildIndex()
     }
     for (std::size_t i = 0; i < cfg_.lights.size(); ++i) {
         devices_.push_back({DeviceKind::Light, i, cfg_.lights[i].name});
+    }
+    for (std::size_t i = 0; i < cfg_.tecs.size(); ++i) {
+        devices_.push_back({DeviceKind::Tec, i, cfg_.tecs[i].name});
     }
 }
 
@@ -235,6 +239,13 @@ std::string ConfigStore::Summary(const DeviceRef& d) const
             enabled = l.enabled;
             break;
         }
+        case DeviceKind::Tec: {
+            const ArroyoTecConfig& t = cfg_.tecs[d.index];
+            kind    = t.type;
+            addr    = t.port + " @ " + std::to_string(t.baud) + (t.simulated ? " (sim)" : "");
+            enabled = t.enabled;
+            break;
+        }
     }
 
     os << "  " << (Dirty(d) ? "*" : " ") << " "
@@ -323,6 +334,15 @@ std::vector<std::pair<std::string, std::string>> ConfigStore::Fields(const Devic
             f.push_back({"poll_interval_ms", std::to_string(l.pollIntervalMs)});
             f.push_back({"enabled",          Yes(l.enabled)});
             f.push_back({"simulated",        Yes(l.simulated)});
+            break;
+        }
+        case DeviceKind::Tec: {
+            const ArroyoTecConfig& t = cfg_.tecs[d.index];
+            f.push_back({"port",             t.port});
+            f.push_back({"baud",             std::to_string(t.baud)});
+            f.push_back({"poll_interval_ms", std::to_string(t.pollIntervalMs)});
+            f.push_back({"enabled",          Yes(t.enabled)});
+            f.push_back({"simulated",        Yes(t.simulated)});
             break;
         }
     }
@@ -476,6 +496,16 @@ bool ConfigStore::Set(const DeviceRef& d, const std::string& field,
             else return unknown();
             break;
         }
+        case DeviceKind::Tec: {
+            ArroyoTecConfig& t = cfg_.tecs[d.index];
+            if      (field == "port")             { t.port = value; ok = true; }
+            else if (field == "baud")             { if (!asInt())  return false; t.baud = i; ok = true; }
+            else if (field == "poll_interval_ms") { if (!asInt())  return false; t.pollIntervalMs = i; ok = true; }
+            else if (field == "enabled")          { if (!asBool()) return false; t.enabled = b; ok = true; }
+            else if (field == "simulated")        { if (!asBool()) return false; t.simulated = b; ok = true; }
+            else return unknown();
+            break;
+        }
     }
 
     if (ok) dirty_.insert(KeyOf(d));
@@ -506,6 +536,9 @@ bool ConfigStore::Save(const DeviceRef& d, std::string& err)
             break;
         case DeviceKind::Light:
             ok = HardwareConfig::SaveInstrument(path_, cfg_.lights[d.index]);
+            break;
+        case DeviceKind::Tec:
+            ok = HardwareConfig::SaveInstrument(path_, cfg_.tecs[d.index]);
             break;
     }
 

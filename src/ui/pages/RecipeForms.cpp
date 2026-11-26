@@ -804,6 +804,7 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
     case ParamType::DeviceHexapod:
     case ParamType::DeviceIo:
     case ParamType::DevicePsu:
+    case ParamType::DeviceTec:
     case ParamType::DeviceCamera:
     case ParamType::LightName:
     case ParamType::Slide: {
@@ -818,6 +819,9 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             : p.type == ParamType::DevicePsu
                 ? (hardware_.PsuCount() > 0 ? "(first: " + hardware_.PsuName(0) + ")"
                                             : std::string("(first PSU)"))
+            : p.type == ParamType::DeviceTec
+                ? (hardware_.TecCount() > 0 ? "(first: " + hardware_.TecName(0) + ")"
+                                            : std::string("(first TEC)"))
             : p.type == ParamType::LightName ? std::string("(every light)")
                                              : std::string("(pick)");
         ImGui::SetNextItemWidth(fitW(preview));
@@ -844,6 +848,15 @@ bool App::DrawParamWidget(const CommandSpec& spec, const ParamSpec& p, nlohmann:
             } else if (p.type == ParamType::DevicePsu) {
                 for (std::size_t i = 0; i < hardware_.PsuCount(); ++i)
                     item(hardware_.PsuName(i));
+            } else if (p.type == ParamType::DeviceTec) {
+                if (ImGui::Selectable("(the first TEC)", v.empty())) {
+                    params[p.name] = std::string();
+                    changed = true;
+                }
+                for (std::size_t i = 0; i < hardware_.TecCount(); ++i)
+                    item(hardware_.TecName(i));
+                if (hardware_.TecCount() == 0)
+                    ImGui::TextDisabled("no enabled Arroyo TEC in hardware.json");
             } else if (p.type == ParamType::DeviceCamera) {
                 if (ImGui::Selectable("(the camera)", v.empty())) {
                     params[p.name] = std::string();

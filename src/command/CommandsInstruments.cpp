@@ -1,4 +1,4 @@
-// CommandsInstruments.cpp : Keithley / CLD101x / PSU / camera commands.
+// CommandsInstruments.cpp : Keithley / CLD101x / Arroyo TEC / PSU / camera commands.
 //
 // Thin wrappers over the Workflow instrument methods (which are read-back
 // verified and thread-safe against the drivers' poll loops). wait_for_
@@ -11,6 +11,7 @@
 #include "core/LightCallout.h"
 #include "core/Log.h"
 #include "core/Topics.h"
+#include "hardware/instruments/ArroyoTec.h"
 #include "hardware/instruments/UDP3305S.h"
 #include "workflow/Workflow.h"
 
@@ -52,6 +53,196 @@ CommandResult ExecWaitForTemperature(ExecutionContext& ctx, const ParamValues& p
     if (r == ExecutionContext::WaitResult::Ok) return CommandResult::Success();
     return CommandResult::Fail(r == ExecutionContext::WaitResult::Stopped
                                    ? "stopped" : "timeout waiting for temperature");
+}
+
+// The faults that keep a TEC output from staying on, as words; "" for none.
+std::string TecFaults(const ArroyoTec::Status& s)
+{
+    std::string f = ArroyoTec::CondText(s.cond & (ArroyoTec::kCondSensorShort | ArroyoTec::kCondSensorOpen |
+                                                  ArroyoTec::kCondTecOpen | ArroyoTec::kCondRunaway |
+                                                  ArroyoTec::kCondTHighLimit | ArroyoTec::kCondTLowLimit));
+    if (!s.lastUnitError.empty()) f += (f.empty() ? "" : "; ") + ("last controller error " + s.lastUnitError);
+    return f;
+}
+
+// tec_startup: set point + output ON + a quick check that the TEC is really
+// driving, as ONE step - with the operator in the loop when it is not.
+//
+// One attempt: read the start temperature (a fresh Measure, not the poll cache)
+// -> TEC:T -> TEC:OUT 1 (read back; an ON the unit refuses or drops comes with
+// its reason) -> wait verify_ms -> read again and judge:
+//   - the output is still ON, and no sensor / module / run-away fault;
+//   - not in VOLTAGE limit: an open TEC cable has no current path, so the
+//     drive runs up against its compliance voltage;
+//   - not in CURRENT limit, when fail_on_current_limit (default on). Note: a
+//     big step (25 -> 60 C) can legitimately drive at the limit for a while;
+//     untick it for such a set point;
+//   - when the start was NOT already within the controller's tolerance of the
+//     set point: |I| >= min_current_a (no current = nothing connected), and
+//     the temperature moved at least min_temp_change_c from the start (0 =
+//     skip). Already at temperature, neither is expected, so neither is asked.
+// A failed attempt switches the output back OFF (off_on_fail) - an unverified
+// TEC is worse than an off one - and asks the operator in the prompt window:
+// Retry (the whole attempt again) or Cancel, for at most prompt_timeout_ms
+// (default 30 min). Cancel, the timeout or Stop fail the step.
+//
+// Writes <prefix>_ok always, and <prefix>_start_c / _temp_c / _current_a /
+// _voltage_v from the last attempt that got as far as measuring.
+CommandResult ExecTecStartup(ExecutionContext& ctx, const ParamValues& p)
+{
+    Workflow&         wf       = ctx.Wf();
+    const std::string dev      = p.GetString("device");   // "" = the first TEC
+    const double      setC     = p.GetDouble("celsius");
+    const int         verifyMs = p.GetInt("verify_ms");
+    const double      minI     = p.GetDouble("min_current_a");
+    const double      minDT    = p.GetDouble("min_temp_change_c");
+    const bool        iLimFail = p.GetBool("fail_on_current_limit");
+    const bool        offOnFail = p.GetBool("off_on_fail");
+    const int         promptMs = p.GetInt("prompt_timeout_ms");
+    const std::string prefix   = p.GetString("ctx_prefix");
+    ctx.CtxSet(prefix + "_ok", false);
+
+    enum class Try { Ok, Failed, Stopped };
+    char buf[320];
+    const auto attempt = [&](std::string& why) -> Try {
+        ArroyoTec* tec = wf.ConnectedTec(dev);
+        if (!tec) { why = wf.TecLabel(dev) + " is not connected (Hardware > Arroyo TEC > Connect)"; return Try::Failed; }
+
+        ArroyoTec::Reading r0;
+        if (!tec->Measure(r0)) { why = "the TEC does not answer: " + tec->LastError(); return Try::Failed; }
+        if (!r0.tempValid) {
+            why = "no valid temperature before switching on (" +
+                  ArroyoTec::CondText(r0.cond & (ArroyoTec::kCondSensorShort | ArroyoTec::kCondSensorOpen)) +
+                  ") - check the thermistor cable";
+            return Try::Failed;
+        }
+        ctx.CtxSet(prefix + "_start_c", r0.tempC);
+
+        if (!wf.SetTecTemperature(dev, setC, &why)) { why = "set point refused: " + why; return Try::Failed; }
+        bool switchedOn = false;
+        const auto fail = [&](const std::string& w) {
+            why = w;
+            if (offOnFail && switchedOn) wf.SetTecOutput(dev, false);
+            return Try::Failed;
+        };
+        if (!wf.SetTecOutput(dev, true, &why)) return fail("output did not switch ON: " + why);
+        switchedOn = true;
+
+        if (!ctx.Sleep(verifyMs)) {
+            if (offOnFail) wf.SetTecOutput(dev, false);
+            return Try::Stopped;
+        }
+
+        ArroyoTec::Reading r1;
+        if (!tec->Measure(r1)) return fail("the TEC stopped answering: " + tec->LastError());
+        ctx.CtxSet(prefix + "_temp_c", r1.tempC);
+        ctx.CtxSet(prefix + "_current_a", r1.currentA);
+        ctx.CtxSet(prefix + "_voltage_v", r1.voltageV);
+        const std::string unit = r1.unitErrors.empty() ? "" : " - controller: " + r1.unitErrors;
+
+        if (!(r1.cond & ArroyoTec::kCondOutputOn))
+            return fail("the output dropped OFF within " + std::to_string(verifyMs) + " ms" + unit);
+        const unsigned faults = r1.cond & (ArroyoTec::kCondSensorShort | ArroyoTec::kCondSensorOpen |
+                                           ArroyoTec::kCondTecOpen | ArroyoTec::kCondRunaway);
+        if (faults) return fail(ArroyoTec::CondText(faults) + unit);
+        if (r1.cond & ArroyoTec::kCondVoltageLimit) {
+            std::snprintf(buf, sizeof(buf), "drive at its VOLTAGE limit (%.2f V, %.2f A) - TEC cable not "
+                          "connected or the module open?", r1.voltageV, r1.currentA);
+            return fail(buf + unit);
+        }
+        if (iLimFail && (r1.cond & ArroyoTec::kCondCurrentLimit)) {
+            std::snprintf(buf, sizeof(buf), "drive at its CURRENT limit (%.2f A, %.2f V) - check the TEC "
+                          "cable (a big temperature step can also do this: untick fail_on_current_limit)",
+                          r1.currentA, r1.voltageV);
+            return fail(buf + unit);
+        }
+        const double tolC = tec->GetStatus().tolC > 0.0 ? tec->GetStatus().tolC : 0.1;
+        if (std::fabs(r0.tempC - setC) > tolC) {
+            if (std::fabs(r1.currentA) < minI) {
+                std::snprintf(buf, sizeof(buf), "no TEC current (%.3f A, want at least %.3f A) - TEC cable "
+                              "not connected?", r1.currentA, minI);
+                return fail(buf + unit);
+            }
+            if (minDT > 0.0 && std::fabs(r1.tempC - r0.tempC) < minDT) {
+                std::snprintf(buf, sizeof(buf), "temperature did not move (%.3f -> %.3f C in %d ms, want "
+                              "%.3f C) - is the sensor on the TEC it is driving?",
+                              r0.tempC, r1.tempC, verifyMs, minDT);
+                return fail(buf + unit);
+            }
+        }
+        std::snprintf(buf, sizeof(buf), "set %.2f C, ON: %.3f -> %.3f C, %.3f A, %.2f V after %d ms",
+                      setC, r0.tempC, r1.tempC, r1.currentA, r1.voltageV, verifyMs);
+        FD_INFO("tec", "%s startup ok: %s", wf.TecLabel(dev).c_str(), buf);
+        return Try::Ok;
+    };
+
+    for (int n = 1;; ++n) {
+        std::string why;
+        const Try t = attempt(why);
+        if (t == Try::Ok) {
+            ctx.CtxSet(prefix + "_ok", true);
+            return CommandResult::Success();
+        }
+        if (t == Try::Stopped) return CommandResult::Fail("stopped");
+
+        FD_WARN("tec", "%s startup attempt %d failed: %s", wf.TecLabel(dev).c_str(), n, why.c_str());
+        const std::string msg = wf.TecLabel(dev) + " startup failed (attempt " + std::to_string(n) +
+                                "):\n\n" + why +
+                                (offOnFail ? "\n\nThe TEC output has been switched OFF." : "") +
+                                "\n\nFix the hardware (TEC and sensor cables, controller), then press "
+                                "Retry - or Cancel to stop this step.";
+        const int choice = ctx.AwaitChoice(msg, {"Retry", "Cancel"}, PromptLevel::Error, promptMs);
+        if (choice == 0) continue;
+        if (choice == ExecutionContext::kChoiceTimedOut)
+            return CommandResult::Fail("tec_startup: nobody answered within " +
+                                       std::to_string(promptMs / 60000) + " min - " + why);
+        if (choice == 1) return CommandResult::Fail("tec_startup: cancelled by the operator - " + why);
+        return CommandResult::Fail("stopped");
+    }
+}
+
+// tec_wait_stable: until the CONTROLLER says stable - output on and in its own
+// tolerance window (TEC:TOL, e.g. 0.1 C held 5 s). That is the front panel's
+// Stable LED, so the step and the instrument cannot disagree about "settled".
+// Only a poll that began after the wait started counts: the cached status may
+// still describe the set point before a tec_set_temperature one step earlier.
+// An output that is (or drops) OFF fails at once - waiting the whole timeout
+// for a tripped controller only hides the trip.
+CommandResult ExecTecWaitStable(ExecutionContext& ctx, const ParamValues& p)
+{
+    const std::string dev = p.GetString("device");   // "" = the first TEC
+    ArroyoTec* tec = ctx.Wf().ConnectedTec(dev);
+    if (!tec) return CommandResult::Fail("tec_wait_stable: " + ctx.Wf().TecLabel(dev) + " is not connected");
+    const unsigned long long seq0 = tec->GetStatus().pollSeq;
+    std::string why;
+    ArroyoTec::Status last;
+    const auto r = ctx.WaitUntil([&] {
+        ArroyoTec* t = ctx.Wf().ConnectedTec(dev);
+        if (!t) { why = ctx.Wf().TecLabel(dev) + " disconnected"; return true; }
+        last = t->GetStatus();
+        if (last.pollSeq < seq0 + 2) return false;
+        if (!last.outputOn) {
+            const std::string f = TecFaults(last);
+            why = "the TEC output is OFF" + (f.empty() ? std::string() : " (" + f + ")");
+            return true;
+        }
+        return last.stable;
+    }, p.GetInt("timeout_ms"), 100);
+
+    if (r == ExecutionContext::WaitResult::Stopped) return CommandResult::Fail("stopped");
+    if (!why.empty()) return CommandResult::Fail("tec_wait_stable: " + why);
+    char buf[200];
+    if (r == ExecutionContext::WaitResult::Timeout) {
+        if (last.tempValid)
+            std::snprintf(buf, sizeof(buf), "tec_wait_stable: not stable after %d ms (%.3f C, set %.3f C, window +/-%.2f C for %.1f s)",
+                          p.GetInt("timeout_ms"), last.tempC, last.setC, last.tolC, last.tolS);
+        else
+            std::snprintf(buf, sizeof(buf), "tec_wait_stable: not stable after %d ms (no valid temperature)",
+                          p.GetInt("timeout_ms"));
+        return CommandResult::Fail(buf);
+    }
+    FD_INFO("tec", "stable at %.3f C (set %.3f C)", last.tempC, last.setC);
+    return CommandResult::Success();
 }
 
 // psu_startup: the verified power-up (Horizon's psu.powerUp, with a CV/CC mode).
@@ -300,6 +491,108 @@ void RegisterInstrumentCommands(CommandRegistry& reg, Workflow& wf, HardwareMana
                       {"timeout_ms", PT::Int, false, 60000, 100, 600000, {}, "wait timeout"},
                   },
                   Needs::Cld, ExecWaitForTemperature});
+
+    // ---- Arroyo TECSource -----------------------------------------------------
+    // The controller's own limits (TLO..THI, read at connect) refuse a set
+    // point before it is sent; the -99..250 bounds here are only the unit's range.
+    // None of these is a teach mover, a parallel mover or dry-run allowed.
+    // Every tec_* step names its TEC with `device` (its name in hardware.json),
+    // listed first; empty = the FIRST configured TEC - the PSU fleet's rule.
+    const auto tecDeviceParam = [] {
+        return ParamSpec{"device", ParamType::DeviceTec, false, "", 0, 0, {},
+                         "TEC controller (its name in hardware.json); empty = the first one"};
+    };
+    {
+        CommandSpec s{"tec_startup", "Instruments",
+                      "TEC startup: set point, output ON, check it is driving; on a failure "
+                      "the operator fixes the hardware and Retries (or Cancels)",
+                      {
+                          tecDeviceParam(),
+                          {"celsius", PT::Double, false, 25.0, -99.0, 250.0, {}, "set point (deg C)"},
+                          {"verify_ms", PT::Int, false, 500, 100, 60000, {},
+                           "how long after ON the drive is checked"},
+                          {"min_current_a", PT::Double, false, 0.05, 0.0, 30.0, {},
+                           "at least this much TEC current (A) when not already at the set point"},
+                          {"min_temp_change_c", PT::Double, false, 0.01, 0.0, 10.0, {},
+                           "the temperature must move this much from the start (deg C); 0 = skip"},
+                          {"fail_on_current_limit", PT::Bool, false, true, 0, 0, {},
+                           "a drive at its current limit fails (untick for a big temperature step)"},
+                          {"off_on_fail", PT::Bool, false, true, 0, 0, {},
+                           "switch the output OFF when an attempt fails"},
+                          {"prompt_timeout_ms", PT::Int, false, 1800000, 10000, 86400000, {},
+                           "how long the Retry / Cancel prompt waits (default 30 min)"},
+                          {"ctx_prefix", PT::String, false, "tec", 0, 0, {}, "ctx key prefix"},
+                      },
+                      Needs::Tec, ExecTecStartup};
+        s.outputs = [](const nlohmann::json& p) {
+            const std::string px = p.value("ctx_prefix", std::string("tec"));
+            CommandOutputs o;
+            o.keys.push_back({px + "_ok", "bool", "true when the TEC started and was seen driving"});
+            o.keys.push_back({px + "_start_c", "number", "deg C before switching on"});
+            o.keys.push_back({px + "_temp_c", "number", "deg C verify_ms after ON"});
+            o.keys.push_back({px + "_current_a", "number", "TEC current (A) verify_ms after ON"});
+            o.keys.push_back({px + "_voltage_v", "number", "TEC voltage (V) verify_ms after ON"});
+            return o;
+        };
+        reg.Register(std::move(s));
+    }
+    reg.Register({"tec_set_temperature", "Instruments", "Set the Arroyo TEC temperature set point",
+                  {
+                      tecDeviceParam(),
+                      {"celsius", PT::Double, true, {}, -99.0, 250.0, {}, "set point (deg C)"},
+                  },
+                  Needs::Tec,
+                  [w](ExecutionContext&, const ParamValues& p) {
+                      std::string why;
+                      if (w->SetTecTemperature(p.GetString("device"), p.GetDouble("celsius"), &why))
+                          return CommandResult::Success();
+                      return CommandResult::Fail("tec_set_temperature: " + why);
+                  }});
+    reg.Register({"tec_output", "Instruments", "Switch the Arroyo TEC output on/off",
+                  {
+                      tecDeviceParam(),
+                      {"on", PT::Bool, true, {}, 0, 0, {}, "true = ON"},
+                  },
+                  Needs::Tec,
+                  [w](ExecutionContext&, const ParamValues& p) {
+                      std::string why;
+                      if (w->SetTecOutput(p.GetString("device"), p.GetBool("on"), &why))
+                          return CommandResult::Success();
+                      return CommandResult::Fail("tec_output: " + why);
+                  }});
+    reg.Register({"tec_wait_stable", "Instruments",
+                  "Wait until the Arroyo TEC reports stable (its own tolerance window)",
+                  {
+                      tecDeviceParam(),
+                      {"timeout_ms", PT::Int, false, 300000, 1000, 3600000, {}, "wait timeout"},
+                  },
+                  Needs::Tec, ExecTecWaitStable});
+    reg.Register({"tec_read_temperature", "Instruments",
+                  "Read the Arroyo TEC temperature (deg C) into the run context",
+                  {
+                      tecDeviceParam(),
+                      {"ctx", PT::String, true, {}, 0, 0, {}, "destination ctx key"},
+                  },
+                  Needs::Tec,
+                  [w](ExecutionContext& c, const ParamValues& p) {
+                      // From the driver's status, not the topic: a shorted
+                      // sensor publishes nothing, and the topic's latest value
+                      // would be an old reading passed off as a new one.
+                      const std::string dev = p.GetString("device");
+                      ArroyoTec* t = w->ConnectedTec(dev);
+                      if (!t) return CommandResult::Fail("tec_read_temperature: " + w->TecLabel(dev) +
+                                                         " is not connected");
+                      const ArroyoTec::Status s = t->GetStatus();
+                      if (!s.valid) return CommandResult::Fail("tec_read_temperature: no reading yet");
+                      if (!s.tempValid) {
+                          const std::string f = ArroyoTec::CondText(s.cond & (ArroyoTec::kCondSensorShort |
+                                                                               ArroyoTec::kCondSensorOpen));
+                          return CommandResult::Fail("tec_read_temperature: no valid temperature" +
+                                                     (f.empty() ? std::string() : " (" + f + ")"));
+                      }
+                      c.CtxSet(p.GetString("ctx"), s.tempC);
+                      return CommandResult::Success();
+                  }});
 
     // ---- UDP3305S PSU fleet --------------------------------------------------
     // Every psu_* step names its supply with `device` (the PSU's name in

@@ -44,6 +44,7 @@ UserRole MinRoleFor(Page p)
         case Page::Camera:
         case Page::Keithley:
         case Page::CLD:
+        case Page::Tec:
         case Page::PSU:
         case Page::Light:
         case Page::IO:

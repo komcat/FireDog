@@ -175,6 +175,15 @@ struct Builder {
                 cfg("PSU '" + v + "'", "add it to this machine's hardware.json (instruments)", "PSUs");
             }
             break;
+        case ParamType::DeviceTec:
+            if (v.empty()) {
+                if (t.hw.tecs.empty())
+                    cfg("an Arroyo TEC (the step uses the first one)",
+                        "add an arroyo_tec to this machine's hardware.json", "Arroyo TEC");
+            } else if (std::find(t.hw.tecs.begin(), t.hw.tecs.end(), v) == t.hw.tecs.end()) {
+                cfg("TEC '" + v + "'", "add it to this machine's hardware.json (instruments)", "Arroyo TEC");
+            }
+            break;
         case ParamType::Slide:
             if (!t.hw.slides.count(v))
                 cfg("pneumatic slide '" + v + "'",
@@ -283,7 +292,8 @@ struct Builder {
                 }
                 if (!jv.is_string()) continue;
                 const std::string v = jv.get<std::string>();
-                if (v.empty() && p.type != ParamType::DevicePsu) continue;
+                if (v.empty() && p.type != ParamType::DevicePsu && p.type != ParamType::DeviceTec)
+                    continue;
 
                 // A step's own detector (detect_object, datum_reference):
                 // taught on each machine.
@@ -397,6 +407,7 @@ struct Builder {
                     break;
                 case ParamType::DeviceMotion: case ParamType::DeviceHexapod: case ParamType::DeviceIo:
                 case ParamType::DevicePsu:    case ParamType::Slide:         case ParamType::LightName:
+                case ParamType::DeviceTec:
                 case ParamType::PinName:
                     if (t.hasHardware) Hardware(p, v, merged, label, owner.name);
                     break;

@@ -51,7 +51,7 @@ namespace firedog {
 // thing's own button. AlignNominal Closes back to Align and VisionTeach to
 // whoever opened it, rather than to prevPage_ (a takeover->takeover switch
 // does not update prevPage_).
-enum class Page { Overview, Camera, Keithley, CLD, PSU, Light, Motion, IO, Pneumatic,
+enum class Page { Overview, Camera, Keithley, CLD, Tec, PSU, Light, Motion, IO, Pneumatic,
                   WatchEdit, TransformEdit, RecipeEdit, Scripts, DutView, Run,
                   Align, VisionTeach, AlignNominal, Needle,
                   DeviceReg, Grip, Tray, Mosaic, Version, Oee, Interlocks };
@@ -399,6 +399,10 @@ private:
     void DrawCldListPanel();       // left:   status + connect/disconnect
     void DrawCldDetailPanel();     // middle: TEC + laser controls
     void DrawCldInfoPanel();       // right:  identity + live values
+    // TEC page — the Arroyo TECSource temperature controller.
+    void DrawTecListPanel();       // left:   status + connect/disconnect
+    void DrawTecDetailPanel();     // middle: set point + output + live readings + chart
+    void DrawTecInfoPanel();       // right:  identity + limits + condition
 
     // PSU page — the UNI-T UDP3305S 3-channel DC power supply.
     void DrawPsuListPanel();       // left:   status + connect/disconnect
@@ -1112,6 +1116,15 @@ private:
     float cldTempSet_    = 25.0f;  // temperature setpoint edit (deg C)
     float cldCurrentSet_ = 50.0f;  // laser current setpoint edit (mA)
     bool  cldPulled_     = false;
+
+    // TEC page state — the page drives ONE TEC of the fleet at a time (tecSel_,
+    // a fleet index, clamped by TecSelected); the set point edit seeds from
+    // THAT controller's own set point once per connection or selection.
+    int   tecSel_        = 0;
+    std::size_t TecSelected();
+    float tecTempSet_    = 25.0f;  // set point edit (deg C)
+    bool  tecPulled_     = false;
+    std::vector<float> tecChartT_, tecChartV_;   // temperature history scratch (chart)
 
     // PSU page state — edits seed from the device's setpoints at connect
     // (same psuPulled_ pattern as the CLD page).

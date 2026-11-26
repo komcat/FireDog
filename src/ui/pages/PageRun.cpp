@@ -813,6 +813,21 @@ void AddPsuFleetReadouts(std::vector<ReadoutDef>& cat, const std::vector<std::st
                        q == 'v' ? ReadoutKind::Volt : ReadoutKind::Amp});
     }
 }
+// Every Arroyo TEC's streams ("tec/<name>/temp|current|voltage"), read off the
+// bus like the PSU fleet's: a TEC that never published has nothing to show.
+void AddTecFleetReadouts(std::vector<ReadoutDef>& cat, const std::vector<std::string>& onBus)
+{
+    for (const std::string& t : onBus) {
+        if (t.rfind("tec/", 0) != 0) continue;
+        const std::size_t a = t.find('/', 4);
+        if (a == std::string::npos || a == 4) continue;
+        const std::string name = t.substr(4, a - 4);
+        const std::string what = t.substr(a + 1);
+        if      (what == "temp")    cat.push_back({t, name + " temp",    ReadoutKind::Temp});
+        else if (what == "current") cat.push_back({t, name + " current", ReadoutKind::Amp});
+        else if (what == "voltage") cat.push_back({t, name + " voltage", ReadoutKind::Volt});
+    }
+}
 const ReadoutDef* FindReadout(const std::vector<ReadoutDef>& cat, const std::string& topic)
 {
     for (const ReadoutDef& d : cat) if (d.topic == topic) return &d;
@@ -837,7 +852,11 @@ constexpr double      kRunReadoutPeriod = 0.25;   // s between pulls off the bus
 void App::DrawRunReadouts()
 {
     std::vector<ReadoutDef> cat = ReadoutCatalogue();
-    AddPsuFleetReadouts(cat, DataBus::Instance().Topics());   // pinned ones format too
+    {
+        const std::vector<std::string> onBus = DataBus::Instance().Topics();
+        AddPsuFleetReadouts(cat, onBus);   // pinned ones format too
+        AddTecFleetReadouts(cat, onBus);
+    }
 
     // Pull on a timer. Only topics the bus already HAS are touched:
     // DataBus::Stream creates on demand, and a phantom empty "psu/ch3/v"

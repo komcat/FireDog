@@ -272,9 +272,11 @@ public:
         // Crosshair pick prompt; false = cancel (or stop released it).
         std::function<bool(const PickRequest&, PickResult*)> awaitPick;
         // The prompt window with the AUTHOR's buttons instead of OK / Cancel:
-        // returns the 0-based index pressed, -1 when Stop released it. null =>
-        // -1. No auto-OK: a choice has no default answer.
-        std::function<int(const std::string&, const std::vector<std::string>&, PromptLevel)>
+        // returns the 0-based index pressed, -1 when Stop released it, -2 when
+        // timeoutMs (> 0) ran out unanswered. null => -1. No auto-OK: a choice
+        // has no default answer, so a timeout is NOT an answer.
+        std::function<int(const std::string&, const std::vector<std::string>&, PromptLevel,
+                          int timeoutMs)>
             awaitChoice;
         // Timing only (docs/cycle-time-design.md §2): true when a command
         // starts waiting on a PERSON through something other than the hooks
@@ -407,9 +409,11 @@ public:
                      PromptLevel level = PromptLevel::Info,
                      const std::vector<std::string>& images = {});
     // Custom buttons (left to right; the first is drawn as the primary one).
-    // 0-based index of the one pressed, -1 = stopped (or no buttons).
+    // 0-based index of the one pressed, -1 = stopped (or no buttons), -2 =
+    // timeoutMs (> 0) passed with no answer (the window closes itself).
+    static constexpr int kChoiceTimedOut = -2;
     int  AwaitChoice(const std::string& message, const std::vector<std::string>& buttons,
-                     PromptLevel level = PromptLevel::Info);
+                     PromptLevel level = PromptLevel::Info, int timeoutMs = 0);
     bool AwaitInput(const std::string& message, std::string* textOut);
     bool AwaitAdjust(const AdjustRequest& req);
     bool AwaitPick(const PickRequest& req, PickResult* out);

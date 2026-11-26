@@ -51,6 +51,7 @@ class ISmu;
 class CLD101x;
 class UDP3305S;
 class CcsPd3;
+class ArroyoTec;
 
 class Workflow {
 public:
@@ -363,6 +364,25 @@ public:
     // the one implementation. An empty kind is a no-op success. Blocking: call
     // from a worker, never the UI thread.
     bool ApplyLighting(const AlignLighting& l, std::string* why = nullptr);
+
+    // ---- Arroyo TEC fleet (TEC page, tec_* commands) ------------------------
+    // The PSU fleet's shape: every enabled entry is built, each call names one
+    // by its config `name`, and "" means the FIRST. Same reconnect pattern. The
+    // blocking setters are for worker threads (a recipe step): limits-checked,
+    // ERRSTR?-checked and read back, `why` says what the controller answered.
+    // The Request* forms queue for the driver's poll thread and are what the UI
+    // thread calls - no serial I/O on the UI.
+    bool ConnectTec(const std::string& device);
+    bool DisconnectTec(const std::string& device);
+    bool SetTecTemperature(const std::string& device, double celsius, std::string* why = nullptr);
+    bool SetTecOutput(const std::string& device, bool on, std::string* why = nullptr);
+    void RequestTecTemperature(const std::string& device, double celsius);
+    void RequestTecOutput(const std::string& device, bool on);
+    // That TEC's driver, or null unless it is Connected. Its GetStatus() is a
+    // cached read-back (no I/O), safe on any thread.
+    ArroyoTec* ConnectedTec(const std::string& device) const;
+    // "TEC 'TEC1'", or the first one's name for "" - for messages.
+    std::string TecLabel(const std::string& device) const;
 
     // ---- Digital IO commands (IO page + future procedures) ------------------
     // devIdx indexes the HardwareManager IO fleet. Writes require Connected.
@@ -935,6 +955,8 @@ private:
     void StartLight(const HardwareConfig& hw);
     void LaunchLightConnect();    // async connect from lightCfg_ (Start + reconnect)
     CcsPd3* ConnectedLight() const;            // null unless state == Connected
+    void StartTec(const HardwareConfig& hw);       // builds every enabled TEC
+    void LaunchTecConnect(std::size_t idx);   // async connect from tecCfgs_[idx] (Start + reconnect)
     // The (channel, native value) list for a call-out or an off, from the
     // config captured at Start. The one place a call-out is resolved.
     bool LightTargets(const std::string& light, const std::string* color, double percent,
@@ -1127,6 +1149,7 @@ private:
     std::future<void>              cldConnect_;
     std::vector<std::future<void>> psuConnect_;      // one per PSU (fleet index)
     std::future<void>              lightConnect_;
+    std::vector<std::future<void>> tecConnect_;      // one per TEC (fleet index)
     std::vector<std::future<void>> motionConnect_;   // one per motion device
     std::vector<std::future<void>> ioConnect_;       // one per IO device
 
@@ -1173,6 +1196,9 @@ private:
     // before any worker exists, and never again.
     LightConfig lightCfg_;
     bool        lightCfgValid_ = false;
+
+    // Arroyo TEC configs captured at Start, by fleet index (same pattern).
+    std::vector<ArroyoTecConfig> tecCfgs_;
 
     // Per-(device,axis) jog target: rapid presses accumulate onto one evolving
     // target so the latest press overrides the previous instead of queuing; the

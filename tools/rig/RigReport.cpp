@@ -274,6 +274,7 @@ void WriteSummary(std::ostream& os, const HardwareConfig& c)
     Field(os, "laser / TEC",        count(c.clds.size(),          enabledOf(c.clds)));
     Field(os, "power supplies",     count(c.psus.size(),          enabledOf(c.psus)));
     Field(os, "lighting",           count(c.lights.size(),        enabledOf(c.lights)));
+    Field(os, "TEC controllers",    count(c.tecs.size(),          enabledOf(c.tecs)));
     os << "\n";
     Field(os, "io watch", c.ioWatch.enabled
               ? "ENABLED, " + std::to_string(c.ioWatch.bindings.size()) + " binding(s)"
@@ -507,7 +508,8 @@ void WriteCameras(std::ostream& os, const HardwareConfig& c)
 
 void WriteInstruments(std::ostream& os, const HardwareConfig& c)
 {
-    if (c.keithleys.empty() && c.clds.empty() && c.psus.empty() && c.lights.empty()) {
+    if (c.keithleys.empty() && c.clds.empty() && c.psus.empty() && c.lights.empty() &&
+        c.tecs.empty()) {
         os << "  (none configured)\n";
         return;
     }
@@ -575,6 +577,19 @@ void WriteInstruments(std::ostream& os, const HardwareConfig& c)
         os << "      the PD3 accepts ONE TCP client: while another program (Horizon,\n"
            << "      the CCS utility) holds it, FireDog cannot connect. Nothing is\n"
            << "      written to the lights at connect.\n\n";
+    }
+
+    for (const ArroyoTecConfig& t : c.tecs) {
+        DeviceHeader(os, t.name, "", t.type + " temperature controller", t.enabled);
+        Field(os, "port", OrNotSet(t.port) + " @ " + std::to_string(t.baud) + " baud"
+                  + (t.simulated ? "   (SIMULATED - no port is opened)" : ""));
+        Field(os, "connected by", "serial port (USB virtual COM port or RS-232, no VISA)");
+        Field(os, "poll interval", std::to_string(t.pollIntervalMs) + " ms");
+        os << "      over USB the baud is fixed at 38400; RS-232 takes the rate set in\n"
+           << "      the controller's Communications menu (factory 9600). A COM port has\n"
+           << "      ONE owner: close ArroyoControl or a terminal before FireDog starts.\n"
+           << "      Nothing is written at connect; disconnect returns the front panel\n"
+           << "      to local and leaves the output as it is.\n\n";
     }
 }
 

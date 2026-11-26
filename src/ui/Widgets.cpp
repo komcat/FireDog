@@ -621,6 +621,7 @@ const char* StepIconFile(const char* type)
         {"xcan_",       "mo_scan"},
         {"keithley_",   "in_meter"},
         {"cld_",        "in_laser"},
+        {"tec_",        "in_temperature"},
         {"psu_",        "in_psu"},
         {"light_",      "in_light"},
         {"vision_",     "vi_detect"},
